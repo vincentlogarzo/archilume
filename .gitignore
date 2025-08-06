@@ -1,0 +1,11 @@
+__pycache__/
+
+# Ignore all content in these directories
+inputs/*
+intermediates/*
+outputs/*
+
+# Keep directory structure but ignore content
+!inputs/.gitkeep
+!intermediates/.gitkeep
+!outputs/.gitkeep
