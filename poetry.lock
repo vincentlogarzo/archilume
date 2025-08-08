@@ -1599,6 +1599,34 @@ dev = ["mkdocs"]
 test = ["nose"]
 
 [[package]]
+name = "pyradiance"
+version = "1.1.5"
+description = "Python inteface for Radiance"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "pyradiance-1.1.5-cp310-cp310-macosx_10_14_x86_64.whl", hash = "sha256:3becd7aded45fb7ddb8ef9f30967e732fea8a62dfeeb7e506fa41d56057f5dbc"},
+    {file = "pyradiance-1.1.5-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:2eb86108d46115ba3432c47578730a9030791db24e1bb3efaefaaf83b3f8d47a"},
+    {file = "pyradiance-1.1.5-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:1f18d08a8492689dbe2a2b99646f607b838b17f3cfd00a7f90cb604d7b9bcb00"},
+    {file = "pyradiance-1.1.5-cp310-cp310-musllinux_1_1_x86_64.whl", hash = "sha256:0e35fcff54dcb9dfa2dc1bcd8c1692db122643c86ee805770c6dd207a9dbd806"},
+    {file = "pyradiance-1.1.5-cp310-cp310-win_amd64.whl", hash = "sha256:51a6e9bd07d94a9c5019c62464e8b57df3d9c58d36c2cd92a1ea791a90176a39"},
+    {file = "pyradiance-1.1.5-cp311-cp311-macosx_10_14_x86_64.whl", hash = "sha256:12bc0c15a01141554a5831d21492648e0c98dc7b215166017821372ddce29c26"},
+    {file = "pyradiance-1.1.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7b97f822583c0d2385bcaba0da72c63e7b8f511771a1c1c3b4c8e83d985825db"},
+    {file = "pyradiance-1.1.5-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:883f3318ddb47b91a290d2e5ab6ea0bc545a8f67ecd449edac28ca8aa938c517"},
+    {file = "pyradiance-1.1.5-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:2d11434315542bfb98cbd3ec56108a12111c473d5fbe15fe3f9015881458f06a"},
+    {file = "pyradiance-1.1.5-cp311-cp311-win_amd64.whl", hash = "sha256:e6d68ba60438226fab92d0360c303d1ef09481e0762f0c3a0ef17a8f68fe2629"},
+    {file = "pyradiance-1.1.5-cp312-abi3-macosx_10_14_x86_64.whl", hash = "sha256:365ed3926449a972efeca6ccfd2c8af2aa2787122eebaa08ea5bda23cbfae584"},
+    {file = "pyradiance-1.1.5-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:099e0b6977d234f8a5c001ba7e38c043970525ea302a5d7235a55c1a0f8b64fe"},
+    {file = "pyradiance-1.1.5-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:02915e2698364038a7e44f906878903aa92b4eb02cd8728b3ca0c596991fb0d8"},
+    {file = "pyradiance-1.1.5-cp312-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:df1048c92551743718003c8da5e5da74a9ea780ed022c677cf507ef8a1bbc52d"},
+    {file = "pyradiance-1.1.5-cp312-abi3-win_amd64.whl", hash = "sha256:8d509a1a0b0bbfd739afd52ce26c07679ee8048e84c4f60aa396ed7c2cacbca9"},
+]
+
+[package.dependencies]
+numpy = ">=1.2.6"
+
+[[package]]
 name = "pytest"
 version = "8.4.1"
 description = "pytest: simple powerful testing with Python"
@@ -2312,4 +2340,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12"
-content-hash = "5a3e87c4e1880036508b2ce84e7069650e3caf5917d009598af76decff4eef12"
+content-hash = "04ccf4bff6b9d8f4f74fbd3bcf951c40ad2945539e3047d7e3f1553e1a559e30"
