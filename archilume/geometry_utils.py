@@ -1,9 +1,6 @@
-# geometry_utils.py
-
 from typing import Optional, Tuple
 
 import pandas as pd
-
 
 def get_bounding_box_from_point_coordinates(point_dataframe: pd.DataFrame) -> pd.DataFrame:
     """
@@ -81,7 +78,7 @@ def get_bounding_box_from_point_coordinates(point_dataframe: pd.DataFrame) -> pd
 
     return corners_df
 
-def get_bounding_box_center_df(box_corners_df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
+def get_center_of_bounding_box(box_corners_df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
     """
     Calculates the center coordinate of a 3D bounding box and returns it as a tuple.
 

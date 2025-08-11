@@ -1,63 +1,151 @@
-# utils.py
-
+# Standard library imports
 import concurrent.futures
 import os
-import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Union
-import open3d as o3d
-import pywavefront
-from pywavefront.visualization import draw
-from PIL import Image
 from pathlib import Path
+from typing import List, Optional, Union
+
+# Third-party imports
+import open3d as o3d
+import tkinter as tk
+from tkinter import filedialog
+from PIL import Image
 
 
-def get_image_dimensions(image_path):
+def select_files(title: str = "Select file(s)") -> Optional[List[str]]:
     """
-    Opens an image file and prints its dimensions.
+    Opens a file dialog to select multiple files from inputs folder.
+
+    Args:
+        title (str): Dialog window title. Defaults to "Select file(s)".
+
+    Returns:
+        List[str] or None: List of file paths if files are selected,
+                          None if dialog is cancelled.
     """
-    if not os.path.exists(image_path):
-        print(f"Error: File not found at '{image_path}'")
+    root = tk.Tk()
+    root.withdraw()
+    
+    # Set initial directory to inputs folder, fall back to current dir if not found
+    inputs_dir = os.path.join(os.getcwd(), "inputs")
+    initial_dir = inputs_dir if os.path.exists(inputs_dir) else os.getcwd()
+
+    file_paths = filedialog.askopenfilenames(
+        initialdir=initial_dir,
+        title=title,
+        parent=root,
+    )
+    root.destroy()
+    return list(file_paths) if file_paths else None
+
+def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
+    """Displays one or more OBJ files using the open3d library with enhanced visualization and navigation."""
+    # Handle single file input
+    if isinstance(filenames, (str, Path)):
+        filenames = [filenames]
+    
+    print(f"Visualizing {len(filenames)} OBJ file(s) with open3d...")
+    
+    combined_mesh = o3d.geometry.TriangleMesh()
+    valid_files = []
+    
+    # Load and combine all meshes
+    for filename in filenames:
+        # Convert to Path object if string
+        if isinstance(filename, str):
+            filename = Path(filename)
+        
+        print(f"Loading: {filename.name}")
+        
+        # Read the mesh from the file
+        mesh = o3d.io.read_triangle_mesh(str(filename))
+
+        if len(mesh.vertices) == 0:
+            print(f"Warning: No vertices found in {filename.name}")
+            continue
+        
+        valid_files.append(filename)
+        
+        # Compute normals for proper lighting
+        if not mesh.has_vertex_normals():
+            mesh.compute_vertex_normals()
+
+        # Apply different colors for each mesh for distinction
+        color_index = len(valid_files) - 1
+        colors = [[0.8, 0.2, 0.2], [0.2, 0.8, 0.2], [0.2, 0.2, 0.8], [0.8, 0.8, 0.2], [0.8, 0.2, 0.8], [0.2, 0.8, 0.8]]
+        mesh.paint_uniform_color(colors[color_index % len(colors)])
+        
+        # Combine meshes
+        combined_mesh += mesh
+    
+    if len(valid_files) == 0:
+        print("No valid OBJ files found.")
         return
+    
+    # Create coordinate frame for reference
+    coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0)
+    
+    # Create wireframe for better structure visualization
+    wireframe = o3d.geometry.LineSet.create_from_triangle_mesh(combined_mesh)
+    wireframe.paint_uniform_color([0.2, 0.2, 0.2])
 
-    try:
-        with Image.open(image_path) as img:
-            width, height = img.size
-            print(
-                f"The dimensions of '{os.path.basename(image_path)}' are: {width}x{height} pixels."
-            )
-    except Exception as e:
-        print(f"Error: Could not read image dimensions. Reason: {e}")
+    # Create a visualizer with custom controls
+    file_names = [f.name for f in valid_files]
+    window_title = f"OBJ Viewer - {', '.join(file_names)}" if len(valid_files) <= 3 else f"OBJ Viewer - {len(valid_files)} files"
+    
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name=window_title, width=1200, height=800)
+    
+    # Add geometries
+    vis.add_geometry(combined_mesh)
+    vis.add_geometry(wireframe)
+    vis.add_geometry(coordinate_frame)
+    
+    # Get render option and enable additional features
+    render_opt = vis.get_render_option()
+    render_opt.show_coordinate_frame = True
+    render_opt.background_color = [0.1, 0.1, 0.1]  # Dark background
+    render_opt.mesh_show_back_face = True
+    render_opt.mesh_show_wireframe = False  # We have custom wireframe
+    render_opt.point_size = 2.0
+    render_opt.line_width = 1.0
+    
+    # Set up view control for better navigation
+    view_ctrl = vis.get_view_control()
+    
+    # Center the view on the mesh
+    vis.poll_events()
+    vis.update_renderer()
+    view_ctrl.set_zoom(0.8)
+    
+    # Display enhanced controls
+    print("-> Enhanced Navigation Controls:")
+    print("   Mouse + drag: Rotate view")
+    print("   Mouse wheel: Zoom in/out")
+    print("   Ctrl + mouse drag: Pan view")
+    print("   R: Reset view")
+    print("   F: Toggle fullscreen")
+    print("   H: Print help")
+    print("   Q or ESC: Exit")
+    print("   S: Save screenshot")
+    print("   P: Toggle point cloud mode")
+    print("   L: Toggle lighting")
+    print("   W: Toggle wireframe mode")
+    print("-> Close the window to continue.")
+    
+    # Run the visualizer
+    vis.run()
+    vis.destroy_window()
 
-def display_obj_o3d(filename: Path):
-    """Displays an OBJ file using the open3d library."""
-    print("Visualizing with open3d...")
-    # Read the mesh from the file
-    mesh = o3d.io.read_triangle_mesh(str(filename))
+def display_ifc(filename: Path):
+    """
+    TODO: Implement IFC file visualization using ifcopenshell, and allow colour checking and editing potentially through ThatOpenCompany
+    """
+    return None
 
-    # The mesh might need normals for proper lighting
-    if not mesh.has_vertex_normals():
-        mesh.compute_vertex_normals()
-
-    # Display the mesh in an interactive window
-    print("-> Close the open3d window to continue.")
-    o3d.visualization.draw_geometries([mesh])
-
-def display_obj_pywavefront(filename: Path):
-    """Displays an OBJ file using the pywavefront library."""
-    print("\nVisualizing with pywavefront...")
-    scene = pywavefront.Wavefront(filename, create_materials=True)
-
-    # Display the mesh in an interactive window
-    print("-> Close the pywavefront window to exit the script.")
-    draw(scene)
-
-def get_files_from_dir(
-    directory: str, file_extension: str, identifier: Optional[str] = None
-) -> Union[str, List[str]]:
+def get_files_from_dir(directory: str, file_extension: str, identifier: Optional[str] = None) -> Union[str, List[str]]:
     """
     Retrieves a list of files with a specific extension and optional identifier from a directory.
 
@@ -90,7 +178,7 @@ def get_files_from_dir(
     else:
         return file_list  # Return the list (either empty or with multiple paths)
 
-def run_commands_parallel(commands: List[str], number_of_workers: int = 4) -> None:
+def run_commands_parallel(commands: List[str], number_of_workers: int = 1) -> None:
     """
     Executes a list of commands in parallel using a ThreadPoolExecutor.
 
@@ -108,9 +196,7 @@ def run_commands_parallel(commands: List[str], number_of_workers: int = 4) -> No
             command_name (str, optional): A descriptive name for the command (e.g., "rpict", "ra_tiff"). Defaults to None.
         """
         if command_name:
-            print(
-                f"Executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}"
-            )
+            print(f"Executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}")
         else:
             print(
                 f"Executing command: {' '.join(command) if isinstance(command, list) else command}"
@@ -132,12 +218,9 @@ def run_commands_parallel(commands: List[str], number_of_workers: int = 4) -> No
 
         except subprocess.CalledProcessError as e:
             if command_name:
-                print(
-                    f"Error executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}"
-                )
+                print(f"Error executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}")
             else:
-                print(
-                    f"Error executing command: {' '.join(command) if isinstance(command, list) else command}"
+                print(f"Error executing command: {' '.join(command) if isinstance(command, list) else command}"
                 )
 
             print(f"Return code: {e.returncode}")
@@ -157,7 +240,6 @@ def run_commands_parallel(commands: List[str], number_of_workers: int = 4) -> No
                 future.result()  # Get the result (or exception if any)
             except Exception as e:
                 print(f"An error occurred during command execution: {e}")
-
 
 def copy_files_concurrently(source_path: str, destination_paths: list):
     """
@@ -232,3 +314,20 @@ def execute_new_radiance_commands(commands: List[str], number_of_workers: int = 
     print("All new commands have successfully completed")
 
     return
+
+def get_image_dimensions(image_path):
+    """
+    Opens an image file and prints its dimensions.
+    """
+    if not os.path.exists(image_path):
+        print(f"Error: File not found at '{image_path}'")
+        return
+
+    try:
+        with Image.open(image_path) as img:
+            width, height = img.size
+            print(
+                f"The dimensions of '{os.path.basename(image_path)}' are: {width}x{height} pixels."
+            )
+    except Exception as e:
+        print(f"Error: Could not read image dimensions. Reason: {e}")

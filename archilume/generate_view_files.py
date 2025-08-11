@@ -1,3 +1,4 @@
+from itertools import product
 import os
 import logging
 import re
@@ -11,7 +12,7 @@ from pathlib import Path
 from archilume.geometry_utils import (
     calc_centroid_of_points,
     calculate_dimensions_from_points,
-    get_bounding_box_center_df,
+    get_center_of_bounding_box,
     get_bounding_box_from_point_coordinates,
 )
 
@@ -22,10 +23,10 @@ logging.basicConfig(
 )
 
 @dataclass
-class ViewGenerator:
+class GenerateViewFiles:
     """
-    Processes room boundary data to calculate geometric parameters
-    and generate floor plate view files for rendering
+    Processes room boundary data to calculate geometric parameters and generate floor plate view files for rendering.
+    The generator creates floor plate views for rendering, and can only work correclty if the room boudaries data is complete and accurate.
     """
 
     room_boundaries_csv_path_input: str
@@ -334,7 +335,7 @@ class ViewGenerator:
                 return False
 
             # --- 4: Detemrine central x,y,z coordinates ---
-            center_coords = get_bounding_box_center_df(self.bounding_box_coordinates)
+            center_coords = get_center_of_bounding_box(self.bounding_box_coordinates)
             if center_coords is None:
                 return False
             x, y, z = center_coords
@@ -436,78 +437,3 @@ class ViewGenerator:
     #     all_vertices_np = np.vstack(all_vertices_list)
     #     min_coords = np.min(all_vertices_np, axis=0); max_coords = np.max(all_vertices_np, axis=0)
     #     return (min_coords[0], max_coords[0], min_coords[1], max_coords[1], min_coords[2], max_coords[2])
-
-def generate_commands(
-    octree,
-    sky_files,
-    view_files,
-    x_res=1024,
-    y_res=1024,
-    ab=2,
-    ad=128,
-    ar=64,
-    as_val=64,
-    ps=6,
-    lw=0.00500,
-    output_dir="results"):
-
-    """ 
-    Generates rpict and ra_tiff commands for a list of input files.
-
-    Args:
-        input_files: A list of input octree file paths.
-        sky_files:
-        view_file: The path to the view file.
-        x_res: The x-resolution for rpict.
-        y_res: The y-resolution for rpict.
-        ab: Ambient bounces for rpict.
-        ad: Ambient divisions for rpict.
-        ar: Ambient resolution for rpict.
-        as_val: Ambient samples for rpict.
-        ps: Pixel size for rpict.
-        output_dir: The directory to store output files.
-        
-    Returns:
-        A tuple containing:
-            - A list of file names without extensions.
-            - A list of rpict commands.
-            - A list of ra_tiff commands.
-    """
-
-    octree_base_name = os.path.basename(octree)
-    octree_no_ext = octree_base_name.replace("_skyless.oct", "")
-
-    rpict_commands = []
-    oconv_commands = []
-    temp_file_names = []
-    ra_tiff_commands = []
-
-    for sky_file_path, view_file_path in product(sky_files, view_files):
-
-        sky_file_base_name = os.path.basename(sky_file_path)
-        sky_file_no_ext = os.path.splitext(sky_file_base_name)[0]
-        view_file_base_name = os.path.basename(view_file_path)
-        view_file_no_ext = os.path.splitext(view_file_base_name)[0]
-        output_file_path = os.path.join(
-            output_dir, f"{octree_no_ext}_{view_file_no_ext}_{sky_file_no_ext}.hdr"
-        )
-        output_file_path_no_ext = os.path.splitext(output_file_path)[0]
-        octree_with_sky_path = rf"octrees/{octree_no_ext}_{sky_file_no_ext}.oct"
-        octree_with_sky_path_temp = rf"octrees/{octree_no_ext}_{sky_file_no_ext}_temp.oct"
-
-        temp_file_name = octree_with_sky_path_temp
-        # shutil.copy(rf'octrees/{octree_base_name}', octree_with_sky_path_temp) # copy original octree
-        oconv_command = rf"oconv -i {octree_with_sky_path_temp} {sky_file_path} > {octree_with_sky_path}"  # substitute original input file with copied file name
-        rpict_command = rf"rpict -w -vtv -t 15 -vf {view_file_path} -x {x_res} -y {y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_file_path}"
-        # Halve the exposure and retain dynamic range in a compressed tiff files a the options.
-        ra_tiff_command = rf"ra_tiff -e -4 {output_file_path} {output_file_path_no_ext}.tiff"
-
-        temp_file_names.append(temp_file_name)
-        oconv_commands.append(oconv_command)
-        rpict_commands.append(rpict_command)
-        ra_tiff_commands.append(ra_tiff_command)
-
-    # get rid of duplicate oconv commands
-    oconv_commands = list(dict.fromkeys(oconv_commands))
-
-    return temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands

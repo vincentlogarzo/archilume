@@ -1,8 +1,10 @@
-import os
-import re
-import subprocess
+from archilume.add_missing_modifiers import AddMissingModifiers 
 
-from dataclasses import dataclass, field
+import os
+import subprocess
+from dataclasses import dataclass
+
+#TODO: shoul dbe allowed to take in multiple .obj file for site and bld and also convert their respectie .mtl files.
 
 @dataclass
 class ObjToOctree:
@@ -167,7 +169,7 @@ class ObjToOctree:
             raise
 
     def rad_to_octree(self, output_dir: str = "octrees") -> None:
-        r"""
+        """
         Runs the oconv command to generate frozen skyless octree for use in rendering. Sky file will be added just prior to rendering.
         must use command prompt intead of powershell in vs code as its default coding is utf-8
         Example from IESVE

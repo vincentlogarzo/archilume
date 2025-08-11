@@ -1,24 +1,21 @@
-[tool.poetry]
+[project]
 name = "archilume"
 version = "0.1.0"
-description = "An implpementation of pyradiance to run simulations on buildings and precincts"
-authors = ["Your Name <you@example.com>"]
+description = "Add your description here"
 readme = "README.md"
-packages = [{include = "archilume"}]
-
-[tool.poetry.dependencies]
-python = ">=3.12"
-pandas = ">=1.5.0"
-pillow = ">=9.0.0"
-open3d = ">=0.16.0"
-numpy = "*"
-pywavefront = "^1.3.3"
-pyradiance = "^1.1.5"
-
-[tool.poetry.group.dev.dependencies]
-pytest = ">=7.0.0"
-pytest-mock = ">=3.10.0"
+requires-python = ">=3.12"
+dependencies = [
+    "ifcopenshell>=0.8.3.post1",
+    "open3d>=0.19.0",
+    "pandas>=2.3.1",
+    "pillow>=11.3.0",
+    "pyradiance>=1.1.5",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["archilume*"]
+exclude = ["inputs*", "outputs*", "intermediates*"]
