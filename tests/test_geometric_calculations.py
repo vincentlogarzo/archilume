@@ -1,13 +1,15 @@
-import numpy as np
-import pandas as pd
-import pytest
-
+# Archilume imports
 from archilume.geometry_utils import (
     calc_centroid_of_points,
     calculate_dimensions_from_points,
     get_bounding_box_center_df,
     get_bounding_box_from_point_coordinates,
 )
+
+# Third-party imports
+import numpy as np
+import pandas as pd
+import pytest
 
 
 # Test fixtures

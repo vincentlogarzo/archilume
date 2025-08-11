@@ -1,20 +1,22 @@
-from itertools import product
-import os
-import logging
-import re
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
-import pandas as pd
-import os
-from pathlib import Path
-
+# Archilume imports
 from archilume.geometry_utils import (
     calc_centroid_of_points,
     calculate_dimensions_from_points,
     get_center_of_bounding_box,
     get_bounding_box_from_point_coordinates,
 )
+
+# Standard library imports
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+from itertools import product
+from pathlib import Path
+from typing import Any
+
+# Third-party imports
+import pandas as pd
 
 # Configure basic logging
 logging.basicConfig(
@@ -23,13 +25,42 @@ logging.basicConfig(
 )
 
 @dataclass
-class GenerateViewFiles:
+class ViewFileGenerator:
     """
-    Processes room boundary data to calculate geometric parameters and generate floor plate view files for rendering.
-    The generator creates floor plate views for rendering, and can only work correclty if the room boudaries data is complete and accurate.
+    Generates Radiance view files from room boundary data for daylight analysis.
+    
+    Creates floor plan view files (.vp) containing camera parameters for rendering
+    each floor level of a building model. Processes CSV data containing room boundary
+    coordinates and generates the necessary view parameters for Radiance simulations.
+    
+    Example:
+        >>> from pathlib import Path
+        >>> csv_path = Path("inputs/room_boundaries.csv")
+        >>> generator = ViewFileGenerator(
+        ...     room_boundaries_csv_path_input=csv_path,
+        ...     ffl_offset=1.0  # Camera height above floor level
+        ... )
+        >>> success = generator.create_aoi_and_view_files()
+        
+    Parameters:
+        room_boundaries_csv_path_input: Path to CSV file containing room boundary coordinates.
+                                      CSV should have columns for apartment_no, room, and 
+                                      coordinate strings in format "X_123.45 Y_678.90 Z_012.34"
+        ffl_offset: Height offset above finished floor level for camera position (meters).
+                   Typical value: 1.0 (eye level above floor). Default: 1.0
+                                      
+    Output:
+        - Creates .aoi files in 'aoi/' directory (one per room)
+        - Creates .vp view files in 'views_grids/' directory (one per floor level)
+        - View files contain Radiance camera parameters for top-down floor views
+    
+    Note:
+        Requires accurate and complete room boundary data for proper functioning.
+        Coordinates are expected in millimeters and will be converted to meters.
     """
 
     room_boundaries_csv_path_input: str
+    ffl_offset: float = 1.0
 
     csv_path: Path = field(init=False)
     csv_accessible: bool = field(default=False, init=False)
@@ -49,7 +80,7 @@ class GenerateViewFiles:
         Sets self.csv_accessible and self.csv_path.
         """
         if not self.room_boundaries_csv_path_input or not isinstance(
-            self.room_boundaries_csv_path_input, str
+            self.room_boundaries_csv_path_input, (str, Path)
         ):
             logging.error(
                 f"CSV file path is invalid (not a string or empty): '{self.room_boundaries_csv_path_input}'"
@@ -59,7 +90,7 @@ class GenerateViewFiles:
             return
 
         try:
-            abs_path = os.path.abspath(self.room_boundaries_csv_path_input)
+            abs_path = os.path.abspath(str(self.room_boundaries_csv_path_input))
         except TypeError:
             logging.error(
                 f"Invalid CSV file path type for abspath: {self.room_boundaries_csv_path_input}"
@@ -85,8 +116,13 @@ class GenerateViewFiles:
 
     def _generate_point_files(self, csv_path: str, output_dir: str = "aoi") -> None:
         """
-        Reads coordinate data from a CSV, groups it by apartment_no and room,
-        and writes individual formatted text files for each group.
+        Generate individual AOI files for each room from processed CSV data.
+        
+        Creates one .aoi file per room containing boundary coordinates and metadata.
+        
+        Parameters:
+            csv_path: Path to processed CSV file with room boundary coordinates
+            output_dir: Directory to save .aoi files (default: 'aoi')
         """
         # Create the output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -148,7 +184,16 @@ class GenerateViewFiles:
         print(f"File generated: {filepath}")
 
     def _parse_room_boundaries_csv(self) -> pd.DataFrame | None:
-        """Loads and parses the room boundaries CSV using a chained pipeline."""
+        """
+        Parse room boundaries CSV into structured DataFrame.
+        
+        Transforms coordinate strings into numeric x,y,z columns and converts
+        from millimeters to meters. Saves processed data to output CSV.
+        
+        Returns:
+            DataFrame with columns: apartment_no, room, x_coords, y_coords, z_coords
+            None if parsing fails
+        """
         logging.info(f"Loading and parsing data from: {self.csv_path}")
         try:
             coord_cols = ["x_coords", "y_coords", "z_coords"]
@@ -237,6 +282,19 @@ class GenerateViewFiles:
         vh_val: str = "50",
         vv_val: str = "30",
     ) -> None:
+        """
+        Write Radiance view parameters to .vp file.
+        
+        Creates a top-down view configuration for floor plan rendering.
+        
+        Parameters:
+            view_file: Output .vp file path
+            x_coord_centre: Camera X position (center of building)
+            y_coord_centre: Camera Y position (center of building) 
+            z_coord: Camera Z position (floor level + offset)
+            vh_val: Horizontal view angle in degrees (default: 50)
+            vv_val: Vertical view angle in degrees (default: 30)
+        """
         try:
             view_file_path_obj = Path(view_file)
             view_file_path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -277,36 +335,29 @@ class GenerateViewFiles:
         except Exception as e:
             logging.error(f"Error creating view file at {view_file}: {e}")
 
-    def create_aoi_and_view_files(self, ffl_offset: float) -> bool:
-        """Orchestrates the processing of room data to generate Radiance view parameters.
-
-        This method serves as the main entry point for processing geometric data.
-        It reads room boundary coordinates from a CSV file, calculates the
-        necessary geometric parameters (bounding box, center point, view dimensions),
-        and generates the corresponding empty view files for each floor level.
-
-        The process involves several key steps:
-        1.  Validates that the source CSV file is accessible.
-        2.  Parses the CSV to load room boundary coordinates into a DataFrame.
-        3.  Calculates the 3D bounding box for the entire model geometry.
-        4.  Determines the center point (X, Y, Z) of the bounding box.
-        5.  Computes the horizontal and vertical view dimensions required for 'rvu'.
-        6.  Identifies unique floor levels (Z-coordinates) and maps them to
-            corresponding view file paths.
-        7.  Creates the necessary subdirectories and empty '.vp' files for each
-            floor level.
-
-        Upon successful execution, this method populates the following attributes:
-        - 'self.room_boundaries_df': DataFrame with parsed room coordinate data.
-        - 'self.bounding_box_coordinates': The min/max coordinates of the model's bounding box.
-        - 'self.x_coord_center','self.y_coord_center', 'self.z_coord_center': The calculated center of the bounding box.
-        - 'self.view_horizontal', 'self.view_vertical': The view dimensions for Radiance ('-vh' and '-vv').
-        - 'self.view_paths_per_level_df': A DataFrame linking each Z-coordinate (floor level) to its generated view file path string.
-
+    def create_aoi_and_view_files(self) -> bool:
+        """
+        Generate AOI and view files from room boundary data.
+        
+        Main method that processes the CSV data to create:
+        1. AOI (Area of Interest) files for each room
+        2. View parameter files for each floor level
+        
+        Uses the ffl_offset specified during class instantiation for camera positioning.
+                       
         Returns:
-            bool: True if all steps complete successfully and view files are
-                created. False if any critical step fails (e.g., file not
-                found, parsing error, calculation failure).
+            bool: True if files generated successfully, False if any step fails
+            
+        Process:
+            - Validates CSV file accessibility
+            - Parses room boundary coordinates 
+            - Calculates building bounding box and center point
+            - Determines view dimensions for proper framing
+            - Creates view files with camera parameters for each floor
+            
+        Generated Files:
+            - aoi/*.aoi: Room boundary files with coordinate data
+            - views_grids/plan_L00.vp, plan_L01.vp, etc: Radiance view parameter files
         """
 
         # --- 1: Check if CSV is accessible ---
@@ -363,7 +414,7 @@ class GenerateViewFiles:
             return False
 
         self.view_paths_per_level_df = self._create_floor_level_info_df(
-            self.room_boundaries_df, view_subdir="views_grids", ffl_offset=ffl_offset
+            self.room_boundaries_df, view_subdir="intermediates/views_grids", ffl_offset=self.ffl_offset
         )
 
         if self.view_paths_per_level_df is None:

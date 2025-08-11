@@ -1,5 +1,7 @@
-from archilume.add_missing_modifiers import AddMissingModifiers 
+# Archilume imports
+from archilume.add_missing_modifiers import AddMissingModifiers
 
+# Standard library imports
 import os
 import subprocess
 from dataclasses import dataclass

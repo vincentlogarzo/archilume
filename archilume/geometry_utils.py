@@ -1,5 +1,7 @@
+# Standard library imports
 from typing import Optional, Tuple
 
+# Third-party imports
 import pandas as pd
 
 def get_bounding_box_from_point_coordinates(point_dataframe: pd.DataFrame) -> pd.DataFrame:

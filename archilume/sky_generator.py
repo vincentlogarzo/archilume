@@ -1,26 +1,17 @@
 """
-TODO insert documentation here
+Radiance Sky File Generator
+
+Generates series of Radiance sky files for daylight analysis using the gensky utility.
+Supports sunny sky conditions with configurable time ranges and geographic locations.
 """
 
-import datetime
-import os
+# Standard library imports
 import logging
-import re
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
-import pandas as pd
 import os
-from datetime import datetime
+import textwrap
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
-from PIL import Image, ImageDraw, ImageFont
-
-from archilume.geometry_utils import (
-    calc_centroid_of_points,
-    calculate_dimensions_from_points,
-    get_bounding_box_center_df,
-    get_bounding_box_from_point_coordinates,
-)
 
 # Configure basic logging
 logging.basicConfig(
@@ -29,28 +20,41 @@ logging.basicConfig(
 )
 
 @dataclass
-class SkyFileGenerator:  # Renamed for Python naming conventions (PascalCase)
+class SkyFileGenerator:
     """
-    Generates Radiance sky files for a specific date, time range, and location.
-
-    The generator is configured with all necessary parameters upon initialization.
-    The generate_sunny_sky_series() method then executes the sky file creation.
-
-    Args (for the auto-generated __init__):
-        lat (float): The latitude for the sky generation.
-        lon (float): The longitude for the sky generation.
-        year (int): The year for the sky generation series.
-        month (int): The month for the series.
-        day (int): The day of the month for the series.
-        start_hour (int): The starting hour for the series (0-23).
-        end_hour (int): The ending hour for the series (0-23).
-        output_dir (str, optional): Directory to save sky files. Defaults to "sky".
-        minute_increment (int, optional): Increment in minutes. Defaults to 5.
-
-    Attributes (available after object creation):
-        str_lat (str): Latitude stored as a string.
-        str_lon (str): Longitude stored as a string.
-        # Plus all the __init__ args are stored as attributes.
+    Generates Radiance sky files for daylight analysis.
+    
+    Creates a series of sunny sky files using the gensky utility for specified
+    date/time ranges and geographic locations. Files are saved in Radiance format
+    suitable for lighting simulation.
+    
+    Example:
+        >>> generator = SkyFileGenerator(
+        ...     lat=-37.8136,  # Melbourne latitude
+        ...     lon=144.9631,  # Melbourne longitude
+        ...     std_meridian=145.0,  # Australian EST
+        ...     year=2024,
+        ...     month=6,  # June (winter solstice)
+        ...     day=21,
+        ...     start_hour_24hr_format=8,
+        ...     end_hour_24hr_format=17
+        ... )
+        >>> generator.generate_sunny_sky_series()
+    
+    Parameters:
+        lat: Latitude in decimal degrees (positive = North, negative = South)
+        lon: Longitude in decimal degrees (positive = East, negative = West) 
+        std_meridian: Standard meridian for timezone in decimal degrees
+        year: Year for sky generation (e.g., 2024)
+        month: Month (1-12)
+        day: Day of month (1-31)
+        start_hour_24hr_format: Start hour in 24-hour format (0-23)
+        end_hour_24hr_format: End hour in 24-hour format (0-23)
+        minute_increment: Time increment in minutes (default: 5)
+        
+    Output:
+        Creates .sky files named as SS_MMDD_HHMM.sky in the output directory.
+        Each file contains gensky command and sky/ground glow definitions.
     """
 
     # Core location parameters
@@ -66,18 +70,20 @@ class SkyFileGenerator:  # Renamed for Python naming conventions (PascalCase)
     end_hour_24hr_format: int
 
     # Optional parameters with defaults
-    output_dir: str = "sky"
     minute_increment: int = 5
 
     def __post_init__(self):
         """
         Performs post-initialization setup:
         - Converts lat/lon to strings for use with gensky.
-        - Creates the output directory if it doesn't exist.
+        - Sets fixed output directory and creates it if needed.
         """
         self.str_lat = str(self.lat)
         self.str_lon = str(self.lon)
         self.str_std_meridian = str(self.std_meridian)
+        
+        # Fixed output directory - not user configurable
+        self.output_dir = "intermediates/sky"
 
         if not os.path.exists(self.output_dir):
             try:
@@ -111,24 +117,25 @@ class SkyFileGenerator:  # Renamed for Python naming conventions (PascalCase)
         try:
             # Append skyfunc lines that create more realistic sky
             with open(output_filepath, "w") as outfile:
-                skyfunc_description = f"""#Radiance Sky file: Ark Resources Pty Ltd
+                skyfunc_description = textwrap.dedent(f"""\
+                    #Radiance Sky file: Ark Resources Pty Ltd
 
-!gensky {str(month)} {str(day)} {time_hhmm_str} +s -a {self.str_lat} -o {self.str_lon} -m {self.str_std_meridian}
+                    !gensky {str(month)} {str(day)} {time_hhmm_str} +s -a {self.str_lat} -o {self.str_lon} -m {self.str_std_meridian}
 
-skyfunc glow skyglow
-0 0
-4 0.7 0.8 1.0 0
-skyglow source sky
-0 0
-4 0 0 1 180
+                    skyfunc glow skyglow
+                    0 0
+                    4 0.7 0.8 1.0 0
+                    skyglow source sky
+                    0 0
+                    4 0 0 1 180
 
-skyfunc glow grndglow
-0 0
-4 0.20 0.20 0.20 0
-grndglow source ground
-0 0
-4 0 0 -1 180
-"""
+                    skyfunc glow grndglow
+                    0 0
+                    4 0.20 0.20 0.20 0
+                    grndglow source ground
+                    0 0
+                    4 0 0 -1 180
+                    """)
                 outfile.write(skyfunc_description)
                 print(f"Successfully generated: {output_filepath}")
         except:
@@ -136,8 +143,13 @@ grndglow source ground
 
     def generate_sunny_sky_series(self):
         """
-        Generates a series of sky files based on the parameters
-        set during object initialization.
+        Execute sky file generation for the configured time series.
+        
+        Creates individual .sky files for each time step from start_hour to end_hour
+        at the specified minute_increment intervals. Files are saved to output_dir.
+        
+        Returns:
+            None: Files are written to disk, status printed to console.
         """
         print(
             f"\nStarting sky generation for {self.month}/{self.day}/{self.year} from {self.start_hour_24hr_format}:00 to {self.end_hour_24hr_format}:00 "
@@ -149,11 +161,11 @@ grndglow source ground
             os.makedirs(self.output_dir)
             print(f"Created output directory: {self.output_dir}")
 
-        start_dt = datetime.datetime(
+        start_dt = datetime(
             self.year, self.month, self.day, self.start_hour_24hr_format, 0
         )
-        end_dt = datetime.datetime(self.year, self.month, self.day, self.end_hour_24hr_format, 0)
-        time_delta = datetime.timedelta(minutes=self.minute_increment)
+        end_dt = datetime(self.year, self.month, self.day, self.end_hour_24hr_format, 0)
+        time_delta = timedelta(minutes=self.minute_increment)
         current_dt = start_dt
 
         while current_dt <= end_dt:

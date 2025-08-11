@@ -3,11 +3,17 @@ Parallel processing utilities that combine PyRadiance with custom parallel execu
 Maintains backward compatibility while leveraging official PyRadiance functions.
 """
 
+# Archilume imports
+from .utils import run_commands_parallel  # Fallback to your existing implementation
+
+# Standard library imports
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple, Callable, Any
-import logging
+
+# Third-party imports
 import pyradiance
 
 try:
@@ -16,8 +22,6 @@ try:
 except ImportError:
     PYRADIANCE_AVAILABLE = False
     logging.warning("PyRadiance not available. Falling back to subprocess calls.")
-
-from .utils import run_commands_parallel  # Fallback to your existing implementation
 
 
 class PyRadianceParallel:
