@@ -50,8 +50,8 @@ class ViewFileGenerator:
                    Typical value: 1.0 (eye level above floor). Default: 1.0
                                       
     Output:
-        - Creates .aoi files in 'aoi/' directory (one per room)
-        - Creates .vp view files in 'views_grids/' directory (one per floor level)
+        - Creates .aoi files in 'intermediates/aoi/' directory (one per room)
+        - Creates .vp view files in 'intermediates/views_grids/' directory (one per floor level)
         - View files contain Radiance camera parameters for top-down floor views
     
     Note:
@@ -114,7 +114,7 @@ class ViewFileGenerator:
             logging.warning(f"CSV file not found at the specified path: {self.csv_path}")
             self.csv_accessible = False
 
-    def _generate_point_files(self, csv_path: str, output_dir: str = "aoi") -> None:
+    def _generate_point_files(self, csv_path: str, output_dir: str = "intermediates/aoi") -> None:
         """
         Generate individual AOI files for each room from processed CSV data.
         
@@ -462,6 +462,9 @@ class ViewFileGenerator:
 
         return True  # Indicate success
 
+
+
+    #TODO: further development below in generating 3D axo views to allow for visualisation of the entire input model and its geometry.  See function get obj bounds below, that could assist in developing this functionality.
     # def _get_obj_bounds(self, filepath: str) -> tuple[float, float, float, float, float, float] | None:
     #     try:
     #         scene = pywavefront.Wavefront(filepath, collect_faces=True, strict=False, create_materials=True)

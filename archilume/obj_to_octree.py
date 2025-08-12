@@ -1,40 +1,55 @@
 # Archilume imports
 from archilume.add_missing_modifiers import AddMissingModifiers
+from archilume.utils import run_commands_parallel
 
 # Standard library imports
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-#TODO: shoul dbe allowed to take in multiple .obj file for site and bld and also convert their respectie .mtl files.
 
 @dataclass
 class ObjToOctree:
     """
-    Converts material definitions from a Wavefront .mtl file
-    (e.g., exported from Revit) into a Radiance material description file.
+    Converts material definitions from Wavefront .mtl files
+    (e.g., exported from Revit) into Radiance material description files.
+    Supports multiple OBJ/MTL file pairs for complex scenes with site and building geometry.
 
     The converter processes common .mtl properties like diffuse color ('Kd')
     and dissolve/opacity ('d') to create Radiance 'plastic' (for opaque)
     or 'glass' (for transparent/translucent) materials.
 
     Attributes:
-        mtl_file_path (str): The full path to the input .mtl file used for conversion.
-        output_file_name (str | None): The full path to the generated Radiance .mtl file.
-                                     This is set upon successful conversion, otherwise None.
-        converted_content (str | None): The Radiance formatted string of the materials.
-                                       Set upon successful conversion, otherwise None.
+        obj_file_paths (list[str]): List of OBJ file paths to process
+        mtl_file_paths (list[str]): List of corresponding MTL file paths
     """
 
-    # User inputs
-    input_mtl_file_path: str | None = None
-    obj_file_path: str | None = None
+    # User inputs - support multiple files
+    obj_file_paths: list[str] = None
+    mtl_file_paths: list[str] = None
+    
+    # Internal output file paths (set automatically during processing)
+    combined_radiance_mtl_path: str | None = field(init=False, default=None)
+    combined_rad_paths: list[str] = field(init=False, default=None)
+    output_dir: str = field(init=False, default=None)
+    
+    def __post_init__(self):
+        """Initialize lists if None and validate input."""
+        if self.obj_file_paths is None:
+            self.obj_file_paths = []
+        if self.mtl_file_paths is None:
+            self.mtl_file_paths = []
+        if self.combined_rad_paths is None:
+            self.combined_rad_paths = []
+        
+        # Set output directory
+        self.output_dir = "intermediates/octrees"
+            
+        # Validate that we have equal number of OBJ and MTL files
+        if len(self.obj_file_paths) != len(self.mtl_file_paths):
+            raise ValueError("Number of OBJ files must match number of MTL files")
 
-    # variables for use within class functions
-    radiance_mtl_file_path: str | None = None
-    rad_file_path: str | None = None
-
-    def __convert_mtl_materials(self, mtl_content: str) -> str:  # <-- Added self
+    def _convert_to_radiance_materials(self, mtl_content: str) -> str:
         """
         Converts .mtl material entries to Radiance material format.
         Args:
@@ -43,7 +58,7 @@ class ObjToOctree:
             The converted content as a string.
         """
 
-        def _format_radiance_glass(material):
+        def __format_radiance_glass(material):
             name = material["name"]
             kd = material.get("Kd", [0.0, 0.0, 0.0])
             return [
@@ -54,7 +69,7 @@ class ObjToOctree:
                 f"3 {kd[0]:.3f} {kd[1]:.3f} {kd[2]:.3f}",
             ]
 
-        def _format_radiance_plastic(material):
+        def __format_radiance_plastic(material):
             name = material["name"]
             kd = material.get("Kd", [0.0, 0.0, 0.0])
             return [
@@ -74,9 +89,9 @@ class ObjToOctree:
             if line.startswith("newmtl"):
                 if current_material:
                     if current_material.get("d", 1.0) < 1.0:
-                        converted_lines.extend(_format_radiance_glass(current_material))
+                        converted_lines.extend(__format_radiance_glass(current_material))
                     elif current_material.get("d", 1.0) == 1.0:
-                        converted_lines.extend(_format_radiance_plastic(current_material))
+                        converted_lines.extend(__format_radiance_plastic(current_material))
                 material_name = line.split(" ", 1)[1]
                 current_material = {"name": material_name}
             elif line.startswith("Kd"):
@@ -88,108 +103,193 @@ class ObjToOctree:
 
         if current_material:
             if current_material.get("d", 1.0) < 1.0:
-                converted_lines.extend(_format_radiance_glass(current_material))
+                converted_lines.extend(__format_radiance_glass(current_material))
             elif current_material.get("d", 1.0) == 1.0:
-                converted_lines.extend(_format_radiance_plastic(current_material))
+                converted_lines.extend(__format_radiance_plastic(current_material))
 
         return "\n".join(converted_lines)
-
-    def parse_mtl_file(self) -> None:
+    
+    def _obj_files_to_rad(self) -> None:
         """
-        Read .mtl file specified by mtl_file_to_parse, convert its content, and save.
-        Updates the instance's mtl_file_path, output_file_name, and converted_content.
-
-        Args:
-            mtl_file_to_parse (str): The full path to the .mtl file to parse.
+        Convert all OBJ files to RAD format.
+        Output RAD files are saved to intermediates/octrees directory.
+        OBJ files must be exported from Revit in meters not mm.
+        TODO: determine what the unit is of the obj file and prompt the user if it is not in meters.
         """
+        self.combined_rad_paths = []
+        
+        # Ensure output directory exists
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        for i, obj_file in enumerate(self.obj_file_paths):
+            try:
+                # Generate output filename in intermediates/octrees directory
+                base_name = os.path.splitext(os.path.basename(obj_file))[0]
+                output_rad_file_name = os.path.join(self.output_dir, f"{base_name}.rad")
+                self.combined_rad_paths.append(output_rad_file_name)
+                
+                print(f"Converting OBJ {i+1}/{len(self.obj_file_paths)}: {os.path.basename(obj_file)}")
+                print(f"  Output: {output_rad_file_name}")
+                
+                # Run the obj2rad command
+                command = ["obj2rad", obj_file]
+                with open(output_rad_file_name, "w") as rad_output:
+                    subprocess.run(command, stdout=rad_output, check=True)
+                
+                # Verify if the rad_file was created
+                if not os.path.exists(output_rad_file_name):
+                    raise FileNotFoundError(f"Expected RAD file not found: {output_rad_file_name}")
+                    
+                print(f"Successfully converted: {os.path.basename(output_rad_file_name)}")
+                
+            except Exception as e:
+                print(f"Error converting {obj_file}: {e}")
+                # Remove failed conversion from the list
+                if output_rad_file_name in self.combined_rad_paths:
+                    self.combined_rad_paths.remove(output_rad_file_name)
+                continue
 
+    def _add_missing_modifiers_from_all_rads(self) -> None:
+        """
+        Add missing modifiers to the combined material file from all RAD files.
+        """
+        if not self.combined_radiance_mtl_path:
+            print("No combined material file to update")
+            return
+            
+        print(f"Adding missing modifiers from {len(self.combined_rad_paths)} RAD files...")
+        
+        for rad_path in self.combined_rad_paths:
+            if os.path.exists(rad_path):
+                print(f"Processing modifiers from: {os.path.basename(rad_path)}")
+                AddMissingModifiers(rad_path, self.combined_radiance_mtl_path).process_files()
+            else:
+                print(f"Warning: RAD file not found: {rad_path}")
+
+    def _parse_mtl_files(self) -> None:
+        """
+        Read all MTL files, convert their content, and combine into a single Radiance material file.
+        Updates the combined_radiance_mtl_path with the merged material definitions.
+        Also adds missing modifiers from RAD files if they exist.
+        Output is saved to intermediates/octrees/combined_radiance.mtl.
+        """
+        if not self.mtl_file_paths:
+            print("No MTL files to process")
+            return
+            
+        all_converted_content = ["#Combined Radiance Material file:"]
+        processed_materials = set()  # Track materials to avoid duplicates
+        
+        for i, mtl_path in enumerate(self.mtl_file_paths):
+            try:
+                print(f"Processing MTL file {i+1}/{len(self.mtl_file_paths)}: {mtl_path}")
+                
+                with open(mtl_path) as file:
+                    mtl_content = file.read()
+
+                # Convert MTL content to Radiance format
+                converted_content = self._convert_to_radiance_materials(mtl_content)
+                
+                # Extract material names to avoid duplicates
+                lines = converted_content.split('\n')
+                current_section = []
+                for line in lines:
+                    if line.strip().startswith('void plastic ') or line.strip().startswith('void glass '):
+                        material_name = line.strip().split()[-1]
+                        if material_name not in processed_materials:
+                            processed_materials.add(material_name)
+                            current_section.append(line)
+                        else:
+                            print(f"Skipping duplicate material: {material_name}")
+                            current_section = []  # Skip this material block
+                    elif current_section or (line.strip() and not line.startswith('#')):
+                        current_section.append(line)
+                    elif current_section:
+                        all_converted_content.extend(current_section)
+                        current_section = []
+                        
+                # Add any remaining content
+                if current_section:
+                    all_converted_content.extend(current_section)
+                    
+            except FileNotFoundError:
+                print(f"Error: MTL file not found at {mtl_path}")
+                continue
+            except Exception as e:
+                print(f"An error occurred processing {mtl_path}: {e}")
+                continue
+        
+        # Create combined output file name
+        if self.mtl_file_paths:
+            self.combined_radiance_mtl_path = os.path.join(self.output_dir, "combined_radiance.mtl")
+            
+            # Write the combined output
+            try:
+                with open(self.combined_radiance_mtl_path, "w") as output_file:
+                    output_file.write("\n".join(all_converted_content))
+                print(f"Combined Radiance material file created: {self.combined_radiance_mtl_path}")
+                print(f"Processed {len(processed_materials)} unique materials")
+                
+                # Add missing modifiers from all RAD files
+                if self.combined_rad_paths:
+                    self._add_missing_modifiers_from_all_rads()
+                    
+            except Exception as e:
+                print(f"Error writing combined material file: {e}")
+
+    def _rad_to_octree(self) -> None:
+        """
+        Runs the oconv command to generate frozen skyless octree for rendering from all RAD files.
+        Output is placed in the same directory as the RAD/MTL files with fixed name 'combined_scene_skyless.oct'.
+        Must use command prompt instead of powershell in VScode as its default encoding is utf-8
+        instead of the required encoding for oconv.
+        Example command: oconv -f material_file.mtl file1.rad file2.rad > output.oct
+        """
+        if not self.combined_rad_paths or not self.combined_radiance_mtl_path:
+            print("No RAD files or material file available for octree generation")
+            return
+        
+        # Determine output directory from the combined material file location
+        output_filename = os.path.join(self.output_dir, "combined_scene_skyless.oct")
+        
+        # Build command with material file and all RAD files
+        command = rf"oconv -f{self.combined_radiance_mtl_path} {self.combined_rad_paths} > {output_filename}"
+        
+
+
+        print(f"Generating octree from {len(self.combined_rad_paths)} RAD files...")
+
+        run_commands_parallel(commands = command)
+        
         try:
-            with open(self.input_mtl_file_path) as file:
-                mtl_content = file.read()
+            with open(output_filename, "w") as outfile:
+                process = subprocess.Popen(command, stdout=outfile, stderr=subprocess.PIPE)
+                _, stderr = process.communicate()
 
-            # Call instance method convert_mtl_materials using self
-            converted_content = self.__convert_mtl_materials(mtl_content)  # <-- Use self.
-
-            # Create the output file name
-            # Use self.input_mtl_file_path for deriving output name
-            self.radiance_mtl_file_path = (
-                os.path.splitext(self.input_mtl_file_path)[0] + "_radiance.mtl"
-            )
-
-            # Write the output to the new file
-            with open(self.radiance_mtl_file_path, "w") as output_file:
-                output_file.write("#Radiance Map file:\n")
-                output_file.write(converted_content)
-
-            print(f"Radiance material file created: {self.radiance_mtl_file_path}")
-
-        except FileNotFoundError:
-            # Use self.mtl_file_path in error message
-            print(f"Error: File not found at {self.radiance_mtl_file_path}")
+            if stderr:
+                print(f"Error running oconv: {stderr.decode()}")
+            else:
+                print(f"Successfully generated: {output_filename}")
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"Error generating octree: {e}")
 
-    def obj_to_rad(self, obj_file_to_parse: str, mtl_file_to_parse: str) -> None:
+    def create_skyless_octree_for_sunlight_analysis(self) -> None:
         """
-        convert obj file to radiance description file ready to be compiled into an octree for rendering scenes.
-        obj2rad "C:\\VE Projects\\! - code\\Run 1\1_obj_and_sky_to_oct\222050_R22_86 COWLES RD.obj" > 222050_R22_86 COWLES RD.rad
-        Obj files must be exported from Revit in meters not mm.
+        Process all OBJ/MTL file pairs: convert OBJ to RAD, parse MTL to Radiance format,
+        and add missing modifiers. This is the main method to call for multi-file processing.
         """
+        if not self.obj_file_paths or not self.mtl_file_paths:
+            print("No files to process")
+            return
+            
+        print(f"Processing {len(self.obj_file_paths)} OBJ/MTL file pairs...")
+        
+        # Convert all OBJ files to RAD
+        self._obj_files_to_rad()
+        
+        # Parse and combine all MTL files
+        self._parse_mtl_files()
+        
+        # Combine all rad file and mtl files converted to radiance description files into one octree
+        self._rad_to_octree()
 
-        self.obj_file_path = obj_file_to_parse  # Set/update the instance attribute
-        self.input_mtl_file_path = mtl_file_to_parse  # Set/update the instance attribute
-
-        try:
-            output_rad_file_name = obj_file_to_parse.replace(".obj", ".rad")
-            self.rad_file_path = output_rad_file_name
-
-            print(f"Attempting to convert \n {obj_file_to_parse} \n to \n {output_rad_file_name}")
-            # Ensure the rad_file directory exists
-
-            os.makedirs(os.path.dirname(output_rad_file_name), exist_ok=True)
-
-            # Run the obj2rad command
-            command = ["obj2rad", obj_file_to_parse]
-            with open(output_rad_file_name, "w") as rad_output:
-                subprocess.run(command, stdout=rad_output, check=True)
-
-            # Verify if the rad_file was created
-            if not os.path.exists(output_rad_file_name):
-                raise FileNotFoundError(f"Expected RAD file not found: {output_rad_file_name}")
-            print(f"Successfully converted \n {obj_file_to_parse} \n to \n {output_rad_file_name}")
-            print(
-                f"Attempting to add missing modifiers to \n {self.radiance_mtl_file_path} \n from \\ n {self.rad_file_path}"
-            )
-
-            # parse original .mtl file
-            self.parse_mtl_file()
-
-            AddMissingModifiers(self.rad_file_path, self.radiance_mtl_file_path).process_files()
-
-        except Exception as e:
-            print(f"Error converting {obj_file_to_parse} \n to \n {output_rad_file_name}: {e}")
-            raise
-
-    def rad_to_octree(self, output_dir: str = "octrees") -> None:
-        """
-        Runs the oconv command to generate frozen skyless octree for use in rendering. Sky file will be added just prior to rendering.
-        must use command prompt intead of powershell in vs code as its default coding is utf-8
-        Example from IESVE
-        To use the below command prompt, a sky file must be added. Note that the rest of this function produces skyless octress for later processing with sunny sky files.
-        oconv -f sky/Jun21_1100_ss.sky lib/87example_radiance.mtl lib/87cowles.rad > octrees/87_example_Jun21_1100_ss.oct
-        oconv -f lib\87cowles_noWindows_radiance.mtl lib\87cowles_noWindows.obj
-        """
-
-        geometry_rad_base = os.path.basename(self.rad_file_path)
-        geometry_rad_base_no_ext = os.path.splitext(geometry_rad_base)[0]
-
-        output_filename = os.path.join(output_dir, f"{geometry_rad_base_no_ext}_skyless.oct")
-        command = ["oconv", "-f", self.radiance_mtl_file_path, self.rad_file_path]
-        with open(output_filename, "w") as outfile:
-            process = subprocess.Popen(command, stdout=outfile, stderr=subprocess.PIPE)
-            _, stderr = process.communicate()
-
-        if stderr:
-            print(f"Error running oconv : {stderr.decode()}")
-        else:
-            print(f"Successfully generated: {output_filename}")

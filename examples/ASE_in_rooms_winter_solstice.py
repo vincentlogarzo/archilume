@@ -8,6 +8,7 @@ during the winter solstice (June 21st in the Southern Hemisphere).
 The analysis includes:
 1. Generating sky files for specified time ranges
 2. Creating view files for building floor plans
+3. 
 3. Setting up for Annual Sunlight Exposure (ASE) calculations
 
 Location: Melbourne, Australia
@@ -21,12 +22,34 @@ from pathlib import Path
 # Archilume imports  
 from archilume.sky_generator import SkyFileGenerator
 from archilume.view_generator import ViewFileGenerator
+from archilume.obj_to_octree import ObjToOctree 
+from archilume.utils import select_files
 
 
 def main():
     """Execute the winter solstice daylight analysis workflow."""
     
-    # === Step 1: Generate Sky Files ===
+    # === Step 1. Generate Octree utilising building obj(s) and site obj(s) and their respective .mtl files ===
+    # This octree can only be used for sunlight exposure analysis as material modifiers are assumed (i.e. colour and matieral type, glass, plastic, or metal)
+
+    # Locate the room boundaries CSV file
+    obj_file_paths = select_files(title="Select obj files")
+    mtl_file_paths = select_files(title="Select mtl files corresponding with the mtl files")
+
+    octree_generator = ObjToOctree(
+        obj_file_paths,
+        mtl_file_paths
+        )
+    
+    octree_generator.create_skyless_octree_for_sunlight_analysis()
+    # TODO The implementation of multiple obj files is not yet supported, so only one obj file can be selected at a time. to be rectified in the input of ObjToOctree class.
+
+
+
+
+    
+
+    # === Step 2: Generate Sky Files ===
     # Create sky files representing sun positions throughout the day
     
     print("Generating sky files for winter solstice analysis...")
@@ -47,7 +70,7 @@ def main():
     print("✓ Sky files generated in 'intermediates/sky/' directory")
     
     
-    # === Step 2: Generate View Files ===
+    # === Step 3: Generate View Files ===
     # Create view parameter files for building floor plans
     
     print("\nGenerating view files for building analysis...")
@@ -67,15 +90,7 @@ def main():
         ffl_offset=1.0                   # Camera height above floor (eye level)
     )
     
-    success = view_generator.create_aoi_and_view_files()
-    
-    if success:
-        print("✓ View files generated successfully")
-        print("  - AOI files: 'aoi/' directory")
-        print("  - View parameter files: 'intermediates/views_grids/' directory")
-    else:
-        print("✗ Failed to generate view files. Check the CSV file format and content.")
-        return False
+    view_generator.create_aoi_and_view_files()
     
     
     # === Step 3: Analysis Setup Complete ===
