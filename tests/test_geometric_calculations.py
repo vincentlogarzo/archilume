@@ -2,7 +2,7 @@
 from archilume.geometry_utils import (
     calc_centroid_of_points,
     calculate_dimensions_from_points,
-    get_bounding_box_center_df,
+    get_center_of_bounding_box,
     get_bounding_box_from_point_coordinates,
 )
 
@@ -258,11 +258,11 @@ class TestCalcCentroidOfPoints:
 
 
 class TestGetBoundingBoxCenterDf:
-    """Tests for get_bounding_box_center_df function"""
+    """Tests for get_center_of_bounding_box function"""
 
     def test_valid_input_returns_correct_center(self, bounding_box_corners):
         """Test that valid bounding box returns correct center coordinates"""
-        result = get_bounding_box_center_df(bounding_box_corners)
+        result = get_center_of_bounding_box(bounding_box_corners)
 
         assert isinstance(result, tuple)
         assert len(result) == 3
@@ -273,12 +273,12 @@ class TestGetBoundingBoxCenterDf:
 
     def test_empty_dataframe_returns_none(self, empty_dataframe):
         """Test that empty DataFrame returns None"""
-        result = get_bounding_box_center_df(empty_dataframe)
+        result = get_center_of_bounding_box(empty_dataframe)
         assert result is None
 
     def test_invalid_input_returns_none(self):
         """Test that invalid input returns None"""
-        result = get_bounding_box_center_df("not a dataframe")
+        result = get_center_of_bounding_box("not a dataframe")
         assert result is None
 
 
@@ -292,7 +292,7 @@ class TestIntegrationWorkflows:
         assert not bounding_box.empty
 
         # Step 2: Get center from bounding box
-        center = get_bounding_box_center_df(bounding_box)
+        center = get_center_of_bounding_box(bounding_box)
 
         assert isinstance(center, tuple)
         assert len(center) == 3

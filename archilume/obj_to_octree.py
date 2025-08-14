@@ -149,22 +149,7 @@ class ObjToOctree:
                     self.combined_rad_paths.remove(output_rad_file_name)
                 continue
 
-    def _add_missing_modifiers_from_all_rads(self) -> None:
-        """
-        Add missing modifiers to the combined material file from all RAD files.
-        """
-        if not self.combined_radiance_mtl_path:
-            print("No combined material file to update")
-            return
-            
-        print(f"Adding missing modifiers from {len(self.combined_rad_paths)} RAD files...")
-        
-        for rad_path in self.combined_rad_paths:
-            if os.path.exists(rad_path):
-                print(f"Processing modifiers from: {os.path.basename(rad_path)}")
-                AddMissingModifiers(rad_path, self.combined_radiance_mtl_path).process_files()
-            else:
-                print(f"Warning: RAD file not found: {rad_path}")
+    #TODO: create a new function here to replace _parse_mtl_files, and push all this code into one new class to replace AddMaterialModifiers, it should use radiance native radiance command to extract all modifiers from rad files, compare this with the mtl files, and create new mtl for all the modifiers missing from the .mtl files. It will then convert all the existing mtls into their respective radiance descriptions with their respective input parameters. Textures will not be supported. 
 
     def _parse_mtl_files(self) -> None:
         """
@@ -173,9 +158,28 @@ class ObjToOctree:
         Also adds missing modifiers from RAD files if they exist.
         Output is saved to intermediates/octrees/combined_radiance.mtl.
         """
-        if not self.mtl_file_paths:
-            print("No MTL files to process")
-            return
+
+        def __add_missing_modifiers_from_all_rads(self) -> None:
+            """
+            Add missing modifiers to the combined material file from all RAD files.
+            """
+            if not self.combined_radiance_mtl_path:
+                print("No combined material file to update")
+                return
+                
+            print(f"Adding missing modifiers from {len(self.combined_rad_paths)} RAD files...")
+            
+            for rad_path in self.combined_rad_paths:
+                if os.path.exists(rad_path):
+                    print(f"Processing modifiers from: {os.path.basename(rad_path)}")
+                    AddMissingModifiers(rad_path, self.combined_radiance_mtl_path).process_files()
+                else:
+                    print(f"Warning: RAD file not found: {rad_path}")
+
+
+            if not self.mtl_file_paths:
+                print("No MTL files to process")
+                return
             
         all_converted_content = ["#Combined Radiance Material file:"]
         processed_materials = set()  # Track materials to avoid duplicates
@@ -232,7 +236,7 @@ class ObjToOctree:
                 
                 # Add missing modifiers from all RAD files
                 if self.combined_rad_paths:
-                    self._add_missing_modifiers_from_all_rads()
+                    __add_missing_modifiers_from_all_rads()
                     
             except Exception as e:
                 print(f"Error writing combined material file: {e}")
@@ -240,7 +244,7 @@ class ObjToOctree:
     def _rad_to_octree(self) -> None:
         """
         Runs the oconv command to generate frozen skyless octree for rendering from all RAD files.
-        Output is placed in the same directory as the RAD/MTL files with fixed name 'combined_scene_skyless.oct'.
+        Output is placed in the same directory as the RAD/MTL files with fixed name '!combined_scene_skyless.oct'.
         Must use command prompt instead of powershell in VScode as its default encoding is utf-8
         instead of the required encoding for oconv.
         Example command: oconv -f material_file.mtl file1.rad file2.rad > output.oct
@@ -250,13 +254,12 @@ class ObjToOctree:
             return
         
         # Determine output directory from the combined material file location
-        output_filename = os.path.join(self.output_dir, "combined_scene_skyless.oct")
+        output_filename = os.path.join(self.output_dir, "!combined_scene_skyless.oct")
         
         # Build command with material file and all RAD files
-        command = rf"oconv -f{self.combined_radiance_mtl_path} {self.combined_rad_paths} > {output_filename}"
+        rad_files_str = " ".join(self.combined_rad_paths)
+        command = rf"oconv -f{self.combined_radiance_mtl_path} {rad_files_str} > {output_filename}"
         
-
-
         print(f"Generating octree from {len(self.combined_rad_paths)} RAD files...")
 
         run_commands_parallel(commands = command)

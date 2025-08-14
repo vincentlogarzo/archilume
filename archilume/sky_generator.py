@@ -31,20 +31,16 @@ class SkyFileGenerator:
     Example:
         >>> generator = SkyFileGenerator(
         ...     lat=-37.8136,  # Melbourne latitude
-        ...     lon=144.9631,  # Melbourne longitude
-        ...     std_meridian=145.0,  # Australian EST
-        ...     year=2024,
         ...     month=6,  # June (winter solstice)
         ...     day=21,
         ...     start_hour_24hr_format=8,
-        ...     end_hour_24hr_format=17
+        ...     end_hour_24hr_format=17,
+        ...     minute_increment=5
         ... )
         >>> generator.generate_sunny_sky_series()
     
     Parameters:
         lat: Latitude in decimal degrees (positive = North, negative = South)
-        lon: Longitude in decimal degrees (positive = East, negative = West) 
-        std_meridian: Standard meridian for timezone in decimal degrees
         year: Year for sky generation (e.g., 2024)
         month: Month (1-12)
         day: Day of month (1-31)
@@ -59,28 +55,24 @@ class SkyFileGenerator:
 
     # Core location parameters
     lat: float
-    lon: float
-    std_meridian: float
 
     # Parameters for the specific sky series
-    year: int
     month: int
     day: int
     start_hour_24hr_format: int
     end_hour_24hr_format: int
 
     # Optional parameters with defaults
+    year: int = datetime.now().year
     minute_increment: int = 5
 
     def __post_init__(self):
         """
         Performs post-initialization setup:
-        - Converts lat/lon to strings for use with gensky.
+        - Converts lat to string for use with gensky.
         - Sets fixed output directory and creates it if needed.
         """
         self.str_lat = str(self.lat)
-        self.str_lon = str(self.lon)
-        self.str_std_meridian = str(self.std_meridian)
         
         # Fixed output directory - not user configurable
         self.output_dir = "intermediates/sky"
@@ -91,6 +83,7 @@ class SkyFileGenerator:
                 print(f"Created output directory: {self.output_dir}")
             except OSError as e:
                 print(f"Error creating directory {self.output_dir}: {e}")
+
 
     def __generate_single_sunny_skyfile(self, month, day, time_hhmm_str, output_time_suffix_str):
         """
@@ -120,7 +113,7 @@ class SkyFileGenerator:
                 skyfunc_description = textwrap.dedent(f"""\
                     #Radiance Sky file: Ark Resources Pty Ltd
 
-                    !gensky {str(month)} {str(day)} {time_hhmm_str} +s -a {self.str_lat} -o {self.str_lon} -m {self.str_std_meridian}
+                    !gensky {str(month)} {str(day)} +{time_hhmm_str} +s -a {self.str_lat}
 
                     skyfunc glow skyglow
                     0 0
@@ -153,7 +146,7 @@ class SkyFileGenerator:
         """
         print(
             f"\nStarting sky generation for {self.month}/{self.day}/{self.year} from {self.start_hour_24hr_format}:00 to {self.end_hour_24hr_format}:00 "
-            f"at {self.str_lat} lat, {self.str_lon} lon."
+            f"at {self.str_lat} lat."
         )
 
         # Create the output directory if it doesn't exist
