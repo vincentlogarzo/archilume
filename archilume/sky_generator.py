@@ -3,7 +3,13 @@ Radiance Sky File Generator
 
 Generates series of Radiance sky files for daylight analysis using the gensky utility.
 Supports sunny sky conditions with configurable time ranges and geographic locations.
+
+IMPORTANT: This generator produces sky files oriented to true north using solar time 
+for sun positioning calculations. The generated files use Radiance's gensky utility 
+which calculates sun positions based on solar time rather than local standard time.
 """
+
+# Archilume imports
 
 # Standard library imports
 import logging
@@ -11,6 +17,8 @@ import os
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+# Third-party imports
 
 
 # Configure basic logging
@@ -28,6 +36,12 @@ class SkyFileGenerator:
     date/time ranges and geographic locations. Files are saved in Radiance format
     suitable for lighting simulation.
     
+    IMPORTANT: Sky files are generated with true north orientation using solar time
+    for sun positioning. The gensky utility calculates sun positions based on solar
+    time (apparent solar time) rather than local standard time or daylight saving time.
+    This ensures accurate solar positioning for lighting analysis but requires users
+    to account for time zone differences when interpreting results.
+    
     Example:
         >>> generator = SkyFileGenerator(
         ...     lat=-37.8136,  # Melbourne latitude
@@ -44,13 +58,14 @@ class SkyFileGenerator:
         year: Year for sky generation (e.g., 2024)
         month: Month (1-12)
         day: Day of month (1-31)
-        start_hour_24hr_format: Start hour in 24-hour format (0-23)
-        end_hour_24hr_format: End hour in 24-hour format (0-23)
+        start_hour_24hr_format: Start hour in 24-hour format (0-23) - solar time
+        end_hour_24hr_format: End hour in 24-hour format (0-23) - solar time
         minute_increment: Time increment in minutes (default: 5)
         
     Output:
         Creates .sky files named as SS_MMDD_HHMM.sky in the output directory.
         Each file contains gensky command and sky/ground glow definitions.
+        Sky orientation is aligned to true north with solar time positioning.
     """
 
     # Core location parameters
@@ -130,7 +145,7 @@ class SkyFileGenerator:
                     4 0 0 -1 180
                     """)
                 outfile.write(skyfunc_description)
-                print(f"Successfully generated: {output_filepath}")
+                # print(f"Successfully generated: {output_filepath}")
         except:
             print(f"Error running gensky for {time_hhmm_str}")
 

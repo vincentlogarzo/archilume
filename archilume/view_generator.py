@@ -225,8 +225,11 @@ class ViewFileGenerator:
 
             logging.info("DataFrame parsed successfully.")
 
-            # Create the new path pointing to the 'aoi' directory
-            output_csv_path = self.csv_path.replace("lib", "aoi").replace(".csv", "_processed.csv")
+            # Create the new path pointing to the 'intermediates/octrees' directory
+            input_path = Path(self.csv_path)
+            intermediates_dir = Path("intermediates/aoi")
+            intermediates_dir.mkdir(parents=True, exist_ok=True)
+            output_csv_path = str(intermediates_dir / f"{input_path.stem}_processed.csv")
             df.to_csv(output_csv_path, index=False)
             logging.info(f"Processed DataFrame saved to: {output_csv_path}")
 
@@ -237,7 +240,7 @@ class ViewFileGenerator:
             logging.error(f"Failed to parse CSV: {e}")
             return None
 
-    def _create_floor_level_info_df(
+    def _create_floor_level_info(
         self, room_boundaries_data: pd.DataFrame, view_subdir: str, ffl_offset: float
     ) -> pd.DataFrame | None:
         current_dir = Path.cwd()
@@ -413,7 +416,7 @@ class ViewFileGenerator:
         except (AttributeError, Exception):
             return False
 
-        self.view_paths_per_level_df = self._create_floor_level_info_df(
+        self.view_paths_per_level_df = self._create_floor_level_info(
             self.room_boundaries_df, view_subdir="intermediates/views_grids", ffl_offset=self.ffl_offset
         )
 

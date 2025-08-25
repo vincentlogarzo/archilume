@@ -1,3 +1,5 @@
+# Archilume imports
+
 # Standard library imports
 import concurrent.futures
 import os
@@ -331,3 +333,4 @@ def get_image_dimensions(image_path):
             )
     except Exception as e:
         print(f"Error: Could not read image dimensions. Reason: {e}")
+

@@ -10,6 +10,7 @@ from pathlib import Path
 # Third-party imports
 
 
+
 @dataclass
 class ObjToOctree:
     """
@@ -42,7 +43,7 @@ class ObjToOctree:
         if self.mtl_paths is None:
             self.mtl_paths = []
         if self.rad_paths is None:
-            self.combined_rad_paths = []
+            self.rad_paths = []
         
         # Set output directory as absolute path
         self.output_dir = Path.cwd() / "intermediates" / "rad"
@@ -51,7 +52,35 @@ class ObjToOctree:
         if len(self.obj_paths) != len(self.mtl_paths):
             raise ValueError("Number of OBJ files must match number of MTL files")
 
-    def obj2rad(self, input_obj: Path) -> None:
+    def _obj2rad(self, input_obj: Path) -> None:
+        """
+        Converts a Wavefront OBJ file to Radiance RAD format using the obj2rad utility.
+        
+        This method calls the external Radiance obj2rad executable to convert a 3D geometry
+        file from OBJ format (commonly exported from CAD software like Revit) into the 
+        RAD format required for Radiance lighting simulations.
+        
+        Args:
+            input_obj (Path): Path to the input .obj file to be converted
+            
+        Raises:
+            ValueError: If input_obj is not a Path object
+            FileNotFoundError: If the expected output RAD file is not created
+            subprocess.CalledProcessError: If the obj2rad command fails
+            
+        Note:
+            - Requires Radiance to be installed at C:\\Program Files\\Radiance\\bin\\obj2rad.exe
+            - Output RAD files are saved to {project_root}/intermediates/rad/ directory
+            - The output directory is created automatically if it doesn't exist
+            - This is a conversion step in the larger workflow of creating octree files for analysis
+            
+        Example:
+            >>> converter = ObjToOctree(["model.obj"], ["model.mtl"])
+            >>> converter.obj2rad(Path("model.obj"))
+            Successfully converted: model.rad
+            >>> # Example 1:  'obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\octrees\\87cowles_BLD_noWindows.rad"'
+            >>> # Example 2:  # Subprocess.run('obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\octrees\\87cowles_BLD_noWindows.rad"', shell=True)
+        """
         
         def _create_output_path(input_obj: Path) -> Path:
             """
@@ -69,16 +98,25 @@ class ObjToOctree:
         
         output_rad = _create_output_path(input_obj)
 
-        #subprocess.run('obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\octrees\\87cowles_BLD_noWindows.rad"', shell=True)
-        
         try:
             # Ensure output directory exists
             output_rad.parent.mkdir(parents=True, exist_ok=True)
-            
-            # 'obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\octrees\\87cowles_BLD_noWindows.rad"'
 
-            # Run the obj2rad command with full path
-            obj2rad_exe = r"C:\Program Files\Radiance\bin\obj2rad.exe" #TODO: this is problematic as it required the user to have radiance installed and in this location. 
+            # Run the obj2rad command - try multiple possible locations
+            # TODO: future should determine how to use the obj2rad from the venv otherwise a user has to install radiance on their computer and add it to thier path environment variables. 
+            possible_paths = [
+                Path("C:/Program Files/Radiance/bin/obj2rad.exe"),
+                Path("obj2rad.exe")  # Fallback to PATH
+            ]
+            
+            obj2rad_exe = None
+            for path in possible_paths:
+                if path.exists() or path.name == "obj2rad.exe":  # Last one relies on PATH
+                    obj2rad_exe = path
+                    break
+            
+            if obj2rad_exe is None:
+                raise FileNotFoundError("obj2rad.exe not found in expected locations")
             with open(output_rad, "w") as rad_output:
                 subprocess.run([obj2rad_exe, str(input_obj)], stdout=rad_output, check=True)
             
@@ -91,11 +129,10 @@ class ObjToOctree:
         except Exception as e:
             print(f"Error converting {input_obj}: {e}")
     
-
-    def _convert_rads_to_octree(self) -> None:
+    def _rads2octree(self) -> None:
         """
         Runs the oconv command to generate frozen skyless octree for rendering from all RAD files.
-        Output is placed in the same directory as the RAD/MTL files with fixed name '!combined_scene_skyless.oct'.
+        Output is placed in the same directory as the RAD/MTL files with fixed name '{original_obj_name}.oct'.
         Must use command prompt instead of powershell in VScode as its default encoding is utf-8
         instead of the required encoding for oconv.
         Example command: oconv -f material_file.mtl file1.rad file2.rad > output.oct
@@ -106,7 +143,8 @@ class ObjToOctree:
         
         # Use pathlib for cross-platform path handling
         output_dir = Path(self.output_dir)
-        output_filename = output_dir / "!combined_scene_skyless.oct"
+        obj_name = Path(self.obj_paths[0]).stem
+        output_filename = output_dir / f"{obj_name}.oct"
         
         # Build command with material file and all RAD files using pathlib
         rad_files_str = " ".join(f'"{Path(rad_path)}"' for rad_path in self.rad_paths)
@@ -139,35 +177,6 @@ class ObjToOctree:
         except Exception as e:
             print(f"Error generating octree: {e}")
 
-    def _create_basic_material_file(self) -> None:
-        """Create a basic Radiance material file with common materials."""
-        if os.path.exists(self.combined_radiance_mtl_path):
-            return
-            
-        basic_materials = """
-# Basic default material
-void plastic default_material
-0
-0
-5 0.7 0.7 0.7 0.0 0.05
-
-# Glass material  
-void glass default_glass
-0
-0
-3 0.96 0.96 0.96
-
-# Concrete material
-void plastic concrete
-0  
-0
-5 0.8 0.8 0.8 0.0 0.1
-"""
-        
-        with open(self.combined_radiance_mtl_path, 'w', encoding='utf-8') as f:
-            f.write(basic_materials)
-        print(f"Created basic material file: {self.combined_radiance_mtl_path}")
-
     def create_skyless_octree_for_analysis(self) -> None:
         """
         Process all OBJ/MTL file pairs: convert OBJ to RAD, parse MTL to Radiance format,
@@ -177,32 +186,32 @@ void plastic concrete
             print("No files to process")
             return
             
-        print(f"Processing {len(self.obj_paths)} OBJ/MTL file pairs...")
+        print(f"Processing OBJ/MTL file pairs...")
         
-        # Convert all OBJ files to RAD
+        # --- Step 1: Convert all OBJ files to RAD ---
         self.rad_paths = []
         for obj_path in self.obj_paths:
             try:
-                self.obj2rad(obj_path)
+                self._obj2rad(Path(obj_path))
+                # Add the output rad file path to our list
+                output_dir = Path(self.output_dir)
+                rad_file = output_dir / Path(obj_path).with_suffix('.rad').name
+                if rad_file.exists():
+                    self.rad_paths.append(str(rad_file))
             except Exception as e:
                 print(f"Error converting {obj_path}: {e}")
                 continue
-
-        #TODO: complete the below class to create readiance material description file. 
         
-        # Parse and combine all MTL files
+        # --- Step 2: Create combine radiance materials description from all mtl files ---
         if self.rad_paths:
             mtl_creator = CreateRadianceMtlFile(
                 rad_paths=self.rad_paths,
                 mtl_paths=self.mtl_paths
             )
-            # Set the path to the combined material file for octree generation
-            self.combined_radiance_mtl_path = os.path.join(self.output_dir, "combined_radiance.mtl")
-            # Create a basic material file if it doesn't exist
-            self._create_basic_material_file()
-            self.combined_rad_paths = self.rad_paths
-        else:
-            print("No RAD files created - skipping material file creation")
+            mtl_creator.create_radiance_mtl_file()
 
-        # Combine all rad file and mtl files converted to radiance description files into one octree
-        self._convert_rads_to_octree()
+            print("Material file created at:", mtl_creator.output_mtl_path)
+        
+        
+        # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
+        self._rads2octree()
