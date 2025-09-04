@@ -2,11 +2,15 @@
 from archilume.utils import select_files, display_obj
 
 # Standard library imports
+from pathlib import Path
 
 # Third-party imports
 
-
-obj_paths = select_files(title="Select one ore more obj files to view, 1st file should be the main object, subsequent files will be used as additional geometry")
+   # Locate the room boundaries CSV file
+obj_paths = [
+    Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj",
+    Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
+    ]
 
 if obj_paths:
     display_obj(obj_paths)

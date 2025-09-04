@@ -62,9 +62,6 @@ import pathlib as Path
 # Third-party imports
 import pyradiance as pr
 
-#TODO: create a new function here to replace _parse_mtl_files, and push all this code into one new class to replace AddMaterialModifiers, it should use radiance native radiance command to extract all modifiers from rad files, compare this with the mtl files, and create new mtl for all the modifiers missing from the .mtl files. It will then convert all the existing mtls into their respective radiance descriptions with their respective input parameters. Textures will not be supported.
-
-
 @dataclass
 class CreateRadianceMtlFile:
     """
@@ -101,8 +98,64 @@ class CreateRadianceMtlFile:
         # create output mtl file path
         self.output_mtl_path = os.path.join(self.output_dir, "materials.mtl")
     
+    @staticmethod
+    def _extract_modifiers_manually(rad_file_path) -> set[str]:
+        """
+        Extract modifiers from a RAD file by parsing line by line.
+        Modifiers appear immediately after blank lines.
+        
+        Args:
+            rad_file_path (str): Path to the RAD file
+            
+        Returns:
+            set: Set of modifier names found in the file
+        """
+        modifiers = set()
+        
+        with open(rad_file_path, 'r') as file:
+            lines = file.readlines()
+        
+        prev_line_blank = False
+        
+        for line in lines:
+            stripped_line = line.strip()
+            
+            # Check if current line is blank
+            if not stripped_line:
+                prev_line_blank = True
+                continue
+            
+            # Skip comments
+            if stripped_line.startswith('#'):
+                continue
+            
+            # If previous line was blank, this could be a modifier line
+            if prev_line_blank:
+                parts = stripped_line.split()
+                
+                # Check if line has enough parts to be a modifier definition
+                if len(parts) >= 3:
+                    modifier_name = parts[0]
+                    primitive_type = parts[1]
+                    identifier = parts[2]
+                    
+                    # Add modifier name if it's not 'void' (geometry uses modifiers)
+                    if modifier_name != 'void':
+                        modifiers.add(modifier_name)
+                    
+                    # Add identifier if this is a modifier definition
+                    if primitive_type in ['plastic', 'glass', 'metal', 'trans', 'light', 'glow', 'texfunc', 'colorpict', 'brightfunc']:
+                        modifiers.add(identifier)
+            
+            prev_line_blank = False
+        
+        return modifiers
+
     def _extract_modifiers_from_rad(self, rad_file_path) -> set[str]:
-        """Extract all modifiers from a RAD file using pyradiance."""
+        """
+        Extract all modifiers from a RAD file using pyradiance.
+        example command: !getprimitives input.rad | getinfo -d
+        """
 
         # Read the RAD file content
         with open(rad_file_path, 'r') as file:
@@ -123,16 +176,19 @@ class CreateRadianceMtlFile:
             if primitive.ptype in ['plastic', 'glass', 'metal', 'trans', 'light', 'glow']:
                 modifiers.add(primitive.identifier)
 
-        return set(modifiers)
+        manual_modifiers = self._extract_modifiers_manually(rad_file_path)
+        modifiers.update(manual_modifiers)
+        #TODO: working on this here.
+
+        return modifiers
 
     def create_radiance_mtl_file(self):
         """Creates a Radiance .mtl file with definitions for all modifiers found in the RAD files."""
         # Step 1: extract modifiers from rad files using the pyradiance library
-        # handled by __post_init__
+            # handled by __post_init__
 
         # Step 2: check each modifier against the mtl files, if not found, then append a default definition to the combined_mtl file. IF found, then determine the RGB and other modifier properties to create a new radiance material definition. 
 
-        
         for modifier in self.rad_modifiers:
             for mtl_path in self.mtl_paths:
                 if not os.path.exists(mtl_path):
@@ -164,10 +220,12 @@ class CreateRadianceMtlFile:
                             self.materials.append(rm.create_plastic_material(f"{modifier}", kd_values))
 
                         #TODO: futher logic could be added here in the futrue to provide greater accuracy to material definitions, such as checking for specular highlights, roughness, metalness, etc.
+                        #FIXME: somehow materials here that are not in the mtl files are not being appended to the final mtl file.Determine why this is e.g. "Material_not_defined" is not being added to the final mtl file.
 
             # Export to file
             rm.export_materials_to_file(self.materials, self.output_mtl_path)     
-    
+
+
 
 
 

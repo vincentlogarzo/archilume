@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 # Third-party imports
+import numpy as np
 import open3d as o3d
 import tkinter as tk
 from tkinter import filedialog
@@ -47,6 +48,55 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     # Handle single file input
     if isinstance(filenames, (str, Path)):
         filenames = [filenames]
+    
+    # View transformation helper functions
+    def set_top_view(vis):
+        """Set camera to top view (looking down Z-axis)"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_front([0, 0, -1])
+        view_ctrl.set_up([0, 1, 0])
+        return False
+    
+    def set_front_view(vis):
+        """Set camera to front view (looking along +Y axis)"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_front([0, 1, 0])
+        view_ctrl.set_up([0, 0, 1])
+        return False
+    
+    def set_back_view(vis):
+        """Set camera to back view (looking along -Y axis)"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_front([0, -1, 0])
+        view_ctrl.set_up([0, 0, 1])
+        return False
+    
+    def set_left_view(vis):
+        """Set camera to left view (looking along +X axis)"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_front([1, 0, 0])
+        view_ctrl.set_up([0, 0, 1])
+        return False
+    
+    def set_right_view(vis):
+        """Set camera to right view (looking along -X axis)"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_front([-1, 0, 0])
+        view_ctrl.set_up([0, 0, 1])
+        return False
+    
+    def set_bottom_view(vis):
+        """Set camera to bottom view (looking up Z-axis)"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_front([0, 0, 1])
+        view_ctrl.set_up([0, -1, 0])
+        return False
+    
+    def reset_view(vis):
+        """Reset to default view"""
+        view_ctrl = vis.get_view_control()
+        view_ctrl.set_zoom(0.8)
+        return False
     
     print(f"Visualizing {len(filenames)} OBJ file(s) with open3d...")
     
@@ -97,7 +147,14 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     file_names = [f.name for f in valid_files]
     window_title = f"OBJ Viewer - {', '.join(file_names)}" if len(valid_files) <= 3 else f"OBJ Viewer - {len(valid_files)} files"
     
-    vis = o3d.visualization.Visualizer()
+    # Try to use VisualizerWithKeyCallback if available, otherwise use regular Visualizer
+    try:
+        vis = o3d.visualization.VisualizerWithKeyCallback()
+        has_key_callback = True
+    except AttributeError:
+        vis = o3d.visualization.Visualizer()
+        has_key_callback = False
+    
     vis.create_window(window_name=window_title, width=1200, height=800)
     
     # Add geometries
@@ -110,12 +167,30 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     render_opt.show_coordinate_frame = True
     render_opt.background_color = [0.1, 0.1, 0.1]  # Dark background
     render_opt.mesh_show_back_face = True
-    render_opt.mesh_show_wireframe = False  # We have custom wireframe
+    render_opt.mesh_show_wireframe = True  # Show wireframe by default
     render_opt.point_size = 2.0
     render_opt.line_width = 1.0
     
     # Set up view control for better navigation
     view_ctrl = vis.get_view_control()
+    
+    # Register key callbacks if available
+    if has_key_callback:
+        try:
+            vis.register_key_callback(ord('1'), set_top_view)
+            vis.register_key_callback(ord('2'), set_front_view)
+            vis.register_key_callback(ord('3'), set_back_view)
+            vis.register_key_callback(ord('4'), set_left_view)
+            vis.register_key_callback(ord('5'), set_right_view)
+            vis.register_key_callback(ord('6'), set_bottom_view)
+            vis.register_key_callback(ord('R'), reset_view)
+            vis.register_key_callback(ord('r'), reset_view)
+        except Exception as e:
+            print(f"   Note: Key callback registration failed: {e}")
+            has_key_callback = False
+    
+    if not has_key_callback:
+        print("   Note: Keyboard view shortcuts not available in this Open3D version")
     
     # Center the view on the mesh
     vis.poll_events()
@@ -135,15 +210,29 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     print("   P: Toggle point cloud mode")
     print("   L: Toggle lighting")
     print("   W: Toggle wireframe mode")
+    print("")
+    if has_key_callback:
+        print("-> Orthographic View Controls:")
+        print("   1: Top view (looking down)")
+        print("   2: Front view")
+        print("   3: Back view") 
+        print("   4: Left view")
+        print("   5: Right view")
+        print("   6: Bottom view (looking up)")
+        print("   R: Reset to default view")
+    else:
+        print("-> Manual View Controls:")
+        print("   Use mouse and standard Open3D controls for navigation")
     print("-> Close the window to continue.")
     
     # Run the visualizer
     vis.run()
     vis.destroy_window()
 
+# TODO: Implement IFC file visualization using ifcopenshell, and allow colour checking and editing potentially through ThatOpenCompany
 def display_ifc(filename: Path):
     """
-    TODO: Implement IFC file visualization using ifcopenshell, and allow colour checking and editing potentially through ThatOpenCompany
+    
     """
     return None
 
@@ -200,14 +289,10 @@ def run_commands_parallel(commands: List[str], number_of_workers: int = 1) -> No
         if command_name:
             print(f"Executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}")
         else:
-            print(
-                f"Executing command: {' '.join(command) if isinstance(command, list) else command}"
-            )
+            print(f"Executing command: {' '.join(command) if isinstance(command, list) else command}")
 
         try:
-            result = subprocess.run(
-                command, shell=isinstance(command, str), capture_output=True, text=True, check=True
-            )
+            result = subprocess.run(command, shell=isinstance(command, str), capture_output=True, text=True, check=True)
             if command_name:
                 print(f"{command_name} command executed successfully.")
             else:
@@ -222,8 +307,7 @@ def run_commands_parallel(commands: List[str], number_of_workers: int = 1) -> No
             if command_name:
                 print(f"Error executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}")
             else:
-                print(f"Error executing command: {' '.join(command) if isinstance(command, list) else command}"
-                )
+                print(f"Error executing command: {' '.join(command) if isinstance(command, list) else command}")
 
             print(f"Return code: {e.returncode}")
             if e.stderr:
@@ -333,4 +417,3 @@ def get_image_dimensions(image_path):
             )
     except Exception as e:
         print(f"Error: Could not read image dimensions. Reason: {e}")
-

@@ -1,5 +1,6 @@
 # Archilume imports
-from archilume.create_radiance_mtl_file import CreateRadianceMtlFile
+from .create_radiance_mtl_file import CreateRadianceMtlFile
+from .utils import run_commands_parallel
 
 # Standard library imports
 import os
@@ -52,7 +53,7 @@ class ObjToOctree:
         if len(self.obj_paths) != len(self.mtl_paths):
             raise ValueError("Number of OBJ files must match number of MTL files")
 
-    def _obj2rad(self, input_obj: Path) -> None:
+    def _obj2rad(self, input_obj_path: Path, exe_directory: str = None) -> None:
         """
         Converts a Wavefront OBJ file to Radiance RAD format using the obj2rad utility.
         
@@ -78,57 +79,22 @@ class ObjToOctree:
             >>> converter = ObjToOctree(["model.obj"], ["model.mtl"])
             >>> converter.obj2rad(Path("model.obj"))
             Successfully converted: model.rad
-            >>> # Example 1:  'obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\octrees\\87cowles_BLD_noWindows.rad"'
-            >>> # Example 2:  # Subprocess.run('obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\octrees\\87cowles_BLD_noWindows.rad"', shell=True)
+            >>> # Example 1:  # subprocess.run('obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\rad\\87cowles_BLD_noWindows.rad"', shell=True)
         """
-        
-        def _create_output_path(input_obj: Path) -> Path:
-            """
-            Create an output path for the .rad file based on the input .obj file.
-            """
-            # 1. Ensure the input is a Path object
-            if not isinstance(input_obj, Path):
-                raise ValueError("Input must be a Path object")
-            
-            project_root = input_obj.parent.parent
-            output_dir = project_root / "intermediates" / "rad"
-            output_rad = output_dir / input_obj.with_suffix('.rad').name
 
-            return output_rad
-        
-        output_rad = _create_output_path(input_obj)
+        output_file_path = Path(__file__).parent.parent / "intermediates" / "rad" / input_obj_path.with_suffix('.rad').name
 
-        try:
-            # Ensure output directory exists
-            output_rad.parent.mkdir(parents=True, exist_ok=True)
+        command = f'obj2rad {input_obj_path} > {output_file_path}'
 
-            # Run the obj2rad command - try multiple possible locations
-            # TODO: future should determine how to use the obj2rad from the venv otherwise a user has to install radiance on their computer and add it to thier path environment variables. 
-            possible_paths = [
-                Path("C:/Program Files/Radiance/bin/obj2rad.exe"),
-                Path("obj2rad.exe")  # Fallback to PATH
-            ]
-            
-            obj2rad_exe = None
-            for path in possible_paths:
-                if path.exists() or path.name == "obj2rad.exe":  # Last one relies on PATH
-                    obj2rad_exe = path
-                    break
-            
-            if obj2rad_exe is None:
-                raise FileNotFoundError("obj2rad.exe not found in expected locations")
-            with open(output_rad, "w") as rad_output:
-                subprocess.run([obj2rad_exe, str(input_obj)], stdout=rad_output, check=True)
-            
-            # Verify if the rad_file was created
-            if not os.path.exists(output_rad):
-                raise FileNotFoundError(f"Expected RAD file not found: {output_rad}")
-                
-            print(f"Successfully converted: {os.path.basename(output_rad)}")
+        # subprocess.run(command, shell=True, encoding='utf-8')
         
-        except Exception as e:
-            print(f"Error converting {input_obj}: {e}")
-    
+        run_commands_parallel([command], max_workers=1)
+
+        if not output_file_path.exists():
+            raise FileNotFoundError(f"Expected RAD file not found: {output_file_path}")
+        else:
+            print(f"Successfully converted: {output_file_path}")
+   
     def _rads2octree(self) -> None:
         """
         Runs the oconv command to generate frozen skyless octree for rendering from all RAD files.
@@ -136,6 +102,7 @@ class ObjToOctree:
         Must use command prompt instead of powershell in VScode as its default encoding is utf-8
         instead of the required encoding for oconv.
         Example command: oconv -f material_file.mtl file1.rad file2.rad > output.oct
+        Example command: oconv -f "C:\Projects\archilume\intermediates\rad\materials.mtl" "C:\Projects\archilume\intermediates\rad\87cowles_site.rad" "C:\Projects\archilume\intermediates\rad\87cowles_BLD_noWindows.rad" > "C:\Projects\archilume\intermediates\octree\87cowles_BLD_noWindows_with_site.oct"
         """
         if not self.rad_paths or not self.combined_radiance_mtl_path:
             print("No RAD files or material file available for octree generation")
@@ -192,12 +159,26 @@ class ObjToOctree:
         self.rad_paths = []
         for obj_path in self.obj_paths:
             try:
+                # Call obj2rad (creates RAD file in same directory as OBJ)
                 self._obj2rad(Path(obj_path))
-                # Add the output rad file path to our list
+                
+                # obj2rad creates the RAD file next to the OBJ file
+                source_rad = Path(obj_path).resolve().with_suffix('.rad')
+                
+                # Copy to our target directory
                 output_dir = Path(self.output_dir)
-                rad_file = output_dir / Path(obj_path).with_suffix('.rad').name
-                if rad_file.exists():
-                    self.rad_paths.append(str(rad_file))
+                output_dir.mkdir(parents=True, exist_ok=True)
+                target_rad = output_dir / source_rad.name
+                
+                if source_rad.exists():
+                    # Copy the file to target directory
+                    import shutil
+                    shutil.copy2(source_rad, target_rad)
+                    self.rad_paths.append(str(target_rad))
+                    print(f"Successfully converted and copied {obj_path} to {target_rad}")
+                else:
+                    print(f"Error: RAD file not created at {source_rad}")
+                    
             except Exception as e:
                 print(f"Error converting {obj_path}: {e}")
                 continue

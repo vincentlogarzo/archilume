@@ -1,0 +1,247 @@
+Metadata-Version: 2.4
+Name: archilume
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: ifcopenshell>=0.8.3.post1
+Requires-Dist: numpy>=2.3.2
+Requires-Dist: open3d>=0.19.0
+Requires-Dist: pandas>=2.3.1
+Requires-Dist: pillow>=11.3.0
+Requires-Dist: pyradiance>=1.1.5
+
+# Archilume
+
+> A Python wrapper for Radiance daylight analysis, providing tools for architectural lighting simulation and analysis.
+
+## 🌟 Features
+
+- **🏢 OBJ to Octree Conversion** - Convert 3D building models (OBJ format) with materials (MTL) into Radiance octree format
+- **☀️ Sky File Generation** - Create accurate sky models for different times, dates, and locations using Radiance's gensky
+- **👁️ View Generation** - Generate view parameter files for interior and exterior building analysis  
+- **⚡ Parallel Processing** - Built-in parallel execution for computationally intensive operations
+- **🎨 Material Processing** - Automatic conversion of MTL materials to Radiance material descriptions
+- **📅 Seasonal Analysis** - Pre-configured workflows for solstice and seasonal daylight studies
+
+## 🚀 Quick Start
+
+### Installation
+
+```bash
+git clone https://github.com/vincentlogarzo/archilume.git
+cd archilume
+pip install -e .
+```
+
+### Prerequisites
+
+| Requirement | Version | Installation |
+|-------------|---------|-------------|
+| Python | 3.12+ | [python.org](https://python.org) |
+| Radiance | Latest | [radiance-online.org](https://www.radiance-online.org/) |
+
+### Basic Usage
+
+```python
+from archilume.obj_to_octree import ObjToOctree
+from archilume.sky_generator import SkyFileGenerator
+
+# Convert 3D model to Radiance format
+octree = ObjToOctree(['building.obj'], ['building.mtl'])
+octree.create_skyless_octree_for_sunlight_analysis()
+
+# Generate sky files for analysis
+sky_gen = SkyFileGenerator(
+    lat=-37.8136,  # Melbourne
+    month=6, day=21,  # Winter solstice
+    start_hour_24hr_format=9,
+    end_hour_24hr_format=17
+)
+sky_gen.generate_sunny_sky_series()
+```
+
+## 📁 Project Structure
+
+```
+archilume/
+├── 📦 archilume/                    # Core package
+│   ├── obj_to_octree.py            # 3D model → Radiance conversion
+│   ├── sky_generator.py            # Sky condition generation  
+│   ├── view_generator.py           # Camera view setup
+│   ├── geometry_utils.py           # Geometric calculations
+│   └── utils.py                    # Utilities & parallel processing
+│
+├── 📚 examples/                     # Complete workflows
+│   ├── winter_solstice_sunlight_exposure.py
+│   └── summer_solstice_shd_analysis.py
+│
+├── 🧪 tests/                       # Test suite
+│   ├── test_geometric_calculations.py
+│   └── test_sky_generator.py
+│
+└── 📂 intermediates/               # Processing files
+    ├── octrees/                    # Radiance scene files
+    ├── sky/                        # Sky condition files  
+    └── views/                      # Camera parameters
+```
+
+## 🔧 Core Classes
+
+### `ObjToOctree`
+Converts 3D building models from OBJ format to Radiance octree format.
+
+```python
+octree_generator = ObjToOctree(
+    obj_file_paths=['building.obj'],
+    mtl_file_paths=['building.mtl']
+)
+octree_generator.create_skyless_octree_for_sunlight_analysis()
+```
+
+### `SkyFileGenerator`
+Generates Radiance sky files for different dates, times, and locations.
+
+```python
+sky_generator = SkyFileGenerator(
+    lat=-37.8136,                    # Latitude in decimal degrees
+    month=6, day=21,                 # Date for analysis
+    start_hour_24hr_format=9,        # Start time (24hr format)
+    end_hour_24hr_format=17,         # End time (24hr format)
+    minute_increment=60              # Time step interval
+)
+```
+
+### `ViewGenerator`
+Creates view parameter files for rendering analysis.
+
+```python
+view_generator = ViewGenerator(
+    room_boundaries_csv_path='rooms.csv',
+    output_dir='intermediates/views'
+)
+```
+
+## 📋 Examples
+
+### Winter Solstice Analysis
+
+Complete workflow for analyzing sunlight exposure during winter solstice:
+
+```python
+from archilume.obj_to_octree import ObjToOctree
+from archilume.sky_generator import SkyFileGenerator
+from archilume.view_generator import ViewGenerator
+
+# 1. Convert building geometry
+octree_generator = ObjToOctree(['building.obj'], ['building.mtl'])
+octree_generator.create_skyless_octree_for_sunlight_analysis()
+
+# 2. Generate winter solstice sky conditions
+sky_generator = SkyFileGenerator(
+    lat=-37.8136,  # Melbourne latitude
+    month=6, day=21,  # Winter solstice
+    start_hour_24hr_format=9,
+    end_hour_24hr_format=17,
+    minute_increment=60
+)
+sky_generator.generate_sunny_sky_series()
+
+# 3. Create view files for analysis
+view_generator = ViewGenerator(
+    room_boundaries_csv_path='room_boundaries.csv',
+    output_dir='intermediates/views'
+)
+view_generator.create_aoi_and_view_files()
+```
+
+### Multi-Location Sky Generation
+
+```python
+# London summer solstice
+london_sky = SkyFileGenerator(
+    lat=51.5074, month=6, day=21,
+    start_hour_24hr_format=6,
+    end_hour_24hr_format=20
+)
+
+# Sydney winter solstice  
+sydney_sky = SkyFileGenerator(
+    lat=-33.8688, month=6, day=21,
+    start_hour_24hr_format=8,
+    end_hour_24hr_format=18
+)
+```
+
+## 🧪 Testing
+
+Run the comprehensive test suite:
+
+```bash
+# Install development dependencies
+pip install -e ".[dev]"
+
+# Run all tests
+pytest tests/
+
+# Run with coverage report
+coverage run -m pytest tests/
+coverage report
+```
+
+## 📄 File Formats
+
+### Input Files
+| Format | Description | Example |
+|--------|-------------|---------|
+| **OBJ** | 3D geometry with vertices and faces | `building.obj` |
+| **MTL** | Material definitions (colors, transparency) | `building.mtl` |  
+| **CSV** | Room boundaries for view generation | `rooms.csv` |
+
+### Output Files
+| Format | Description | Usage |
+|--------|-------------|-------|
+| **OCT** | Radiance octree for efficient rendering | Scene geometry |
+| **SKY** | Radiance sky descriptions | Lighting conditions |
+| **VF** | View parameter files | Camera positions |
+
+## 📦 Dependencies
+
+Core dependencies automatically installed:
+
+- **[pyradiance](https://github.com/LBNL-ETA/pyradiance)** ≥1.1.5 - Official Python interface to Radiance
+- **[open3d](https://open3d.org/)** ≥0.19.0 - 3D data processing and visualization  
+- **[ifcopenshell](https://ifcopenshell.org/)** ≥0.8.3 - Building Information Modeling (BIM) support
+- **[numpy](https://numpy.org/)** ≥2.3.2 - Numerical computing
+- **[pandas](https://pandas.pydata.org/)** ≥2.3.1 - Data analysis and manipulation
+- **[pillow](https://pillow.readthedocs.io/)** ≥11.3.0 - Image processing
+
+## 🤝 Contributing
+
+1. **Fork** the repository
+2. **Create** a feature branch: `git checkout -b feature/amazing-feature`
+3. **Commit** changes: `git commit -m 'Add amazing feature'`
+4. **Push** to branch: `git push origin feature/amazing-feature`  
+5. **Open** a Pull Request
+
+## 📄 License
+
+This project is licensed under the **MIT License** - see the LICENSE file for details.
+
+## 🙏 Acknowledgments
+
+- Built on top of the [**Radiance**](https://www.radiance-online.org/) lighting simulation package
+- Utilizes [**PyRadiance**](https://github.com/LBNL-ETA/pyradiance) for Radiance integration
+- Inspired by architectural lighting analysis workflows
+
+## 💬 Support
+
+- 📋 **Issues**: [GitHub Issues](https://github.com/vincentlogarzo/archilume/issues)
+- 📚 **Examples**: Check the `examples/` directory  
+- 🧪 **Tests**: Review `tests/` for API usage patterns
+
+---
+
+<div align="center">
+<strong>🏛️ Archilume - Architectural Lighting Made Simple</strong>
+</div>
