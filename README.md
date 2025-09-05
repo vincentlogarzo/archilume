@@ -28,6 +28,8 @@ pip install -e .
 | Python | 3.12+ | [python.org](https://python.org) |
 | Radiance | Latest | [radiance-online.org](https://www.radiance-online.org/) |
 
+**Important**: Radiance must be installed to `C:\Radiance\bin\` on Windows. The Archilume library expects the `obj2rad.exe` executable to be located at `C:\Radiance\bin\obj2rad.exe`.
+
 ### Basic Usage
 
 ```python

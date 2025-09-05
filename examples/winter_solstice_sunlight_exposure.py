@@ -20,7 +20,7 @@ Analysis Period: 9:00 AM - 3:00 PM at 5-minute intervals
 from archilume.sky_generator import SkyFileGenerator
 from archilume.view_generator import ViewFileGenerator
 from archilume.obj_to_octree import ObjToOctree
-from archilume.obj2rad_test import obj2rad
+from archilume.obj2rad_test import obj2rad_with_os_system
 
 # Standard library imports
 from pathlib import Path
@@ -35,8 +35,6 @@ def main():
         Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj",
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
         ]
-       
-    mtl_paths = [Path(obj_path).with_suffix('.mtl') for obj_path in obj_paths]
 
     # Locate the room boundaries CSV file of the building of interest to this study
     csv_path = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv"
@@ -44,10 +42,10 @@ def main():
     # --- Step 1. Generate Octree utilising building obj(s) and site obj(s) and their respective .mtl files ---
     # This octree can only be used for sunlight exposure analysis as material modifiers are assumed (i.e. colour and matieral type, glass, plastic, or metal)
 
-    obj2rad(obj_paths)
+    # obj2rad_with_os_system(obj_paths)
     
-    # octree_generator = ObjToOctree(obj_paths, mtl_paths)
-    # octree_generator.create_skyless_octree_for_analysis()
+    octree_generator = ObjToOctree(obj_paths)
+    octree_generator.create_skyless_octree_for_analysis()
     
     
     # --- Step 2: Generate Sky Files ---
