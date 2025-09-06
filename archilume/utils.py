@@ -401,7 +401,7 @@ def execute_new_radiance_commands(commands: List[str], number_of_workers: int = 
 
     return
 
-def get_image_dimensions(image_path):
+def get_image_dimensions(image_path) -> None:
     """
     Opens an image file and prints its dimensions.
     """
@@ -417,3 +417,14 @@ def get_image_dimensions(image_path):
             )
     except Exception as e:
         print(f"Error: Could not read image dimensions. Reason: {e}")
+
+def notforuse_obj2rad_with_subprocess(obj_paths: Path) -> None:
+    """Convert OBJ file to Radiance format using obj2rad.exe.
+    obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\rad\\87cowles_BLD_noWindows.rad"
+    This function serves as an example and is not to be used, it does not run when called as part of a class with obj2rad for an unknown reason, the alternative obj2rad_with_os_system is used instead. 
+    """
+
+    for obj_path in obj_paths:
+        output_file_path = Path(__file__).parent.parent / "intermediates" / "rad" / obj_path.with_suffix('.rad').name
+        command = f'obj2rad {obj_path} > {output_file_path}'
+        run_commands_parallel([command],number_of_workers=1)

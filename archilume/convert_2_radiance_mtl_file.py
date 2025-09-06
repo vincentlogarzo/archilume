@@ -51,19 +51,20 @@ void plastic default_material
 
 """
 # Archilume imports
-import archilume.radiance_materials as rm
+from archilume import radiance_materials as rm
 
 # Standard library imports
 import os
 import re
 from dataclasses import dataclass, field
-import pathlib as Path
+from pathlib import Path
+import subprocess
 
 # Third-party imports
 import pyradiance as pr
 
 @dataclass
-class CreateRadianceMtlFile:
+class Convert2RadianceMtlFile:
     """
     Processes a Radiance .rad file and an accompanying .mtl file to find
     modifiers defined in the .rad file that are missing from the .mtl file,
@@ -83,14 +84,14 @@ class CreateRadianceMtlFile:
         """Initializes the output directory for Radiance material files."""
         
         # Ensure output directory exists
-        self.output_dir = os.path.join(os.path.dirname(__file__), "..", "intermediates", "rad")
+        self.output_dir = Path(__file__).parent.parent / "intermediates" / "rad"
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
         # Extract modifiers from RAD files to create a list of primitives
         if self.rad_paths:
             for rad_file_path in self.rad_paths:
-                modifiers = self._extract_modifiers_from_rad(rad_file_path)
+                modifiers = self._get_modifiers_from_rad(rad_file_path)
                 self.rad_modifiers.update(modifiers)
 
             print("Found modifiers:", self.rad_modifiers)
@@ -98,88 +99,39 @@ class CreateRadianceMtlFile:
         # create output mtl file path
         self.output_mtl_path = os.path.join(self.output_dir, "materials.mtl")
     
-    @staticmethod
-    def _extract_modifiers_manually(rad_file_path) -> set[str]:
-        """
-        Extract modifiers from a RAD file by parsing line by line.
-        Modifiers appear immediately after blank lines.
+    def _get_modifiers_from_rad(self, rad_file_path: Path) -> set[str]:
+        """Extract modifier names from RAD file using rad2mgf."""
         
-        Args:
-            rad_file_path (str): Path to the RAD file
-            
-        Returns:
-            set: Set of modifier names found in the file
-        """
+        if not rad_file_path.exists():
+            print(f"Error: RAD file not found: {rad_file_path}")
+            return set()
+
+        # Run rad2mgf and capture output
+        try:
+            result = subprocess.run(
+                ['rad2mgf', str(rad_file_path)],
+                capture_output=True,
+                text=True,
+                encoding='utf-8'
+            )
+        except FileNotFoundError:
+            print("Error: rad2mgf command not found. Make sure Radiance is installed.")
+            return set()
+
+        if result.returncode != 0:
+            print(f"Error running rad2mgf: {result.stderr}")
+            return set()
+
+        # Filter lines starting with 'm' and extract modifier names
         modifiers = set()
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('m '):
+                # Extract modifier name (typically the second token)
+                parts = line.split()
+                if len(parts) > 1:
+                    modifiers.add(parts[1])
         
-        with open(rad_file_path, 'r') as file:
-            lines = file.readlines()
-        
-        prev_line_blank = False
-        
-        for line in lines:
-            stripped_line = line.strip()
-            
-            # Check if current line is blank
-            if not stripped_line:
-                prev_line_blank = True
-                continue
-            
-            # Skip comments
-            if stripped_line.startswith('#'):
-                continue
-            
-            # If previous line was blank, this could be a modifier line
-            if prev_line_blank:
-                parts = stripped_line.split()
-                
-                # Check if line has enough parts to be a modifier definition
-                if len(parts) >= 3:
-                    modifier_name = parts[0]
-                    primitive_type = parts[1]
-                    identifier = parts[2]
-                    
-                    # Add modifier name if it's not 'void' (geometry uses modifiers)
-                    if modifier_name != 'void':
-                        modifiers.add(modifier_name)
-                    
-                    # Add identifier if this is a modifier definition
-                    if primitive_type in ['plastic', 'glass', 'metal', 'trans', 'light', 'glow', 'texfunc', 'colorpict', 'brightfunc']:
-                        modifiers.add(identifier)
-            
-            prev_line_blank = False
-        
-        return modifiers
-
-    def _extract_modifiers_from_rad(self, rad_file_path) -> set[str]:
-        """
-        Extract all modifiers from a RAD file using pyradiance.
-        example command: !getprimitives input.rad | getinfo -d
-        """
-
-        # Read the RAD file content
-        with open(rad_file_path, 'r') as file:
-            rad_content = file.read()
-
-        # Parse primitives from the content
-        primitives = pr.parse_primitive(rad_content)
-
-        # Extract unique modifiers
-        modifiers = set()
-
-        for primitive in primitives:
-            # Add the modifier name if it exists and isn't 'void'
-            if primitive.modifier and primitive.modifier != 'void':
-                modifiers.add(primitive.modifier)
-
-            # If this primitive itself is a modifier, add its identifier
-            if primitive.ptype in ['plastic', 'glass', 'metal', 'trans', 'light', 'glow']:
-                modifiers.add(primitive.identifier)
-
-        manual_modifiers = self._extract_modifiers_manually(rad_file_path)
-        modifiers.update(manual_modifiers)
-        #TODO: working on this here.
-
         return modifiers
 
     def create_radiance_mtl_file(self):
@@ -200,6 +152,8 @@ class CreateRadianceMtlFile:
                     match = re.search(pattern, mtl_content, re.MULTILINE | re.DOTALL)
                     
                     if match:
+
+                    #FIXME: if there is no match, the material modifier if passed and not entered into the mtl file with a radince description. This may mean that the original pyradiance primitive call may have worked, it was just this code that passed over the modifiers not already found in the .mtl files from revit.
                         material_block = match.group(1)
                         
                         # Extract Kd values (RGB diffuse color)
@@ -220,7 +174,6 @@ class CreateRadianceMtlFile:
                             self.materials.append(rm.create_plastic_material(f"{modifier}", kd_values))
 
                         #TODO: futher logic could be added here in the futrue to provide greater accuracy to material definitions, such as checking for specular highlights, roughness, metalness, etc.
-                        #FIXME: somehow materials here that are not in the mtl files are not being appended to the final mtl file.Determine why this is e.g. "Material_not_defined" is not being added to the final mtl file.
 
             # Export to file
             rm.export_materials_to_file(self.materials, self.output_mtl_path)     

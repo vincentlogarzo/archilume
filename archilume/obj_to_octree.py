@@ -1,6 +1,5 @@
 # Archilume imports
-from archilume.create_radiance_mtl_file import CreateRadianceMtlFile
-from archilume.utils import run_commands_parallel
+from archilume.convert_2_radiance_mtl_file import Convert2RadianceMtlFile
 
 # Standard library imports
 import os
@@ -9,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Third-party imports
+import pyradiance
 
 
 @dataclass
@@ -57,10 +57,8 @@ class ObjToOctree:
 
     def obj2rad_with_os_system(self, exe_path: Path = Path(r"C:/Radiance/bin/obj2rad.exe")) -> int:
         """
-        Convert the exe_path could not utilise the pyradiancies binary obj2rad, 
-        an exit code is received that could not be resolved. The user must install Radiance
+        Convert OBJ files to RAD format using obj2rad from pyradiance or system Radiance.
         """
-
         for input_obj_path in self.input_obj_paths:
             
             output_rad_path = Path(__file__).parent.parent / "intermediates" / "rad" / input_obj_path.with_suffix('.rad').name
@@ -84,25 +82,25 @@ class ObjToOctree:
         """
         Runs the oconv command to generate frozen skyless octree for rendering from all RAD files.
         Output is placed in the same directory as the RAD/MTL files with fixed name '{original_obj_name}.oct'.
-        Must use command prompt instead of powershell in VScode as its default encoding is utf-8
-        instead of the required encoding for oconv.
+        Must use command prompt instead of powershell in VScode as its default encoding is utf-16 if  run in the shell,
+        instead of the required encoding of utf-8 required for oconv.
         Example command: oconv -f material_file.mtl file1.rad file2.rad > output.oct
         Example command: oconv -f "C:\Projects\archilume\intermediates\rad\materials.mtl" "C:\Projects\archilume\intermediates\rad\87cowles_site.rad" "C:\Projects\archilume\intermediates\rad\87cowles_BLD_noWindows.rad" > "C:\Projects\archilume\intermediates\octree\87cowles_BLD_noWindows_with_site.oct"
         """
-        if not self.rad_paths or not self.combined_radiance_mtl_path:
+        if not self.output_rad_paths or not self.combined_radiance_mtl_path:
             print("No RAD files or material file available for octree generation")
             return
         
         # Use pathlib for cross-platform path handling
         output_dir = Path(self.output_dir)
-        obj_name = Path(self.obj_paths[0]).stem
+        obj_name = Path(self.input_obj_paths[0]).stem
         output_filename = output_dir / f"{obj_name}.oct"
         
         # Build command with material file and all RAD files using pathlib
-        rad_files_str = " ".join(f'"{Path(rad_path)}"' for rad_path in self.rad_paths)
+        rad_files_str = " ".join(f'"{Path(rad_path)}"' for rad_path in self.output_rad_paths)
         command = f'oconv -f "{Path(self.combined_radiance_mtl_path)}" {rad_files_str} > "{output_filename}"'
         
-        print(f"Generating octree from {len(self.rad_paths)} RAD files...")
+        print(f"Generating octree from {len(self.output_rad_paths)} RAD files...")
         print(f"Command: {command}")
         
         try:
@@ -151,13 +149,16 @@ class ObjToOctree:
 
         # --- Step 2: Create radiance materials description from all mtl files and cross reference modifiers contained in rad files created ---
         if self.output_rad_paths:
-            mtl_creator = CreateRadianceMtlFile(
+            mtl_creator = Convert2RadianceMtlFile(
                 rad_paths=self.output_rad_paths,
                 mtl_paths=self.input_mtl_paths
             )
             mtl_creator.create_radiance_mtl_file()
 
             print("Material file created at:", mtl_creator.output_mtl_path)
+
+            self.combined_radiance_mtl_path = mtl_creator.output_mtl_path
+
         
         
         # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---

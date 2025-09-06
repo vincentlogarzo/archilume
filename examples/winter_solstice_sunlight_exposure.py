@@ -20,7 +20,6 @@ Analysis Period: 9:00 AM - 3:00 PM at 5-minute intervals
 from archilume.sky_generator import SkyFileGenerator
 from archilume.view_generator import ViewFileGenerator
 from archilume.obj_to_octree import ObjToOctree
-from archilume.obj2rad_test import obj2rad_with_os_system
 
 # Standard library imports
 from pathlib import Path
@@ -36,13 +35,13 @@ def main():
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
         ]
 
-    # Locate the room boundaries CSV file of the building of interest to this study
+    # Locate the room boundaries CSV file of the building of interest to this study. This should be exported from Revit
+    #TODO: future iteration of this code will allow for input of a revit file, and use of revit API to extract the room boundaries csv, this could also be visualised in the obj_viewer.py example file.
     csv_path = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv"
     
+
     # --- Step 1. Generate Octree utilising building obj(s) and site obj(s) and their respective .mtl files ---
     # This octree can only be used for sunlight exposure analysis as material modifiers are assumed (i.e. colour and matieral type, glass, plastic, or metal)
-
-    # obj2rad_with_os_system(obj_paths)
     
     octree_generator = ObjToOctree(obj_paths)
     octree_generator.create_skyless_octree_for_analysis()
@@ -100,7 +99,7 @@ def main():
     print("\n" + "="*60)
     print("WINTER SOLSTICE ANALYSIS SETUP COMPLETE")
     print("="*60)
-    print(f"Location: Melbourne, Australia ({sky_generator.lat}°S")
+    print(f"Location: Melbourne, Australia ({sky_generator.lat}")
     print(f"Date: {sky_generator.month}/{sky_generator.day}/{sky_generator.year}")
     print(f"Time range: {sky_generator.start_hour_24hr_format}:00 - {sky_generator.end_hour_24hr_format}:00")
     print(f"Time intervals: {sky_generator.minute_increment} minutes")
