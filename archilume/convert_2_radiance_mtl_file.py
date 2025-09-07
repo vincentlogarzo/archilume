@@ -91,7 +91,7 @@ class Convert2RadianceMtlFile:
         # Extract modifiers from RAD files to create a list of primitives
         if self.rad_paths:
             for rad_file_path in self.rad_paths:
-                modifiers = self._get_modifiers_from_rad(rad_file_path)
+                modifiers = self._get_modifiers_from_rad(Path(rad_file_path))
                 self.rad_modifiers.update(modifiers)
 
             print("Found modifiers:", self.rad_modifiers)
@@ -100,7 +100,11 @@ class Convert2RadianceMtlFile:
         self.output_mtl_path = os.path.join(self.output_dir, "materials.mtl")
     
     def _get_modifiers_from_rad(self, rad_file_path: Path) -> set[str]:
-        """Extract modifier names from RAD file using rad2mgf."""
+        """
+        Extract modifier names from RAD file using rad2mgf.
+        This can alternatively be performed with: obj2rad -n Untitled.obj > a.mat
+        example 1: obj2rad -n C:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj > C:\\Projects\\archilume\\intermediates\\rad\\87cowles_BLD_noWindows.mat
+        """
         
         if not rad_file_path.exists():
             print(f"Error: RAD file not found: {rad_file_path}")
@@ -135,16 +139,32 @@ class Convert2RadianceMtlFile:
         return modifiers
 
     def create_radiance_mtl_file(self):
-        """Creates a Radiance .mtl file with definitions for all modifiers found in the RAD files."""
+        """
+        Generates a Radiance .mtl file containing material definitions for all modifiers found in the RAD files.
+        This method performs the following steps:
+        1. Iterates through each modifier extracted from RAD files.
+        2. Searches for corresponding material definitions in provided .mtl files.
+        3. If a modifier is found in an .mtl file, extracts its properties (such as RGB diffuse color and transparency).
+        4. Determines the appropriate Radiance material type (glass or plastic) based on transparency.
+        5. Appends the generated Radiance material definition to the materials list.
+        6. Exports all collected material definitions to the output .mtl file.
+        Notes:
+            - If a modifier is not found in any .mtl file, a default gray plastic material is created for it.
+            - Future enhancements may include more detailed material property extraction (e.g., specular, roughness, metalness).
+        """
         # Step 1: extract modifiers from rad files using the pyradiance library
             # handled by __post_init__
 
         # Step 2: check each modifier against the mtl files, if not found, then append a default definition to the combined_mtl file. IF found, then determine the RGB and other modifier properties to create a new radiance material definition. 
 
         for modifier in self.rad_modifiers:
+            material_found = False
+            
+            # Search for modifier in all MTL files
             for mtl_path in self.mtl_paths:
                 if not os.path.exists(mtl_path):
                     continue
+                    
                 with open(mtl_path, 'r', encoding='utf-8') as f:
                     mtl_content = f.read()
                     # Use regex to find the material definition
@@ -152,16 +172,17 @@ class Convert2RadianceMtlFile:
                     match = re.search(pattern, mtl_content, re.MULTILINE | re.DOTALL)
                     
                     if match:
-
-                    #FIXME: if there is no match, the material modifier if passed and not entered into the mtl file with a radince description. This may mean that the original pyradiance primitive call may have worked, it was just this code that passed over the modifiers not already found in the .mtl files from revit.
+                        material_found = True
                         material_block = match.group(1)
                         
                         # Extract Kd values (RGB diffuse color)
+                        kd_values = [0.5, 0.5, 0.5]  # Default gray
                         kd_match = re.search(r'Kd\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', material_block)
                         if kd_match:
                             kd_values = [float(kd_match.group(1)), float(kd_match.group(2)), float(kd_match.group(3))]
                         
                         # Extract d value (transparency/dissolve)
+                        d_value = 1.0  # Default opaque
                         d_match = re.search(r'^d\s+([\d.]+)', material_block, re.MULTILINE)
                         if d_match:
                             d_value = float(d_match.group(1))
@@ -172,11 +193,21 @@ class Convert2RadianceMtlFile:
                         else:
                             # It's a plastic-like material
                             self.materials.append(rm.create_plastic_material(f"{modifier}", kd_values))
+                        
+                        print(f"Created material for modifier '{modifier}' from MTL file")
+                        break  # Found the material, no need to check other MTL files
+                        
+                        #TODO: further logic could be added here in the future to provide greater accuracy to material definitions, such as checking for specular highlights, roughness, metalness, etc.
+            
+            # If no match found in any MTL file, create a default material
+            if not material_found:
+                # Create a default gray plastic material for unmatched modifiers
+                default_color = [0.5, 0.5, 0.5]  # Medium gray
+                self.materials.append(rm.create_plastic_material(f"{modifier}", default_color))
+                print(f"Created default material for unmatched modifier '{modifier}'")
 
-                        #TODO: futher logic could be added here in the futrue to provide greater accuracy to material definitions, such as checking for specular highlights, roughness, metalness, etc.
-
-            # Export to file
-            rm.export_materials_to_file(self.materials, self.output_mtl_path)     
+        # Export to file (after processing all modifiers)
+        rm.export_materials_to_file(self.materials, self.output_mtl_path)     
 
 
 

@@ -230,7 +230,8 @@ def export_materials_to_file(materials: List[Primitive], filename: str) -> None:
         for material in materials:
             f.write(str(material))
             f.write("\n\n")
-            print(f"Exported material:{filename}")
+    
+    print(f"Exported {len(materials)} materials to:{filename}")
     
     
 

@@ -87,7 +87,7 @@ def main():
     # --- Step 4: Render scene for each view file octree and sky file combination octree for each timestep ----
     # Parallel processing will be used by default for all the following steps, it will utilise 75% of the cores available on the computer it is on. This step must combine the skyless octree with the sky file for each timestep, it will then render that combined octree using each view file and then destroy the root created octree used for rendering, it will natively check if the output files exist and skip running these commands again. This step must overlay only the illuminated pixels onto a higher quality rendering for each level, as the direct sunlight with -ab parameter set to 0 will produce images that show only the sunlight. 
 
-    #FIXME: up to here. 
+    #TODO: tae the 04_render_scenes_rpict and conver thtis into your code that functions here. 
 
 
     # --- Step 5: Post process results  ----

@@ -92,9 +92,9 @@ class ObjToOctree:
             return
         
         # Use pathlib for cross-platform path handling
-        output_dir = Path(self.output_dir)
+        output_dir = Path().parent.parent / "intermediates" / "octree"
         obj_name = Path(self.input_obj_paths[0]).stem
-        output_filename = output_dir / f"{obj_name}.oct"
+        output_filename = output_dir / f"{obj_name}_with_site_skyless.oct"
         
         # Build command with material file and all RAD files using pathlib
         rad_files_str = " ".join(f'"{Path(rad_path)}"' for rad_path in self.output_rad_paths)
@@ -159,7 +159,6 @@ class ObjToOctree:
 
             self.combined_radiance_mtl_path = mtl_creator.output_mtl_path
 
-        
         
         # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
         self._rad2octree()
