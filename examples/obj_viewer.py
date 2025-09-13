@@ -1,5 +1,5 @@
 # Archilume imports
-from archilume.utils import select_files, display_obj
+from archilume.utils import display_obj
 
 # Standard library imports
 from pathlib import Path

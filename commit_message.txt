@@ -1,4 +1,0 @@
-refactor: restructure project and add examples
-
-Restructure the project to have a more logical layout, with separate directories for the library code, examples, inputs, and outputs.
-Add example scripts for all the steps in the daylighting analysis pipeline.

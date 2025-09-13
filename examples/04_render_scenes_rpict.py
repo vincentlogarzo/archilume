@@ -55,17 +55,29 @@ rpict -defaults # to get defaults
 
 import os
 from itertools import product
-import utils
+from archilume import utils
 import sys
+from pathlib import Path
 
-def generate_commands(octree,sky_files, view_files, x_res=1024, y_res=1024, ab=2, ad=128, ar=64, as_val=64, ps=6, lw=0.00500,output_dir='results'):
+def generate_commands(
+        octree_path: Path, 
+        sky_files: list[Path], 
+        view_files: list[Path], 
+        x_res=1024, 
+        y_res=1024, 
+        ab=2, 
+        ad=128, 
+        ar=64, 
+        as_val=64, 
+        ps=6, 
+        lw=0.00500) -> None:
     """
     Generates rpict and ra_tiff commands for a list of input files.
 
     Args:
         input_files: A list of input octree file paths.
-        sky_files: 
-        view_file: The path to the view file.
+        sky_files: A list of input sky file paths.
+        view_file: Al list of input view file paths.
         x_res: The x-resolution for rpict.
         y_res: The y-resolution for rpict.
         ab: Ambient bounces for rpict.
@@ -73,7 +85,6 @@ def generate_commands(octree,sky_files, view_files, x_res=1024, y_res=1024, ab=2
         ar: Ambient resolution for rpict.
         as_val: Ambient samples for rpict.
         ps: Pixel size for rpict.
-        output_dir: The directory to store output files.
 
     Returns:
         A tuple containing:
@@ -82,41 +93,37 @@ def generate_commands(octree,sky_files, view_files, x_res=1024, y_res=1024, ab=2
             - A list of ra_tiff commands.
     """
 
-    octree_base_name = os.path.basename(octree)
-    octree_no_ext = octree_base_name.replace('_skyless.oct', '')
-
     rpict_commands = []
     oconv_commands = []
-    temp_file_names = []
+    temp_octree_with_sky_paths = []
     ra_tiff_commands = []
+
+    octree_base_name = str(octree_path.stem).replace('_skyless', '')
+    image_dir = Path(__file__).parent.parent / "outputs" / "images"
 
     for sky_file_path, view_file_path in product(sky_files, view_files):
         
-        sky_file_base_name = os.path.basename(sky_file_path)
-        sky_file_no_ext = os.path.splitext(sky_file_base_name)[0]
-        view_file_base_name = os.path.basename(view_file_path)
-        view_file_no_ext = os.path.splitext(view_file_base_name)[0]
-        output_file_path = os.path.join(output_dir, f'{octree_no_ext}_{view_file_no_ext}_{sky_file_no_ext}.hdr')
-        output_file_path_no_ext = os.path.splitext(output_file_path)[0]
-        octree_with_sky_path = rf'octrees/{octree_no_ext}_{sky_file_no_ext}.oct'
-        octree_with_sky_path_temp = rf'octrees/{octree_no_ext}_{sky_file_no_ext}_temp.oct'
+        sky_file_name = Path(sky_file_path).stem
+        view_file_name = Path(view_file_path).stem
+        octree_with_sky_path = Path(octree_path).parent / f'{octree_path.stem}_{sky_file_name}.oct'
+        output_hdr_path = image_dir / f'{octree_base_name}_{view_file_name}_{sky_file_name}.hdr'
 
-        temp_file_name = octree_with_sky_path_temp
-        # shutil.copy(rf'octrees/{octree_base_name}', octree_with_sky_path_temp) # copy original octree
-        oconv_command = rf'oconv -i {octree_with_sky_path_temp} {sky_file_path} > {octree_with_sky_path}' # substitute original input file with copied file name
-        rpict_command = rf'rpict -w -vtv -t 15 -vf {view_file_path} -x {x_res} -y {y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_file_path}'
-        # Halve the exposure and retain dynamic range in a compressed tiff files a the options. 
-        ra_tiff_command = rf'ra_tiff -e -4 {output_file_path} {output_file_path_no_ext}.tiff'
+        temp_octree_with_sky_path = Path(octree_path).parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
+        oconv_command, rpict_command, ra_tiff_command = [
+            rf'oconv -i {temp_octree_with_sky_path} {sky_file_path} > {octree_with_sky_path}' ,
+            rf'rpict -w -vtv -t 15 -vf {view_file_path} -x {x_res} -y {y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}',
+            rf'ra_tiff -e -4 {output_hdr_path} {output_hdr_path.stem}.tiff' # Half exposure of image and retain dynamic range
+        ]
 
-        temp_file_names.append(temp_file_name)
+        temp_octree_with_sky_paths.append(temp_octree_with_sky_path)
         oconv_commands.append(oconv_command)
         rpict_commands.append(rpict_command)
         ra_tiff_commands.append(ra_tiff_command)
     
-    # get rid of duplicate oconv commands
+    # get rid of duplicate oconv commands while retaining list order
     oconv_commands = list(dict.fromkeys(oconv_commands))
 
-    return temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands
+    return temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands
 
 def execute_new_radiance_commands(commands, number_of_workers=1):
     """ 
@@ -157,21 +164,27 @@ def execute_new_radiance_commands(commands, number_of_workers=1):
 
     return 
 
-# --- 1. get input files ---
-octree = 'octrees/87cowles_noWindows_skyless.oct'
-octree_base_name = os.path.basename(octree)
 
-if not octree:
+# --- 1. get input files ---
+
+octree_path = Path(__file__).parent.parent / "intermediates" / "octree" / "87cowles_BLD_noWindows_with_site.oct"
+
+if not octree_path:
     print("Error: No octree file selected. Exiting program.")
     sys.exit(1) # Exit with status code 1 to indicate an error
 
-sky_files = utils.get_files_from_dir('sky','.sky')
-view_files = utils.get_files_from_dir('views_grids','.vp')
-# TODO: this code breaks when only one view file is presented. An input of a singular view file must be allowable. 
+sky_files_dir = Path(__file__).parent.parent / "intermediates" / "sky"
+view_files_dir = Path(__file__).parent.parent / "intermediates" / "views_grids"
+
+sky_files = utils.get_files_from_dir(sky_files_dir, '.sky')
+view_files = utils.get_files_from_dir(view_files_dir, '.vp')
+
+# FIXME: this code breaks when only one view file is present. An input of a singular view file must be allowable. 
+
 
 # --- 2. Generate all commands that shall be passsed to radiance programmes in parallel --- 
 temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands = generate_commands(
-    octree,
+    octree_path,
     sky_files,
     view_files,
     x_res       =2048, #1024
@@ -187,18 +200,22 @@ temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands = generate_com
 # for oconv_command in oconv_commands:
 #     print(oconv_command)
 
+
 # --- 3. generate temp files for oconv to use.
-utils.copy_files_concurrently(rf'octrees/{octree_base_name}',temp_file_names)
+utils.copy_files_concurrently(octree_path,temp_file_names)
 
 # TODO: run code to run daylihgt sim on each level using overcast sky, and then very low quality sunny sky simulations for each time increment, and them pcomb the high quality dayihgt sim together with each low qaulity sunny sky simulation to create a high quality end result for every image. 
+
 
 # --- 4. run oconv commands if octree does not exist ---
 execute_new_radiance_commands(oconv_commands, number_of_workers = 6)
 
-# TODO: Find and delete all files ending in '_temp' in the specified directory.
+# TODO: Find and delete all files ending in '_temp' in the specified directory. use guidance in pyhon basics book using pathlibs .unlink()
+
 
 # --- 5. rendering octrees with a given view files input ---
-execute_new_radiance_commands(rpict_commands, number_of_workers = 8)
+# execute_new_radiance_commands(rpict_commands, number_of_workers = 8)
+
 
 # --- 6. run ra_tiff to convert output hdr files to .tiff ---
-execute_new_radiance_commands(ra_tiff_commands, number_of_workers = 10)
+# execute_new_radiance_commands(ra_tiff_commands, number_of_workers = 10)
