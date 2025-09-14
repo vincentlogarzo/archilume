@@ -51,6 +51,20 @@ rpict -defaults # to get defaults
 -t 0                                # time between reports
 -n 1                                # number of rays
 
+
+oconv -i octrees/87cowles_skyless.oct sky/sunny_sky_0621_0900.sky > octrees/87cowles_sunny_sky_0621_0900.oct
+rpict -vf views_grids/plan_L01.vp -x 1024 -y 1024 -ab 3 -ad 128 -ar 64 -as 64 -ps 6 octrees/87cowles_SS_0621_1030.oct > results/87cowles_plan_L01_SS_0621_1030.hdr
+ra_tiff results/87cowles_SS_0621_1030.hdr results/87cowles_SS_0621_1030.tiff
+
+# Accelerad rpict
+must set cuda enable GPU prior to executing the accelerad_rpict command below. 
+check CUDA GPUs
+nvidia-smi 
+Command
+med | accelerad_rpict -vf views_grids\floorplate_view_L1.vp -x 1024 -y 1024 -ab 1 -ad 1024 -ar 256 -as 256 -ps 5 octrees/untitled_Jun21_0940.oct > results/untitled_floor_plate_Jun21_0940_med_accelerad.hdr
+
+high |  rpict -vf views_grids\view.vp -x 1024 -y 1024 -ab 2 -ad 1024 -ar 256 -as 256 -ps 5 octrees/untitled_Jun21_0940.oct > results/untitled_floor_plate_Jun21_0940_high.hdr 
+
 """
 
 import os
@@ -70,27 +84,38 @@ def generate_commands(
         ar=64, 
         as_val=64, 
         ps=6, 
-        lw=0.00500) -> None:
+        lw=0.00500
+        ) -> None:
     """
-    Generates rpict and ra_tiff commands for a list of input files.
+    Generates oconv, rpict, and ra_tiff commands for rendering combinations of octree, sky, and view files.
+
+    Creates all permutations of sky files and view files with a single octree file, generating
+    the necessary Radiance commands for the complete rendering pipeline: octree compilation
+    with sky (oconv), scene rendering (rpict), and HDR to TIFF conversion (ra_tiff).
 
     Args:
-        input_files: A list of input octree file paths.
-        sky_files: A list of input sky file paths.
-        view_file: Al list of input view file paths.
-        x_res: The x-resolution for rpict.
-        y_res: The y-resolution for rpict.
-        ab: Ambient bounces for rpict.
-        ad: Ambient divisions for rpict.
-        ar: Ambient resolution for rpict.
-        as_val: Ambient samples for rpict.
-        ps: Pixel size for rpict.
+        octree_path (Path): Path to the base octree file (typically skyless).
+        sky_files (list[Path]): List of sky file paths (.sky files).
+        view_files (list[Path]): List of view file paths (.vp files).
+        x_res (int, optional): X-resolution for rpict rendering. Defaults to 1024.
+        y_res (int, optional): Y-resolution for rpict rendering. Defaults to 1024.
+        ab (int, optional): Ambient bounces for rpict. Defaults to 2.
+        ad (int, optional): Ambient divisions for rpict. Defaults to 128.
+        ar (int, optional): Ambient resolution for rpict. Defaults to 64.
+        as_val (int, optional): Ambient samples for rpict. Defaults to 64.
+        ps (int, optional): Pixel sample spacing for rpict. Defaults to 6.
+        lw (float, optional): Limit weight for rpict. Defaults to 0.00500.
 
     Returns:
-        A tuple containing:
-            - A list of file names without extensions.
-            - A list of rpict commands.
-            - A list of ra_tiff commands.
+        tuple: A 4-tuple containing:
+            - temp_octree_with_sky_paths (list[Path]): Temporary octree file paths for oconv input.
+            - oconv_commands (list[str]): Commands to combine octree with sky files.
+            - rpict_commands (list[str]): Commands to render scenes from different viewpoints.
+            - ra_tiff_commands (list[str]): Commands to convert HDR output to TIFF format.
+            
+    Note:
+        Output files are named using the pattern: {octree_base}_{view_name}_{sky_name}.{ext}
+        Duplicate oconv commands are automatically removed while preserving order.
     """
 
     rpict_commands = []
@@ -108,6 +133,7 @@ def generate_commands(
         octree_with_sky_path = Path(octree_path).parent / f'{octree_path.stem}_{sky_file_name}.oct'
         output_hdr_path = image_dir / f'{octree_base_name}_{view_file_name}_{sky_file_name}.hdr'
 
+        # constructed commands that will be executed in parallel from each other untill all are complete.
         temp_octree_with_sky_path = Path(octree_path).parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
         oconv_command, rpict_command, ra_tiff_command = [
             rf'oconv -i {temp_octree_with_sky_path} {sky_file_path} > {octree_with_sky_path}' ,
@@ -126,20 +152,26 @@ def generate_commands(
     return temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands
 
 def execute_new_radiance_commands(commands, number_of_workers=1):
-    """ 
-    This code is running the below line in the terminal with various combinations of inputs .oct and .sky files. 
-    oconv -i octrees/87cowles_skyless.oct sky/sunny_sky_0621_0900.sky > octrees/87cowles_sunny_sky_0621_0900.oct
-    rpict -vf views_grids/plan_L01.vp -x 1024 -y 1024 -ab 3 -ad 128 -ar 64 -as 64 -ps 6 octrees/87cowles_SS_0621_1030.oct > results/87cowles_plan_L01_SS_0621_1030.hdr
-    ra_tiff results/87cowles_SS_0621_1030.hdr results/87cowles_SS_0621_1030.tiff
-
-    # Accelerad rpict
-    must set cuda enable GPU prior to executing the accelerad_rpict command below. 
-    check CUDA GPUs
-    nvidia-smi 
-    Command
-    med | accelerad_rpict -vf views_grids\floorplate_view_L1.vp -x 1024 -y 1024 -ab 1 -ad 1024 -ar 256 -as 256 -ps 5 octrees/untitled_Jun21_0940.oct > results/untitled_floor_plate_Jun21_0940_med_accelerad.hdr
-
-    high |  rpict -vf views_grids\view.vp -x 1024 -y 1024 -ab 2 -ad 1024 -ar 256 -as 256 -ps 5 octrees/untitled_Jun21_0940.oct > results/untitled_floor_plate_Jun21_0940_high.hdr 
+    """
+    Executes Radiance commands in parallel, filtering out commands whose output files already exist.
+    
+    This function takes a list of Radiance commands (oconv, rpict, ra_tiff) and executes only 
+    those whose output files don't already exist, avoiding redundant computation.
+    
+    Args:
+        commands (list[str]): List of command strings to execute. Each command should be a 
+                             valid shell command that outputs to a file using '>' redirection
+                             or specifies an output file as the last argument.
+        number_of_workers (int, optional): Number of parallel workers for command execution.
+                                         Defaults to 1. Should not exceed 6 for oconv commands.
+    
+    Returns:
+        None: Function executes commands and prints completion message.
+        
+    Note:
+        Commands are filtered based on whether their output files exist. The function
+        attempts to extract output paths by splitting on '>' operator first, then
+        falls back to using the last space-separated argument for commands like ra_tiff.
     """ 
     filtered_commands = []
     for command in commands:
@@ -176,13 +208,14 @@ if not octree_path:
 sky_files_dir = Path(__file__).parent.parent / "intermediates" / "sky"
 view_files_dir = Path(__file__).parent.parent / "intermediates" / "views_grids"
 
-sky_files = utils.get_files_from_dir(sky_files_dir, '.sky')
-view_files = utils.get_files_from_dir(view_files_dir, '.vp')
+sky_files = [str(path) for path in sky_files_dir.glob('*.sky')]
+view_files = [str(path) for path in view_files_dir.glob('*.vp')]
 
 # FIXME: this code breaks when only one view file is present. An input of a singular view file must be allowable. 
 
 
 # --- 2. Generate all commands that shall be passsed to radiance programmes in parallel --- 
+
 temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands = generate_commands(
     octree_path,
     sky_files,
@@ -197,23 +230,23 @@ temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands = generate_com
     lw          =0.001, # 0.005
 )
 
-# for oconv_command in oconv_commands:
-#     print(oconv_command)
-
 
 # --- 3. generate temp files for oconv to use.
+
 utils.copy_files_concurrently(octree_path,temp_file_names)
 
 # TODO: run code to run daylihgt sim on each level using overcast sky, and then very low quality sunny sky simulations for each time increment, and them pcomb the high quality dayihgt sim together with each low qaulity sunny sky simulation to create a high quality end result for every image. 
 
 
 # --- 4. run oconv commands if octree does not exist ---
+
 execute_new_radiance_commands(oconv_commands, number_of_workers = 6)
 
 # TODO: Find and delete all files ending in '_temp' in the specified directory. use guidance in pyhon basics book using pathlibs .unlink()
 
 
 # --- 5. rendering octrees with a given view files input ---
+
 # execute_new_radiance_commands(rpict_commands, number_of_workers = 8)
 
 

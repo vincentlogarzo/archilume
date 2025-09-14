@@ -236,39 +236,6 @@ def display_ifc(filename: Path):
     """
     return None
 
-def get_files_from_dir(directory: str, file_extension: str, identifier: Optional[str] = None) -> Union[str, List[str]]:
-    """
-    Retrieves a list of files with a specific extension and optional identifier from a directory.
-
-    Args:
-        directory (str): The path to the directory to search.
-        file_extension (str): The file extension (e.g., 'txt', 'jpg').
-        identifier (str, optional): An identifying word that must be present in the filename. Defaults to None.
-
-    Returns:
-        str or list: A single file path (str) if only one file is found,
-                     a list of file paths if multiple files are found,
-                     or an empty list if no files are found.
-    """
-
-    file_list = []
-    try:
-        for filename in os.listdir(directory):
-            if filename.endswith(file_extension):
-                if identifier is None or identifier in filename:
-                    file_path = os.path.join(directory, filename)
-                    file_path = file_path.replace("\\", "/")
-                    file_list.append(file_path)
-    except FileNotFoundError:
-        print(f"Error: Directory '{directory}' not found.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-    if len(file_list) == 1:
-        return file_list[0]  # Return the single file path as a string
-    else:
-        return file_list  # Return the list (either empty or with multiple paths)
-
 def run_commands_parallel(commands: List[str], number_of_workers: int = 1) -> None:
     """
     Executes a list of commands in parallel using a ThreadPoolExecutor.
