@@ -32,6 +32,7 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     #TODO setup a direct rpict rendering and then a subseuent pcomb of these files to then generate a hdr file and
     ra_tiff outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_overcast_indirect.tiff
 
+    
         # Enhanced indirect pass with more bounces using overcast sky
         rpict -av 0.5 0.5 0.5 -ab 3 -ad 8192 -as 1024 -aa 0.05 \
             -ar 512 -lr 12 -lw 0.002 \

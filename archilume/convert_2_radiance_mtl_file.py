@@ -32,14 +32,14 @@ class Convert2RadianceMtlFile:
         """Initializes the output directory for Radiance material files."""
         
         # Ensure output directory exists
-        self.output_dir = Path(__file__).parent.parent / "intermediates" / "rad"
+        self.output_dir = Path(__file__).parent.parent / "outputs" / "rad"
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
         # Extract modifiers from RAD files to create a list of primitives
         if self.rad_paths:
             for rad_file_path in self.rad_paths:
-                modifiers = self._get_modifiers_from_rad(Path(rad_file_path))
+                modifiers = self.__get_modifiers_from_rad(Path(rad_file_path))
                 self.rad_modifiers.update(modifiers)
 
             print("Found modifiers:", self.rad_modifiers)
@@ -47,11 +47,11 @@ class Convert2RadianceMtlFile:
         # create output mtl file path
         self.output_mtl_path = os.path.join(self.output_dir, "materials.mtl")
     
-    def _get_modifiers_from_rad(self, rad_file_path: Path) -> set[str]:
+    def __get_modifiers_from_rad(self, rad_file_path: Path) -> set[str]:
         """
         Extract modifier names from RAD file using rad2mgf.
         This can alternatively be performed with: obj2rad -n Untitled.obj > a.mat
-        example 1: obj2rad -n C:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj > C:\\Projects\\archilume\\intermediates\\rad\\87cowles_BLD_noWindows.mat
+        example 1: obj2rad -n C:\Projects\archilume\inputs\87cowles_BLD_noWindows.obj > C:\Projects\archilume\outputs\rad\87cowles_BLD_noWindows.mat
         """
         
         if not rad_file_path.exists():

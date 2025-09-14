@@ -52,7 +52,7 @@ def main():
     # --- Step 2: Generate Sky Files ---
     # Create sky files representing sun positions throughout the day
     
-    print("\nGenerating sky files for winter solstice analysis 'intermediates/sky/' directory")
+    print("\nGenerating sky files for winter solstice analysis 'outputs/sky/' directory")
     
     sky_generator = SkyFileGenerator(
         lat=-37.8136,                    # Melbourne latitude 
@@ -64,6 +64,7 @@ def main():
     )
 
     sky_generator.generate_sunny_sky_series()
+    sky_generator.generate_overcast_skyfile()
     
 
     # --- Step 3: Generate View Files ----

@@ -53,15 +53,15 @@ class ObjToOctree:
         self.input_mtl_paths = [Path(input_obj_path).with_suffix('.mtl') for input_obj_path in self.input_obj_paths]
         
         # Set output directory as absolute path
-        self.output_dir = Path.cwd() / "intermediates" / "rad"
+        self.output_dir = Path.cwd() / "outputs" / "rad"
 
-    def obj2rad_with_os_system(self, exe_path: Path = Path(r"C:/Radiance/bin/obj2rad.exe")) -> int:
+    def __obj2rad_with_os_system(self, exe_path: Path = Path(r"C:/Radiance/bin/obj2rad.exe")) -> int:
         """
         Convert OBJ files to RAD format using obj2rad from pyradiance or system Radiance.
         """
         for input_obj_path in self.input_obj_paths:
             
-            output_rad_path = Path(__file__).parent.parent / "intermediates" / "rad" / input_obj_path.with_suffix('.rad').name
+            output_rad_path = Path(__file__).parent.parent / "outputs" / "rad" / input_obj_path.with_suffix('.rad').name
             self.output_rad_paths.append(output_rad_path)
             
             # Build the command string
@@ -78,21 +78,20 @@ class ObjToOctree:
         
         return 0  # Return 0 if all commands succeeded
    
-    def _rad2octree(self) -> None:
+    def __rad2octree(self) -> None:
         """
         Runs the oconv command to generate frozen skyless octree for rendering from all RAD files.
         Output is placed in the same directory as the RAD/MTL files with fixed name '{original_obj_name}.oct'.
         Must use command prompt instead of powershell in VScode as its default encoding is utf-16 if  run in the shell,
         instead of the required encoding of utf-8 required for oconv.
         Example command: oconv -f material_file.mtl file1.rad file2.rad > output.oct
-        Example command: oconv -f "C:\Projects\archilume\intermediates\rad\materials.mtl" "C:\Projects\archilume\intermediates\rad\87cowles_site.rad" "C:\Projects\archilume\intermediates\rad\87cowles_BLD_noWindows.rad" > "C:\Projects\archilume\intermediates\octree\87cowles_BLD_noWindows_with_site.oct"
         """
         if not self.output_rad_paths or not self.combined_radiance_mtl_path:
             print("No RAD files or material file available for octree generation")
             return
         
         # Use pathlib for cross-platform path handling
-        output_dir = Path().parent.parent / "intermediates" / "octree"
+        output_dir = Path().parent.parent / "outputs" / "octree"
         obj_name = Path(self.input_obj_paths[0]).stem
         output_filename = output_dir / f"{obj_name}_with_site_skyless.oct"
         
@@ -141,7 +140,7 @@ class ObjToOctree:
         
         # --- Step 1: Convert all OBJ files to RAD ---
         try:
-            self.obj2rad_with_os_system()
+            self.__obj2rad_with_os_system()
 
         except Exception as e:
             print(f"Error running obj2rad: {e}")
@@ -161,4 +160,4 @@ class ObjToOctree:
 
         
         # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
-        self._rad2octree()
+        self.__rad2octree()

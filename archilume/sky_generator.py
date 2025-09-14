@@ -90,7 +90,8 @@ class SkyFileGenerator:
         self.str_lat = str(self.lat)
         
         # Fixed output directory - not user configurable
-        self.output_dir = "intermediates/sky"
+        self.output_dir = "outputs/sky"
+        #FIXME use relative references and update this to use pathlib.
 
         if not os.path.exists(self.output_dir):
             try:
@@ -188,3 +189,47 @@ class SkyFileGenerator:
             )
             current_dt += time_delta
         print("\nSky generation series complete.")
+    
+    def generate_overcast_skyfile(self):
+        """
+        Generates a CIE overcast sky file using gensky.
+
+        Creates a single overcast sky file suitable for lighting simulation under
+        uniform cloudy conditions. The sky uses the CIE overcast sky model (+c)
+        which provides even luminance distribution appropriate for overcast days.
+        >>> example: gensky -ang 45 0 -c -B 55.8659217877 > outputs\sky\TenK_cie_overcast.sky
+
+        Returns:
+            None: Sky file is written to disk at outputs/sky
+        """
+        output_filename_base = f"TenK_cie_overcast.rad"
+        output_filepath = os.path.join(self.output_dir, output_filename_base)
+
+        print(f"Outputting to: {output_filepath}")
+
+        try:
+            with open(output_filepath, "w") as outfile:
+                skyfunc_description = textwrap.dedent(f"""\
+                    #Radiance Sky file: Ark Resources Pty Ltd
+
+                    !gensky -ang 45 0 -c -B 55.8659217877
+
+                    skyfunc glow skyglow
+                    0 0
+                    4 0.7 0.8 1.0 0
+                    skyglow source sky
+                    0 0
+                    4 0 0 1 180
+
+                    skyfunc glow grndglow
+                    0 0
+                    4 0.20 0.20 0.20 0
+                    grndglow source ground
+                    0 0
+                    4 0 0 -1 180
+                    """)
+                outfile.write(skyfunc_description)
+        except Exception as e:
+            print(f"Error generating overcast sky file: {e}")
+
+

@@ -80,17 +80,26 @@ def generate_commands(octree_path: Path, sky_files: list[Path], view_files: list
 
 
 # --- 1. get input files ---
-octree_path = Path(__file__).parent.parent / "intermediates" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
-sky_files_dir = Path(__file__).parent.parent / "intermediates" / "sky"
-view_files_dir = Path(__file__).parent.parent / "intermediates" / "views_grids"
+octree_path = Path(__file__).parent.parent / "outputs" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
+sky_files_dir = Path(__file__).parent.parent / "outputs" / "sky"
+view_files_dir = Path(__file__).parent.parent / "outputs" / "views_grids"
+overcast_sky_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.sky"
 
 sky_files = [path for path in sky_files_dir.glob('*.sky')]
 view_files = [path for path in view_files_dir.glob('*.vp')]
 # FIXME: this code breaks when only one view file is present. An input of a singular view file must be allowable. 
 
+# --- 2. Combine skyless octree with the TenK_cie_overcast.rad sky file for ambient file generation
+octree_with_overcast_sky_path = Path(octree_path).parent / f'{octree_path.stem}_TenK_cie_overcast.oct'
+overcast_octree_command = str(rf'oconv -i {octree_path} {overcast_sky_path} > {octree_with_overcast_sky_path}')
+utils.execute_new_radiance_commands(overcast_octree_command)
+
+# --- 3. Rendering overcast sky octree with each view_file to generate an ambient file.
+#TODO: setup this new execution to only generate new ambient files. 
+
 
 # --- 2. Generate all commands that shall be passsed to radiance programmes in parallel --- 
-temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands = generate_commands(
+temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands = generate_commands(
     octree_path,
     sky_files,
     view_files,
@@ -106,19 +115,20 @@ temp_file_names, oconv_commands, rpict_commands, ra_tiff_commands = generate_com
 
 
 # --- 3. generate temp files for oconv to use.
-utils.copy_files(octree_path, temp_file_names)
+utils.copy_files(octree_path, temp_octree_with_sky_paths)
 
 
 # --- 4. run oconv commands to combine the skyless octree with its respective sky file. ---
 utils.execute_new_radiance_commands(oconv_commands, number_of_workers = 6)
 
 
-# --- 5. delete temp files to reduce storage used ---
-utils.delete_files(temp_file_names)
+# --- 5. delete temp files after use to reduce storage load ---
+utils.delete_files(temp_octree_with_sky_paths)
 
 
 # --- 6. rendering octrees with a given view files input ---
 utils.execute_new_radiance_commands(rpict_commands, number_of_workers = 8)
+#TODO: update this rpict command to have an input of the ambient file in each subequent simulation. This should be split into direct only calcualtions that will be used for results extraction (i.e. # hrs each pixel is illuminated, and an direct simulation with an ambient file input that will serve as a more high quality rendering in order to put together a .gif file of the results.
 
 # TODO: run code to run daylihgt sim on each level using overcast sky, and then very low quality sunny sky simulations for each time increment, and them pcomb the high quality daylight sim together with each low qaulity sunny sky simulation to create a high quality end result for every image that can then be combined into a giff for the day for each level, and then utlimately a results summary can be drawn from the original source files.
 
