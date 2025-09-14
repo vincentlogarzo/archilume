@@ -294,7 +294,7 @@ def run_commands_parallel(commands: List[str], number_of_workers: int = 1) -> No
             except Exception as e:
                 print(f"An error occurred during command execution: {e}")
 
-def copy_files_concurrently(source_path: str, destination_paths: list):
+def copy_files(source_path: Union[Path, str], destination_paths: list[Path]) -> None:
     """
     Concurrently copies a single source file to multiple destination paths
     using a pool of threads.
@@ -303,13 +303,26 @@ def copy_files_concurrently(source_path: str, destination_paths: list):
         source_path (str): The full path to the single file to be copied.
         destination_paths (list): A list of strings, where each string is a
                                   full destination path for a new copy.
+    
+    Returns:
+        list: A list of destination paths that were successfully copied to.
     """
     try:
+        # Filter out destination paths that already exist
+        filtered_paths = [dest for dest in destination_paths if not os.path.exists(dest)]
+        
+        if not filtered_paths:
+            print(f"All destination paths already exist. No files to copy.")
+        
+        if len(filtered_paths) < len(destination_paths):
+            skipped_count = len(destination_paths) - len(filtered_paths)
+            print(f"Skipping {skipped_count} existing destination(s).")
+        
         # Use a ThreadPoolExecutor to manage the concurrent copy operations.
         with ThreadPoolExecutor() as executor:
             # Schedule shutil.copy to run for each destination path.
             futures = [
-                executor.submit(shutil.copy, source_path, dest) for dest in destination_paths
+                executor.submit(shutil.copy, source_path, dest) for dest in filtered_paths
             ]
 
             # This loop waits for each copy to finish and will raise an
@@ -318,38 +331,64 @@ def copy_files_concurrently(source_path: str, destination_paths: list):
                 future.result()
 
         print(
-            f"Successfully copied '{os.path.basename(source_path)}' to {len(destination_paths)} locations."
+            f"Successfully copied '{os.path.basename(source_path)}' to {len(filtered_paths)} locations."
         )
 
     except Exception as e:
         print(f"An error occurred during the copy operation: {e}")
-        # Optionally re-raise the exception if you want the calling code to handle it
-        # raise
 
-def execute_new_radiance_commands(commands: List[str], number_of_workers: int = 1) -> None:
+def delete_files(file_paths: list[Path]) -> None:
     """
-    This code is running the below line in the terminal with various combinations of inputs .oct and .sky files.
-    oconv -i octrees/87cowles_skyless.oct sky/sunny_sky_0621_0900.sky > octrees/87cowles_sunny_sky_0621_0900.oct
-    rpict -vf views_grids/plan_L01.vp -x 1024 -y 1024 -ab 3 -ad 128 -ar 64 -as 64 -ps 6 octrees/87cowles_SS_0621_1030.oct > results/87cowles_plan_L01_SS_0621_1030.hdr
-    ra_tiff results/87cowles_SS_0621_1030.hdr results/87cowles_SS_0621_1030.tiff
-
-    # Accelerad rpict
-    must set cuda enable GPU prior to executing the accelerad_rpict command below.
-    check CUDA GPUs
-    nvidia-smi
-    Command
-    med | accelerad_rpict -vf views_grids\floorplate_view_L1.vp -x 1024 -y 1024 -ab 1 -ad 1024 -ar 256 -as 256 -ps 5 octrees/untitled_Jun21_0940.oct > results/untitled_floor_plate_Jun21_0940_med_accelerad.hdr
-
-    high |  rpict -vf views_grids\view.vp -x 1024 -y 1024 -ab 2 -ad 1024 -ar 256 -as 256 -ps 5 octrees/untitled_Jun21_0940.oct > results/untitled_floor_plate_Jun21_0940_high.hdr
+    Deletes files from a list of Path objects using pathlib's unlink() method.
+    
+    Args:
+        file_paths (list[Path]): List of Path objects to delete.
     """
+    deleted_count = 0
+    skipped_count = 0
+    
+    for file_path in file_paths:
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                deleted_count += 1
+                print(f"Deleted: {file_path.name}")
+            else:
+                skipped_count += 1
+                print(f"Skipped (not found): {file_path.name}")
+        except Exception as e:
+            print(f"Error deleting {file_path.name}: {e}")
+            skipped_count += 1
+    
+    print(f"Deletion complete: {deleted_count} deleted, {skipped_count} skipped")
+         
+def execute_new_radiance_commands(commands: list[str] , number_of_workers: int = 1) -> None:
+    """
+    Executes Radiance commands in parallel, filtering out commands whose output files already exist.
+    
+    This function takes a list of Radiance commands (oconv, rpict, ra_tiff) and executes only 
+    those whose output files don't already exist, avoiding redundant computation.
+    
+    Args:
+        commands (list[str]): List of command strings to execute. Each command should be a 
+                             valid shell command that outputs to a file using '>' redirection
+                             or specifies an output file as the last argument.
+        number_of_workers (int, optional): Number of parallel workers for command execution.
+                                         Defaults to 1. Should not exceed 6 for oconv commands.
+    
+    Returns:
+        None: Function executes commands and prints completion message.
+        
+    Note:
+        Commands are filtered based on whether their output files exist. The function
+        attempts to extract output paths by splitting on '>' operator first, then
+        falls back to using the last space-separated argument for commands like ra_tiff.
+    """ 
     filtered_commands = []
     for command in commands:
-        # Add this check to skip empty or whitespace-only strings
-        if not command or not command.strip():
-            continue
         try:
             # First, try splitting by the '>' operator
-            output_path = command.split(" > ")[1].strip()
+            output_path = command.split(' > ')[1].strip()
         except IndexError:
             # If that fails, it's likely a command like ra_tiff.
             # Split by spaces and take the last element.
@@ -361,12 +400,10 @@ def execute_new_radiance_commands(commands: List[str], number_of_workers: int = 
 
     run_commands_parallel(
         filtered_commands,
-        number_of_workers=number_of_workers,  # number of workers should not go over 6 for oconv
-    )
+        number_of_workers = number_of_workers # number of workers should not go over 6 for oconv
+        )
 
-    print("All new commands have successfully completed")
-
-    return
+    print('All new commands have successfully completed')
 
 def get_image_dimensions(image_path) -> None:
     """

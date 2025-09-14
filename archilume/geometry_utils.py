@@ -124,11 +124,7 @@ def get_center_of_bounding_box(box_corners_df: pd.DataFrame) -> Optional[Tuple[f
     # --- 4. Return as tuple ---
     return (x_coord_center, y_coord_center, z_coord_center)
 
-def calculate_dimensions_from_points(
-    df_points: pd.DataFrame, 
-    x_col: str = "x_coords", 
-    y_col: str = "y_coords"
-    ) -> tuple[float | None, float | None]:
+def calculate_dimensions_from_points(df_points: pd.DataFrame, x_col: str = "x_coords", y_col: str = "y_coords") -> tuple[float | None, float | None]:
     """
     Calculates the width (x_max - x_min) and depth (y_max - y_min)
     from a DataFrame of points.
@@ -187,10 +183,7 @@ def calculate_dimensions_from_points(
     except Exception:
         return None, None
 
-def calc_centroid_of_points(
-        df: pd.DataFrame, 
-        x_col: str = "x_coords", 
-        y_col: str = "y_coords") -> Optional[Tuple[float, float]]:
+def calc_centroid_of_points(df: pd.DataFrame, x_col: str = "x_coords", y_col: str = "y_coords") -> Optional[Tuple[float, float]]:
     """
     Calculates the centroid from coordinates in a pandas DataFrame.
 

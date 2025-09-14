@@ -23,6 +23,7 @@ from archilume.obj_to_octree import ObjToOctree
 
 # Standard library imports
 from pathlib import Path
+import sys
 
 # Third-party imports 
 
@@ -45,12 +46,13 @@ def main():
     
     octree_generator = ObjToOctree(obj_paths)
     octree_generator.create_skyless_octree_for_analysis()
+
     
     
     # --- Step 2: Generate Sky Files ---
     # Create sky files representing sun positions throughout the day
     
-    print("\nGenerating sky files for winter solstice analysis...")
+    print("\nGenerating sky files for winter solstice analysis 'intermediates/sky/' directory")
     
     sky_generator = SkyFileGenerator(
         lat=-37.8136,                    # Melbourne latitude 
@@ -58,11 +60,10 @@ def main():
         day=21,
         start_hour_24hr_format=9,        # 9:00 AM
         end_hour_24hr_format=15,         # 3:00 PM
-        minute_increment=5               # Every 5 minutes
+        minute_increment=30              # Minutes
     )
-    
+
     sky_generator.generate_sunny_sky_series()
-    print("\nSky files generated in 'intermediates/sky/' directory")
     
 
     # --- Step 3: Generate View Files ----
@@ -73,8 +74,7 @@ def main():
     # Check if CSV file exists
     if not csv_path.exists():
         print(f"\nError: Room boundaries CSV not found at {csv_path}")
-        print("\nPlease ensure the input file exists before running this analysis.")
-        return False
+        sys.exit(1)
     
     view_generator = ViewFileGenerator(
         room_boundaries_csv_path_input=csv_path,
@@ -85,9 +85,7 @@ def main():
 
 
     # --- Step 4: Render scene for each view file octree and sky file combination octree for each timestep ----
-    # Parallel processing will be used by default for all the following steps, it will utilise 75% of the cores available on the computer it is on. This step must combine the skyless octree with the sky file for each timestep, it will then render that combined octree using each view file and then destroy the root created octree used for rendering, it will natively check if the output files exist and skip running these commands again. This step must overlay only the illuminated pixels onto a higher quality rendering for each level, as the direct sunlight with -ab parameter set to 0 will produce images that show only the sunlight. 
 
-    #TODO: tae the 04_render_scenes_rpict and conver thtis into your code that functions here. 
 
 
     # --- Step 5: Post process results  ----
