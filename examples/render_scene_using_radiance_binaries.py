@@ -4,13 +4,13 @@
 Use the below in the command prompt only not in powershell. Oconv required utf-8 encoding for the input files. 
 
     cd C:\Projects\archilume
-    obj2rad inputs\87cowles_BLD_noWindows.obj > intermediates\rad\87cowles_BLD_noWindows.rad
-    obj2rad inputs\87cowles_site.obj > intermediates\rad\87cowles_site.rad
-    cd C:\Projects\archilume\intermediates
+    obj2rad inputs\87cowles_BLD_noWindows.obj > outputs\rad\87cowles_BLD_noWindows.rad
+    obj2rad inputs\87cowles_site.obj > outputs\rad\87cowles_site.rad
+    cd C:\Projects\archilume\outputs
     oconv -f rad\materials.mtl rad/87cowles_BLD_noWindows.rad rad\87cowles_site.rad > octree\87cowles_BLD_noWindows_with_site_skyless.oct
     oconv -i octree\87cowles_BLD_noWindows_with_site_skyless.oct sky/SS_0621_0900.sky > octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
     cd C:\Projects\archilume
-    rpict -w -vtv -t 5 -vf intermediates\views_grids\plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 2048 -ar 256 -as 512 -ps 4 -lw 0.004 intermediates\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr
+    rpict -w -vtl -t 5 -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 2048 -ar 256 -as 512 -ps 4 -lw 0.004 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr
     ra_tiff -e -4 outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.tiff
 
     #FIXME: there is light leakes on the resulting hdr files of the walls of this obj file. It appears that potentially walls have been assigned as a glass type. Test this by altering the glass properties. 
@@ -26,8 +26,9 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     cd C:\Projects\archilume
     gensky 12 21 12:00 -c -B 55.47 > intermediates\sky\overcast_sky.rad
     oconv -i intermediates\octree\87cowles_BLD_noWindows_with_site_skyless.oct intermediates\sky\overcast_sky.rad > intermediates\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct
-    rpict -w -vtv -t 5 -vf intermediates\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 1 -ad 8192 -as 1024 -aa 0.05 -ar 512 -lr 12 -lw 0.002 -af outputs\images\indirect_overcast.amb -i intermediates\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr
-    rpict -w -vtv -t 5 -vf intermediates\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 0 -dr 4 -dt 0.01 -ds 0.01 -dj 0.9 -dc 0.75 -dp 512 -st 0.1 intermediates\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr
+    rpict -w -vtl -t 5 -vf intermediates\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 1 -ad 8192 -as 1024 -aa 0.05 -ar 512 -lr 12 -lw 0.002 -af outputs\images\indirect_overcast.amb -i intermediates\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr
+    rpict -w -vtl -t 5 -vf intermediates\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 0 -dr 4 -dt 0.01 -ds 0.01 -dj 0.9 -dc 0.75 -dp 512 -st 0.1 intermediates\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr
+    
     pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr > outputs\images\87cowles_BLD_noWindows_with_site_combined.hdr
     #TODO setup a direct rpict rendering and then a subseuent pcomb of these files to then generate a hdr file and
     ra_tiff outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_overcast_indirect.tiff
@@ -49,6 +50,20 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 
 
 rpict defauls inputs are seen below, not all are utilised, but could be useful in future iteration of this code. 
+
+Performance Impact of Each Parameter
+
+Parameter    Slow Value    Fast Value    Speed Impact    Quality Impact
+---------    ----------    ----------    ------------    --------------
+-ad          8192          512-1024      HUGE            High
+-as          1024          0-256         HIGH            Medium
+-ps          1             4-8           HIGH            Medium
+-x -y        2048          1024          4x faster       Visual only
+-aa          0.08          0.2           Medium          Low-Medium
+-ar          1024          128-256       Medium          Low
+-pt          0.04          0.15          Medium          Low
+-lr          12            4-6           Low-Medium      Low
+
 
 rpict -defaults 
 -vtv                            # view type perspective
@@ -96,6 +111,10 @@ rpict -defaults
 -ms 0.000000                    # mist sampling distance
 -lr 7                           # limit reflection
 -lw 4.00e-003                   # limit weight
+
+
+
+
 
 
 """

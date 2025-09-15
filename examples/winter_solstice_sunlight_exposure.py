@@ -65,7 +65,7 @@ def main():
 
     sky_generator.generate_sunny_sky_series()
     sky_generator.generate_overcast_skyfile()
-    
+
 
     # --- Step 3: Generate View Files ----
     # Create view parameter files for building floor plans and Axonometric flyover images

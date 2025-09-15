@@ -64,7 +64,7 @@ def generate_commands(octree_path: Path, sky_files: list[Path], view_files: list
         temp_octree_with_sky_path = Path(octree_path).parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
         oconv_command, rpict_command, ra_tiff_command = [
             rf'oconv -i {temp_octree_with_sky_path.replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}' ,
-            rf'rpict -w -vtv -t 15 -vf {view_file_path} -x {x_res} -y {y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}',
+            rf'rpict -w -vtl -t 15 -vf {view_file_path} -x {x_res} -y {y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}',
             rf'ra_tiff -e -4 {output_hdr_path} {image_dir / f"{output_hdr_path.stem}.tiff"}' # Half exposure of image and retain dynamic range
         ]
 
@@ -90,15 +90,46 @@ view_files = [path for path in view_files_dir.glob('*.vp')]
 # FIXME: this code breaks when only one view file is present. An input of a singular view file must be allowable. 
 
 # --- 2. Combine skyless octree with the TenK_cie_overcast.rad sky file for ambient file generation
+"""
+# example radiance command: 
+oconv -i outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct outputs\sky\TenK_cie_overcast.rad > outputs\octree\87cowles_BLD_noWindows_with_site_skyless_TenK_cie_overcast.oct 
+"""
 octree_with_overcast_sky_path = Path(octree_path).parent / f'{octree_path.stem}_TenK_cie_overcast.oct'
 overcast_octree_command = str(rf'oconv -i {octree_path} {overcast_sky_path} > {octree_with_overcast_sky_path}')
 utils.execute_new_radiance_commands(overcast_octree_command)
 
-# --- 3. Rendering overcast sky octree with each view_file to generate an ambient file.
-#TODO: setup this new execution to only generate new ambient files. 
+# --- 3. Rendering overcast sky octree with each view_file to generate a warmed ambient file to speed up the rendering process.
+"""
+# example radiance command warming up the ambient file:
+rpict -w -t 2 -vtl -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 2048 -as 512 -ar 512 -ps 1 -pt 0.06 -af outputs\images\87cowles_BLD_noWindows_with_site_plan_L02.amb outputs\octree\87cowles_BLD_noWindows_with_site_skyless_TenK_cie_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_indirect.hdr
 
+# subsequent medium quality rendering with the ambient file producing an ouptut indirect image
+rpict -w -t 2 -vtl -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -ab 3 -aa 0.1 -ar 1024 -ad 4096 -as 1024 -lr 12 -lw 0.00200 -af outputs\images\87cowles_BLD_noWindows_with_site_plan_L02.amb outputs\octree\87cowles_BLD_noWindows_with_site_skyless_TenK_cie_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_indirect.hdr
+
+#FIXME: test exporting obj with high quality parametes in 1m format from Revit, see if this fixes the resulting images issues with walls. to determine if another subsequent rendering step is necessary like below. 
+
+# subsequent high quality rendering with the ambient file producing an ouptut indirect image
+rpict -w -t 2 -vtl -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -ab 4 -aa 0.1 -ar 1024 -ad 4096 -as 1024 -lr 12 -lw 0.00200 -af outputs\images\87cowles_BLD_noWindows_with_site_plan_L02.amb outputs\octree\87cowles_BLD_noWindows_with_site_skyless_TenK_cie_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_indirect.hdr
+
+
+
+"""
+#TODO: setup actual execution section of this example code above. 
+
+# --- 4. Apply filtering to resulting indirect image using overcast sky
+"""
+# Apply gentle filtering to reduce remaining noise
+pfilt -r 0.6 -x 2048 -y 2048 outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_indirect.hdr > outputs\images\plan_L02_filtered.hdr
+# Or use median filter for spot noise
+pfilt -m 0.25 -x 2048 -y 2048 input.hdr > filtered.hdr
+"""
+#TODO: apply filtering step post the creation of these hdr images using the ambient files.
 
 # --- 2. Generate all commands that shall be passsed to radiance programmes in parallel --- 
+"""
+# example radiance rpict command for direct sun image:
+rpict -w -vtv -t 5 -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 1024 -as 64 -ar 64 -ps 5 -lw 0.001 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
+"""
 temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands = generate_commands(
     octree_path,
     sky_files,
@@ -114,23 +145,16 @@ temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands = g
 )
 
 
-# --- 3. generate temp files for oconv to use.
+# --- 3. generate temp files for oconv, combine these with sky files, then delete the temp files.
 utils.copy_files(octree_path, temp_octree_with_sky_paths)
-
-
-# --- 4. run oconv commands to combine the skyless octree with its respective sky file. ---
 utils.execute_new_radiance_commands(oconv_commands, number_of_workers = 6)
-
-
-# --- 5. delete temp files after use to reduce storage load ---
 utils.delete_files(temp_octree_with_sky_paths)
-
 
 # --- 6. rendering octrees with a given view files input ---
 utils.execute_new_radiance_commands(rpict_commands, number_of_workers = 8)
-#TODO: update this rpict command to have an input of the ambient file in each subequent simulation. This should be split into direct only calcualtions that will be used for results extraction (i.e. # hrs each pixel is illuminated, and an direct simulation with an ambient file input that will serve as a more high quality rendering in order to put together a .gif file of the results.
 
-# TODO: run code to run daylihgt sim on each level using overcast sky, and then very low quality sunny sky simulations for each time increment, and them pcomb the high quality daylight sim together with each low qaulity sunny sky simulation to create a high quality end result for every image that can then be combined into a giff for the day for each level, and then utlimately a results summary can be drawn from the original source files.
+#TODO: run pcomb to comine the indirect hdr file with the direct sunlight hdr for each timestep to create a hdr file that can be convert to a tiff and then to a .giff with a higher quality look and feel. This gif cannot be used for results generation, results will be generated form the direct .hdr files only, as they represent the sunlit are
+# pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr > outputs\images\87cowles_BLD_noWindows_with_site_combined.hdr
 
 
 # --- 7. run ra_tiff to convert output hdr files to .tiff ---
