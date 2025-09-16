@@ -48,7 +48,6 @@ def main():
     octree_generator.create_skyless_octree_for_analysis()
 
     
-    
     # --- Step 2: Generate Sky Files ---
     # Create sky files representing sun positions throughout the day
     

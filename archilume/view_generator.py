@@ -50,8 +50,8 @@ class ViewFileGenerator:
                    Typical value: 1.0 (eye level above floor). Default: 1.0
                                       
     Output:
-        - Creates .aoi files in 'intermediates/aoi/' directory (one per room)
-        - Creates .vp view files in 'intermediates/views_grids/' directory (one per floor level)
+        - Creates .aoi files in 'outputs/aoi/' directory (one per room)
+        - Creates .vp view files in 'outputs/views_grids/' directory (one per floor level)
         - View files contain Radiance camera parameters for top-down floor views
     
     Note:
@@ -114,7 +114,7 @@ class ViewFileGenerator:
             logging.warning(f"CSV file not found at the specified path: {self.csv_path}")
             self.csv_accessible = False
 
-    def _generate_point_files(self, csv_path: str, output_dir: str = "intermediates/aoi") -> None:
+    def _generate_point_files(self, csv_path: str, output_dir: str = "outputs/aoi") -> None:
         """
         Generate individual AOI files for each room from processed CSV data.
         
@@ -225,11 +225,11 @@ class ViewFileGenerator:
 
             logging.info("DataFrame parsed successfully.")
 
-            # Create the new path pointing to the 'intermediates/octrees' directory
+            # Create the new path pointing to the 'outputs/octree' directory
             input_path = Path(self.csv_path)
-            intermediates_dir = Path("intermediates/aoi")
-            intermediates_dir.mkdir(parents=True, exist_ok=True)
-            output_csv_path = str(intermediates_dir / f"{input_path.stem}_processed.csv")
+            outputs_dir = Path("outputs/aoi")
+            outputs_dir.mkdir(parents=True, exist_ok=True)
+            output_csv_path = str(outputs_dir / f"{input_path.stem}_processed.csv")
             df.to_csv(output_csv_path, index=False)
             logging.info(f"Processed DataFrame saved to: {output_csv_path}")
 
@@ -417,7 +417,7 @@ class ViewFileGenerator:
             return False
 
         self.view_paths_per_level_df = self._create_floor_level_info(
-            self.room_boundaries_df, view_subdir="intermediates/views_grids", ffl_offset=self.ffl_offset
+            self.room_boundaries_df, view_subdir="outputs/views_grids", ffl_offset=self.ffl_offset
         )
 
         if self.view_paths_per_level_df is None:

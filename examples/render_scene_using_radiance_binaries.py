@@ -1,6 +1,7 @@
 # singular example using radiance binaries
 
 """
+--- 1. ---
 Use the below in the command prompt only not in powershell. Oconv required utf-8 encoding for the input files. 
 
     cd C:\Projects\archilume
@@ -21,34 +22,29 @@ Use the below in the command prompt only not in powershell. Oconv required utf-8
     med  | rpict -vf view_description.vp -x 1024 -y 1024 -ab 1 -ad 1024 -ar 256 -as 256 -ps 5 octree_with_sky.oct > output.hdr
     high | rpict -vf view_description.vp -x 1024 -y 1024 -ab 2 -ad 1024 -ar 256 -as 256 -ps 5 octree_with_sky.oct > output.hdr
 
-
+--- 2. ---
 to be test on creation of ambient and direct rpict runs, where the ambient file could be re-used. for subeuent rendinergs. 
     cd C:\Projects\archilume
-    gensky 12 21 12:00 -c -B 55.47 > intermediates\sky\overcast_sky.rad
-    oconv -i intermediates\octree\87cowles_BLD_noWindows_with_site_skyless.oct intermediates\sky\overcast_sky.rad > intermediates\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct
-    rpict -w -vtl -t 5 -vf intermediates\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 1 -ad 8192 -as 1024 -aa 0.05 -ar 512 -lr 12 -lw 0.002 -af outputs\images\indirect_overcast.amb -i intermediates\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr
-    rpict -w -vtl -t 5 -vf intermediates\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 0 -dr 4 -dt 0.01 -ds 0.01 -dj 0.9 -dc 0.75 -dp 512 -st 0.1 intermediates\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr
+    gensky 12 21 12:00 -c -B 55.47 > outputs\sky\overcast_sky.rad
+    oconv -i outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct outputs\sky\TenK_cie_overcast.rad > outputs\octree\87cowles_BLD_noWindows_with_site_TenK_cie_overcast.oct
+    rpict -w -vtl -t 5 -vf outputs\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 1 -ad 8192 -as 1024 -aa 0.05 -ar 512 -lr 12 -lw 0.002 -af outputs\images\indirect_overcast.amb -i outputs\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr
+    rpict -w -vtl -t 5 -vf outputs\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 0 -dr 4 -dt 0.01 -ds 0.01 -dj 0.9 -dc 0.75 -dp 512 -st 0.1 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr
     
     pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr > outputs\images\87cowles_BLD_noWindows_with_site_combined.hdr
     #TODO setup a direct rpict rendering and then a subseuent pcomb of these files to then generate a hdr file and
     ra_tiff outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_overcast_indirect.tiff
 
-    
-        # Enhanced indirect pass with more bounces using overcast sky
-        rpict -av 0.5 0.5 0.5 -ab 3 -ad 8192 -as 1024 -aa 0.05 \
-            -ar 512 -lr 12 -lw 0.002 \
-            -af indirect_base.amb -i scene.oct > indirect.hdr
+--- 3. ---
+# Turn view into rays file that can be rendered in parallel. This route is not to be investigate it did not work intially but could be a point of speeding up the process in the future. A points.txt files would be more appropraite. I beleive the vwrays programme is generating an invalid ray.dat file. 
 
-        # Enhanced direct pass with better shadow sampling
-        rpict -av 0 0 0 -ab 0 -dr 4 -dt 0.01 -ds 0.01 -dj 0.9 \
-            -dc 0.75 -dp 512 -st 0.1 \
-            scene_with_sun.oct > direct.hdr
+    # Generate rays
+    vwrays -ff -x 512 -y 512 -vtl -vp 15.34 13.145 97.59 -vd 0 0 -1 -vu 0 1 0 -vh 29.48 -vv 25.59 > outputs\views_grids\rays.dat
+    # Add your custom rtrace parameters
+    rtrace -ffc -x 512 -y 512 -ab 1 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct < outputs\views_grids\rays.dat > outputs\images\colors.hdr
+    # REM Convert to TIFF for viewing
+    ra_tiff outputs\images\colors.hdr outputs\images\viewable.tiff
 
-        # Same combination
-        pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' \
-            indirect.hdr direct.hdr > combined.hdr
-
-
+--- 4. ---
 rpict defauls inputs are seen below, not all are utilised, but could be useful in future iteration of this code. 
 
 Performance Impact of Each Parameter
