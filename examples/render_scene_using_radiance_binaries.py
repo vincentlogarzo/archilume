@@ -37,12 +37,17 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 --- 3. ---
 # Turn view into rays file that can be rendered in parallel. This route is not to be investigate it did not work intially but could be a point of speeding up the process in the future. A points.txt files would be more appropraite. I beleive the vwrays programme is generating an invalid ray.dat file. 
 
-    # Generate rays
-    vwrays -ff -x 512 -y 512 -vtl -vp 15.34 13.145 97.59 -vd 0 0 -1 -vu 0 1 0 -vh 29.48 -vv 25.59 > outputs\views_grids\rays.dat
-    # Add your custom rtrace parameters
-    rtrace -ffc -x 512 -y 512 -ab 1 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct < outputs\views_grids\rays.dat > outputs\images\colors.hdr
-    # REM Convert to TIFF for viewing
-    ra_tiff outputs\images\colors.hdr outputs\images\viewable.tiff
+    # Generate rays in terminal in either binary option (-ff) or human readable format
+    vwrays -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 > outputs\views_grids\plan_L02_rays.txt
+
+    # RGBE values at each point with more parameters for quality
+    rtrace -h -ab 1 -ad 2048 -as 512 -ar 128 -aa 0.15 outputs\octree\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900.oct < outputs\views_grids\plan_L02_rays.txt > outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt
+
+    # Create hdr image from text output
+    TODO: test this option. FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908. 
+    pvalue -r -h -x 1908 -y 1908 outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt > outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02_rtrace.hdr
+
+
 
 --- 4. ---
 rpict defauls inputs are seen below, not all are utilised, but could be useful in future iteration of this code. 
