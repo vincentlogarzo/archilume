@@ -54,12 +54,12 @@ def main():
     print("\nGenerating sky files for winter solstice analysis 'outputs/sky/' directory")
     
     sky_generator = SkyFileGenerator(
-        lat=-37.8136,                    # Melbourne latitude 
-        month=6,                         # June (winter solstice)
-        day=21,
-        start_hour_24hr_format=9,        # 9:00 AM
-        end_hour_24hr_format=15,         # 3:00 PM
-        minute_increment=30              # Minutes
+        lat                             = -37.8136, # Melbourne latitude 
+        month                           = 6,        # June (winter solstice)
+        day                             = 21,
+        start_hour_24hr_format          = 9,        # 9:00 AM
+        end_hour_24hr_format            = 15,       # 3:00 PM
+        minute_increment                = 30        # Minutes
     )
 
     sky_generator.generate_sunny_sky_series()

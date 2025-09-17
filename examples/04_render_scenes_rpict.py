@@ -10,9 +10,9 @@ from itertools import product
 from archilume import utils
 from pathlib import Path
 
-def generate_overcast_sky_rendering_commands(octree_path: Path, image_dir: Path, sky_file: Path, view_files: list[Path], x_res: int=2048, 
-    y_res: int=2048, aa: float=0.1, ab: list=[1,2],ad: list=[2048, 4096], ar: list=[512, 1024], as_val: list=[512,1024],
-    dj: float=0.7,lr: int=12, lw:float=0.002, pj: int=1, ps: list=[1, 4],pt: list=[0.06, 0.05]) -> tuple[list[str], list[str]]:
+def generate_overcast_sky_rendering_commands(octree_path: Path, image_dir: Path, sky_file: Path, view_files: list[Path], x_res: list=[512, 2048], 
+    y_res: list=[512, 2048], aa: float=0.1, ab: int=1, ad: int=4096, ar: int=1024, as_val: int=1024,
+    dj: float=0.7,lr: int=12, lw:float=0.002, pj: int=1, ps: int=4, pt: float=0.05) -> tuple[list[str], list[str]]:
     """
     Generates oconv, rpict warming run and rpict medium quality run for overcast sky view_file combinations. 
 
@@ -25,19 +25,19 @@ def generate_overcast_sky_rendering_commands(octree_path: Path, image_dir: Path,
         image_dir (Path): Directory path for output images.
         sky_file (Path): Path to sky file (.sky or .rad file).
         view_files (list[Path]): List of view file paths (.vp files).
-        x_res (int, optional): X-resolution for rpict rendering. Defaults to 2048.
-        y_res (int, optional): Y-resolution for rpict rendering. Defaults to 2048.
-        aa (list, optional): Ambient accuracy for rpict. Defaults to [1, 0.1].
-        ab (list, optional): Ambient bounces for rpict. Defaults to [1, 2].
-        ad (list, optional): Ambient divisions for rpict. Defaults to [2048, 4096].
-        ar (list, optional): Ambient resolution for rpict. Defaults to [512, 1024].
-        as_val (list, optional): Ambient samples for rpict. Defaults to [512, 1024].
+        x_res (list, optional): X-resolution for rpict rendering [low_qual, med_qual]. Defaults to [512, 2048].
+        y_res (list, optional): Y-resolution for rpict rendering [low_qual, med_qual]. Defaults to [512, 2048].
+        aa (float, optional): Ambient accuracy for rpict. Defaults to 0.1.
+        ab (int, optional): Ambient bounces for rpict [low_qual=1, med_qual=2]. Defaults to 1.
+        ad (int, optional): Ambient divisions for rpict [low_qual=2048, med_qual=4096]. Defaults to 4096.
+        ar (int, optional): Ambient resolution for rpict [low_qual=512, med_qual=1024]. Defaults to 1024.
+        as_val (int, optional): Ambient samples for rpict [low_qual=512, med_qual=1024]. Defaults to 1024.
         dj (float, optional): Direct jitter for rpict. Defaults to 0.7.
         lr (int, optional): Limit reflection for rpict. Defaults to 12.
         lw (float, optional): Limit weight for rpict. Defaults to 0.002.
         pj (int, optional): Pixel jitter for rpict. Defaults to 1.
-        ps (list, optional): Pixel sample spacing for rpict. Defaults to [1, 4].
-        pt (list, optional): Pixel threshold for rpict. Defaults to [0.06, 0.05].
+        ps (int, optional): Pixel sample spacing for rpict [low_qual=1, med_qual=4]. Defaults to 4.
+        pt (float, optional): Pixel threshold for rpict [low_qual=0.06, med_qual=0.05]. Defaults to 0.05.
 
     Returns:
         tuple: A 3-tuple containing:
@@ -47,7 +47,7 @@ def generate_overcast_sky_rendering_commands(octree_path: Path, image_dir: Path,
             
     Note:
         # example radiance command warming up the ambient file:
-        rpict -w -t 2 -vtl -vf view.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 2048 -as 512 -ar 512 -ps 1 -pt 0.06 -af ambient.amb model_overcast_sky.oct  > output.hdr
+        rpict -w -t 2 -vtl -vf view.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 2048 -as 512 -ar 512 -ps 1 -pt 0.06 -af ambient.amb model_overcast_sky.oct
         # subsequent medium quality rendering with the ambient file producing an ouptut indirect image
         rpict -w -t 2 -vtl -vf view.vp -x 2048 -y 2048 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -ab 2 -aa 0.1 -ar 1024 -ad 4096 -as 1024 -lr 12 -lw 0.00200 -af ambient_file.amb model_overcast_sky.oct > output_image.hdr
     """
@@ -65,8 +65,8 @@ def generate_overcast_sky_rendering_commands(octree_path: Path, image_dir: Path,
 
         # constructed commands that will be executed in parallel from each other untill all are complete.
         rpict_low_qual_command, rpict_med_qual_command = [
-            rf"rpict -w -t 2 -vtl -vf {view_file_path} -x {x_res} -y {y_res} -aa {aa} -ab {ab[0]} -ad {ad[0]} -ar {ar[0]} -as {as_val[0]} -ps {ps[0]} -pt {pt[0]} -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}",
-            rf"rpict -w -t 2 -vtl -vf {view_file_path} -x {x_res} -y {y_res} -aa {aa} -ab {ab[1]} -ad {ad[1]} -ar {ar[1]} -as {as_val[1]} -ps {ps[1]} -pt {pt[1]} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path}  > {output_hdr_path}"
+            rf"rpict -w -t 2 -vtl -vf {view_file_path} -x {x_res[0]} -y {y_res[0]} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}",
+            rf"rpict -w -t 2 -vtl -vf {view_file_path} -x {x_res[1]} -y {y_res[1]} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
         ]
 
         rpict_low_qual_commands.append(rpict_low_qual_command)
@@ -142,11 +142,11 @@ def generate_sunny_sky_rendering_commands(octree_path: Path, image_dir: Path, sk
 
 
 # --- 1. get input files ---
-octree_path = Path(__file__).parent.parent / "outputs" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
+skyless_octree_path = Path(__file__).parent.parent / "outputs" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
 sky_files_dir = Path(__file__).parent.parent / "outputs" / "sky"
 view_files_dir = Path(__file__).parent.parent / "outputs" / "views_grids"
 image_dir = Path(__file__).parent.parent / "outputs" / "images"
-overcast_sky_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad"
+overcast_sky_file_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad"
 
 sky_files = [path for path in sky_files_dir.glob('*.sky')]
 view_files = [path for path in view_files_dir.glob('*.vp')] 
@@ -165,28 +165,28 @@ r"""
 """
 
 overcast_octree_command, rpict_low_qual_commands, rpict_med_qual_commands = generate_overcast_sky_rendering_commands(
-    octree_path,
+    skyless_octree_path,
     image_dir, 
-    overcast_sky_path, 
+    overcast_sky_file_path, 
     view_files, 
-    x_res       =2048, 
-    y_res       =2048
+    x_res       =[512, 2048], 
+    y_res       =[512, 2048]
     )
 
-utils.execute_new_radiance_commands(overcast_octree_command, number_of_workers=1)
-utils.execute_new_radiance_commands(rpict_low_qual_commands, number_of_workers=6)
-utils.execute_new_radiance_commands(rpict_med_qual_commands, number_of_workers=6)
- 
+utils.execute_new_radiance_commands(overcast_octree_command, number_of_workers = 1)
+utils.execute_new_radiance_commands(rpict_low_qual_commands, number_of_workers = 8)
+utils.execute_new_radiance_commands(rpict_med_qual_commands, number_of_workers = 8)
+
 
 # --- 3. Generate all commands that shall be passsed to radiance programmes in parallel for sunny sky files. --- 
 r"""
 # 3.1 to combine an skyless octree with a sunny sky
-    oconv -i outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct outputs\sky\SS_0621_0900.sky > outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
+    oconv -i outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct outputs\sky\SS_0621_0900.sky > outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
 # 3.2 example radiance rpict command for direct sun image:
     rpict -w -vtl -t 2 -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 1024 -as 64 -ar 64 -ps 5 -lw 0.001 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
 """
 temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands = generate_sunny_sky_rendering_commands(
-    octree_path,
+    skyless_octree_path,
     image_dir,
     sky_files,
     view_files,
@@ -194,19 +194,21 @@ temp_octree_with_sky_paths, oconv_commands, rpict_commands, ra_tiff_commands = g
     y_res       =2048
     )
 
-# --- 4. generate temp files for oconv, combine these with sky files, then delete the temp files.
-utils.copy_files(octree_path, temp_octree_with_sky_paths)
+utils.copy_files(skyless_octree_path, temp_octree_with_sky_paths)
 utils.execute_new_radiance_commands(oconv_commands, number_of_workers = 6)
 utils.delete_files(temp_octree_with_sky_paths)
 
-# --- 5. rendering octrees with a given view files input ---
+
+# --- 4. rendering sunny sky octrees for each view_file ---
 utils.execute_new_radiance_commands(rpict_commands, number_of_workers = 8)
 
 #TODO: run pcomb to comine the indirect hdr file with the direct sunlight hdr for each timestep to create a hdr file that can be convert to a tiff and then to a .giff with a higher quality look and feel. This gif cannot be used for results generation, results will be generated form the direct .hdr files only, as they represent the sunlit are
-# 
+# --- 5. run pcomb to combine the indirect and direct hdr files into a single hdr file for each view_file and sky_file combination.
 r"""
 pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_indirect.hdr outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900_combined.hdr
+#TODO: run pcomb to comine the indirect hdr file with the direct sunlight hdr for each timestep to create a hdr file that can be convert to a tiff and then to a .giff with a higher quality look and feel. This gif cannot be used for results generation, results will be generated form the direct .hdr files only, as they represent the sunlit are
 """
+
 
 # --- 7. run ra_tiff to convert output hdr files to .tiff ---
 r"""
@@ -215,7 +217,7 @@ ra_tiff -e -4 outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0
 utils.execute_new_radiance_commands(ra_tiff_commands, number_of_workers = 10)
 
 
-# ---8. Overlay room boundaries with the apartment numbers and room identifier of interest with an instant area of compliance for that timestep, place timestamp on image, simulated on: X and sunny sky winter solstice June 21 : 09:00 
+# ---8. Overlay room boundaries with room boundary name and apartment numbers and room identifier of interest with an instant area of compliance for that timestep, place timestamp on image, "Simulated on YYMMDD HH:MM for June 21 09:00 latitude: -37.8136"
 
 
 
