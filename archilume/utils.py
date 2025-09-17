@@ -362,17 +362,17 @@ def delete_files(file_paths: list[Path]) -> None:
     
     print(f"Deletion complete: {deleted_count} deleted, {skipped_count} skipped")
          
-def execute_new_radiance_commands(commands: list[str] , number_of_workers: int = 1) -> None:
+def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_workers: int = 1) -> None:
     """
     Executes Radiance commands in parallel, filtering out commands whose output files already exist.
     
-    This function takes a list of Radiance commands (oconv, rpict, ra_tiff) and executes only 
-    those whose output files don't already exist, avoiding redundant computation.
+    This function takes a single command string or list of Radiance commands (oconv, rpict, ra_tiff) 
+    and executes only those whose output files don't already exist, avoiding redundant computation.
     
     Args:
-        commands (list[str]): List of command strings to execute. Each command should be a 
-                             valid shell command that outputs to a file using '>' redirection
-                             or specifies an output file as the last argument.
+        commands (str or list[str]): Single command string or list of command strings to execute. 
+                                   Each command should be a valid shell command that outputs to a file 
+                                   using '>' redirection or specifies an output file as the last argument.
         number_of_workers (int, optional): Number of parallel workers for command execution.
                                          Defaults to 1. Should not exceed 6 for oconv commands.
     
@@ -384,6 +384,10 @@ def execute_new_radiance_commands(commands: list[str] , number_of_workers: int =
         attempts to extract output paths by splitting on '>' operator first, then
         falls back to using the last space-separated argument for commands like ra_tiff.
     """ 
+    # Handle single command string input
+    if isinstance(commands, str):
+        commands = [commands]
+    
     filtered_commands = []
     for command in commands:
         try:

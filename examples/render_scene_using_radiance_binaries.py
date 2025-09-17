@@ -40,11 +40,15 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     # Generate rays in terminal in either binary option (-ff) or human readable format
     vwrays -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 > outputs\views_grids\plan_L02_rays.txt
 
+    # add in ambient file run on whole scene to speed up subseuent rtrace runs at higher quality.
+    TODO: setup ambient file runs for fastering rendering in subsequent runs. 
+    
     # RGBE values at each point with more parameters for quality
     rtrace -h -ab 1 -ad 2048 -as 512 -ar 128 -aa 0.15 outputs\octree\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900.oct < outputs\views_grids\plan_L02_rays.txt > outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt
 
     # Create hdr image from text output
-    TODO: test this option. FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908. 
+    TODO: test this option. It has not yet been determined how to compile the results.txt file from rtace into a hdr file.  
+    FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908. 
     pvalue -r -h -x 1908 -y 1908 outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt > outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02_rtrace.hdr
 
 

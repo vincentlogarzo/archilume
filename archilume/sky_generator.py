@@ -17,6 +17,7 @@ import os
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # Third-party imports
 
@@ -90,7 +91,7 @@ class SkyFileGenerator:
         self.str_lat = str(self.lat)
         
         # Fixed output directory - not user configurable
-        self.output_dir = "outputs/sky"
+        self.output_dir = Path(__file__).parent.parent / "outputs"/  "sky"
         #FIXME use relative references and update this to use pathlib.
 
         if not os.path.exists(self.output_dir):
@@ -118,8 +119,8 @@ class SkyFileGenerator:
         # Construct a descriptive filename using month and day arguments
         month_str = f"{month:02d}"
         day_str = f"{day:02d}"
-        output_filename_base = f"SS_{month_str}{day_str}_{output_time_suffix_str}.sky"
-        output_filepath = os.path.join(self.output_dir, output_filename_base)
+        output_filename = f"SS_{month_str}{day_str}_{output_time_suffix_str}.sky"
+        output_filepath = self.output_dir / output_filename
 
         print(f"Outputting to: {output_filepath}")
 
@@ -202,8 +203,8 @@ class SkyFileGenerator:
         Returns:
             None: Sky file is written to disk at outputs/sky
         """
-        output_filename_base = f"TenK_cie_overcast.rad"
-        output_filepath = os.path.join(self.output_dir, output_filename_base)
+        
+        output_filepath = self.output_dir / "TenK_cie_overcast.rad"
 
         print(f"Outputting to: {output_filepath}")
 
