@@ -10,7 +10,6 @@ from pathlib import Path
 # Third-party imports
 import pyradiance
 
-
 @dataclass
 class ObjToOctree:
     """
@@ -23,8 +22,8 @@ class ObjToOctree:
     or 'glass' (for transparent/translucent) materials.
 
     Attributes:
-        obj_paths (list[str]): List of OBJ file paths to process
-        mtl_paths (list[str]): List of corresponding MTL file paths
+        input_obj_paths (list[Path]): List of OBJ file paths to process
+        input_mtl_paths (list[Path]): List of corresponding MTL file paths
     """
 
     # User inputs - support multiple files

@@ -40,6 +40,10 @@ def main():
     #TODO: future iteration of this code will allow for input of a revit file, and use of revit API to extract the room boundaries csv, this could also be visualised in the obj_viewer.py example file.
     csv_path = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv"
     
+    # Check if CSV file exists
+    if not csv_path.exists():
+        print(f"\nError: Room boundaries CSV not found at {csv_path}")
+        sys.exit(1)
 
     # --- Step 1. Generate Octree utilising building obj(s) and site obj(s) and their respective .mtl files ---
     # This octree can only be used for sunlight exposure analysis as material modifiers are assumed (i.e. colour and matieral type, glass, plastic, or metal)
@@ -47,7 +51,7 @@ def main():
     octree_generator = ObjToOctree(obj_paths)
     octree_generator.create_skyless_octree_for_analysis()
 
-    
+
     # --- Step 2: Generate Sky Files ---
     # Create sky files representing sun positions throughout the day
     
@@ -59,7 +63,7 @@ def main():
         day                             = 21,
         start_hour_24hr_format          = 9,        # 9:00 AM
         end_hour_24hr_format            = 15,       # 3:00 PM
-        minute_increment                = 30        # Minutes
+        minute_increment                = 10        # Minutes
     )
 
     sky_generator.generate_sunny_sky_series()
@@ -70,11 +74,6 @@ def main():
     # Create view parameter files for building floor plans and Axonometric flyover images
     
     print("\nGenerating view files for building analysis...")
-    
-    # Check if CSV file exists
-    if not csv_path.exists():
-        print(f"\nError: Room boundaries CSV not found at {csv_path}")
-        sys.exit(1)
     
     view_generator = ViewFileGenerator(
         room_boundaries_csv_path_input=csv_path,

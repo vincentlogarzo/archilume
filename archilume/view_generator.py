@@ -468,29 +468,6 @@ class ViewFileGenerator:
 
 
     #TODO: further development below in generating 3D axo views to allow for visualisation of the entire input model and its geometry.  See function get obj bounds below, that could assist in developing this functionality.
-    # def _get_obj_bounds(self, filepath: str) -> tuple[float, float, float, float, float, float] | None:
-    #     try:
-    #         scene = pywavefront.Wavefront(filepath, collect_faces=True, strict=False, create_materials=True)
-    #     except FileNotFoundError:
-    #         logging.error(f"OBJ File not found: {filepath}")
-    #         return None
-    #     except Exception as e:
-    #         logging.error(f"Error loading OBJ {filepath}: {e}", exc_info=True)
-    #         return None
-    #     all_vertices_list = []
-    #     for mesh in scene.mesh_list:
-    #         if mesh.materials:
-    #             material = mesh.materials[0]
-    #             vertex_format = material.vertex_format; vertex_data = material.vertices
-    #             if not vertex_data: continue
-    #             vertex_data_np = np.array(vertex_data, dtype=np.float32)
-    #             if vertex_format == 'V3F': vertices = vertex_data_np.reshape(-1, 3)
-    #             elif vertex_format == 'T2F_V3F': vertices = vertex_data_np.reshape(-1, 5)[:, 2:]
-    #             elif vertex_format == 'N3F_V3F': vertices = vertex_data_np.reshape(-1, 6)[:, 3:]
-    #             elif vertex_format == 'T2F_N3F_V3F': vertices = vertex_data_np.reshape(-1, 8)[:, 5:]
-    #             else: logging.warning(f"Unsupported OBJ vertex format: {vertex_format} in {filepath}"); continue
-    #             all_vertices_list.append(vertices)
-    #     if not all_vertices_list: logging.warning(f"No vertices found in OBJ: {filepath}"); return None
-    #     all_vertices_np = np.vstack(all_vertices_list)
-    #     min_coords = np.min(all_vertices_np, axis=0); max_coords = np.max(all_vertices_np, axis=0)
-    #     return (min_coords[0], max_coords[0], min_coords[1], max_coords[1], min_coords[2], max_coords[2])
+   # use         
+            # getbbox -h outputs\rad\87cowles_BLD_noWindows.rad
+                # expected outputs: xmin xmax ymin ymax zmin zmax

@@ -8,6 +8,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Union
+from PIL import Image
 
 # Third-party imports
 import numpy as np
@@ -229,70 +230,11 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     vis.run()
     vis.destroy_window()
 
-# TODO: Implement IFC file visualization using ifcopenshell, and allow colour checking and editing potentially through ThatOpenCompany
 def display_ifc(filename: Path):
     """
-    
+    # TODO: Implement IFC file visualization using ifcopenshell, and allow colour checking and editing potentially through ThatOpenCompany
     """
     return None
-
-def run_commands_parallel(commands: List[str], number_of_workers: int = 1) -> None:
-    """
-    Executes a list of commands in parallel using a ThreadPoolExecutor.
-
-    Args:
-        commands (list): A list of commands to execute.
-        number_of_workers (int, optional): The maximum number of worker threads. Defaults to 4.
-    """
-
-    def _run_command(command: Union[str, List[str]], command_name: Optional[str] = None) -> None:
-        """
-        Executes the given command in the terminal and prints the command and output.
-
-        Args:
-            command (str or list): The command to execute (as a string or list of arguments).
-            command_name (str, optional): A descriptive name for the command (e.g., "rpict", "ra_tiff"). Defaults to None.
-        """
-        if command_name:
-            print(f"Executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}")
-        else:
-            print(f"Executing command: {' '.join(command) if isinstance(command, list) else command}")
-
-        try:
-            result = subprocess.run(command, shell=isinstance(command, str), capture_output=True, text=True, check=True)
-            if command_name:
-                print(f"{command_name} command executed successfully.")
-            else:
-                print("Command executed successfully.")
-
-            if result.stdout:
-                print(f"Standard output:\n{result.stdout}")
-            if result.stderr:
-                print(f"Standard error:\n{result.stderr}")
-
-        except subprocess.CalledProcessError as e:
-            if command_name:
-                print(f"Error executing {command_name} command: {' '.join(command) if isinstance(command, list) else command}")
-            else:
-                print(f"Error executing command: {' '.join(command) if isinstance(command, list) else command}")
-
-            print(f"Return code: {e.returncode}")
-            if e.stderr:
-                print(f"Standard error:\n{e.stderr}")
-
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=number_of_workers) as executor:
-        futures = [executor.submit(_run_command, command) for command in commands]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()  # Get the result (or exception if any)
-            except Exception as e:
-                print(f"An error occurred during command execution: {e}")
 
 def copy_files(source_path: Union[Path, str], destination_paths: list[Path]) -> None:
     """
@@ -384,6 +326,62 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         attempts to extract output paths by splitting on '>' operator first, then
         falls back to using the last space-separated argument for commands like ra_tiff.
     """ 
+    def _execute_commands_with_progress(commands: List[str], number_of_workers: int = 1) -> None:
+        """
+        Executes commands with real-time progress output by streaming stdout/stderr.
+        
+        Args:
+            commands (List[str]): List of commands to execute
+            number_of_workers (int): Number of parallel workers
+        """
+        def _run_command_with_progress(command: str) -> None:
+            """Execute a single command with real-time output streaming."""
+            print(f"Starting: {command}")
+            
+            try:
+                # Use Popen for real-time output streaming
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1  # Line buffered
+                )
+                
+                # Stream output in real-time
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
+                        break
+                    if output:
+                        print(output.strip())
+                
+                # Wait for process to complete and get return code
+                return_code = process.poll()
+                
+                if return_code == 0:
+                    print(f"✓ Completed successfully: {command}")
+                else:
+                    print(f"✗ Failed with return code {return_code}: {command}")
+                    
+            except Exception as e:
+                print(f"✗ Error executing command '{command}': {e}")
+        
+        if number_of_workers == 1:
+            # Sequential execution for single worker
+            for command in commands:
+                _run_command_with_progress(command)
+        else:
+            # Parallel execution
+            with concurrent.futures.ThreadPoolExecutor(max_workers=number_of_workers) as executor:
+                futures = [executor.submit(_run_command_with_progress, command) for command in commands]
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        print(f"Error in parallel execution: {e}")
+
     # Handle single command string input
     if isinstance(commands, str):
         commands = [commands]
@@ -402,10 +400,10 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         if not os.path.exists(output_path):
             filtered_commands.append(command)
 
-    run_commands_parallel(
+    _execute_commands_with_progress(
         filtered_commands,
-        number_of_workers = number_of_workers # number of workers should not go over 6 for oconv
-        )
+        number_of_workers=number_of_workers
+    )
 
     print('All new commands have successfully completed')
 
@@ -426,13 +424,158 @@ def get_image_dimensions(image_path) -> None:
     except Exception as e:
         print(f"Error: Could not read image dimensions. Reason: {e}")
 
-def notforuse_obj2rad_with_subprocess(obj_paths: Path) -> None:
-    """Convert OBJ file to Radiance format using obj2rad.exe.
-    obj2rad "c:\\Projects\\archilume\\inputs\\87cowles_BLD_noWindows.obj" > "c:\\Projects\\archilume\\intermediates\\rad\\87cowles_BLD_noWindows.rad"
-    This function serves as an example and is not to be used, it does not run when called as part of a class with obj2rad for an unknown reason, the alternative obj2rad_with_os_system is used instead. 
+def combine_gifs(gif_paths: list[Path], output_path: Path, duration: int=100) -> None:
+    """Combine multiple GIF files into a single animated GIF.
+    
+    Takes a list of GIF file paths and combines them sequentially into a single
+    animated GIF file. All input GIFs are appended as frames in the output animation.
+    
+    Args:
+        gif_paths: List of Path objects pointing to the input GIF files to combine
+        output_path: Path where the combined GIF will be saved
+        duration: Duration in milliseconds for each frame in the output GIF (default: 100)
+        
+    Returns:
+        None
+        
+    Raises:
+        PIL.UnidentifiedImageError: If any of the input files are not valid images
+        FileNotFoundError: If any of the input GIF files don't exist
+        PermissionError: If unable to write to the output path
+        
+    Example:
+        >>> gif_files = [Path('frame1.gif'), Path('frame2.gif'), Path('frame3.gif')]
+        >>> combine_gifs(gif_files, Path('animation.gif'), duration=200)
     """
+    
+    gifs = [Image.open(f) for f in gif_paths]
+    gifs[0].save(output_path, save_all=True, append_images=gifs[1:], 
+                 duration=duration, loop=0)
 
-    for obj_path in obj_paths:
-        output_file_path = Path(__file__).parent.parent / "intermediates" / "rad" / obj_path.with_suffix('.rad').name
-        command = f'obj2rad {obj_path} > {output_file_path}'
-        run_commands_parallel([command],number_of_workers=1)
+def combine_gifs_by_view(image_dir: Path, view_files: list[Path], duration: int=500) -> None:
+    """Create separate animated GIFs grouped by view file names, plus a combined animation.
+    
+    Scans the image directory for GIF files and groups them by view file names. Creates
+    separate animated GIFs for each view and one combined animation with all GIFs.
+    
+    Args:
+        image_dir: Directory containing the GIF files to process
+        view_files: List of view file Path objects used to group GIFs by name
+        duration: Duration in milliseconds for each frame in the output GIFs (default: 500)
+        
+    Returns:
+        None
+        
+    Example:
+        >>> view_files = [Path('plan_L02.vp'), Path('section_A.vp')]
+        >>> combine_gifs_by_view(Path('outputs/images'), view_files, duration=300)
+    """
+    gif_files = [path for path in image_dir.glob('*.gif')]
+    
+    # Filter out previously created result files to avoid circular references
+    gif_files = [gif for gif in gif_files if not gif.name.startswith('animated_results_') and gif.name != 'grid_animation_9windows.gif']
+    
+    if not gif_files:
+        print("No GIF files found in the image directory (excluding result files).")
+        return
+    
+    # Create separate animated GIFs for each view file
+    for view_file in view_files:
+        view_name = view_file.stem
+        # Find all GIF files that contain this view name
+        view_gif_files = [gif for gif in gif_files if view_name in gif.name]
+        
+        if view_gif_files:
+            output_gif_path = image_dir / f'animated_results_{view_name}.gif'
+            # Delete existing file if it exists
+            if output_gif_path.exists():
+                output_gif_path.unlink()
+            combine_gifs(view_gif_files, output_gif_path, duration)
+            print(f"Created animation for {view_name}: {len(view_gif_files)} frames")
+
+def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3, 3), 
+                   target_size: tuple=(200, 200), duration: int=500) -> None:
+    """Create a grid layout GIF combining multiple individual GIFs.
+    
+    Takes multiple GIF files and combines them into a single animated GIF with a grid layout.
+    Each individual GIF is resized to fit within the grid cells.
+    
+    Args:
+        gif_paths: List of Path objects pointing to input GIF files
+        output_path: Path where the grid GIF will be saved
+        grid_size: Tuple (cols, rows) defining the grid dimensions (default: 3x3)
+        target_size: Tuple (width, height) for each cell in pixels (default: 200x200)
+        duration: Duration in milliseconds for each frame (default: 500)
+        
+    Returns:
+        None
+        
+    Example:
+        >>> gif_files = [Path('view1.gif'), Path('view2.gif'), Path('view3.gif')]
+        >>> create_grid_gif(gif_files, Path('grid_animation.gif'), grid_size=(2, 2))
+    """
+    if not gif_paths:
+        print("No GIF files provided for grid creation.")
+        return
+    
+    output_path = image_dir / "animated_results_grid_all_levels.gif"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Delete existing output file if it exists
+    if output_path.exists():
+        output_path.unlink()
+    
+    cols, rows = grid_size
+    cell_width, cell_height = target_size
+    total_width = cols * cell_width
+    total_height = rows * cell_height
+    
+    # Load all GIFs and get their frame counts
+    gifs_data = []
+    max_frames = 0
+    
+    for gif_path in gif_paths[:cols * rows]:  # Limit to grid capacity
+        gif = Image.open(gif_path)
+        frames = []
+        try:
+            while True:
+                # Resize frame to fit cell
+                frame = gif.copy().resize((cell_width, cell_height), Image.Resampling.LANCZOS)
+                frames.append(frame)
+                gif.seek(gif.tell() + 1)
+        except EOFError:
+            pass
+        
+        gifs_data.append(frames)
+        max_frames = max(max_frames, len(frames))
+    
+    # Create grid frames
+    grid_frames = []
+    for frame_idx in range(max_frames):
+        grid_frame = Image.new('RGB', (total_width, total_height), (0, 0, 0))
+        
+        for i, gif_frames in enumerate(gifs_data):
+            row = i // cols
+            col = i % cols
+            
+            # Use modulo to loop shorter GIFs
+            frame = gif_frames[frame_idx % len(gif_frames)]
+            
+            x = col * cell_width
+            y = row * cell_height
+            grid_frame.paste(frame, (x, y))
+        
+        grid_frames.append(grid_frame)
+    
+    # Save grid animation
+    if grid_frames:
+        grid_frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=grid_frames[1:],
+            duration=duration,
+            loop=0
+        )
+        print(f"Created grid animation: {len(grid_frames)} frames, {len(gifs_data)} views in {cols}x{rows} grid")
+
+
