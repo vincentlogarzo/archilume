@@ -2,7 +2,9 @@
 
 # Standard library imports
 import concurrent.futures
+import math
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +18,6 @@ import open3d as o3d
 import tkinter as tk
 from tkinter import filedialog
 from PIL import Image
-
 
 def select_files(title: str = "Select file(s)") -> Optional[List[str]]:
     """
@@ -407,91 +408,157 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
 
     print('All new commands have successfully completed')
 
-def get_image_dimensions(image_path) -> None:
-    """
-    Opens an image file and prints its dimensions.
-    """
-    if not os.path.exists(image_path):
-        print(f"Error: File not found at '{image_path}'")
-        return
-
-    try:
-        with Image.open(image_path) as img:
-            width, height = img.size
-            print(
-                f"The dimensions of '{os.path.basename(image_path)}' are: {width}x{height} pixels."
-            )
-    except Exception as e:
-        print(f"Error: Could not read image dimensions. Reason: {e}")
-
-def combine_gifs(gif_paths: list[Path], output_path: Path, duration: int=100) -> None:
-    """Combine multiple GIF files into a single animated GIF.
-    
-    Takes a list of GIF file paths and combines them sequentially into a single
-    animated GIF file. All input GIFs are appended as frames in the output animation.
-    
-    Args:
-        gif_paths: List of Path objects pointing to the input GIF files to combine
-        output_path: Path where the combined GIF will be saved
-        duration: Duration in milliseconds for each frame in the output GIF (default: 100)
-        
-    Returns:
-        None
-        
-    Raises:
-        PIL.UnidentifiedImageError: If any of the input files are not valid images
-        FileNotFoundError: If any of the input GIF files don't exist
-        PermissionError: If unable to write to the output path
-        
-    Example:
-        >>> gif_files = [Path('frame1.gif'), Path('frame2.gif'), Path('frame3.gif')]
-        >>> combine_gifs(gif_files, Path('animation.gif'), duration=200)
-    """
-    
-    gifs = [Image.open(f) for f in gif_paths]
-    gifs[0].save(output_path, save_all=True, append_images=gifs[1:], 
-                 duration=duration, loop=0)
-
-def combine_gifs_by_view(image_dir: Path, view_files: list[Path], duration: int=500) -> None:
-    """Create separate animated GIFs grouped by view file names, plus a combined animation.
+def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
+    """Create separate animated files grouped by view file names using parallel processing.
     
     Scans the image directory for GIF files and groups them by view file names. Creates
-    separate animated GIFs for each view and one combined animation with all GIFs.
+    separate animated files for each view in parallel for improved performance.
     
     Args:
         image_dir: Directory containing the GIF files to process
         view_files: List of view file Path objects used to group GIFs by name
-        duration: Duration in milliseconds for each frame in the output GIFs (default: 500)
+        fps: Frames per second for the output animation. If None, defaults to 1 FPS (1 second per frame)
+        output_format: Output format - 'gif' or 'mp4' (default: 'gif')
+        number_of_workers: Number of parallel workers for processing views (default: 4)
         
     Returns:
         None
         
     Example:
         >>> view_files = [Path('plan_L02.vp'), Path('section_A.vp')]
-        >>> combine_gifs_by_view(Path('outputs/images'), view_files, duration=300)
+        >>> combine_gifs_by_view(Path('outputs/images'), view_files, fps=2.0, output_format='mp4', number_of_workers=6)
+        >>> combine_gifs_by_view(Path('outputs/images'), view_files, output_format='gif')  # Uses 1 FPS with 4 workers
     """
+    def _combine_gifs(gif_paths: list[Path], output_path: Path, duration: int=100, output_format: str='gif') -> None:
+        """Combine multiple GIF files into a single animated file.
+        
+        Takes a list of GIF file paths and combines them sequentially into a single
+        animated file. All input GIFs are appended as frames in the output animation.
+        
+        Args:
+            gif_paths: List of Path objects pointing to the input GIF files to combine
+            output_path: Path where the combined file will be saved
+            duration: Duration in milliseconds for each frame in the output file (default: 100)
+            output_format: Output format - 'gif' or 'mp4' (default: 'gif')
+            
+        Returns:
+            None
+            
+        Raises:
+            PIL.UnidentifiedImageError: If any of the input files are not valid images
+            FileNotFoundError: If any of the input GIF files don't exist
+            PermissionError: If unable to write to the output path
+            ValueError: If output_format is not supported
+            
+        Example:
+            >>> gif_files = [Path('frame1.gif'), Path('frame2.gif'), Path('frame3.gif')]
+            >>> _combine_gifs(gif_files, Path('animation.gif'), duration=200, output_format='gif')
+            >>> _combine_gifs(gif_files, Path('animation.mp4'), duration=200, output_format='mp4')
+        """
+        
+        if output_format.lower() == 'gif':
+            gifs = [Image.open(f) for f in gif_paths]
+            gifs[0].save(output_path, save_all=True, append_images=gifs[1:], 
+                        duration=duration, loop=0)
+        elif output_format.lower() == 'mp4':
+            try:
+                import cv2
+            except ImportError:
+                raise ImportError("OpenCV (cv2) is required for MP4 output. Install with: pip install opencv-python")
+            
+            # Get dimensions from first GIF
+            first_gif = Image.open(gif_paths[0])
+            width, height = first_gif.size
+            
+            # Set up video writer (fps = 1000/duration for proper timing)
+            fps = 1000 / duration if duration > 0 else 10
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+            
+            # Process each GIF and add frames to video
+            for gif_path in gif_paths:
+                gif = Image.open(gif_path)
+                try:
+                    while True:
+                        # Convert PIL image to OpenCV format (BGR)
+                        frame_rgb = gif.convert('RGB')
+                        frame_bgr = cv2.cvtColor(np.array(frame_rgb), cv2.COLOR_RGB2BGR)
+                        video_writer.write(frame_bgr)
+                        gif.seek(gif.tell() + 1)
+                except EOFError:
+                    pass
+            
+            video_writer.release()
+        else:
+            raise ValueError(f"Unsupported output format: {output_format}. Use 'gif' or 'mp4'.")
+
     gif_files = [path for path in image_dir.glob('*.gif')]
     
     # Filter out previously created result files to avoid circular references
-    gif_files = [gif for gif in gif_files if not gif.name.startswith('animated_results_') and gif.name != 'grid_animation_9windows.gif']
+    gif_files = [gif for gif in gif_files if not gif.name.startswith('animated_results_') and gif.name != 'animated_results_grid_all_levels.gif']
     
     if not gif_files:
         print("No GIF files found in the image directory (excluding result files).")
         return
     
-    # Create separate animated GIFs for each view file
-    for view_file in view_files:
+    def _process_single_view(view_file: Path) -> str:
+        """Process a single view file to create animated output."""
         view_name = view_file.stem
         # Find all GIF files that contain this view name
         view_gif_files = [gif for gif in gif_files if view_name in gif.name]
         
-        if view_gif_files:
-            output_gif_path = image_dir / f'animated_results_{view_name}.gif'
+        if not view_gif_files:
+            return f"✗ No GIF files found for view: {view_name}"
+        
+        try:
+            # Calculate duration based on number of frames found
+            num_frames = len(view_gif_files)
+            
+            if fps is None:
+                # Auto-calculate: set duration to match number of frames (1 second per frame)
+                duration = num_frames * 1000  # num_frames seconds total
+                calculated_fps = 1.0
+            else:
+                # Calculate total duration based on FPS
+                duration = int((num_frames / fps) * 1000)  # total animation duration in ms
+                calculated_fps = fps
+            
+            # Calculate per-frame duration for the animation
+            per_frame_duration = int(duration / num_frames) if num_frames > 0 else 1000
+            
+            output_file_path = image_dir / f'animated_results_{view_name}.{output_format.lower()}'
             # Delete existing file if it exists
-            if output_gif_path.exists():
-                output_gif_path.unlink()
-            combine_gifs(view_gif_files, output_gif_path, duration)
-            print(f"Created animation for {view_name}: {len(view_gif_files)} frames")
+            if output_file_path.exists():
+                output_file_path.unlink()
+            
+            _combine_gifs(view_gif_files, output_file_path, per_frame_duration, output_format)
+            return f"✓ Created {output_format.upper()} animation for {view_name}: {num_frames} frames, {duration/1000:.1f}s at {calculated_fps} FPS"
+            
+        except Exception as e:
+            return f"✗ Error processing {view_name}: {e}"
+    
+    print(f"Processing {len(view_files)} views using {number_of_workers} workers")
+    
+    # Create separate animated files for each view file in parallel
+    if number_of_workers == 1:
+        # Sequential processing for single worker
+        for view_file in view_files:
+            result = _process_single_view(view_file)
+            print(result)
+    else:
+        # Parallel processing
+        with ThreadPoolExecutor(max_workers=number_of_workers) as executor:
+            futures = [executor.submit(_process_single_view, view_file) for view_file in view_files]
+            
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    print(result)
+                except Exception as e:
+                    print(f"✗ Error in parallel view processing: {e}")
+    
+    print(f"Completed processing {len(view_files)} view animations")
 
 def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3, 3), 
                    target_size: tuple=(200, 200), duration: int=500) -> None:
@@ -577,5 +644,436 @@ def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3,
             loop=0
         )
         print(f"Created grid animation: {len(grid_frames)} frames, {len(gifs_data)} views in {cols}x{rows} grid")
+
+def create_grid_mp4(mp4_paths: list[Path], image_dir: Path, grid_size: tuple=(3, 3), 
+                    target_size: tuple=(200, 200), fps: int=1) -> None:
+    """Create a grid layout MP4 combining multiple individual MP4 files.
+    
+    Takes multiple MP4 files and combines them into a single MP4 with a grid layout.
+    Each individual MP4 is resized to fit within the grid cells.
+    
+    Args:
+        mp4_paths: List of Path objects pointing to input MP4 files
+        image_dir: Directory where the grid MP4 will be saved
+        grid_size: Tuple (cols, rows) defining the grid dimensions (default: 3x3)
+        target_size: Tuple (width, height) for each cell in pixels (default: 200x200)
+        fps: Frames per second for the output video (default: 1)
+        
+    Returns:
+        None
+        
+    Example:
+        >>> mp4_files = [Path('view1.mp4'), Path('view2.mp4'), Path('view3.mp4')]
+        >>> create_grid_mp4(mp4_files, Path('output'), grid_size=(2, 2))
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise ImportError("OpenCV (cv2) is required for MP4 processing. Install with: pip install opencv-python")
+    
+    if not mp4_paths:
+        print("No MP4 files provided for grid creation.")
+        return
+    
+    output_path = image_dir / "animated_results_grid_all_levels.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Delete existing output file if it exists
+    if output_path.exists():
+        output_path.unlink()
+    
+    cols, rows = grid_size
+    cell_width, cell_height = target_size
+    
+    # Load video properties and find maximum duration
+    video_info = []
+    max_frames = 0
+    
+    for mp4_path in mp4_paths[:cols * rows]:  # Limit to grid capacity
+        try:
+            cap = cv2.VideoCapture(str(mp4_path))
+            if not cap.isOpened():
+                print(f"Error opening {mp4_path}")
+                continue
+                
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            video_fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            video_info.append({
+                'path': mp4_path,
+                'cap': cap,
+                'frame_count': frame_count,
+                'fps': video_fps,
+                'width': width,
+                'height': height
+            })
+            
+            max_frames = max(max_frames, frame_count)
+            
+        except Exception as e:
+            print(f"Error loading {mp4_path}: {e}")
+            continue
+    
+    if not video_info:
+        print("No valid MP4 files found.")
+        return
+    
+    # Set up output video writer
+    grid_width = cols * cell_width
+    grid_height = rows * cell_height
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(str(output_path), fourcc, fps, (grid_width, grid_height))
+    
+    # Process frames
+    for frame_idx in range(max_frames):
+        # Create grid frame
+        grid_frame = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
+        
+        for i, video in enumerate(video_info):
+            row = i // cols
+            col = i % cols
+            
+            # Calculate position in grid
+            y_start = row * cell_height
+            y_end = y_start + cell_height
+            x_start = col * cell_width
+            x_end = x_start + cell_width
+            
+            # Get frame from video (loop if needed)
+            video_frame_idx = frame_idx % video['frame_count']
+            video['cap'].set(cv2.CAP_PROP_POS_FRAMES, video_frame_idx)
+            ret, frame = video['cap'].read()
+            
+            if ret:
+                # Resize frame to cell size
+                resized_frame = cv2.resize(frame, (cell_width, cell_height))
+                grid_frame[y_start:y_end, x_start:x_end] = resized_frame
+        
+        # Write frame to output video
+        out.write(grid_frame)
+    
+    # Clean up
+    out.release()
+    for video in video_info:
+        video['cap'].release()
+    
+    print(f"Created grid MP4: {len(video_info)} views in {cols}x{rows} grid, {max_frames} frames at {fps} FPS")
+
+def create_pixel_to_world_mapping_from_hdr(hdr_file_path: Path, output_dir: Path = None) -> Path:
+    """
+    Creates a pixel-to-world coordinate mapping from an HDR file's VIEW parameters.
+    
+    Extracts viewpoint and view angle information from HDR file metadata,
+    then calculates the mapping between pixel coordinates and real-world coordinates.
+    
+    Args:
+        hdr_file_path (Path): Path to the HDR file containing VIEW parameters
+        output_dir (Path, optional): Directory to save the mapping file. 
+                                   Defaults to parent/outputs/aoi/
+    
+    Returns:
+        Path: Path to the generated mapping file
+        
+    Raises:
+        FileNotFoundError: If HDR file doesn't exist
+        ValueError: If VIEW parameters cannot be extracted
+        
+    Example:
+        >>> hdr_path = Path("image.hdr")
+        >>> mapping_file = create_pixel_to_world_mapping_from_hdr(hdr_path)
+        >>> print(f"Mapping saved to: {mapping_file}")
+    """
+    
+    # Step 1: Validate input
+    if not hdr_file_path.exists():
+        raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
+    
+    # Get image dimensions using simple PIL approach for GIF file
+    gif_path = hdr_file_path.parent / f"{hdr_file_path.stem}.gif"
+    
+    if gif_path.exists():
+        # Use GIF file for dimensions (more reliable with PIL)
+        width, height = Image.open(gif_path).size
+        print(f"GIF dimensions - width: {width}, height: {height}")
+    
+    # Step 2: Read HDR file header to extract VIEW parameters
+    print(f"Reading HDR file header: {hdr_file_path}")
+    
+    view_line = None
+    try:
+        with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # Read the header lines (typically the first few lines contain metadata)
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if line.startswith('VIEW='):
+                    view_line = line
+                    print(f"Found VIEW line at line {line_num}: {view_line}")
+                    break
+                # Stop reading after reasonable number of lines (HDR headers are typically short)
+                if line_num > 50:
+                    break
+    except Exception as e:
+        raise ValueError(f"Error reading HDR file: {e}")
+    
+    if not view_line:
+        raise ValueError("No VIEW line found in HDR file header")
+    
+    print(f"Found VIEW line: {view_line}")
+    
+    # Step 4: Extract -vp (viewpoint) and -vh/-vv (view angles) values
+    # Extract vp values (x, y, z coordinates of viewpoint)
+    vp_match = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', view_line)
+    if not vp_match:
+        raise ValueError("Could not extract -vp values from VIEW line")
+    
+    vp_x, vp_y, vp_z = map(float, vp_match.groups())
+    print(f"Viewpoint (vp): x={vp_x}, y={vp_y}, z={vp_z}")
+    
+    # Extract vh (horizontal view angle) and vv (vertical view angle)
+    vh_match = re.search(r'-vh\s+([\d.-]+)', view_line)
+    vv_match = re.search(r'-vv\s+([\d.-]+)', view_line)
+    
+    if not vh_match or not vv_match:
+        raise ValueError("Could not extract -vh or -vv values from VIEW line")
+    
+    vh_angle = float(vh_match.group(1))
+    vv_angle = float(vv_match.group(1))
+    print(f"View angles - horizontal (vh): {vh_angle}°, vertical (vv): {vv_angle}°")
+    
+    # Step 5: Calculate pixel-to-world coordinate mapping
+    world_width = 2 * vp_z * math.tan(math.radians(vh_angle / 2))
+    world_height = 2 * vp_z * math.tan(math.radians(vv_angle / 2))
+    
+    world_units_per_pixel_x = world_width / width
+    world_units_per_pixel_y = world_height / height
+    
+    print(f"World dimensions: {world_width:.3f} x {world_height:.3f} units")
+    print(f"World units per pixel: x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
+    
+    # Step 6: Generate pixel-to-world coordinate mapping file
+    if output_dir is None:
+        output_dir = hdr_file_path.parent.parent / "aoi"
+    
+    output_file = output_dir / "pixel_to_world_coordinate_map.txt"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_file, 'w') as f:
+        f.write("pixel_x pixel_y world_x world_y\n")
+        
+        # Generate mapping for all pixels
+        for py in range(height):
+            for px in range(width):
+                # Convert pixel coordinates to world coordinates
+                # Pixel (0,0) is top-left, world coordinates centered on viewpoint
+                world_x = vp_x + (px - width/2) * world_units_per_pixel_x
+                world_y = vp_y + (height/2 - py) * world_units_per_pixel_y  # Flip Y axis
+                
+                f.write(f"{px} {py} {world_x:.6f} {world_y:.6f}\n")
+    
+    print(f"Pixel-to-world coordinate mapping saved to: {output_file}")
+    print("Key coordinate mappings:")
+    key_points = [
+        (0, 0, "top-left"),
+        (width-1, 0, "top-right"),
+        (0, height-1, "bottom-left"),
+        (width-1, height-1, "bottom-right"),
+        (width//2, height//2, "center")
+    ]
+    for px, py, label in key_points:
+        world_x = vp_x + (px - width/2) * world_units_per_pixel_x
+        world_y = vp_y + (height/2 - py) * world_units_per_pixel_y
+        print(f"  {label}: pixel({px}, {py}) -> world({world_x:.3f}, {world_y:.3f})")
+    
+    return output_file
+
+def stamp_gif_files(gif_paths: list[Path], stamp_text: str, font_size: int = 24, 
+                   text_color: tuple = (255, 255, 255), background_color: tuple = (0, 0, 0), 
+                   background_alpha: int = 180, padding: int = 10, number_of_workers: int = 4) -> None:
+    """
+    Stamps individual GIF files with a given input string in the bottom right corner using parallel processing.
+    Can use template strings with {time} and {datetime} placeholders that get replaced with timestamp from filename.
+    
+    Args:
+        gif_paths (list[Path]): List of Path objects pointing to GIF files to stamp
+        stamp_text (str): Text template to stamp on each GIF. Can include {time} and {datetime} placeholders.
+        font_size (int, optional): Size of the text font. Defaults to 24.
+        text_color (tuple, optional): RGB color of the text. Defaults to white (255, 255, 255).
+        background_color (tuple, optional): RGB color of text background. Defaults to black (0, 0, 0).
+        background_alpha (int, optional): Alpha transparency of background (0=transparent, 255=opaque). Defaults to 180.
+        padding (int, optional): Padding around the text in pixels. Defaults to 10.
+        number_of_workers (int, optional): Number of parallel workers for processing. Defaults to 4.
+    
+    Returns:
+        None
+        
+    Example:
+        >>> gif_files = [Path('image1.gif'), Path('image2.gif')]
+        >>> stamp_gif_files(gif_files, 'Simulated on {datetime} for {time} lat, lon: -33.8248567, 151.2385034')
+        >>> stamp_gif_files(gif_files, 'Custom text', background_alpha=0)  # Fully transparent background
+        >>> stamp_gif_files(gif_files, 'Custom text', number_of_workers=8)  # Use 8 parallel workers
+    """
+    from PIL import ImageDraw, ImageFont
+    from datetime import datetime
+    
+    if not gif_paths:
+        print("No GIF files provided to stamp.")
+        return
+    
+    print(f"Stamping {len(gif_paths)} GIF files with text: '{stamp_text}' using {number_of_workers} workers")
+    
+    def _stamp_single_gif(gif_path: Path) -> str:
+        """
+        Stamps a single GIF file with the given text.
+        
+        Args:
+            gif_path (Path): Path to the GIF file to stamp
+            
+        Returns:
+            str: Status message for this file
+        """
+        try:
+            if not gif_path.exists():
+                return f"File not found: {gif_path.name}"
+
+            # Extract timestamp from filename and format the stamp text
+            final_text = stamp_text
+            filename = gif_path.stem
+            timestamp_match = re.search(r'(\d{4}_\d{4})', filename)
+            
+            if timestamp_match and ('{time}' in stamp_text or '{datetime}' in stamp_text):
+                timestamp = timestamp_match.group(1)
+                month_day = timestamp[:4]  # e.g., "0621"
+                hour_min = timestamp[5:]   # e.g., "0900"
+                
+                # Convert to readable format
+                month = month_day[:2]
+                day = month_day[2:]
+                hour = hour_min[:2]
+                minute = hour_min[2:]
+                
+                # Format as "June 21 09:00"
+                month_names = {
+                    "01": "January", "02": "February", "03": "March", "04": "April",
+                    "05": "May", "06": "June", "07": "July", "08": "August", 
+                    "09": "September", "10": "October", "11": "November", "12": "December"
+                }
+                
+                month_name = month_names.get(month, f"Month{month}")
+                formatted_time = f"{month_name} {int(day)} {hour}:{minute}"
+                
+                # Get current datetime
+
+                current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
+                
+                # Replace placeholders in template
+                final_text = stamp_text.format(time=formatted_time, datetime=current_datetime)
+            
+            # Try to load a font for this worker (each thread loads its own)
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except (OSError, IOError):
+                try:
+                    font = ImageFont.load_default()
+                except:
+                    font = None
+            
+            # Open the GIF
+            gif = Image.open(gif_path)
+            
+            # Prepare to store all frames
+            frames = []
+            
+            # Process each frame
+            try:
+                while True:
+                    frame = gif.copy()
+                    
+                    # Convert to RGBA to handle transparency properly
+                    if frame.mode != 'RGBA':
+                        frame = frame.convert('RGBA')
+                    
+                    # Create a drawing context
+                    draw = ImageDraw.Draw(frame)
+                    
+                    # Get text dimensions
+                    if font:
+                        bbox = draw.textbbox((0, 0), final_text, font=font)
+                        text_width = bbox[2] - bbox[0]
+                        text_height = bbox[3] - bbox[1]
+                    else:
+                        # Fallback estimation if font loading failed
+                        text_width = len(final_text) * 8
+                        text_height = 16
+                    
+                    # Calculate position for bottom right corner
+                    x = frame.width - text_width - padding
+                    y = frame.height - text_height - padding
+                    
+                    # Draw background rectangle
+                    rect_x1 = x - padding//2
+                    rect_y1 = y - padding//2
+                    rect_x2 = x + text_width + padding//2
+                    rect_y2 = y + text_height + padding//2
+                    
+                    draw.rectangle([rect_x1, rect_y1, rect_x2, rect_y2], 
+                                 fill=background_color + (background_alpha,))  # Configurable transparency background
+                    
+                    # Draw the text
+                    if font:
+                        draw.text((x, y), final_text, font=font, fill=text_color + (255,))
+                    else:
+                        draw.text((x, y), final_text, fill=text_color + (255,))
+                    
+                    frames.append(frame)
+                    gif.seek(gif.tell() + 1)
+                    
+            except EOFError:
+                # End of frames
+                pass
+            
+            # Save the stamped GIF
+            if frames:
+                # Preserve original GIF properties
+                duration = gif.info.get('duration', 100)
+                loop = gif.info.get('loop', 0)
+                
+                frames[0].save(
+                    gif_path,
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=duration,
+                    loop=loop,
+                    format='GIF'
+                )
+                
+                return f"Stamped {gif_path.name} ({len(frames)} frames)"
+            else:
+                return f"No frames found in {gif_path.name}"
+            
+        except Exception as e:
+            return f"Error stamping {gif_path.name}: {e}"
+    
+    # Process GIFs in parallel
+    if number_of_workers == 1:
+        # Sequential processing for single worker
+        for gif_path in gif_paths:
+            result = _stamp_single_gif(gif_path)
+            print(result)
+    else:
+        # Parallel processing
+        with ThreadPoolExecutor(max_workers=number_of_workers) as executor:
+            futures = [executor.submit(_stamp_single_gif, gif_path) for gif_path in gif_paths]
+            
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    print(result)
+                except Exception as e:
+                    print(f"✗ Error in parallel processing: {e}")
+    
+    print(f"Completed stamping {len(gif_paths)} GIF files")
 
 

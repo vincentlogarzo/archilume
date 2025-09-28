@@ -7,6 +7,7 @@ Description-Content-Type: text/markdown
 Requires-Dist: ifcopenshell>=0.8.3.post1
 Requires-Dist: numpy>=2.3.2
 Requires-Dist: open3d>=0.19.0
+Requires-Dist: opencv-python>=4.11.0.86
 Requires-Dist: pandas>=2.3.1
 Requires-Dist: pillow>=11.3.0
 Requires-Dist: pyradiance>=1.1.5
@@ -40,6 +41,8 @@ pip install -e .
 |-------------|---------|-------------|
 | Python | 3.12+ | [python.org](https://python.org) |
 | Radiance | Latest | [radiance-online.org](https://www.radiance-online.org/) |
+
+**Important**: Radiance must be installed to `C:\Radiance\bin\` on Windows. The Archilume library expects the `obj2rad.exe` executable to be located at `C:\Radiance\bin\obj2rad.exe`.
 
 ### Basic Usage
 

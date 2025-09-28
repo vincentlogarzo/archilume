@@ -35,6 +35,7 @@ def main():
         Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj",
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
         ]
+    #TODO: input obj must be allowed in its native format of mm exported from revit, future iterations should identify the unit and utilise the correct converter to handle this issue. 
 
     # Locate the room boundaries CSV file of the building of interest to this study. This should be exported from Revit
     #TODO: future iteration of this code will allow for input of a revit file, and use of revit API to extract the room boundaries csv, this could also be visualised in the obj_viewer.py example file.
@@ -67,6 +68,7 @@ def main():
     )
 
     sky_generator.generate_sunny_sky_series()
+    #TODO: input class inputs to this function as inputs to the class, therefore the class can be instantiated without any variables, unless a wants to override the defaults.
     sky_generator.generate_overcast_skyfile()
 
 

@@ -142,6 +142,7 @@ def generate_sunny_sky_rendering_commands(octree_path: Path, image_dir: Path, sk
         overcast_hdr_path = image_dir / f"{octree_base_name}_{view_file_name}__TenK_cie_overcast.hdr"
 
         # constructed commands that will be executed in parallel from each other untill all are complete.
+        #FIXME: the -vtv n the rpict command may be redundant as this is already specified in the view file. update the view file code to use vtv instead of vtl and remove -vtv from here and test the results. 
         temp_octree_with_sky_path = Path(octree_path).parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
         oconv_command, rpict_command, pcomb_command, ra_gif_command = [
             rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}" ,
@@ -162,9 +163,9 @@ def generate_sunny_sky_rendering_commands(octree_path: Path, image_dir: Path, sk
     return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_commands, ra_gif_commands
 
 
-# --- 1. get input files ---
+# --- 01. get input files ---
 skyless_octree_path = Path(__file__).parent.parent / "outputs" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
-
+overcast_sky_file_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad"
 sky_files_dir = Path(__file__).parent.parent / "outputs" / "sky"
 view_files_dir = Path(__file__).parent.parent / "outputs" / "views_grids"
 image_dir = Path(__file__).parent.parent / "outputs" / "images"
@@ -172,10 +173,7 @@ sky_files = [path for path in sky_files_dir.glob('*.sky')]
 view_files = [path for path in view_files_dir.glob('*.vp')] 
 
 
-overcast_sky_file_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad"
-
-
-# --- 2. Combine skyless octree with the TenK_cie_overcast.rad sky file for ambient file generation, these renderings will be compiled with the sunny sky rendering later. ---
+# --- 02. Combine skyless octree with the TenK_cie_overcast.rad sky file for ambient file generation, these renderings will be compiled with the sunny sky rendering later. ---
 r"""
 # 2.1 example frozen skyless octree
     oconv -f outputs\rad\materials.mtl outputs\rad\87cowles_BLD_noWindows.rad outputs\rad\87cowles_site.rad > outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct
@@ -201,12 +199,10 @@ utils.execute_new_radiance_commands(rpict_low_qual_commands, number_of_workers =
 utils.execute_new_radiance_commands(rpict_med_qual_commands, number_of_workers = 8)
 
 
-# --- 3. Generate all commands that shall be passsed to radiance programmes in parallel for sunny sky files. --- 
+# --- 03. Generate all commands that shall be passsed to radiance programmes in parallel for sunny sky files. --- 
 r"""
 # 3.1 to combine an skyless octree with a sunny sky
     oconv -i outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct outputs\sky\SS_0621_0900.sky > outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
-# 3.2 example radiance rpict command for direct sun image:
-    rpict -w -vtv -t 2 -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 1024 -as 64 -ar 64 -ps 5 -lw 0.001 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
 """
 
 temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_commands, ra_gif_commands = generate_sunny_sky_rendering_commands(
@@ -223,40 +219,66 @@ utils.execute_new_radiance_commands(oconv_commands, number_of_workers = 6)
 utils.delete_files(temp_octree_with_sky_paths)
 
 
-# --- 4. rendering sunny sky octrees for each view_file ---
+# --- 04. rendering sunny sky octrees for each view_file ---
 r"""
 4.1:
-    rpict -w -vtv -t 3 -vf {view_file_path} -x {x_res} -y {y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}"
+    rpict -w -vtv -t 3 -vf view_file.vp -x 2048 -y 2048 -ab 0 -ad 1024 -as 64 -ar 64 -ps 5 -lw 0.001 scene_with_sky.oct > output.hdr
 """
 utils.execute_new_radiance_commands(rpict_commands, number_of_workers = 10)
 
 
-# --- 5. Add the direct sunlight and indrect daylighting renderings together. 
+# --- 05. Add the direct sunlight and indrect daylighting renderings together. 
 r"""
 5.1:
+    pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" image_overcast.hdr image_sunny_sky.hdr > combined.hdr
     pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.hdr outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1400.hdr > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1400_combined.hdr
 """
 utils.execute_new_radiance_commands(pcomb_commands, number_of_workers = 14)
 
 
-# --- 7. run ra_gif to convert output hdr files ---
+# --- 06. run ra_gif to convert output hdr files ---
 r"""
 7.1:
     ra_gif -e -2 -d -n 256 outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1400_combined.hdr outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1400_combined.gif
+    ra_gif -e -2 outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1400_combined.hdr outputs\images\87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1400_combined.gif
 """
+#TODO: change this back to ra_tiff to retain the dynamic range of the image for further processing, this will ensure a much smoother image output and final resulting images, and a much larger file. 
 utils.execute_new_radiance_commands(ra_gif_commands, number_of_workers = 10)
-combined_hdr_files_paths_for_deletion = [Path(cmd.split(' > ')[-1].strip()) for cmd in pcomb_commands if ' > ' in cmd]
-utils.delete_files(combined_hdr_files_paths_for_deletion)
+# combined_hdr_files_paths_for_deletion = [Path(cmd.split(' > ')[-1].strip()) for cmd in pcomb_commands if ' > ' in cmd]
+# utils.delete_files(combined_hdr_files_paths_for_deletion)
 
 
-# ---8. Overlay room boundaries with room boundary name and apartment numbers and room identifier of interest with an instant area of compliance for that timestep, place timestamp on image, "Simulated on YYMMDD HH:MM for June 21 09:00 latitude: -37.8136"
-# TODO: this step
+# --- 07. Stamp images with relevant information ---
+
+# --- 07.1 create a pixel to real world coordiante map.txt ---
+hdr_file_path = next(image_dir.glob('*_combined.hdr'), None)
+utils.create_pixel_to_world_mapping_from_hdr(hdr_file_path)
+
+# --- 07.2 First pass overlay to each .gif file to stamp with "Simulated on YYMMDD HH:MM for June 21 09:00 latitude: -37.8136" ---
+gif_files_to_stamp = [path for path in image_dir.glob('*_combined.gif')]
+
+# Extract timestamps from filenames
+stamp_template  = "Simulated on {datetime} for {time} lat, lon: -33.8248567, 151.2385034"
+utils.stamp_gif_files(gif_files_to_stamp, stamp_template, font_size=24, text_color=(255, 255, 255), background_alpha=0, number_of_workers=10)
+#TODO: ensure this stamp also contain the level number in the stamp, this will help identify the level when viewing the final grid mp4.
 
 
+# --- 07.3 Second pass overlay to stamp each .gif with area of interest (.AOI) including the "APT: apartment_name, ROOM: room_name" in the centre of room. Bedrooms will be quantitied for information purposes by shown differently to the rest as they do not form part of compliance. e.g. if the relocation of a living space to the current location of the bedroom would affect compliance or allow it to pass. ---
 
-# --- 9. turn gif files with overlays into animated gif with a results table on the side
-utils.combine_gifs_by_view(image_dir, view_files, duration=500)
 
-# --- 10. Create final gif combining all the individual giffs at lower quality with 9 windows for each level.
-individual_view_gifs = [path for path in image_dir.glob('animated_results_*.gif')]
-utils.create_grid_gif(individual_view_gifs, image_dir, grid_size=(3, 2), target_size=(1024, 1024), duration=800) 
+# --- 07.4 Third pass overlay of the results of each time step on each .gif gile for each aoi, there may need to be work to exclude full height or determine of % of compliant area. If its an absolute amount of area, then discrpancies between the AOI and say kitchen joinery does not need ot be considere , it is is a % of compliance area, then excluding part of the aoi that are acually our of bounds is important.
+
+
+# --- 07.5 Create summary image that shows a scale with each pixel to determine the combined area that is illuminanted in each aoi at each time step, and draw a chart of each data point to show the real area illuminanted and the period of time it occurs over. Then determine then place the ADDG sunlihgt access thresholds of compliance, i. .e 1m2 for at least 15 mins in either the living, or open private space. 
+
+# --- 08. turn gif files with overlays into animated gif with a results table on the side
+utils.combine_gifs_by_view(image_dir, view_files, output_format='gif', number_of_workers=8)
+utils.combine_gifs_by_view(image_dir, view_files, output_format='mp4', number_of_workers=8)
+#TODO: create new function that replaces the above and converts the stamped gifs into individual mp4 file.
+
+# --- 9. Create final MP4 combining all the individual MP4s at lower quality into a grid
+individual_view_mp4s = [path for path in image_dir.glob('animated_results_*.mp4')]
+utils.create_grid_mp4(individual_view_mp4s, image_dir, grid_size=(3, 2), target_size=(1024, 1024), fps=1)
+
+individual_view_mp4s = [path for path in image_dir.glob('animated_results_*.gif')]
+utils.create_grid_gif(individual_view_mp4s, image_dir, grid_size=(3, 2), target_size=(1024, 1024), duration = 400)

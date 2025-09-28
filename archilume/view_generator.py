@@ -468,6 +468,4 @@ class ViewFileGenerator:
 
 
     #TODO: further development below in generating 3D axo views to allow for visualisation of the entire input model and its geometry.  See function get obj bounds below, that could assist in developing this functionality.
-   # use         
-            # getbbox -h outputs\rad\87cowles_BLD_noWindows.rad
-                # expected outputs: xmin xmax ymin ymax zmin zmax
+    # use getbbox -h outputs\rad\87cowles_BLD_noWindows.rad # expected outputs: xmin xmax ymin ymax zmin zmax
