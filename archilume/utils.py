@@ -10,7 +10,8 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Union
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+from datetime import datetime
 
 # Third-party imports
 import numpy as np
@@ -362,12 +363,12 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                 return_code = process.poll()
                 
                 if return_code == 0:
-                    print(f"✓ Completed successfully: {command}")
+                    print(f"Completed successfully: {command}")
                 else:
-                    print(f"✗ Failed with return code {return_code}: {command}")
+                    print(f"Failed with return code {return_code}: {command}")
                     
             except Exception as e:
-                print(f"✗ Error executing command '{command}': {e}")
+                print(f"Error executing command '{command}': {e}")
         
         if number_of_workers == 1:
             # Sequential execution for single worker
@@ -406,17 +407,17 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         number_of_workers=number_of_workers
     )
 
-    print('All new commands have successfully completed')
+    print(f"All new commands have successfully completed e.g. {commands[0]}")
 
-def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
+def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
     """Create separate animated files grouped by view file names using parallel processing.
     
-    Scans the image directory for GIF files and groups them by view file names. Creates
+    Scans the image directory for TIFF files and groups them by view file names. Creates
     separate animated files for each view in parallel for improved performance.
     
     Args:
-        image_dir: Directory containing the GIF files to process
-        view_files: List of view file Path objects used to group GIFs by name
+        image_dir: Directory containing the TIFF files to process
+        view_files: List of view file Path objects used to group TIFFs by name
         fps: Frames per second for the output animation. If None, defaults to 1 FPS (1 second per frame)
         output_format: Output format - 'gif' or 'mp4' (default: 'gif')
         number_of_workers: Number of parallel workers for processing views (default: 4)
@@ -426,17 +427,17 @@ def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=Non
         
     Example:
         >>> view_files = [Path('plan_L02.vp'), Path('section_A.vp')]
-        >>> combine_gifs_by_view(Path('outputs/images'), view_files, fps=2.0, output_format='mp4', number_of_workers=6)
-        >>> combine_gifs_by_view(Path('outputs/images'), view_files, output_format='gif')  # Uses 1 FPS with 4 workers
+        >>> combine_tiffs_by_view(Path('outputs/images'), view_files, fps=2.0, output_format='mp4', number_of_workers=6)
+        >>> combine_tiffs_by_view(Path('outputs/images'), view_files, output_format='gif')  # Uses 1 FPS with 4 workers
     """
-    def _combine_gifs(gif_paths: list[Path], output_path: Path, duration: int=100, output_format: str='gif') -> None:
-        """Combine multiple GIF files into a single animated file.
+    def _combine_tiffs(tiff_paths: list[Path], output_path: Path, duration: int=100, output_format: str='gif') -> None:
+        """Combine multiple TIFF files into a single animated file.
         
-        Takes a list of GIF file paths and combines them sequentially into a single
-        animated file. All input GIFs are appended as frames in the output animation.
+        Takes a list of TIFF file paths and combines them sequentially into a single
+        animated file. All input TIFFs are appended as frames in the output animation.
         
         Args:
-            gif_paths: List of Path objects pointing to the input GIF files to combine
+            tiff_paths: List of Path objects pointing to the input TIFF files to combine
             output_path: Path where the combined file will be saved
             duration: Duration in milliseconds for each frame in the output file (default: 100)
             output_format: Output format - 'gif' or 'mp4' (default: 'gif')
@@ -446,19 +447,19 @@ def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=Non
             
         Raises:
             PIL.UnidentifiedImageError: If any of the input files are not valid images
-            FileNotFoundError: If any of the input GIF files don't exist
+            FileNotFoundError: If any of the input TIFF files don't exist
             PermissionError: If unable to write to the output path
             ValueError: If output_format is not supported
             
         Example:
-            >>> gif_files = [Path('frame1.gif'), Path('frame2.gif'), Path('frame3.gif')]
-            >>> _combine_gifs(gif_files, Path('animation.gif'), duration=200, output_format='gif')
-            >>> _combine_gifs(gif_files, Path('animation.mp4'), duration=200, output_format='mp4')
+            >>> tiff_files = [Path('frame1.tiff'), Path('frame2.tiff'), Path('frame3.tiff')]
+            >>> _combine_tiffs(tiff_files, Path('animation.gif'), duration=200, output_format='gif')
+            >>> _combine_tiffs(tiff_files, Path('animation.mp4'), duration=200, output_format='mp4')
         """
         
         if output_format.lower() == 'gif':
-            gifs = [Image.open(f) for f in gif_paths]
-            gifs[0].save(output_path, save_all=True, append_images=gifs[1:], 
+            tiffs = [Image.open(f) for f in tiff_paths]
+            tiffs[0].save(output_path, save_all=True, append_images=tiffs[1:], 
                         duration=duration, loop=0)
         elif output_format.lower() == 'mp4':
             try:
@@ -466,53 +467,48 @@ def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=Non
             except ImportError:
                 raise ImportError("OpenCV (cv2) is required for MP4 output. Install with: pip install opencv-python")
             
-            # Get dimensions from first GIF
-            first_gif = Image.open(gif_paths[0])
-            width, height = first_gif.size
+            # Get dimensions from first TIFF
+            first_tiff = Image.open(tiff_paths[0])
+            width, height = first_tiff.size
             
             # Set up video writer (fps = 1000/duration for proper timing)
             fps = 1000 / duration if duration > 0 else 10
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             video_writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
             
-            # Process each GIF and add frames to video
-            for gif_path in gif_paths:
-                gif = Image.open(gif_path)
-                try:
-                    while True:
-                        # Convert PIL image to OpenCV format (BGR)
-                        frame_rgb = gif.convert('RGB')
-                        frame_bgr = cv2.cvtColor(np.array(frame_rgb), cv2.COLOR_RGB2BGR)
-                        video_writer.write(frame_bgr)
-                        gif.seek(gif.tell() + 1)
-                except EOFError:
-                    pass
+            # Process each TIFF and add frames to video
+            for tiff_path in tiff_paths:
+                tiff = Image.open(tiff_path)
+                # Convert PIL image to OpenCV format (BGR)
+                frame_rgb = tiff.convert('RGB')
+                frame_bgr = cv2.cvtColor(np.array(frame_rgb), cv2.COLOR_RGB2BGR)
+                video_writer.write(frame_bgr)
             
             video_writer.release()
         else:
             raise ValueError(f"Unsupported output format: {output_format}. Use 'gif' or 'mp4'.")
 
-    gif_files = [path for path in image_dir.glob('*.gif')]
+    tiff_files = [path for path in image_dir.glob('*.tiff')]
     
     # Filter out previously created result files to avoid circular references
-    gif_files = [gif for gif in gif_files if not gif.name.startswith('animated_results_') and gif.name != 'animated_results_grid_all_levels.gif']
+    tiff_files = [tiff for tiff in tiff_files if not tiff.name.startswith('animated_results_') and tiff.name != 'animated_results_grid_all_levels.tiff']
     
-    if not gif_files:
-        print("No GIF files found in the image directory (excluding result files).")
+    if not tiff_files:
+        print("No TIFF files found in the image directory (excluding result files).")
         return
     
     def _process_single_view(view_file: Path) -> str:
         """Process a single view file to create animated output."""
         view_name = view_file.stem
-        # Find all GIF files that contain this view name
-        view_gif_files = [gif for gif in gif_files if view_name in gif.name]
+        # Find all TIFF files that contain this view name
+        view_tiff_files = [tiff for tiff in tiff_files if view_name in tiff.name]
         
-        if not view_gif_files:
-            return f"✗ No GIF files found for view: {view_name}"
+        if not view_tiff_files:
+            return f"X No TIFF files found for view: {view_name}"
         
         try:
             # Calculate duration based on number of frames found
-            num_frames = len(view_gif_files)
+            num_frames = len(view_tiff_files)
             
             if fps is None:
                 # Auto-calculate: set duration to match number of frames (1 second per frame)
@@ -531,11 +527,11 @@ def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=Non
             if output_file_path.exists():
                 output_file_path.unlink()
             
-            _combine_gifs(view_gif_files, output_file_path, per_frame_duration, output_format)
-            return f"✓ Created {output_format.upper()} animation for {view_name}: {num_frames} frames, {duration/1000:.1f}s at {calculated_fps} FPS"
+            _combine_tiffs(view_tiff_files, output_file_path, per_frame_duration, output_format)
+            return f"OK Created {output_format.upper()} animation for {view_name}: {num_frames} frames, {duration/1000:.1f}s at {calculated_fps} FPS"
             
         except Exception as e:
-            return f"✗ Error processing {view_name}: {e}"
+            return f"X Error processing {view_name}: {e}"
     
     print(f"Processing {len(view_files)} views using {number_of_workers} workers")
     
@@ -556,12 +552,20 @@ def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=Non
                     result = future.result()
                     print(result)
                 except Exception as e:
-                    print(f"✗ Error in parallel view processing: {e}")
+                    print(f"X Error in parallel view processing: {e}")
     
     print(f"Completed processing {len(view_files)} view animations")
 
+def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
+    """Legacy function that calls combine_tiffs_by_view for backward compatibility.
+    
+    This function is deprecated. Use combine_tiffs_by_view instead.
+    """
+    print("Warning: combine_gifs_by_view is deprecated. Use combine_tiffs_by_view instead.")
+    combine_tiffs_by_view(image_dir, view_files, fps, output_format, number_of_workers)
+
 def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3, 3), 
-                   target_size: tuple=(200, 200), duration: int=500) -> None:
+                   target_size: tuple=(200, 200), fps: float=1.0) -> None:
     """Create a grid layout GIF combining multiple individual GIFs.
     
     Takes multiple GIF files and combines them into a single animated GIF with a grid layout.
@@ -569,17 +573,17 @@ def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3,
     
     Args:
         gif_paths: List of Path objects pointing to input GIF files
-        output_path: Path where the grid GIF will be saved
+        image_dir: Directory where the grid GIF will be saved
         grid_size: Tuple (cols, rows) defining the grid dimensions (default: 3x3)
         target_size: Tuple (width, height) for each cell in pixels (default: 200x200)
-        duration: Duration in milliseconds for each frame (default: 500)
+        fps: Frames per second for the animation (default: 1.0)
         
     Returns:
         None
         
     Example:
         >>> gif_files = [Path('view1.gif'), Path('view2.gif'), Path('view3.gif')]
-        >>> create_grid_gif(gif_files, Path('grid_animation.gif'), grid_size=(2, 2))
+        >>> create_grid_gif(gif_files, image_dir, grid_size=(2, 2), fps=2.0)
     """
     if not gif_paths:
         print("No GIF files provided for grid creation.")
@@ -591,6 +595,9 @@ def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3,
     # Delete existing output file if it exists
     if output_path.exists():
         output_path.unlink()
+    
+    # Convert fps to duration in milliseconds
+    duration = int(1000 / fps) if fps > 0 else 1000
     
     cols, rows = grid_size
     cell_width, cell_height = target_size
@@ -790,13 +797,35 @@ def create_pixel_to_world_mapping_from_hdr(hdr_file_path: Path, output_dir: Path
     if not hdr_file_path.exists():
         raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
     
-    # Get image dimensions using simple PIL approach for GIF file
-    gif_path = hdr_file_path.parent / f"{hdr_file_path.stem}.gif"
-    
-    if gif_path.exists():
-        # Use GIF file for dimensions (more reliable with PIL)
-        width, height = Image.open(gif_path).size
-        print(f"GIF dimensions - width: {width}, height: {height}")
+    try:
+        with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            line_count = 0
+            for line in f:
+                line_count += 1
+                line = line.strip()
+                
+                # Look for the resolution line pattern: -Y height +X width
+                if line.startswith('-Y') and '+X' in line:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part == '-Y' and i + 1 < len(parts):
+                            height = int(parts[i + 1])
+                        elif part == '+X' and i + 1 < len(parts):
+                            width = int(parts[i + 1])
+                    if width and height:
+                        print(f"HDR dimensions - width: {width}, height: {height}")
+                        break
+                
+                # Stop reading when we hit binary data or after reasonable number of lines
+                if line_count > 100 or (len(line) > 0 and any(ord(c) > 127 for c in line if c.isprintable() == False)):
+                    print(f"Stopped reading at line {line_count}")
+                    break
+        
+        if not width or not height:
+            raise ValueError("Could not find resolution line in HDR file header")
+            
+    except Exception as e:
+        raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
     
     # Step 2: Read HDR file header to extract VIEW parameters
     print(f"Reading HDR file header: {hdr_file_path}")
@@ -888,192 +917,84 @@ def create_pixel_to_world_mapping_from_hdr(hdr_file_path: Path, output_dir: Path
     
     return output_file
 
-def stamp_gif_files(gif_paths: list[Path], stamp_text: str, font_size: int = 24, 
-                   text_color: tuple = (255, 255, 255), background_color: tuple = (0, 0, 0), 
-                   background_alpha: int = 180, padding: int = 10, number_of_workers: int = 4) -> None:
-    """
-    Stamps individual GIF files with a given input string in the bottom right corner using parallel processing.
-    Can use template strings with {time} and {datetime} placeholders that get replaced with timestamp from filename.
+def stamp_tiff_files(tiff_paths: list[Path], font_size: int = 24, text_color: tuple = (255, 255, 0), background_alpha: int = 0, padding: int = 10, number_of_workers: int = 4) -> None:
+    """Stamps TIFF files with location/datetime info in bottom right corner."""
     
-    Args:
-        gif_paths (list[Path]): List of Path objects pointing to GIF files to stamp
-        stamp_text (str): Text template to stamp on each GIF. Can include {time} and {datetime} placeholders.
-        font_size (int, optional): Size of the text font. Defaults to 24.
-        text_color (tuple, optional): RGB color of the text. Defaults to white (255, 255, 255).
-        background_color (tuple, optional): RGB color of text background. Defaults to black (0, 0, 0).
-        background_alpha (int, optional): Alpha transparency of background (0=transparent, 255=opaque). Defaults to 180.
-        padding (int, optional): Padding around the text in pixels. Defaults to 10.
-        number_of_workers (int, optional): Number of parallel workers for processing. Defaults to 4.
-    
-    Returns:
-        None
-        
-    Example:
-        >>> gif_files = [Path('image1.gif'), Path('image2.gif')]
-        >>> stamp_gif_files(gif_files, 'Simulated on {datetime} for {time} lat, lon: -33.8248567, 151.2385034')
-        >>> stamp_gif_files(gif_files, 'Custom text', background_alpha=0)  # Fully transparent background
-        >>> stamp_gif_files(gif_files, 'Custom text', number_of_workers=8)  # Use 8 parallel workers
-    """
-    from PIL import ImageDraw, ImageFont
-    from datetime import datetime
-    
-    if not gif_paths:
-        print("No GIF files provided to stamp.")
+    if not tiff_paths:
         return
     
-    print(f"Stamping {len(gif_paths)} GIF files with text: '{stamp_text}' using {number_of_workers} workers")
-    
-    def _stamp_single_gif(gif_path: Path) -> str:
-        """
-        Stamps a single GIF file with the given text.
-        
-        Args:
-            gif_path (Path): Path to the GIF file to stamp
-            
-        Returns:
-            str: Status message for this file
-        """
+    def _stamp_single_tiff(tiff_path: Path) -> str:
+        """Stamp a single TIFF file."""
         try:
-            if not gif_path.exists():
-                return f"File not found: {gif_path.name}"
-
-            # Extract timestamp from filename and format the stamp text
-            final_text = stamp_text
-            filename = gif_path.stem
-            timestamp_match = re.search(r'(\d{4}_\d{4})', filename)
+            if not tiff_path.exists():
+                return f"File not found: {tiff_path.name}"
             
-            if timestamp_match and ('{time}' in stamp_text or '{datetime}' in stamp_text):
-                timestamp = timestamp_match.group(1)
-                month_day = timestamp[:4]  # e.g., "0621"
-                hour_min = timestamp[5:]   # e.g., "0900"
-                
-                # Convert to readable format
-                month = month_day[:2]
-                day = month_day[2:]
-                hour = hour_min[:2]
-                minute = hour_min[2:]
-                
-                # Format as "June 21 09:00"
-                month_names = {
-                    "01": "January", "02": "February", "03": "March", "04": "April",
-                    "05": "May", "06": "June", "07": "July", "08": "August", 
-                    "09": "September", "10": "October", "11": "November", "12": "December"
-                }
-                
-                month_name = month_names.get(month, f"Month{month}")
-                formatted_time = f"{month_name} {int(day)} {hour}:{minute}"
-                
-                # Get current datetime
-
-                current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
-                
-                # Replace placeholders in template
-                final_text = stamp_text.format(time=formatted_time, datetime=current_datetime)
+            # Extract info from filename
+            filename = tiff_path.stem
+            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
+            level = "Unknown"
+            timestep = "Unknown"
             
-            # Try to load a font for this worker (each thread loads its own)
+            # Extract timestamp
+            if ts := re.search(r'(\d{4}_\d{4})', filename):
+                ts_str = ts.group(1)
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                month = int(ts_str[:2]) - 1
+                day = int(ts_str[2:4])
+                hour = ts_str[5:7]
+                minute = ts_str[7:9]
+                timestep = f"{month_names[month]} {day} {hour}:{minute}"
+            
+            # Extract level
+            if level_match := re.search(r'[_]?L(\d+)', filename):
+                level = f"L{level_match.group(1)}"
+            
+            # Create stamp text using f-string with actual variables
+            final_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Location: lat: -33.8248567"
+            #FIXME: the lat must be sourced from the radiance metadata if available, 
+            
+            # Load font and image
             try:
                 font = ImageFont.truetype("arial.ttf", font_size)
             except (OSError, IOError):
-                try:
-                    font = ImageFont.load_default()
-                except:
-                    font = None
+                font = ImageFont.load_default()
             
-            # Open the GIF
-            gif = Image.open(gif_path)
+            image = Image.open(tiff_path).convert('RGBA')
+            draw = ImageDraw.Draw(image)
             
-            # Prepare to store all frames
-            frames = []
+            # Calculate text position (bottom right)
+            bbox = draw.textbbox((0, 0), final_text, font=font)
+            text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            x = image.width - text_width - padding
+            y = image.height - text_height - padding
             
-            # Process each frame
-            try:
-                while True:
-                    frame = gif.copy()
-                    
-                    # Convert to RGBA to handle transparency properly
-                    if frame.mode != 'RGBA':
-                        frame = frame.convert('RGBA')
-                    
-                    # Create a drawing context
-                    draw = ImageDraw.Draw(frame)
-                    
-                    # Get text dimensions
-                    if font:
-                        bbox = draw.textbbox((0, 0), final_text, font=font)
-                        text_width = bbox[2] - bbox[0]
-                        text_height = bbox[3] - bbox[1]
-                    else:
-                        # Fallback estimation if font loading failed
-                        text_width = len(final_text) * 8
-                        text_height = 16
-                    
-                    # Calculate position for bottom right corner
-                    x = frame.width - text_width - padding
-                    y = frame.height - text_height - padding
-                    
-                    # Draw background rectangle
-                    rect_x1 = x - padding//2
-                    rect_y1 = y - padding//2
-                    rect_x2 = x + text_width + padding//2
-                    rect_y2 = y + text_height + padding//2
-                    
-                    draw.rectangle([rect_x1, rect_y1, rect_x2, rect_y2], 
-                                 fill=background_color + (background_alpha,))  # Configurable transparency background
-                    
-                    # Draw the text
-                    if font:
-                        draw.text((x, y), final_text, font=font, fill=text_color + (255,))
-                    else:
-                        draw.text((x, y), final_text, fill=text_color + (255,))
-                    
-                    frames.append(frame)
-                    gif.seek(gif.tell() + 1)
-                    
-            except EOFError:
-                # End of frames
-                pass
+            # Draw background and text
+            if background_alpha > 0:
+                draw.rectangle([x - padding//2, y - padding//2, 
+                              x + text_width + padding//2, y + text_height + padding//2], 
+                              fill=(0, 0, 0, background_alpha))
             
-            # Save the stamped GIF
-            if frames:
-                # Preserve original GIF properties
-                duration = gif.info.get('duration', 100)
-                loop = gif.info.get('loop', 0)
-                
-                frames[0].save(
-                    gif_path,
-                    save_all=True,
-                    append_images=frames[1:],
-                    duration=duration,
-                    loop=loop,
-                    format='GIF'
-                )
-                
-                return f"Stamped {gif_path.name} ({len(frames)} frames)"
-            else:
-                return f"No frames found in {gif_path.name}"
+            draw.text((x, y), final_text, font=font, fill=text_color + (255,))
+            image.save(tiff_path, format='TIFF')
+            
+            return f"Stamped {tiff_path.name}"
             
         except Exception as e:
-            return f"Error stamping {gif_path.name}: {e}"
+            return f"Error stamping {tiff_path.name}: {e}"
     
-    # Process GIFs in parallel
+    # Process files
+    print(f"Stamping {len(tiff_paths)} TIFF files using {number_of_workers} workers")
+    
     if number_of_workers == 1:
-        # Sequential processing for single worker
-        for gif_path in gif_paths:
-            result = _stamp_single_gif(gif_path)
-            print(result)
+        for tiff_path in tiff_paths:
+            print(_stamp_single_tiff(tiff_path))
     else:
-        # Parallel processing
         with ThreadPoolExecutor(max_workers=number_of_workers) as executor:
-            futures = [executor.submit(_stamp_single_gif, gif_path) for gif_path in gif_paths]
-            
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    result = future.result()
-                    print(result)
-                except Exception as e:
-                    print(f"✗ Error in parallel processing: {e}")
+            for future in concurrent.futures.as_completed(
+                [executor.submit(_stamp_single_tiff, path) for path in tiff_paths]):
+                print(future.result())
     
-    print(f"Completed stamping {len(gif_paths)} GIF files")
+    print(f"Completed stamping {len(tiff_paths)} TIFF files")
 
 
