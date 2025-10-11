@@ -119,6 +119,7 @@ class ViewFileGenerator:
         Generate individual AOI files for each room from processed CSV data.
         
         Creates one .aoi file per room containing boundary coordinates and metadata.
+        Includes view file association header for matching AOI to output images.
         
         Parameters:
             csv_path: Path to processed CSV file with room boundary coordinates
@@ -151,12 +152,25 @@ class ViewFileGenerator:
 
             # get centre of mass of group
             centroid_x, centroid_y = calc_centroid_of_points(group[["x_coords", "y_coords"]])
+            
+            # Determine associated view file based on z_coordinate
+            room_z_coord = group['z_coords'].iloc[0]
+            
+            # Get unique z coordinates and find which level this room belongs to
+            all_z_coords = sorted(df['z_coords'].unique())
+            try:
+                level_index = all_z_coords.index(room_z_coord)
+                associated_view_file = f"plan_L{level_index:02}.vp"
+            except ValueError:
+                # Fallback if z_coord not found in unique list
+                associated_view_file = "plan_L00.vp"
 
             # 1. Header lines
             header_line1 = f"AOI Points File: {apartment_name} {room_name}"
-            header_line2 = f"FFL z height(m): {group['z_coords'].iloc[0]}"
-            header_line3 = f"CENTRAL x,y: {centroid_x:.4f} {centroid_y:.4f}"
-            header_line4 = f"NO. PERIMETER POINTS {num_points}: x,y positions"
+            header_line2 = f"ASSOCIATED VIEW FILE: {associated_view_file}"
+            header_line3 = f"FFL z height(m): {room_z_coord}"
+            header_line4 = f"CENTRAL x,y: {centroid_x:.4f} {centroid_y:.4f}"
+            header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y positions"
 
             # 2. Coordinate data lines, formatted to 4 decimal places
             xy_coord_lines = []
@@ -166,7 +180,7 @@ class ViewFileGenerator:
 
             # 3. Combine all parts into the final text content
             file_content = "\n".join(
-                [header_line1, header_line2, header_line3, header_line4] + xy_coord_lines
+                [header_line1, header_line2, header_line3, header_line4, header_line5] + xy_coord_lines
             )
 
             # --- Create a valid filename and save the file ---
@@ -338,31 +352,24 @@ class ViewFileGenerator:
         except Exception as e:
             logging.error(f"Error creating view file at {view_file}: {e}")
 
-    def create_aoi_and_view_files(self) -> bool:
+    def create_aoi_files(self) -> bool:
         """
-        Generate AOI and view files from room boundary data.
-        
-        Main method that processes the CSV data to create:
-        1. AOI (Area of Interest) files for each room
-        2. View parameter files for each floor level
-        
-        Uses the ffl_offset specified during class instantiation for camera positioning.
-                       
-        Returns:
-            bool: True if files generated successfully, False if any step fails
-            
-        Process:
-            - Validates CSV file accessibility
-            - Parses room boundary coordinates 
-            - Calculates building bounding box and center point
-            - Determines view dimensions for proper framing
-            - Creates view files with camera parameters for each floor
-            
-        Generated Files:
-            - aoi/*.aoi: Room boundary files with coordinate data
-            - views_grids/plan_L00.vp, plan_L01.vp, etc: Radiance view parameter files
-        """
+        Generate AOI (Area of Interest) files from room boundary data.
 
+        Processes the CSV data to:
+        1. Parse room boundary coordinates
+        2. Calculate building bounding box and center point
+        3. Determine view dimensions for proper framing
+
+        Returns:
+            bool: True if AOI data calculated successfully, False if any step fails
+
+        Sets instance attributes:
+            - room_boundaries_df: Parsed room boundary data
+            - bounding_box_coordinates: 3D bounding box coordinates
+            - x_coord_center, y_coord_center, z_coord_center: Center coordinates
+            - view_horizontal, view_vertical: View dimensions
+        """
         # --- 1: Check if CSV is accessible ---
         if not self.csv_accessible:
             return False
@@ -416,8 +423,41 @@ class ViewFileGenerator:
         except (AttributeError, Exception):
             return False
 
+        return True
+
+    def create_view_files(self) -> bool:
+        """
+        Generate view parameter files for each floor level.
+
+        Uses previously calculated AOI data (center coordinates and view dimensions)
+        to create Radiance view parameter files.
+
+        Prerequisites:
+            - create_aoi_files() must be called first to set required instance attributes
+            - Requires: room_boundaries_df, x_coord_center, y_coord_center,
+                       view_horizontal, view_vertical
+
+        Returns:
+            bool: True if view files generated successfully, False if any step fails
+
+        Generated Files:
+            - views_grids/plan_L00.vp, plan_L01.vp, etc: Radiance view parameter files
+        """
+        # Check if required attributes are set
+        if not hasattr(self, 'room_boundaries_df') or self.room_boundaries_df is None:
+            print("Error: AOI data not available. Call create_aoi_files() first.")
+            return False
+
+        if not all(hasattr(self, attr) for attr in ['x_coord_center', 'y_coord_center',
+                                                      'view_horizontal', 'view_vertical']):
+            print("Error: Center coordinates or view dimensions not available.")
+            return False
+
+        # Create floor level info
         self.view_paths_per_level_df = self._create_floor_level_info(
-            self.room_boundaries_df, view_subdir="outputs/views_grids", ffl_offset=self.ffl_offset
+            self.room_boundaries_df,
+            view_subdir=Path(__file__).parent.parent / "outputs" / "views_grids",
+            ffl_offset=self.ffl_offset
         )
 
         if self.view_paths_per_level_df is None:
@@ -425,8 +465,7 @@ class ViewFileGenerator:
 
         print("\n--- printing view files df ---\n", self.view_paths_per_level_df.to_string())
 
-        # --- 6: generate all plan view files ---
-
+        # --- Generate all plan view files ---
         # Iterate through each file path in the 'view_file_path' column
         for row in self.view_paths_per_level_df.itertuples(index=False):
             # Extract data from the current row using attribute access
@@ -457,15 +496,4 @@ class ViewFileGenerator:
             except Exception as e:
                 print(f"Error creating {file_path}: {e}")
 
-        # --- 7: generate axonometric views of building overall
-
-        # TODO: further development below in generating 3D axo views to allow for visualisation of the entire input model and its geometry.  See function get obj bounds below, that could assist in developing this functionality.
-
-        # consideration of get_ob_bounding box if that is better for use in axonometric views.
-
         return True  # Indicate success
-
-
-
-    #TODO: further development below in generating 3D axo views to allow for visualisation of the entire input model and its geometry.  See function get obj bounds below, that could assist in developing this functionality.
-    # use getbbox -h outputs\rad\87cowles_BLD_noWindows.rad # expected outputs: xmin xmax ymin ymax zmin zmax

@@ -10,6 +10,18 @@ from itertools import product
 from archilume import utils
 from pathlib import Path
 
+# --- 01. get input files ---
+skyless_octree_path = Path(__file__).parent.parent / "outputs" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
+overcast_sky_file_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad"
+sky_files_dir = Path(__file__).parent.parent / "outputs" / "sky"
+view_files_dir = Path(__file__).parent.parent / "outputs" / "views_grids"
+image_dir = Path(__file__).parent.parent / "outputs" / "images"
+sky_files = [path for path in sky_files_dir.glob('*.sky')]
+view_files = [path for path in view_files_dir.glob('*.vp')] 
+x_res = 2048 # number of pixels in the x direction
+y_res = 2048 # number of pixels in the y direction
+
+
 def generate_overcast_sky_rendering_commands(
         octree_path: Path, 
         image_dir: Path, 
@@ -163,17 +175,6 @@ def generate_sunny_sky_rendering_commands(octree_path: Path, image_dir: Path, sk
     return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_commands, ra_tiff_commands
 
 
-# --- 01. get input files ---
-skyless_octree_path = Path(__file__).parent.parent / "outputs" / "octree" / "87cowles_BLD_noWindows_with_site_skyless.oct"
-overcast_sky_file_path = Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad"
-sky_files_dir = Path(__file__).parent.parent / "outputs" / "sky"
-view_files_dir = Path(__file__).parent.parent / "outputs" / "views_grids"
-image_dir = Path(__file__).parent.parent / "outputs" / "images"
-sky_files = [path for path in sky_files_dir.glob('*.sky')]
-view_files = [path for path in view_files_dir.glob('*.vp')] 
-x_res = 2048 # number of pixels in the x direction
-y_res = 2048 # number of pixels in the y direction
-
 # --- 02. Combine skyless octree with the TenK_cie_overcast.rad sky file for ambient file generation, these renderings will be compiled with the sunny sky rendering later. ---
 r"""
 # 2.1 example frozen skyless octree
@@ -226,7 +227,7 @@ r"""
     rpict -w -vtv -t 3 -vf view_file.vp -x 2048 -y 2048 -ab 0 -ad 1024 -as 64 -ar 64 -ps 5 -lw 0.001 scene_with_sky.oct > output.hdr
 """
 utils.execute_new_radiance_commands(rpict_commands, number_of_workers = 10)
-
+#TODO invesitgate overture to increase quality of the output simage. 
 
 # --- 05. Add the direct sunlight and indrect daylighting renderings together. 
 r"""
@@ -252,8 +253,7 @@ utils.execute_new_radiance_commands(ra_tiff_commands, number_of_workers = 10)
 # --- 07. Stamp images with relevant information ---
 
 # --- 07.1 create a pixel to real world coordiante map.txt ---
-hdr_file_path = next(image_dir.glob('*_combined.hdr'), None)
-utils.create_pixel_to_world_mapping_from_hdr(hdr_file_path)
+utils.create_pixel_to_world_mapping_from_hdr(self.image_dir)
 
 # --- 07.2 First pass overlay to each .gif file to stamp with "Simulated on YYMMDD HH:MM for June 21 09:00 latitude: -37.8136" ---
 tiff_files_to_stamp = [path for path in image_dir.glob('*_combined.tiff')]
@@ -263,30 +263,38 @@ tiff_files_to_stamp = [path for path in image_dir.glob('*_combined.tiff')]
 utils.stamp_tiff_files(
     tiff_files_to_stamp, 
     font_size           = 24, 
-    text_color          = (255, 255, 0), # yellow text RGB 
+    text_color          = (255, 255, 255), # yellow text RGB 
     background_alpha    = 180, 
     number_of_workers   = 10
     )
 
-# --- 07.3 Second pass overlay to stamp each .gif with area of interest (.AOI) including the "APT: apartment_name, ROOM: room_name" in the centre of room. Bedrooms will be quantitied for information purposes by shown differently to the rest as they do not form part of compliance. e.g. if the relocation of a living space to the current location of the bedroom would affect compliance or allow it to pass. ---
+# --- 07.3 Second pass overlay to stamp each .gif with area of interest (.AOI) including the "APT: apartment_name, ROOM: room_name" in the centre of room. Bedrooms will be quantitied for information and shown differently to the rest as they do not form part of compliance. e.g. if the relocation of a living space to the current location of the bedroom would affect compliance or allow it to pass. ---
+# utils.stamp_tiff_files_with_aoi(
+#     tiff_files_to_stamp, 
+#     lineweight              = 1, 
+#     font_size               = 32, 
+#     text_color              = (255, 0, 0), 
+#     background_alpha        = 180, 
+#     number_of_workers       = 10
+#     )
+
+# FIXME: Optimize stamping by creating one stamp per level and reusing for all images on that level
 
 # --- 07.4 Third pass overlay of the results of each time step on each .gif gile for each aoi, there may need to be work to exclude full height or determine of % of compliant area. If its an absolute amount of area, then discrpancies between the AOI and say kitchen joinery does not need ot be considere , it is is a % of compliance area, then excluding part of the aoi that are acually our of bounds is important.Also output a csv file with the results of each aoi
-
-
-# TODO: create interactive UI for AOI adjustment all parameters in the AOI.
+# TODO: Add real world coordinate mapping to processed boundaries CSV after HDR rendering
+# TODO: Regenerate AOI files with real world coordinates and cross-check against final images
+# TODO: Create interactive UI for AOI adjustment with persistent storage per room
 
 # --- 07.5 Create summary image that shows a scale with each pixel to determine the combined area that is illuminanted in each aoi at each time step, and draw a chart of each data point to show the real area illuminanted and the period of time it occurs over. Then determine then place the ADDG sunlihgt access thresholds of compliance, i. .e 1m2 for at least 15 mins in either the living, or open private space. 
 
 
-# --- 08. turn gif files with overlays into animated gif with a results table on the side
+# --- 08. combine individual gif files with overlays into animated gif with a results table on the side
 utils.combine_tiffs_by_view(image_dir, view_files, output_format='gif', number_of_workers=8)
 utils.combine_tiffs_by_view(image_dir, view_files, output_format='mp4', number_of_workers=8)
-#TODO: create new function that replaces the above and converts the stamped gifs into individual mp4 file.
-
 
 # --- 9. Create final MP4 combining all the individual MP4s at lower quality into a grid
 individual_view_mp4s = [path for path in image_dir.glob('animated_results_*.mp4')]
-utils.create_grid_mp4(individual_view_mp4s, image_dir, grid_size=(3, 2), target_size=(1024, 1024), fps=1)
+utils.create_grid_mp4(individual_view_mp4s, image_dir, grid_size=(3, 2), target_size=(1024, 1024), fps=2)
 
 individual_view_gifs = [path for path in image_dir.glob('animated_results_*.gif')]
-utils.create_grid_gif(individual_view_gifs, image_dir, grid_size=(3, 2), target_size=(2048, 2048), fps=2.5)
+utils.create_grid_gif(individual_view_gifs, image_dir, grid_size=(3, 2), target_size=(2048, 2048), fps=2)

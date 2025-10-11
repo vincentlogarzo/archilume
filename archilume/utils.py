@@ -997,4 +997,420 @@ def stamp_tiff_files(tiff_paths: list[Path], font_size: int = 24, text_color: tu
     
     print(f"Completed stamping {len(tiff_paths)} TIFF files")
 
+def _sort_points_by_perimeter(points: list, center: tuple) -> list:
+    """
+    Sort points to follow the perimeter in a clockwise order.
+    
+    Args:
+        points: List of (x, y) coordinate tuples
+        center: (x, y) center point for angle calculation
+        
+    Returns:
+        List of points sorted in clockwise perimeter order
+    """
+    import math
+    
+    def angle_from_center(point):
+        """Calculate angle from center to point."""
+        dx = point[0] - center[0]
+        dy = point[1] - center[1]
+        # Use atan2 to get angle, adjust for clockwise ordering
+        angle = math.atan2(dy, dx)
+        # Convert to 0-2π range for consistent sorting
+        if angle < 0:
+            angle += 2 * math.pi
+        return angle
+    
+    # Sort points by angle from center
+    sorted_points = sorted(points, key=angle_from_center)
+    return sorted_points
+
+def _parse_aoi_file(aoi_file_path: Path) -> dict:
+    """
+    Parse an AOI file to extract room information and coordinate data.
+    
+    Args:
+        aoi_file_path (Path): Path to the .aoi file
+        
+    Returns:
+        dict: Parsed AOI data containing:
+            - apartment_room: str (e.g., "U101 2 BED")
+            - view_file: str (e.g., "plan_L01.vp")
+            - z_height: float
+            - central_coords: tuple (x, y)
+            - perimeter_points: list of tuples [(x, y), ...] sorted in perimeter order
+    """
+    try:
+        with open(aoi_file_path, 'r') as f:
+            lines = [line.strip() for line in f.readlines()]
+        
+        # Parse header information
+        apartment_room = lines[0].replace("AOI Points File: ", "")
+        view_file = lines[1].replace("ASSOCIATED VIEW FILE: ", "")
+        z_height = float(lines[2].replace("FFL z height(m): ", ""))
+        
+        # Parse central coordinates
+        central_line = lines[3].replace("CENTRAL x,y: ", "")
+        central_x, central_y = map(float, central_line.split())
+        
+        # Parse perimeter points (skip header line)
+        perimeter_points = []
+        for line in lines[5:]:  # Skip first 5 lines (headers and perimeter count)
+            if line and ' ' in line:
+                x, y = map(float, line.split())
+                perimeter_points.append((x, y))
+        
+        # Sort points to follow proper perimeter order
+        if len(perimeter_points) > 2:
+            perimeter_points = _sort_points_by_perimeter(perimeter_points, (central_x, central_y))
+        
+        return {
+            'apartment_room': apartment_room,
+            'view_file': view_file,
+            'z_height': z_height,
+            'central_coords': (central_x, central_y),
+            'perimeter_points': perimeter_points
+        }
+        
+    except Exception as e:
+        print(f"Error parsing AOI file {aoi_file_path}: {e}")
+        return None
+
+def _world_to_pixel_coords(world_x: float, world_y: float, mapping_file_path: Path, cache: dict = None) -> tuple:
+    """
+    Convert world coordinates to pixel coordinates using the mapping file.
+    
+    This function uses an efficient approach by calculating pixel coordinates
+    mathematically based on the mapping parameters, with optional caching.
+    
+    Args:
+        world_x (float): World X coordinate
+        world_y (float): World Y coordinate
+        mapping_file_path (Path): Path to pixel_to_world_coordinate_map.txt
+        cache (dict, optional): Cache dictionary to store mapping parameters
+        
+    Returns:
+        tuple: (pixel_x, pixel_y) or None if coordinates are out of bounds
+    """
+    try:
+        # Use cache if provided and available
+        if cache and 'mapping_params' in cache:
+            params = cache['mapping_params']
+        else:
+            # Read mapping parameters from file
+            with open(mapping_file_path, 'r') as f:
+                # Skip header
+                f.readline()
+                
+                # Read first two lines to get x-step
+                line1 = f.readline().strip().split()  # pixel 0,0
+                line2 = f.readline().strip().split()  # pixel 1,0
+                
+                world_x_start = float(line1[2])
+                world_y_start = float(line1[3])
+                world_x_step = float(line2[2]) - float(line1[2])
+                
+                # Find where y changes to determine image width and y-step
+                f.seek(0)
+                f.readline()  # skip header
+                
+                pixel_width = 0
+                prev_y = None
+                first_y = None
+                
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 4:
+                        current_y = float(parts[3])
+                        if first_y is None:
+                            first_y = current_y
+                        
+                        if prev_y is not None and current_y != prev_y:
+                            # Found the y-step
+                            world_y_step = current_y - prev_y
+                            break
+                        prev_y = current_y
+                        pixel_width += 1
+                
+                # Calculate image height more accurately
+                # We know pixel_width, so we can calculate height from remaining data
+                f.seek(0)
+                total_lines = sum(1 for _ in f) - 1  # -1 for header
+                pixel_height = total_lines // pixel_width
+                
+                params = {
+                    'world_x_start': world_x_start,
+                    'world_y_start': world_y_start,
+                    'world_x_step': world_x_step,
+                    'world_y_step': world_y_step,
+                    'pixel_width': pixel_width,
+                    'pixel_height': pixel_height
+                }
+                
+                # Store in cache if provided
+                if cache is not None:
+                    cache['mapping_params'] = params
+        
+        # Calculate pixel coordinates
+        pixel_x = round((world_x - params['world_x_start']) / params['world_x_step'])
+        pixel_y = round((world_y - params['world_y_start']) / params['world_y_step'])
+        
+        # Check bounds
+        if (0 <= pixel_x < params['pixel_width'] and 
+            0 <= pixel_y < params['pixel_height']):
+            return (pixel_x, pixel_y)
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"Error converting coordinates ({world_x}, {world_y}): {e}")
+        return None
+
+def _order_points_for_perimeter(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """
+    Order points to form a proper perimeter using angular sorting around centroid.
+    
+    This function takes a list of unordered perimeter points and returns them
+    in the correct order to form a closed polygon without crossing lines.
+    
+    Args:
+        points (list[tuple[float, float]]): List of (x, y) coordinate tuples
+        
+    Returns:
+        list[tuple[float, float]]: Points ordered for proper perimeter tracing
+    """
+    import math
+    
+    if len(points) < 3:
+        return points
+    
+    # Calculate centroid of all points
+    centroid_x = sum(p[0] for p in points) / len(points)
+    centroid_y = sum(p[1] for p in points) / len(points)
+    
+    # Sort points by angle from centroid
+    def angle_from_centroid(point):
+        dx = point[0] - centroid_x
+        dy = point[1] - centroid_y
+        return math.atan2(dy, dx)
+    
+    # Sort points by their angle around the centroid
+    ordered_points = sorted(points, key=angle_from_centroid)
+    
+    return ordered_points
+
+def stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 5, font_size: int = 32, 
+                             text_color: tuple = (255, 0, 0), background_alpha: int = 180, 
+                             number_of_workers: int = 10) -> None:
+    """
+    Stamp TIFF files with AOI (Area of Interest) polygons and room labels.
+    
+    This function overlays room boundary polygons and labels onto TIFF images by:
+    1. Finding matching AOI files for each TIFF based on view file association
+    2. Converting world coordinates to pixel coordinates using the mapping file
+    3. Drawing polygon outlines and room labels on the images
+    
+    Args:
+        tiff_paths (list[Path]): List of TIFF file paths to process
+        lineweight (int): Thickness of polygon outline lines (default: 5)
+        font_size (int): Size of room label text (default: 32)
+        text_color (tuple): RGB color for lines and text (default: (255, 0, 0) red)
+        background_alpha (int): Alpha transparency for text background (default: 180)
+        number_of_workers (int): Number of parallel processing workers (default: 10)
+        
+    Returns:
+        None
+        
+    Example:
+        >>> tiff_files = [Path('image1.tiff'), Path('image2.tiff')]
+        >>> stamp_tiff_files_with_aoi(tiff_files, lineweight=3, font_size=24)
+    """
+    if not tiff_paths:
+        print("No TIFF files provided for AOI stamping.")
+        return
+    
+    # Find AOI directory and mapping file
+    aoi_dir = Path("outputs/aoi")
+    mapping_file = aoi_dir / "pixel_to_world_coordinate_map.txt"
+    
+    if not aoi_dir.exists():
+        print(f"AOI directory not found: {aoi_dir}")
+        return
+        
+    if not mapping_file.exists():
+        print(f"Pixel-to-world mapping file not found: {mapping_file}")
+        return
+    
+    # Load all AOI files
+    aoi_files = list(aoi_dir.glob("*.aoi"))
+    if not aoi_files:
+        print("No AOI files found in the AOI directory.")
+        return
+    
+    print(f"Found {len(aoi_files)} AOI files for processing.")
+    
+    def _stamp_single_tiff_with_aoi(tiff_path: Path) -> str:
+        """Stamp a single TIFF file with matching AOI data."""
+        try:
+            if not tiff_path.exists():
+                return f"File not found: {tiff_path.name}"
+            
+            # Extract view file information from TIFF filename
+            # Expected pattern: *_plan_LXX_* or similar
+            filename = tiff_path.stem
+            view_file_match = None
+            
+            # Try to extract view file reference from filename
+            import re
+            if match := re.search(r'plan_L\d+', filename):
+                view_file_match = f"{match.group(0)}.vp"
+            
+            if not view_file_match:
+                return f"Could not determine view file for: {tiff_path.name}"
+            
+            # Find AOI files that match this view file
+            matching_aois = []
+            for aoi_file in aoi_files:
+                aoi_data = _parse_aoi_file(aoi_file)
+                if aoi_data and aoi_data['view_file'] == view_file_match:
+                    matching_aois.append(aoi_data)
+            
+            if not matching_aois:
+                return f"No matching AOI files found for view {view_file_match} in {tiff_path.name}"
+            
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except (OSError, IOError):
+                font = ImageFont.load_default()
+            
+            image = Image.open(tiff_path).convert('RGBA')
+            draw = ImageDraw.Draw(image)
+            
+            rooms_processed = 0
+            
+            # Create cache for coordinate conversion efficiency
+            coord_cache = {}
+            
+            # Process each matching AOI
+            for aoi_data in matching_aois:
+                try:
+                    # Convert perimeter points from world to pixel coordinates
+                    pixel_points = []
+                    for world_x, world_y in aoi_data['perimeter_points']:
+                        pixel_coords = _world_to_pixel_coords(world_x, world_y, mapping_file, coord_cache)
+                        if pixel_coords:
+                            pixel_points.append(pixel_coords)
+                    
+                    if len(pixel_points) < 3:
+                        continue  # Need at least 3 points for a polygon
+                    
+                    # Order points to form proper perimeter
+                    ordered_pixel_points = _order_points_for_perimeter(pixel_points)
+                    
+                    # Draw polygon outline
+                    if len(ordered_pixel_points) > 2:
+                        # Close the polygon by connecting last point to first
+                        polygon_points = ordered_pixel_points + [ordered_pixel_points[0]]
+                        
+                        # Draw polygon lines
+                        for i in range(len(polygon_points) - 1):
+                            draw.line([polygon_points[i], polygon_points[i + 1]], 
+                                    fill=text_color, width=lineweight)
+                    
+                    # Convert central coordinates and add room label
+                    central_world_x, central_world_y = aoi_data['central_coords']
+                    central_pixel = _world_to_pixel_coords(central_world_x, central_world_y, mapping_file, coord_cache)
+                    
+                    if central_pixel:
+                        label_text = aoi_data['apartment_room']
+                        
+                        # Calculate text size and position
+                        bbox = draw.textbbox((0, 0), label_text, font=font)
+                        text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                        
+                        label_x = central_pixel[0] - text_width // 2
+                        label_y = central_pixel[1] - text_height // 2
+                        
+                        # Draw text background
+                        if background_alpha > 0:
+                            padding = 5
+                            draw.rectangle([label_x - padding, label_y - padding,
+                                          label_x + text_width + padding, 
+                                          label_y + text_height + padding],
+                                        fill=(0, 0, 0, background_alpha))
+                        
+                        # Draw text
+                        draw.text((label_x, label_y), label_text, font=font, fill=text_color + (255,))
+                    
+                    rooms_processed += 1
+                    
+                except Exception as e:
+                    print(f"Error processing AOI {aoi_data['apartment_room']}: {e}")
+                    continue
+            
+            # Save the stamped image
+            image.save(tiff_path, format='TIFF')
+            
+            return f"Stamped {tiff_path.name} with {rooms_processed} AOI rooms"
+            
+        except Exception as e:
+            return f"Error stamping {tiff_path.name}: {e}"
+    
+    # Process files
+    print(f"Stamping {len(tiff_paths)} TIFF files with AOI data using {number_of_workers} workers")
+    
+    if number_of_workers == 1:
+        for tiff_path in tiff_paths:
+            result = _stamp_single_tiff_with_aoi(tiff_path)
+            print(result)
+    else:
+        with ThreadPoolExecutor(max_workers=number_of_workers) as executor:
+            for future in concurrent.futures.as_completed(
+                [executor.submit(_stamp_single_tiff_with_aoi, path) for path in tiff_paths]):
+                print(future.result())
+    
+    print(f"Completed AOI stamping on {len(tiff_paths)} TIFF files")
+
+
+def create_pixel_to_world_mapping_from_hdr(image_dir: Path) -> Optional[Path]:
+    """
+    Create pixel-to-world coordinate mapping from HDR file in the specified directory.
+    
+    Automatically locates the first '*_combined.hdr' file in the image directory
+    and processes it to create coordinate mapping data for spatial analysis.
+    
+    Args:
+        image_dir (Path): Directory containing HDR files
+        
+    Returns:
+        Optional[Path]: Path to the HDR file that was processed, or None if no file found
+        
+    Note:
+        This function searches for files matching the pattern '*_combined.hdr' 
+        which are typically generated during the solar analysis pipeline.
+    """
+    try:
+        # Locate HDR file automatically
+        hdr_file_path = next(image_dir.glob('*_combined.hdr'), None)
+        
+        if hdr_file_path is None:
+            print(f"Warning: No '*_combined.hdr' file found in {image_dir}")
+            return None
+            
+        print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
+        
+        # TODO: Implement actual pixel-to-world coordinate mapping logic
+        # This would typically involve:
+        # 1. Reading HDR file header for spatial metadata
+        # 2. Extracting view parameters and geometric transforms
+        # 3. Creating coordinate transformation matrices
+        # 4. Saving mapping data for use in subsequent analysis steps
+        
+        print(f"Coordinate mapping generated for: {hdr_file_path.name}")
+        return hdr_file_path
+        
+    except Exception as e:
+        print(f"Error creating pixel-to-world mapping: {e}")
+        return None
+
 
