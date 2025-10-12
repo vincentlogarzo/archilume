@@ -15,7 +15,7 @@ which calculates sun positions based on solar time rather than local standard ti
 import logging
 import os
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -69,18 +69,20 @@ class SkyFileGenerator:
         Sky orientation is aligned to true north with solar time positioning.
     """
 
-    # Core location parameters
+    # Required Parameters for the specific sky series
     lat: float
-
-    # Parameters for the specific sky series
     month: int
     day: int
     start_hour_24hr_format: int
     end_hour_24hr_format: int
 
     # Optional parameters with defaults
-    year: int = datetime.now().year
     minute_increment: int = 5
+
+    # Fixed - not user configurable but accessible from instance
+    year: int = field(init = False, default = datetime.now().year)
+    sky_file_dir: Path = field(init = False, default = Path(__file__).parent.parent / "outputs" / "sky")
+    TenK_cie_overcast_sky_file_path: Path = field(init=False, default=Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad")
 
     def __post_init__(self):
         """
@@ -89,18 +91,13 @@ class SkyFileGenerator:
         - Sets fixed output directory and creates it if needed.
         """
         self.str_lat = str(self.lat)
-        
-        # Fixed output directory - not user configurable
-        self.output_dir = Path(__file__).parent.parent / "outputs"/  "sky"
-        #FIXME use relative references and update this to use pathlib.
 
-        if not os.path.exists(self.output_dir):
+        if not os.path.exists(self.sky_file_dir):
             try:
-                os.makedirs(self.output_dir)
-                print(f"Created output directory: {self.output_dir}")
+                os.makedirs(self.sky_file_dir)
+                print(f"Created output directory: {self.sky_file_dir}")
             except OSError as e:
-                print(f"Error creating directory {self.output_dir}: {e}")
-
+                print(f"Error creating directory {self.sky_file_dir}: {e}")
 
     def __generate_single_sunny_skyfile(self, month, day, time_hhmm_str, output_time_suffix_str):
         """
@@ -120,7 +117,7 @@ class SkyFileGenerator:
         month_str = f"{month:02d}"
         day_str = f"{day:02d}"
         output_filename = f"SS_{month_str}{day_str}_{output_time_suffix_str}.sky"
-        output_filepath = self.output_dir / output_filename
+        output_filepath = self.sky_file_dir / output_filename
 
         print(f"Outputting to: {output_filepath}")
 
@@ -156,7 +153,7 @@ class SkyFileGenerator:
         Execute sky file generation for the configured time series.
         
         Creates individual .sky files for each time step from start_hour to end_hour
-        at the specified minute_increment intervals. Files are saved to output_dir.
+        at the specified minute_increment intervals. Files are saved to sky_file_dir.
         
         Returns:
             None: Files are written to disk, status printed to console.
@@ -167,9 +164,9 @@ class SkyFileGenerator:
         )
 
         # Create the output directory if it doesn't exist
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-            print(f"Created output directory: {self.output_dir}")
+        if not os.path.exists(self.sky_file_dir):
+            os.makedirs(self.sky_file_dir)
+            print(f"Created output directory: {self.sky_file_dir}")
 
         start_dt = datetime(
             self.year, self.month, self.day, self.start_hour_24hr_format, 0
@@ -191,25 +188,23 @@ class SkyFileGenerator:
             current_dt += time_delta
         print("\nSky generation series complete.")
     
-    def generate_overcast_skyfile(self):
+    def generate_TenK_cie_overcast_skyfile(self):
         """
         Generates a CIE overcast sky file using gensky.
 
         Creates a single overcast sky file suitable for lighting simulation under
         uniform cloudy conditions. The sky uses the CIE overcast sky model (+c)
         which provides even luminance distribution appropriate for overcast days.
-        >>> example: gensky -ang 45 0 -c -B 55.8659217877 > outputs\sky\TenK_cie_overcast.sky
+        >>> example: gensky -ang 45 0 -c -B 55.8659217877 > "outputs/sky/TenK_cie_overcast.sky"
 
         Returns:
             None: Sky file is written to disk at outputs/sky
         """
-        
-        output_filepath = self.output_dir / "TenK_cie_overcast.rad"
 
-        print(f"Outputting to: {output_filepath}")
+        print(f"Outputting to: {self.TenK_cie_overcast_sky_file_path}")
 
         try:
-            with open(output_filepath, "w") as outfile:
+            with open(self.TenK_cie_overcast_sky_file_path, "w") as outfile:
                 skyfunc_description = textwrap.dedent(f"""\
                     #Radiance Sky file: Ark Resources Pty Ltd
 

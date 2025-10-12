@@ -59,12 +59,13 @@ class ViewFileGenerator:
         Coordinates are expected in millimeters and will be converted to meters.
     """
 
-    room_boundaries_csv_path_input: str
+    room_boundaries_csv_path_input: Path
     ffl_offset: float = 1.0
 
+    # Fixed - not user configurable but accessible from instance
     csv_path: Path = field(init=False)
     csv_accessible: bool = field(default=False, init=False)
-
+    view_file_dir: Path = field(init = False, default = Path(__file__).parent.parent / "outputs" / "views_grids")
     room_boundaries_df: pd.DataFrame | None = field(default=None, init=False)
     bounding_box_coordinates: Any = field(default=None, init=False)
     x_coord_center: float | None = field(default=None, init=False)
@@ -113,8 +114,15 @@ class ViewFileGenerator:
         else:
             logging.warning(f"CSV file not found at the specified path: {self.csv_path}")
             self.csv_accessible = False
+        
+        if not os.path.exists(self.view_file_dir):
+            try:
+                os.makedirs(self.view_file_dir)
+                print(f"Created output directory: {self.view_file_dir}")
+            except OSError as e:
+                print(f"Error creating directory {self.view_file_dir}: {e}")
 
-    def _generate_point_files(self, csv_path: str, output_dir: str = "outputs/aoi") -> None:
+    def __generate_point_files(self, csv_path: str, output_dir: str = "outputs/aoi") -> None:
         """
         Generate individual AOI files for each room from processed CSV data.
         
@@ -197,7 +205,7 @@ class ViewFileGenerator:
 
         print(f"File generated: {filepath}")
 
-    def _parse_room_boundaries_csv(self) -> pd.DataFrame | None:
+    def __parse_room_boundaries_csv(self) -> pd.DataFrame | None:
         """
         Parse room boundaries CSV into structured DataFrame.
         
@@ -247,17 +255,14 @@ class ViewFileGenerator:
             df.to_csv(output_csv_path, index=False)
             logging.info(f"Processed DataFrame saved to: {output_csv_path}")
 
-            self._generate_point_files(output_csv_path)
+            self.__generate_point_files(output_csv_path)
 
             return df
         except Exception as e:
             logging.error(f"Failed to parse CSV: {e}")
             return None
 
-    def _create_floor_level_info(
-        self, room_boundaries_data: pd.DataFrame, view_subdir: str, ffl_offset: float
-    ) -> pd.DataFrame | None:
-        current_dir = Path.cwd()
+    def __create_floor_level_info(self, room_boundaries_data: pd.DataFrame, view_dir: str, ffl_offset: float) -> pd.DataFrame | None:
         try:
             z_coords_numeric = pd.to_numeric(room_boundaries_data["z_coords"], errors="coerce")
             unique_z_coords_series = z_coords_numeric.dropna().unique()
@@ -272,7 +277,7 @@ class ViewFileGenerator:
             logging.error(f"Error processing 'z_coords' for floor level DF: {e}", exc_info=True)
             return None
 
-        view_dir_path = current_dir / view_subdir
+        view_dir_path = view_dir
         try:
             view_dir_path.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -290,7 +295,7 @@ class ViewFileGenerator:
 
         return output_df
 
-    def _populate_view_files(
+    def __populate_view_files(
         self,
         view_file: str,
         x_coord_centre: float,
@@ -375,7 +380,7 @@ class ViewFileGenerator:
             return False
 
         # --- 2: parse room boundary coordinates csv ---
-        self.room_boundaries_df = self._parse_room_boundaries_csv()
+        self.room_boundaries_df = self.__parse_room_boundaries_csv()
         print("\n--- printing transformed room boundaries data ---\n", self.room_boundaries_df)
 
         if self.room_boundaries_df is None or self.room_boundaries_df.empty:
@@ -454,9 +459,9 @@ class ViewFileGenerator:
             return False
 
         # Create floor level info
-        self.view_paths_per_level_df = self._create_floor_level_info(
+        self.view_paths_per_level_df = self.__create_floor_level_info(
             self.room_boundaries_df,
-            view_subdir=Path(__file__).parent.parent / "outputs" / "views_grids",
+            view_subdir=self.view_file_dir,
             ffl_offset=self.ffl_offset
         )
 
@@ -484,7 +489,7 @@ class ViewFileGenerator:
                 print(f"Successfully created: {file_path}")
 
                 # populate these files
-                self._populate_view_files(
+                self.__populate_view_files(
                     file_path,
                     x_coord_centre=self.x_coord_center,
                     y_coord_centre=self.y_coord_center,

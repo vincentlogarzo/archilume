@@ -10,16 +10,16 @@ from archilume import utils
 
 # Standard library imports
 from dataclasses import dataclass, field
+import os
 from typing import List
 from datetime import datetime
 from pathlib import Path
-import json
 
 # Third-party imports
 from itertools import product
 
 @dataclass
-class SunlightRenderingEngine:
+class RenderingPipelines:
     """
     Comprehensive solar illumination analysis engine for architectural daylight evaluation.
     
@@ -55,11 +55,11 @@ class SunlightRenderingEngine:
     overcast_sky_file_path: Path
     sky_files_dir: Path
     view_files_dir: Path
-    image_dir: Path
     x_res: int
     y_res: int
     
     # Fields that will be populated after initialization
+    image_dir: Path = field(init = False, default = Path(__file__).parent.parent / "outputs" / "images")
     sky_files: List[Path] = field(default_factory=list, init=False)
     view_files: List[Path] = field(default_factory=list, init=False)
     overcast_octree_command: str = field(default="", init=False)
@@ -84,6 +84,13 @@ class SunlightRenderingEngine:
         # Validate resolution values
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
+        
+        if not os.path.exists(self.image_dir):
+            try:
+                os.makedirs(self.image_dir)
+                print(f"Created output directory: {self.image_dir}")
+            except OSError as e:
+                print(f"Error creating directory {self.image_dir}: {e}")
         
         # Generate overcast sky rendering commands
         self.overcast_octree_command, self.rpict_low_qual_commands, self.rpict_med_qual_commands = self.__generate_overcast_sky_rendering_commands()
@@ -137,8 +144,7 @@ class SunlightRenderingEngine:
         overcast_octree_command = str(rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}")
 
         rpict_low_qual_commands, rpict_med_qual_commands = [], []
-        x_res_low, y_res_low = 512, 512
-        x_res_med, y_res_med = self.x_res, self.y_res
+        x_res_overture, y_res_overture = 512, 512
 
         for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
             
@@ -147,8 +153,8 @@ class SunlightRenderingEngine:
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
             rpict_low_qual_command, rpict_med_qual_command = [
-                rf"rpict -w -t 2 -vtv -vf {view_file_path} -x {x_res_low} -y {y_res_low} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path}",
-                rf"rpict -w -t 2 -vtv -vf {view_file_path} -x {x_res_med} -y {y_res_med} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
+                rf"rpict -w -t 2 -vtv -vf {view_file_path} -x {x_res_overture} -y {y_res_overture} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path}",
+                rf"rpict -w -t 2 -vtv -vf {view_file_path} -x {self.x_res} -y {self.y_res} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
             ]
 
             rpict_low_qual_commands.append(rpict_low_qual_command)
@@ -220,7 +226,7 @@ class SunlightRenderingEngine:
 
         return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_commands, ra_tiff_commands
 
-    def render_sequences(self):
+    def sunlight_rendering_pipeline(self):
         """
         Render images for each combination of sky and view files.
         """
@@ -237,6 +243,7 @@ class SunlightRenderingEngine:
         utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=6)
         utils.delete_files(self.temp_octree_with_sky_paths)
 
+
         # Phase 3: Execute High-Fidelity Solar Illumination Analysis
         # Perform precision rendering of direct solar conditions across temporal variations
         utils.execute_new_radiance_commands(self.rpict_commands, number_of_workers=10)  # TODO: investigate overture to increase quality of the output image
@@ -249,61 +256,7 @@ class SunlightRenderingEngine:
         # Transform HDR data to accessible format with optimized exposure mapping
         utils.execute_new_radiance_commands(self.ra_tiff_commands, number_of_workers=10)  # TODO: automate exposure adjustment based on histogram analysis
 
-        # combined_hdr_files_paths_for_deletion = [Path(cmd.split(' > ')[-1].strip()) for cmd in self.pcomb_commands if ' > ' in cmd]
-        # utils.delete_files(combined_hdr_files_paths_for_deletion)
-
-        # Phase 4: Establish Spatial-Temporal Coordinate Framework
-        # Create precise pixel-to-world coordinate mapping for analytical accuracy
-        utils.create_pixel_to_world_mapping_from_hdr(self.image_dir)
-
-        # Phase 4a: Apply Temporal and Contextual Annotations
-        # Embed chronological and meteorological metadata for regulatory compliance verification
-        tiff_files_to_stamp = [path for path in self.image_dir.glob('*_combined.tiff')]
-        
-        # TODO: implement dynamic geospatial coordinate system based on project location
-        utils.stamp_tiff_files(
-            tiff_files_to_stamp, 
-            font_size=24, 
-            text_color=(255, 255, 255),  # Professional white annotation
-            background_alpha=180, 
-            number_of_workers=10
-        )
-
-        # Phase 4b: Architectural Space Identification and Compliance Delineation
-        # Overlay spatial boundaries with occupancy classifications for regulatory assessment
-        # utils.stamp_tiff_files_with_aoi(
-        #     tiff_files_to_stamp, 
-        #     lineweight              = 1, 
-        #     font_size               = 32, 
-        #     text_color              = (255, 0, 0), 
-        #     background_alpha        = 180, 
-        #     number_of_workers       = 10
-        #     )
-
-        # Optimization Opportunity: Implement hierarchical stamping methodology for computational efficiency
-
-        # Phase 4c: Quantitative Compliance Analysis and Data Export
-        # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
-        # TODO: Implement real-world coordinate mapping for processed boundaries
-        # TODO: Generate AOI files with geospatial coordinates and validation protocols
-        # TODO: Develop interactive interface for dynamic AOI adjustment with persistent configuration
-
-        # Phase 4d: Generate Comprehensive Illumination Analytics Dashboard
-        # Produce calibrated visualization showing temporal illumination patterns with ADDG compliance thresholds 
-
-
-        # Phase 5: Synthesize Multi-Format Temporal Visualizations
-        # Create animated sequences demonstrating illumination evolution across temporal cycles
-        utils.combine_tiffs_by_view(self.image_dir, self.view_files, output_format='gif', number_of_workers=8)
-        utils.combine_tiffs_by_view(self.image_dir, self.view_files, output_format='mp4', number_of_workers=8)
-
-
-        # Phase 6: Generate Consolidated Multi-Perspective Analytics
-        # Produce unified grid visualization integrating all viewpoint analyses for comprehensive assessment
-        individual_view_mp4s = [path for path in self.image_dir.glob('animated_results_*.mp4')]
-        utils.create_grid_mp4(individual_view_mp4s, self.image_dir, grid_size=(3, 2), target_size=(1024, 1024), fps=2)
-
-        individual_view_gifs = [path for path in self.image_dir.glob('animated_results_*.gif')]
-        utils.create_grid_gif(individual_view_gifs, self.image_dir, grid_size=(3, 2), target_size=(2048, 2048), fps=2)
+        combined_hdr_files_paths_for_deletion = [Path(cmd.split(' > ')[-1].strip()) for cmd in self.pcomb_commands if ' > ' in cmd]
+        utils.delete_files(combined_hdr_files_paths_for_deletion)
 
         print("Rendering sequence completed successfully.")

@@ -33,7 +33,8 @@ class ObjToOctree:
     input_mtl_paths: list[Path] = field(init=False, default=None)
     combined_radiance_mtl_path: str | None = field(init=False, default=None)
     output_rad_paths: list[str] = field(init=False, default=None)
-    output_dir: str = field(init=False, default=None)
+    output_dir: Path = field(init=False, default=Path().parent.parent / "outputs" / "octree")
+    skyless_octree_path: Path = field(init=False, default=None)
     
     def __post_init__(self):
         """Initialize lists if None and validate input."""
@@ -47,6 +48,13 @@ class ObjToOctree:
             self.input_mtl_paths = []
         if self.output_rad_paths is None: 
             self.output_rad_paths = []
+        
+        if not os.path.exists(self.output_dir):
+            try:
+                os.makedirs(self.output_dir)
+                print(f"Created output directory: {self.output_dir}")
+            except OSError as e:
+                print(f"Error creating directory {self.output_dir}: {e}")
         
         # Create mtl paths from input obj paths
         self.input_mtl_paths = [Path(input_obj_path).with_suffix('.mtl') for input_obj_path in self.input_obj_paths]
@@ -88,15 +96,13 @@ class ObjToOctree:
         if not self.output_rad_paths or not self.combined_radiance_mtl_path:
             print("No RAD files or material file available for octree generation")
             return
-        
-        # Use pathlib for cross-platform path handling
-        output_dir = Path().parent.parent / "outputs" / "octree"
-        obj_name = Path(self.input_obj_paths[0]).stem
-        output_filename = output_dir / f"{obj_name}_with_site_skyless.oct"
+
+        obj_name = self.input_obj_paths[0].stem
+        self.skyless_octree_path = self.output_dir / f"{obj_name}_with_site_skyless.oct"
         
         # Build command with material file and all RAD files using pathlib
         rad_files_str = " ".join(f'"{Path(rad_path)}"' for rad_path in self.output_rad_paths)
-        command = f'oconv -f "{Path(self.combined_radiance_mtl_path)}" {rad_files_str} > "{output_filename}"'
+        command = f'oconv -f "{Path(self.combined_radiance_mtl_path)}" {rad_files_str} > "{self.skyless_octree_path}"'
         
         print(f"Generating octree from {len(self.output_rad_paths)} RAD files...")
         print(f"Command: {command}")
@@ -112,15 +118,15 @@ class ObjToOctree:
             )
             
             if result.returncode == 0:
-                print(f"Successfully generated: {output_filename}")
-                if output_filename.exists():
-                    print(f"Octree file size: {output_filename.stat().st_size} bytes")
+                print(f"Successfully generated: {self.skyless_octree_path}")
+                if self.skyless_octree_path.exists():
+                    print(f"Octree file size: {self.skyless_octree_path.stat().st_size} bytes")
             else:
                 print(f"Warning: oconv returned code {result.returncode}")
                 print(f"STDERR: {result.stderr}")
-                if output_filename.exists():
-                    print(f"Octree file created despite warnings: {output_filename}")
-                    print(f"Octree file size: {output_filename.stat().st_size} bytes")
+                if self.skyless_octree_path.exists():
+                    print(f"Octree file created despite warnings: {self.skyless_octree_path}")
+                    print(f"Octree file size: {self.skyless_octree_path.stat().st_size} bytes")
                     
         except Exception as e:
             print(f"Error generating octree: {e}")

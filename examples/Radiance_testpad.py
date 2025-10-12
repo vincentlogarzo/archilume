@@ -34,8 +34,8 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 --- 3. ---
 #testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
     rtpict -n 2 -vf view.vp -af ambfile.amb octree_with_sky.oct > output_rtpict.hdr
-    rtpict -n 2 -t 5 -vtv -vf outputs\views_grids\plan_L02.vp -af outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.amb outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_rtpict.hdr
-
+    rtpict -n 2 -t 5 -vtv -vf outputs/views_grids/plan_L02.vp -af outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.amb outputs/octree/87cowles_BLD_noWindows_with_site_skyless.oct > outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_rtpict.hdr
+    #TODO: rtpict does not appear to work due to an internal quoatation erorr, this progamme is not viable for now untill it is rectified. 
 
 
 --- 4. ---

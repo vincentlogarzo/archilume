@@ -407,7 +407,10 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         number_of_workers=number_of_workers
     )
 
-    print(f"All new commands have successfully completed e.g. {commands[0]}")
+    if commands:
+        print(f"All new commands have successfully completed e.g. {commands[0]}")
+    else:
+        print("No commands were provided to execute.")
 
 def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
     """Create separate animated files grouped by view file names using parallel processing.
