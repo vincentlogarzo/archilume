@@ -18,7 +18,7 @@ Analysis Period: 9:00 AM - 3:00 PM at 5-minute intervals
 
 # Archilume imports  
 from archilume.sky_generator import SkyFileGenerator
-from archilume.view_generator import ViewFileGenerator
+from archilume.view_generator import ViewGenerator
 from archilume.obj_to_octree import ObjToOctree
 from archilume.rendering_pipelines import RenderingPipelines
 from archilume.image_processor import ImageProcessor
@@ -77,11 +77,11 @@ def main():
     
     print("\nGenerating view files for building analysis...")
     
-    view_generator = ViewFileGenerator(
-        room_boundaries_csv_path_input=csv_path,
+    view_generator = ViewGenerator(
+        room_boundaries_csv_path=csv_path,
         ffl_offset = 1.0 # Image height plane above finished floor level
         )
-    view_generator.create_view_files()
+    view_generator.create_plan_view_files()
 
 
     # Phase 4: Execute Comprehensive Solar Analysis Pipeline
