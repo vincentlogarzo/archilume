@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Union
@@ -339,28 +340,68 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         def _run_command_with_progress(command: str) -> None:
             """Execute a single command with real-time output streaming."""
             print(f"Starting: {command}")
-            
+
             try:
+                # Set up environment with RAYPATH for Radiance commands
+                env = os.environ.copy()
+                env['RAYPATH'] = r'C:\Radiance\lib'
+
+                # Check if command uses output redirection
+                has_output_redirect = ' > ' in command
+
                 # Use Popen for real-time output streaming
-                process = subprocess.Popen(
-                    command,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    universal_newlines=True,
-                    bufsize=1  # Line buffered
-                )
-                
-                # Stream output in real-time
-                while True:
-                    output = process.stdout.readline()
-                    if output == '' and process.poll() is not None:
-                        break
-                    if output:
-                        print(output.strip())
-                
+                # Note: When using output redirection (>), rpict sends progress to stderr
+                # and binary image data to stdout (which gets redirected by the shell)
+                if has_output_redirect:
+                    # With redirect: stdout goes to file, only read stderr for progress
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        encoding='utf-8',
+                        errors='replace',
+                        bufsize=1,
+                        env=env
+                    )
+
+                    # Read stderr for progress messages
+                    while True:
+                        output = process.stderr.readline()
+                        if output == '' and process.poll() is not None:
+                            break
+                        if output:
+                            # Filter for meaningful progress messages
+                            stripped = output.strip()
+                            if any(kw in stripped for kw in ['rpict:', 'rays,', '%', 'hours', 'error', 'warning']):
+                                if sum(c.isprintable() or c.isspace() for c in stripped) / max(len(stripped), 1) > 0.8:
+                                    print(stripped, flush=True)
+                else:
+                    # No redirect: stdout contains binary data, discard it and only read stderr
+                    process = subprocess.Popen(
+                        command,
+                        shell=True,
+                        stdout=subprocess.DEVNULL,  # Discard binary output
+                        stderr=subprocess.PIPE,
+                        encoding='utf-8',
+                        errors='replace',
+                        bufsize=1,
+                        env=env
+                    )
+
+                    # Read stderr for progress messages
+                    while True:
+                        output = process.stderr.readline()
+                        if output == '' and process.poll() is not None:
+                            break
+                        if output:
+                            stripped = output.strip()
+                            if any(kw in stripped for kw in ['rpict:', 'rays,', '%', 'hours', 'error', 'warning']):
+                                if sum(c.isprintable() or c.isspace() for c in stripped) / max(len(stripped), 1) > 0.8:
+                                    print(stripped, flush=True)
+
                 # Wait for process to complete and get return code
-                return_code = process.poll()
+                return_code = process.wait()
                 
                 if return_code == 0:
                     print(f"Completed successfully: {command}")
@@ -390,16 +431,27 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
     
     filtered_commands = []
     for command in commands:
-        try:
-            # First, try splitting by the '>' operator
-            output_path = command.split(' > ')[1].strip()
-        except IndexError:
-            # If that fails, it's likely a command like ra_tiff.
-            # Split by spaces and take the last element.
-            output_path = command.split()[-1].strip()
+        output_path = None
 
-        # Now, check if the extracted path exists
-        if not os.path.exists(output_path):
+        # Try to extract output path from command
+        if ' > ' in command:
+            # Command has redirect operator
+            try:
+                output_path = command.split(' > ')[1].strip()
+            except IndexError:
+                pass
+        elif any(cmd in command for cmd in ['ra_tiff', 'ra_ppm', 'pfilt', 'pcomb']):
+            # Commands that typically have output file as last argument
+            try:
+                output_path = command.split()[-1].strip()
+            except (IndexError, AttributeError):
+                pass
+
+        # If no output path found, skip filtering and include command
+        if output_path is None:
+            filtered_commands.append(command)
+        # Otherwise, check if the output file exists
+        elif not os.path.exists(output_path):
             filtered_commands.append(command)
 
     _execute_commands_with_progress(
@@ -1373,7 +1425,6 @@ def stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 5, font_
                 print(future.result())
     
     print(f"Completed AOI stamping on {len(tiff_paths)} TIFF files")
-
 
 def create_pixel_to_world_mapping_from_hdr(image_dir: Path) -> Optional[Path]:
     """
