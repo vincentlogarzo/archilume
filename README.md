@@ -30,24 +30,30 @@ pip install -e .
 
 **Important**: Radiance must be installed to `C:\Radiance\bin\` on Windows. The Archilume library expects the `obj2rad.exe` executable to be located at `C:\Radiance\bin\obj2rad.exe`.
 
+**Windows Installation Issue**: If you encounter the error "Warning! PATH too long installer unable to modify PATH!" during Radiance installation, manually add the environment variables after installation:
+
+```cmd
+setx PATH "%PATH%;C:\Radiance\bin"
+setx RAYPATH "C:\Radiance\lib"
+```
+
 ### Basic Usage
 
 ```python
 from archilume.obj_to_octree import ObjToOctree
-from archilume.sky_generator import SkyFileGenerator
+from archilume.sky_generator import SkyGenerator
 
 # Convert 3D model to Radiance format
 octree = ObjToOctree(['building.obj'], ['building.mtl'])
 octree.create_skyless_octree_for_sunlight_analysis()
 
 # Generate sky files for analysis
-sky_gen = SkyFileGenerator(
-    lat=-37.8136,  # Melbourne
+sky_gen = SkyGenerator(lat=-37.8136)  # Melbourne
+sky_gen.generate_sunny_sky_series(
     month=6, day=21,  # Winter solstice
     start_hour_24hr_format=9,
     end_hour_24hr_format=17
 )
-sky_gen.generate_sunny_sky_series()
 ```
 
 ## 📁 Project Structure
@@ -88,16 +94,18 @@ octree_generator = ObjToOctree(
 octree_generator.create_skyless_octree_for_sunlight_analysis()
 ```
 
-### `SkyFileGenerator`
+### `SkyGenerator`
 Generates Radiance sky files for different dates, times, and locations.
 
 ```python
-sky_generator = SkyFileGenerator(
-    lat=-37.8136,                    # Latitude in decimal degrees
+sky_generator = SkyGenerator(lat=-37.8136)  # Latitude in decimal degrees
+
+# Generate sky series for specific date/time range
+sky_generator.generate_sunny_sky_series(
     month=6, day=21,                 # Date for analysis
     start_hour_24hr_format=9,        # Start time (24hr format)
     end_hour_24hr_format=17,         # End time (24hr format)
-    minute_increment=60              # Time step interval
+    minute_increment=60              # Time step interval (default: 5)
 )
 ```
 
@@ -119,7 +127,7 @@ Complete workflow for analyzing sunlight exposure during winter solstice:
 
 ```python
 from archilume.obj_to_octree import ObjToOctree
-from archilume.sky_generator import SkyFileGenerator
+from archilume.sky_generator import SkyGenerator
 from archilume.view_generator import ViewGenerator
 
 # 1. Convert building geometry
@@ -127,14 +135,13 @@ octree_generator = ObjToOctree(['building.obj'], ['building.mtl'])
 octree_generator.create_skyless_octree_for_sunlight_analysis()
 
 # 2. Generate winter solstice sky conditions
-sky_generator = SkyFileGenerator(
-    lat=-37.8136,  # Melbourne latitude
+sky_generator = SkyGenerator(lat=-37.8136)  # Melbourne latitude
+sky_generator.generate_sunny_sky_series(
     month=6, day=21,  # Winter solstice
     start_hour_24hr_format=9,
     end_hour_24hr_format=17,
     minute_increment=60
 )
-sky_generator.generate_sunny_sky_series()
 
 # 3. Create view files for analysis
 view_generator = ViewGenerator(
@@ -148,15 +155,17 @@ view_generator.create_aoi_and_view_files()
 
 ```python
 # London summer solstice
-london_sky = SkyFileGenerator(
-    lat=51.5074, month=6, day=21,
+london_sky = SkyGenerator(lat=51.5074)
+london_sky.generate_sunny_sky_series(
+    month=6, day=21,
     start_hour_24hr_format=6,
     end_hour_24hr_format=20
 )
 
-# Sydney winter solstice  
-sydney_sky = SkyFileGenerator(
-    lat=-33.8688, month=6, day=21,
+# Sydney winter solstice
+sydney_sky = SkyGenerator(lat=-33.8688)
+sydney_sky.generate_sunny_sky_series(
+    month=6, day=21,
     start_hour_24hr_format=8,
     end_hour_24hr_format=18
 )

@@ -33,16 +33,16 @@ class ImageProcessor:
     y_res: int
     
     # Fields that will be populated after initialization
-    sky_files: List[Path] = field(default_factory=list, init=False)
-    view_files: List[Path] = field(default_factory=list, init=False)
-    overcast_octree_command: str = field(default="", init=False)
-    rpict_low_qual_commands: List[str] = field(default_factory=list, init=False)
-    rpict_med_qual_commands: List[str] = field(default_factory=list, init=False)
-    temp_octree_with_sky_paths: List[Path] = field(default_factory=list, init=False)
-    oconv_commands: List[str] = field(default_factory=list, init=False)
-    rpict_commands: List[str] = field(default_factory=list, init=False)
-    pcomb_commands: List[str] = field(default_factory=list, init=False)
-    ra_tiff_commands: List[str] = field(default_factory=list, init=False)
+    sky_files: List[Path]                   = field(default_factory=list, init=False)
+    view_files: List[Path]                  = field(default_factory=list, init=False)
+    overcast_octree_command: str            = field(default="", init=False)
+    rpict_low_qual_commands: List[str]      = field(default_factory=list, init=False)
+    rpict_med_qual_commands: List[str]      = field(default_factory=list, init=False)
+    temp_octree_with_sky_paths: List[Path]  = field(default_factory=list, init=False)
+    oconv_commands: List[str]               = field(default_factory=list, init=False)
+    rpict_commands: List[str]               = field(default_factory=list, init=False)
+    pcomb_commands: List[str]               = field(default_factory=list, init=False)
+    ra_tiff_commands: List[str]             = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """
@@ -65,8 +65,6 @@ class ImageProcessor:
         """
 
         # Phase 4: Establish Spatial-Temporal Coordinate Framework
-        # Create precise pixel-to-world coordinate mapping for analytical accuracy
-        utils.create_pixel_to_world_mapping_from_hdr(self.image_dir)
 
         # Phase 4a: Apply Temporal and Contextual Annotations
         # Embed chronological and meteorological metadata for regulatory compliance verification
@@ -94,14 +92,10 @@ class ImageProcessor:
 
         # Optimization Opportunity: Implement hierarchical stamping methodology for computational efficiency
 
-        # Phase 4c: Quantitative Compliance Analysis and Data Export
-        # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
-        # TODO: Implement real-world coordinate mapping for processed boundaries
-        # TODO: Generate AOI files with geospatial coordinates and validation protocols
-        # TODO: Develop interactive interface for dynamic AOI adjustment with persistent configuration
+
 
         # Phase 4d: Generate Comprehensive Illumination Analytics Dashboard
-        # Produce calibrated visualization showing temporal illumination patterns with ADDG compliance thresholds 
+        # Produce calibrated visualization showing temporal illumination patterns with ADG compliance thresholds 
 
 
         # Phase 5: Synthesize Multi-Format Temporal Visualizations
@@ -118,4 +112,4 @@ class ImageProcessor:
         individual_view_gifs = [path for path in self.image_dir.glob('animated_results_*.gif')]
         utils.create_grid_gif(individual_view_gifs, self.image_dir, grid_size=(3, 2), target_size=(2048, 2048), fps=2)
 
-        print("Rendering sequence completed successfully.")
+        print("\nRendering sequence completed successfully.\n")

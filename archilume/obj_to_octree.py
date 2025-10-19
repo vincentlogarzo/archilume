@@ -27,14 +27,14 @@ class ObjToOctree:
     """
 
     # User inputs - support multiple files
-    input_obj_paths: list[Path] = None
+    input_obj_paths: list[Path]             = None
 
     # Internal output file paths (set automatically during processing)
-    input_mtl_paths: list[Path] = field(init=False, default=None)
-    combined_radiance_mtl_path: str | None = field(init=False, default=None)
-    output_rad_paths: list[str] = field(init=False, default=None)
-    output_dir: Path = field(init=False, default=Path().parent.parent / "outputs" / "octree")
-    skyless_octree_path: Path = field(init=False, default=None)
+    input_mtl_paths: list[Path]             = field(init=False, default=None)
+    combined_radiance_mtl_path: str | None  = field(init=False, default=None)
+    output_rad_paths: list[str]             = field(init=False, default=None)
+    output_dir: Path                        = field(init=False, default=Path(__file__).parent.parent / "outputs" / "octree")
+    skyless_octree_path: Path               = field(init=False, default=None)
     
     def __post_init__(self):
         """Initialize lists if None and validate input."""
@@ -58,9 +58,47 @@ class ObjToOctree:
         
         # Create mtl paths from input obj paths
         self.input_mtl_paths = [Path(input_obj_path).with_suffix('.mtl') for input_obj_path in self.input_obj_paths]
+
+    def create_skyless_octree_for_analysis(self) -> None:
+        """
+        Process all OBJ/MTL file pairs: convert OBJ to RAD, parse MTL to Radiance format,
+        and add missing modifiers. This is the main method to call for multi-file processing.
+        """
+        if not self.input_obj_paths or not self.input_mtl_paths:
+            print("No files to process")
+            return
+            
+        print(f"Processing OBJ/MTL file pairs...")
         
-        # Set output directory as absolute path
-        self.output_dir = Path.cwd() / "outputs" / "rad"
+        # Check if octree already exists before doing any processing
+        obj_name = self.input_obj_paths[0].stem
+        self.skyless_octree_path = self.output_dir / f"{obj_name}_with_site_skyless.oct"
+        
+        if self.skyless_octree_path.exists():
+            print(f"Skyless octree already exists: {self.skyless_octree_path}")
+            return
+        
+        # --- Step 1: Convert all OBJ files to RAD ---
+        try:
+            self.__obj2rad_with_os_system()
+
+        except Exception as e:
+            print(f"Error running obj2rad: {e}")
+        
+        # --- Step 2: Create radiance materials description from all mtl files and cross reference modifiers contained in rad files created ---
+        if self.output_rad_paths:
+            mtl_creator = Convert2RadianceMtlFile(
+                rad_paths=self.output_rad_paths,
+                mtl_paths=self.input_mtl_paths
+            )
+            mtl_creator.create_radiance_mtl_file()
+
+            print("Material file created at:", mtl_creator.output_mtl_path)
+
+            self.combined_radiance_mtl_path = mtl_creator.output_mtl_path
+
+        # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
+        self.__rad2octree()
 
     def __obj2rad_with_os_system(self, exe_path: Path = Path(r"C:/Radiance/bin/obj2rad.exe")) -> int:
         """
@@ -96,9 +134,6 @@ class ObjToOctree:
         if not self.output_rad_paths or not self.combined_radiance_mtl_path:
             print("No RAD files or material file available for octree generation")
             return
-
-        obj_name = self.input_obj_paths[0].stem
-        self.skyless_octree_path = self.output_dir / f"{obj_name}_with_site_skyless.oct"
         
         # Build command with material file and all RAD files using pathlib
         rad_files_str = " ".join(f'"{Path(rad_path)}"' for rad_path in self.output_rad_paths)
@@ -131,38 +166,4 @@ class ObjToOctree:
         except Exception as e:
             print(f"Error generating octree: {e}")
 
-    def create_skyless_octree_for_analysis(self) -> None:
-        """
-        Process all OBJ/MTL file pairs: convert OBJ to RAD, parse MTL to Radiance format,
-        and add missing modifiers. This is the main method to call for multi-file processing.
-        """
-        if not self.input_obj_paths or not self.input_mtl_paths:
-            print("No files to process")
-            return
-            
-        print(f"Processing OBJ/MTL file pairs...")
-        
-        
-        # --- Step 1: Convert all OBJ files to RAD ---
-        try:
-            self.__obj2rad_with_os_system()
 
-        except Exception as e:
-            print(f"Error running obj2rad: {e}")
-        
-
-        # --- Step 2: Create radiance materials description from all mtl files and cross reference modifiers contained in rad files created ---
-        if self.output_rad_paths:
-            mtl_creator = Convert2RadianceMtlFile(
-                rad_paths=self.output_rad_paths,
-                mtl_paths=self.input_mtl_paths
-            )
-            mtl_creator.create_radiance_mtl_file()
-
-            print("Material file created at:", mtl_creator.output_mtl_path)
-
-            self.combined_radiance_mtl_path = mtl_creator.output_mtl_path
-
-        
-        # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
-        self.__rad2octree()

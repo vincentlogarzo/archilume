@@ -4,80 +4,52 @@
 --- 1. ---
 Use the below in the command prompt only not in powershell. Oconv required utf-8 encoding for the input files. 
 
-    cd C:\Projects\archilume
-    obj2rad inputs\87cowles_BLD_noWindows.obj > outputs\rad\87cowles_BLD_noWindows.rad
-    obj2rad inputs\87cowles_site.obj > outputs\rad\87cowles_site.rad
-    cd C:\Projects\archilume\outputs
-    oconv -f rad\materials.mtl rad/87cowles_BLD_noWindows.rad rad\87cowles_site.rad > octree\87cowles_BLD_noWindows_with_site_skyless.oct
-    oconv -i octree\87cowles_BLD_noWindows_with_site_skyless.oct sky/SS_0621_0900.sky > octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
-    cd C:\Projects\archilume
-    rtpict -w -vtv -t 5 -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 2048 -ar 256 -as 512 -ps 4 -lw 0.004 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr
-
-
-    ra_tiff -e -4 outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr outputs\images\87cowles_BLD_noWindows_with_site_SS_0621_0900.tiff
+    cd C:/Projects/archilume
+    obj2rad inputs/87cowles_BLD_noWindows.obj > outputs/rad/87cowles_BLD_noWindows.rad
+    obj2rad inputs/87cowles_site.obj > outputs/rad/87cowles_site.rad
+    cd C:/Projects/archilume/outputs
+    oconv -f rad/materials.mtl rad/87cowles_BLD_noWindows.rad rad/87cowles_site.rad > octree/87cowles_BLD_noWindows_with_site_skyless.oct
+    oconv -i octree/87cowles_BLD_noWindows_with_site_skyless.oct sky/SS_0621_0900.sky > octree/87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
+    rpict -w -t 5 -vf views_grids/plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 2048 -ar 256 -as 512 -ps 4 -lw 0.004 octree/87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
+    ra_tiff -e -4 outputs/images/87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr outputs/images/87cowles_BLD_noWindows_with_site_SS_0621_0900.tiff
  
-    med quality:  rpict -vf view_description.vp -x 1024 -y 1024 -ab 1 -ad 1024 -ar 256 -as 256 -ps 5 octree_with_sky.oct > output.hdr
-    high quality:  rpict -vf view_description.vp -x 1024 -y 1024 -ab 2 -ad 1024 -ar 256 -as 256 -ps 5 octree_with_sky.oct > output.hdr
-
 --- 2. ---
-to be test on creation of ambient and direct rpict runs, where the ambient file could be re-used. for subeuent rendinergs. 
-    cd C:\Projects\archilume
-    gensky 12 21 12:00 -c -B 55.47 > outputs\sky\overcast_sky.rad
-    oconv -i outputs\octree\87cowles_BLD_noWindows_with_site_skyless.oct outputs\sky\TenK_cie_overcast.rad > outputs\octree\87cowles_BLD_noWindows_with_site_TenK_cie_overcast.oct
-    rpict -w -vtv -t 5 -vf outputs\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 1 -ad 8192 -as 1024 -aa 0.05 -ar 512 -lr 12 -lw 0.002 -af outputs\images\indirect_overcast.amb -i outputs\octree\87cowles_BLD_noWindows_with_site_with_overcast.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr
-    rpict -w -vtv -t 5 -vf outputs\views_grids\plan_L02.vp -x 1024 -y 1024 -ab 0 -dr 4 -dt 0.01 -ds 0.01 -dj 0.9 -dc 0.75 -dp 512 -st 0.1 outputs\octree\87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr
-    
-    pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr > outputs\images\87cowles_BLD_noWindows_with_site_combined.hdr
-    #TODO setup a direct rpict rendering and then a subseuent pcomb of these files to then generate a hdr file and
-    ra_tiff outputs\images\87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs\images\87cowles_BLD_noWindows_overcast_indirect.tiff
+to be test on creation of ambient and direct rpict runs, where the ambient file is intially run as an overture and then reused to speed up seubsequent runs 
+    cd C:/Projects/archilume
+    oconv -i outputs/octree/87cowles_BLD_noWindows_with_site_skyless.oct outputs/sky/TenK_cie_overcast.rad > outputs/octree/87cowles_BLD_noWindows_with_site_TenK_cie_overcast.oct
+    rpict -w -t 5 -vf outputs/views_grids/plan_L02.vp -x 64 -y 64 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 -af outputs/images/indirect_overcast_plan_L02.amb -i outputs/octree/87cowles_BLD_noWindows_with_site_TenK_cie_overcast.oct
+    rpict -w -t 5 -vf outputs/views_grids/plan_L02.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 -af outputs/images/indirect_overcast.amb -i outputs/octree/87cowles_BLD_noWindows_with_site_TenK_cie_overcast.oct > outputs/images/87cowles_BLD_noWindows_with_site_TenK_cie_overcast_indirect.hdr
+    pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' outputs/images/87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs/images/87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr > outputs/images/87cowles_BLD_noWindows_with_site_combined.hdr
+    ra_tiff outputs/images/87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs/images/87cowles_BLD_noWindows_overcast_indirect.tiff
 
 --- 3. ---
 #testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
+    #TODO: rtpict does not appear to work due to an internal quoatation erorr, this progamme is not viable for now untill it is rectified.
     rtpict -n 2 -vf view.vp -af ambfile.amb octree_with_sky.oct > output_rtpict.hdr
     rtpict -n 2 -t 5 -vtv -vf outputs/views_grids/plan_L02.vp -af outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.amb outputs/octree/87cowles_BLD_noWindows_with_site_skyless.oct > outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_rtpict.hdr
-    #TODO: rtpict does not appear to work due to an internal quoatation erorr, this progamme is not viable for now untill it is rectified. 
-
-
+     
 --- 4. ---
 # Turn view into rays file that can be rendered in parallel. This route is not to be investigate it did not work intially but could be a point of speeding up the process in the future. A points.txt files would be more appropraite. I beleive the vwrays programme is generating an invalid ray.dat file. 
 
     # Generate rays in terminal in either binary option (-ff) or human readable format
-    vwrays -vf outputs\views_grids\plan_L02.vp -x 2048 -y 2048 > outputs\views_grids\plan_L02_rays.txt
+    vwrays -vf outputs/views_grids/plan_L02.vp -x 2048 -y 2048 > outputs/views_grids/plan_L02_rays.txt
     #FIXME: update this export to place the header into the file itself. 
 
     # add in ambient file run on whole scene to speed up subseuent rtrace runs at higher quality.
     TODO: " AmbientFileUseandthe“Overture”Calculation" Read the above section of rendering with radiance and adjust the ambient file generation into an overture calculation with a small image with the final rendering parameters before getting into the actual rendering, then test out using Pfilt to reduce the size of the image for smoothing. 
     
     # RGBE values at each point with more parameters for quality
-    rtrace -h -ab 1 -ad 2048 -as 512 -ar 128 -aa 0.15 outputs\octree\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900.oct < outputs\views_grids\plan_L02_rays.txt > outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt
+    rtrace -h -ab 1 -ad 2048 -as 512 -ar 128 -aa 0.15 outputs/octree/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900.oct < outputs/views_grids/plan_L02_rays.txt > outputs/wpd/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt
 
     # Convert rtrace points.txt to RGBE format 
     rtrace -h -ab 4 -aa 0.1 scene.rad < camera_rays.txt | ra_rgbe > output.hdr
     #TODO test the above. 
 
     FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908. 
-    pvalue -r -h -x 1908 -y 1908 outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt > outputs\wpd\87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02_rtrace.hdr
+    pvalue -r -h -x 1908 -y 1908 outputs/wpd/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt > outputs/wpd/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02_rtrace.hdr
 
 
---- 5. ---  
-# Investigate using rad programmes with rpict, Greg Ward says this is even better than rtpict on radance discourse.
-rad Usage: rad [-w][-s][-n|-N npr][-t][-e][-V][-v view][-o dev] rfile [VAR=value ..]
-    rad -n -s scene.rif OPTFILE=render.opt
-    rtpict -n 8 @render.opt scene.oct > output.hdr
-
-    scene.rif 
-        rpict= rtpict -n 8
-        RESOLUTION= 1000
-        ZONE= I 0 20 0 20 0 20
-        QUALITY= H
-        DETAIL= H
-        EXPOSURE= 1
-        UP= Z
-        INDIRECT= 6
-        VARIABILITY= H
-        REPORT= 1
-
-
+    
 rpict quality settings reference 
 ----------------------------------------------------------------------------
 

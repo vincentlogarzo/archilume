@@ -110,6 +110,12 @@ class ViewGenerator:
             completes execution to allow the instance to be created.
         """
 
+        # Check if CSV file exists
+        if not self.room_boundaries_csv_path.exists():
+            print(f"\nError: Room boundaries CSV not found at {self.room_boundaries_csv_path}")
+            import sys
+            sys.exit(1)
+
         # Create the output directory if it doesn't exist
         os.makedirs(self.aoi_file_dir, exist_ok=True)
         os.makedirs(self.view_file_dir, exist_ok=True)
@@ -117,7 +123,6 @@ class ViewGenerator:
         # Run csv parser to restructure the room boundaries data for use
         self.__parse_room_boundaries_csv()
         
-
     def create_plan_view_files(self) -> bool:
         """
         Generate Radiance view parameter files for each floor level.
@@ -226,6 +231,7 @@ class ViewGenerator:
             # Extract data from the current row
             file_path = row['view_file_path']
             z_coordinate = row['ffl_z_coord_with_offset']
+
             try:
                 # Extract the directory path from the file path
                 dir_path = os.path.dirname(file_path)
@@ -242,7 +248,35 @@ class ViewGenerator:
                 try:
                     view_file_path_obj = Path(file_path)
                     view_file_path_obj.parent.mkdir(parents=True, exist_ok=True)
-                    view_content_str = str(f"rvu -vtv -vp {str(self.x_coord_center)} {str(self.y_coord_center)} {str(z_coordinate)} -vd 0 0 -1 -vu 0 1 0 -vh {str(self.view_horizontal)} -vv {str(self.view_vertical)} -vo 0 -va 0 -vs 0 -vl 0")
+                    view_content = [
+                        "rvu",
+                        "-vtl",
+                        "-vp",
+                        str(self.x_coord_center),
+                        str(self.y_coord_center),
+                        str(z_coordinate),
+                        "-vd",
+                        "0",
+                        "0",
+                        "-1",
+                        "-vu",
+                        "0",
+                        "1",
+                        "0",
+                        "-vh",
+                        str(self.view_horizontal),
+                        "-vv",
+                        str(self.view_vertical),
+                        "-vo",
+                        "0",
+                        "-va",
+                        "0",
+                        "-vs",
+                        "0",
+                        "-vl",
+                        "0",
+                    ]
+                    view_content_str = " ".join(view_content)
                     with open(view_file_path_obj, "w") as vf:
                         vf.write(view_content_str)
                     logging.debug(
