@@ -136,9 +136,9 @@ class RenderingPipelines:
                 
         Note:
             # example radiance command warming up the ambient file:
-                rpict -w -t 2 -vtv -vf view.vp -x 64 -y 64 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.00200 -af ambient.amb model_overcast_sky.oct
+                rpict -w -t 2 -vf view.vp -x 64 -y 64 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.00200 -af ambient.amb model_overcast_sky.oct
             # subsequent medium quality rendering with the ambient file producing an ouptut indirect image
-                rpict -w -t 2 -vtv -vf view.vp -x 2048 -y 2048 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -ab 2 -aa 0.1 -ar 1024 -ad 4096 -as 1024 -lr 12 -lw 0.00200 -af ambient_file.amb model_overcast_sky.oct > output_image.hdr
+                rpict -w -t 2 -vf view.vp -x 2048 -y 2048 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -ab 2 -aa 0.1 -ar 1024 -ad 4096 -as 1024 -lr 12 -lw 0.00200 -af ambient_file.amb model_overcast_sky.oct > output_image.hdr
         """
         
         octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
@@ -215,11 +215,10 @@ class RenderingPipelines:
             overcast_hdr_path = self.image_dir / f"{octree_base_name}_{view_file_name}__TenK_cie_overcast.hdr"
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
-            #FIXME: the -vtv n the rpict command may be redundant as this is already specified in the view file. update the view file code to use vtv instead of vtl and remove -vtv from here and test the results. 
             temp_octree_with_sky_path = self.skyless_octree_path.parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
             oconv_command, rpict_command, pcomb_command, ra_tiff_command = [
                 rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}" ,
-                rf"rpict -w -vtv -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
+                rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
                 rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} > {output_hdr_path_combined}',
                 rf"ra_tiff -e -2 {output_hdr_path_combined} {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}"
             ]
@@ -273,8 +272,5 @@ class RenderingPipelines:
         # Phase 3b: Convert to Industry-Standard TIFF Format
         # Transform HDR data to accessible format with optimized exposure mapping
         utils.execute_new_radiance_commands(self.ra_tiff_commands, number_of_workers=10)  # TODO: automate exposure adjustment based on histogram analysis
-
-        combined_hdr_files_paths_for_deletion = [Path(cmd.split(' > ')[-1].strip()) for cmd in self.pcomb_commands if ' > ' in cmd]
-        utils.delete_files(combined_hdr_files_paths_for_deletion)
 
         print("Rendering sequence completed successfully.")

@@ -823,154 +823,220 @@ def create_grid_mp4(mp4_paths: list[Path], image_dir: Path, grid_size: tuple=(3,
     
     print(f"Created grid MP4: {len(video_info)} views in {cols}x{rows} grid, {max_frames} frames at {fps} FPS")
 
-def create_pixel_to_world_mapping_from_hdr(hdr_file_path: Path, output_dir: Path = None) -> Path:
+def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
     """
-    Creates a pixel-to-world coordinate mapping from an HDR file's VIEW parameters.
-    
-    Extracts viewpoint and view angle information from HDR file metadata,
-    then calculates the mapping between pixel coordinates and real-world coordinates.
-    
+    Create pixel-to-world coordinate mapping from HDR file in the specified directory.
+
+    Automatically locates the first '*_combined.hdr' file in the image directory,
+    extracts viewpoint and view angle information from HDR file metadata, then
+    calculates the mapping between pixel coordinates and real-world coordinates.
+    The mapping file is saved to the output directory for use in spatial analysis.
+
     Args:
-        hdr_file_path (Path): Path to the HDR file containing VIEW parameters
-        output_dir (Path, optional): Directory to save the mapping file. 
-                                   Defaults to parent/outputs/aoi/
-    
+        image_dir (Path): Directory containing HDR files
+        output_dir (Path, optional): Directory to save the mapping file.
+                                     If None, defaults to image_dir.parent/aoi/
+
     Returns:
-        Path: Path to the generated mapping file
-        
+        Optional[Path]: Path to the HDR file that was processed, or None if processing failed
+
     Raises:
         FileNotFoundError: If HDR file doesn't exist
-        ValueError: If VIEW parameters cannot be extracted
-        
+        ValueError: If VIEW parameters or image dimensions cannot be extracted
+
+    Note:
+        This function searches for files matching the pattern '*_combined.hdr'
+        which are typically generated during the solar analysis pipeline.
+        The mapping file format is: pixel_x pixel_y world_x world_y
+
     Example:
-        >>> hdr_path = Path("image.hdr")
-        >>> mapping_file = create_pixel_to_world_mapping_from_hdr(hdr_path)
-        >>> print(f"Mapping saved to: {mapping_file}")
+        >>> image_dir = Path("outputs/images")
+        >>> hdr_path = create_pixel_to_world_coord_map(image_dir)
+        >>> if hdr_path:
+        ...     print(f"Mapping created from: {hdr_path}")
     """
-    
-    # Step 1: Validate input
-    if not hdr_file_path.exists():
-        raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
-    
     try:
-        with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            line_count = 0
-            for line in f:
-                line_count += 1
-                line = line.strip()
-                
-                # Look for the resolution line pattern: -Y height +X width
-                if line.startswith('-Y') and '+X' in line:
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if part == '-Y' and i + 1 < len(parts):
-                            height = int(parts[i + 1])
-                        elif part == '+X' and i + 1 < len(parts):
-                            width = int(parts[i + 1])
-                    if width and height:
-                        print(f"HDR dimensions - width: {width}, height: {height}")
+        # ===================================================================
+        # STEP 1: LOCATE AND VALIDATE HDR FILE
+        # ===================================================================
+        # Search for an HDR file in the specified directory
+        # The glob pattern '*.hdr' finds any HDR file
+        # next() returns the first match, or None if no files found
+        hdr_file_path = next(image_dir.glob('*.hdr'), None)
+
+        if hdr_file_path is None:
+            print(f"Warning: No '*_combined.hdr' file found in {image_dir}")
+            return None
+
+        print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
+
+        # Double-check that the file actually exists on disk
+        if not hdr_file_path.exists():
+            raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
+
+        # ===================================================================
+        # STEP 2: EXTRACT IMAGE DIMENSIONS FROM HDR FILE
+        # ===================================================================
+        # HDR files contain a header with metadata followed by binary image data
+        # We need to find a line like: "-Y 600 +X 800" which means:
+        #   - Image is 800 pixels wide (X dimension)
+        #   - Image is 600 pixels tall (Y dimension)
+        # Initialize dimension variables
+        
+        width = None
+        height = None
+
+        try:
+            # Open file with UTF-8 encoding, ignoring any decode errors
+            with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                line_count = 0
+                for line in f:
+                    line_count += 1
+                    line = line.strip()
+
+                    # Look for the resolution line pattern: -Y height +X width
+                    # This is the standard Radiance HDR format for image dimensions
+                    if line.startswith('-Y') and '+X' in line:
+                        parts = line.split()  # Split line into individual tokens
+                        # Parse the dimensions from the format: -Y <height> +X <width>
+                        for i, part in enumerate(parts):
+                            if part == '-Y' and i + 1 < len(parts):
+                                height = int(parts[i + 1])
+                            elif part == '+X' and i + 1 < len(parts):
+                                width = int(parts[i + 1])
+                        # If we found both dimensions, we're done
+                        if width and height:
+                            print(f"HDR dimensions - width: {width}, height: {height}")
+                            break
+
+                    # Safety check: Stop reading if we've gone too far or hit binary data
+                    # HDR headers are typically < 100 lines, and binary data has non-printable chars
+                    if line_count > 100 or (len(line) > 0 and any(ord(c) > 127 for c in line if not c.isprintable())):
+                        print(f"Stopped reading at line {line_count}")
                         break
-                
-                # Stop reading when we hit binary data or after reasonable number of lines
-                if line_count > 100 or (len(line) > 0 and any(ord(c) > 127 for c in line if c.isprintable() == False)):
-                    print(f"Stopped reading at line {line_count}")
-                    break
-        
-        if not width or not height:
-            raise ValueError("Could not find resolution line in HDR file header")
-            
-    except Exception as e:
-        raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
-    
-    # Step 2: Read HDR file header to extract VIEW parameters
-    print(f"Reading HDR file header: {hdr_file_path}")
-    
-    view_line = None
-    try:
+
+            # Validate that we actually found the dimensions
+            if not width or not height:
+                raise ValueError("Could not find resolution line in HDR file header")
+
+        except Exception as e:
+            raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
+
+        # ===================================================================
+        # STEP 3: EXTRACT VIEW PARAMETERS FROM HDR FILE
+        # ===================================================================
+        # The HDR file contains a VIEW line with camera information, e.g.:
+        # VIEW= -vtl v -vp 50.0 30.0 1.5 -vd 0 1 0 -vu 0 0 1 -vh 45 -vv 45
+        # This tells us:
+        #   -vtl: orthographic view type (v = perspective)
+        #   -vp: viewpoint position (x, y, z coordinates of camera)
+        #   -vd: view direction (where camera is looking)
+        #   -vu: view up vector (which way is "up")
+        #   -vh: horizontal view angle in degrees (field of view width)
+        #   -vv: vertical view angle in degrees (field of view height)
+
+        print(f"Reading HDR file header: {hdr_file_path}")
+
+        # Find the VIEW line in the HDR header
         with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            # Read the header lines (typically the first few lines contain metadata)
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if line.startswith('VIEW='):
-                    view_line = line
-                    print(f"Found VIEW line at line {line_num}: {view_line}")
-                    break
-                # Stop reading after reasonable number of lines (HDR headers are typically short)
-                if line_num > 50:
-                    break
+            view_line = next((line.strip() for line in f if line.startswith('VIEW=')), None)
+
+        if not view_line:
+            raise ValueError("No VIEW line found in HDR file header")
+
+        print(f"Found VIEW line: {view_line}")
+
+        # ===================================================================
+        # STEP 4: PARSE VIEWPOINT AND VIEW ANGLE VALUES
+        # ===================================================================
+        # Now we extract specific values from the VIEW line using regex patterns
+
+        # Extract -vp (viewpoint): The 3D position of the camera
+        # Regex pattern: "-vp" followed by 3 numbers (can be negative, decimals)
+        # Example: "-vp 50.0 30.0 1.5" means camera at position (50, 30, 1.5) meters
+
+        vp_match = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', view_line)
+        if not vp_match:
+            raise ValueError("Could not extract -vp values from VIEW line")
+
+        vp_x, vp_y, vp_z = map(float, vp_match.groups())
+        print(f"Viewpoint (vp): x={vp_x}, y={vp_y}, z={vp_z}")
+
+        # Extract -vh (horizontal view angle) and -vv (vertical view angle)
+        # These define the camera's field of view in degrees
+        # Example: -vh 45 means the camera sees 45° horizontally
+        vh = float(re.search(r'-vh\s+([\d.-]+)', view_line).group(1))
+        vv = float(re.search(r'-vv\s+([\d.-]+)', view_line).group(1))
+        print(f"View distance - horizontal (vh): {vh}m, vertical (vv): {vv}m")
+
+        #FIXME: future iteration should determine if -vtl or -vtv is used in the view line. This will determeine how the real world dimensions are calculated. 
+
+        # ===================================================================
+        # STEP 5: CALCULATE WORLD DIMENSIONS AND PIXEL SCALE
+        # ===================================================================
+        # For orthographic views (-vtl), vh and vv are direct real-world dimensions
+        # Example: -vh 50.0 -vv 30.0 means the image shows a 50m x 30m area
+        # Calculate how many meters (or world units) each pixel represents
+        # If image is 800 pixels wide and covers 50 meters, then each pixel = 50/800 = 0.0625m
+        world_units_per_pixel_x = vv / width
+        world_units_per_pixel_y = vh / height
+
+        print(f"World dimensions: {vv:.3f} x {vh:.3f} units")
+        print(f"World units per pixel: x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
+
+        # ===================================================================
+        # STEP 6: GENERATE AND SAVE THE PIXEL-TO-WORLD MAPPING FILE
+        # ===================================================================
+        # Now we create a text file that maps every pixel to its world coordinate
+        # This file will be used later for spatial analysis (e.g., AOI stamping)
+
+
+        output_file = hdr_file_path.parent.parent / "aoi" / "pixel_to_world_coordinate_map.txt"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write the mapping file
+        with open(output_file, 'w') as f:
+            # Write view_line as first header line
+            f.write(f"# VIEW: {view_line}\n")
+            # Write image dimensions as second header line
+            f.write(f"# Image dimensions in pixels: width={width}, height={height}\n")
+            # Write world dimensions as third header line
+            f.write(f"# World dimensions in meters: width={vv:.6f}, height={vh:.6f}\n")
+            # Write column header line
+            f.write("pixel_x pixel_y world_x world_y\n")
+
+            # Map each pixel to world coordinates (pixel 0,0 = top-left, world coords centered on viewpoint)
+            for py in range(height):
+                for px in range(width):
+                    world_x = vp_x + (px - width/2) * world_units_per_pixel_x
+                    world_y = vp_y + (height/2 - py) * world_units_per_pixel_y  # Y-axis flipped
+                    f.write(f"{px} {py} {world_x:.6f} {world_y:.6f}\n")
+
+        print(f"Pixel-to-world coordinate mapping saved to: {output_file}")
+
+        # Display some example mappings to verify correctness
+        print("Key coordinate mappings:")
+        key_points = [
+            (0, 0, "top-left"),
+            (width-1, 0, "top-right"),
+            (0, height-1, "bottom-left"),
+            (width-1, height-1, "bottom-right"),
+            (width//2, height//2, "center")
+        ]
+        for px, py, label in key_points:
+            world_x = vp_x + (px - width/2) * world_units_per_pixel_x
+            world_y = vp_y + (height/2 - py) * world_units_per_pixel_y
+            print(f"  {label}: pixel({px}, {py}) -> world({world_x:.3f}, {world_y:.3f})")
+
+        print(f"Coordinate mapping generated for: {hdr_file_path.name}")
+        return hdr_file_path
+
     except Exception as e:
-        raise ValueError(f"Error reading HDR file: {e}")
-    
-    if not view_line:
-        raise ValueError("No VIEW line found in HDR file header")
-    
-    print(f"Found VIEW line: {view_line}")
-    
-    # Step 4: Extract -vp (viewpoint) and -vh/-vv (view angles) values
-    # Extract vp values (x, y, z coordinates of viewpoint)
-    vp_match = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', view_line)
-    if not vp_match:
-        raise ValueError("Could not extract -vp values from VIEW line")
-    
-    vp_x, vp_y, vp_z = map(float, vp_match.groups())
-    print(f"Viewpoint (vp): x={vp_x}, y={vp_y}, z={vp_z}")
-    
-    # Extract vh (horizontal view angle) and vv (vertical view angle)
-    vh_match = re.search(r'-vh\s+([\d.-]+)', view_line)
-    vv_match = re.search(r'-vv\s+([\d.-]+)', view_line)
-    
-    if not vh_match or not vv_match:
-        raise ValueError("Could not extract -vh or -vv values from VIEW line")
-    
-    vh_angle = float(vh_match.group(1))
-    vv_angle = float(vv_match.group(1))
-    print(f"View angles - horizontal (vh): {vh_angle}°, vertical (vv): {vv_angle}°")
-    
-    # Step 5: Calculate pixel-to-world coordinate mapping
-    world_width = 2 * vp_z * math.tan(math.radians(vh_angle / 2))
-    world_height = 2 * vp_z * math.tan(math.radians(vv_angle / 2))
-    
-    world_units_per_pixel_x = world_width / width
-    world_units_per_pixel_y = world_height / height
-    
-    print(f"World dimensions: {world_width:.3f} x {world_height:.3f} units")
-    print(f"World units per pixel: x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
-    
-    # Step 6: Generate pixel-to-world coordinate mapping file
-    if output_dir is None:
-        output_dir = hdr_file_path.parent.parent / "aoi"
-    
-    output_file = output_dir / "pixel_to_world_coordinate_map.txt"
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(output_file, 'w') as f:
-        f.write("pixel_x pixel_y world_x world_y\n")
-        
-        # Generate mapping for all pixels
-        for py in range(height):
-            for px in range(width):
-                # Convert pixel coordinates to world coordinates
-                # Pixel (0,0) is top-left, world coordinates centered on viewpoint
-                world_x = vp_x + (px - width/2) * world_units_per_pixel_x
-                world_y = vp_y + (height/2 - py) * world_units_per_pixel_y  # Flip Y axis
-                
-                f.write(f"{px} {py} {world_x:.6f} {world_y:.6f}\n")
-    
-    print(f"Pixel-to-world coordinate mapping saved to: {output_file}")
-    print("Key coordinate mappings:")
-    key_points = [
-        (0, 0, "top-left"),
-        (width-1, 0, "top-right"),
-        (0, height-1, "bottom-left"),
-        (width-1, height-1, "bottom-right"),
-        (width//2, height//2, "center")
-    ]
-    for px, py, label in key_points:
-        world_x = vp_x + (px - width/2) * world_units_per_pixel_x
-        world_y = vp_y + (height/2 - py) * world_units_per_pixel_y
-        print(f"  {label}: pixel({px}, {py}) -> world({world_x:.3f}, {world_y:.3f})")
-    
-    return output_file
+        print(f"Error creating pixel-to-world mapping: {e}")
+        return None
+
+
+
 
 def stamp_tiff_files(tiff_paths: list[Path], font_size: int = 24, text_color: tuple = (255, 255, 0), background_alpha: int = 0, padding: int = 10, number_of_workers: int = 4) -> None:
     """Stamps TIFF files with location/datetime info in bottom right corner."""
@@ -1425,46 +1491,5 @@ def stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 5, font_
                 print(future.result())
     
     print(f"Completed AOI stamping on {len(tiff_paths)} TIFF files")
-
-def create_pixel_to_world_mapping_from_hdr(image_dir: Path) -> Optional[Path]:
-    """
-    Create pixel-to-world coordinate mapping from HDR file in the specified directory.
-    
-    Automatically locates the first '*_combined.hdr' file in the image directory
-    and processes it to create coordinate mapping data for spatial analysis.
-    
-    Args:
-        image_dir (Path): Directory containing HDR files
-        
-    Returns:
-        Optional[Path]: Path to the HDR file that was processed, or None if no file found
-        
-    Note:
-        This function searches for files matching the pattern '*_combined.hdr' 
-        which are typically generated during the solar analysis pipeline.
-    """
-    try:
-        # Locate HDR file automatically
-        hdr_file_path = next(image_dir.glob('*_combined.hdr'), None)
-        
-        if hdr_file_path is None:
-            print(f"Warning: No '*_combined.hdr' file found in {image_dir}")
-            return None
-            
-        print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
-        
-        # TODO: Implement actual pixel-to-world coordinate mapping logic
-        # This would typically involve:
-        # 1. Reading HDR file header for spatial metadata
-        # 2. Extracting view parameters and geometric transforms
-        # 3. Creating coordinate transformation matrices
-        # 4. Saving mapping data for use in subsequent analysis steps
-        
-        print(f"Coordinate mapping generated for: {hdr_file_path.name}")
-        return hdr_file_path
-        
-    except Exception as e:
-        print(f"Error creating pixel-to-world mapping: {e}")
-        return None
 
 

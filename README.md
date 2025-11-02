@@ -214,7 +214,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Built on [Radiance](https://www.radiance-online.org/), the industry-standard lighting simulation software
 - Uses [PyRadiance](https://github.com/LBNL-ETA/pyradiance) for Python-Radiance integration
-- Developed for architectural environmental performance analysis
+- Special thanks to [@MrBlenny](https://github.com/MrBlenny) for bringing life to a sick project.
 
 ## Support
 

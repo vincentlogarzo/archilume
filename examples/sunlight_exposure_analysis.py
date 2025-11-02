@@ -95,15 +95,19 @@ def main():
     # Phase 5: Post-process all image frames into compliance results (video, gifs, and csv results)
     print("\nImageProcessor getting started...\n")
 
-    # Generate AOI perimeter points with real-world coordinates by using rendered .HDR images
-    utils.create_pixel_to_world_mapping_from_hdr(renderer.image_dir)
-    view_generator.create_aoi_files()
+    # Generate AOI perimeter points with real-world coordinates by using a rendered .HDR images
+    utils.create_pixel_to_world_coord_map(renderer.image_dir)
+    view_generator.create_aoi_files() #TODO: fix the creation aoi function to take in the real world to pixel coordinate map and generate aoi with both pixel and real world coordinates for use in subseuent analysis. 
         # --- 07.4 Third pass overlay of the results of each time step on each .gif gile for each aoi, there may need to be work to exclude full height or determine of % of compliant area. If its an absolute amount of area, then discrpancies between the AOI and say kitchen joinery does not need ot be considere , it is is a % of compliance area, then excluding part of the aoi that are acually our of bounds is important.Also output a csv file with the results of each aoi
         # Phase 4c: Quantitative Compliance Analysis and Data Export
         # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
         # TODO: Implement real-world coordinate mapping for processed boundaries
         # TODO: Generate AOI files with geospatial coordinates and validation protocols
         # TODO: Develop interactive interface for dynamic AOI adjustment with persistent configuration
+    
+    # TODO implement the image processing pipeline to generate gifs, videos, and csv results.
+
+
 
 
     return True
