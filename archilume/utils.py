@@ -847,7 +847,8 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
     Note:
         This function searches for files matching the pattern '*_combined.hdr'
         which are typically generated during the solar analysis pipeline.
-        The mapping file format is: pixel_x pixel_y world_x world_y
+        The mapping file format is: # pixel_x pixel_y world_x world_y (commented header)
+        followed by whitespace-delimited numeric data rows
 
     Example:
         >>> image_dir = Path("outputs/images")
@@ -1003,7 +1004,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
             # Write world dimensions as third header line
             f.write(f"# World dimensions in meters: width={vv:.6f}, height={vh:.6f}\n")
             # Write column header line
-            f.write("pixel_x pixel_y world_x world_y\n")
+            f.write("# pixel_x pixel_y world_x world_y\n")
 
             # Map each pixel to world coordinates (pixel 0,0 = top-left, world coords centered on viewpoint)
             for py in range(height):
@@ -1029,7 +1030,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
             print(f"  {label}: pixel({px}, {py}) -> world({world_x:.3f}, {world_y:.3f})")
 
         print(f"Coordinate mapping generated for: {hdr_file_path.name}")
-        return hdr_file_path
+        return output_file
 
     except Exception as e:
         print(f"Error creating pixel-to-world mapping: {e}")

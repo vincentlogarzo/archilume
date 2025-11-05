@@ -17,6 +17,7 @@ from typing import Any
 
 # Third-party imports
 import pandas as pd
+import numpy as np
 
 # Configure basic logging
 logging.basicConfig(
@@ -290,7 +291,7 @@ class ViewGenerator:
 
         return True  # Indicate success
 
-    def create_aoi_files(self) -> bool:
+    def create_aoi_files(self, coordinate_map_path: Path | None = None) -> bool:
         """
         Generate Area of Interest (AOI) files for each room from boundary data.
 
@@ -298,12 +299,18 @@ class ViewGenerator:
         analysis. Each file includes room metadata, boundary coordinates, centroid
         calculations, and associated view file references organized by floor level.
 
+        Args:
+            coordinate_map_path: Optional path to pixel-to-world coordinate map file.
+                                If provided, adds pixel coordinate columns via nearest
+                                neighbor lookup from world coordinates.
+
         Processing Workflow:
             1. Validates that processed CSV file exists from successful parsing
             2. Loads and groups room boundary data by apartment and room
             3. For each room group:
                - Calculates room centroid from boundary points
                - Determines associated view file based on floor level (Z coordinate)
+               - If coordinate_map_path provided, performs nearest pixel lookup
                - Formats boundary coordinates to 4 decimal places
                - Generates structured file content with headers and data
                - Creates sanitized filename from apartment and room names
@@ -314,8 +321,8 @@ class ViewGenerator:
             - Header Line 2: \"ASSOCIATED VIEW FILE: plan_L##.vp\"
             - Header Line 3: \"FFL z height(m): {floor_level}\"
             - Header Line 4: \"CENTRAL x,y: {centroid_x} {centroid_y}\"
-            - Header Line 5: \"NO. PERIMETER POINTS {count}: x,y positions\"
-            - Data Lines: One per boundary point as \"x.xxxx y.yyyy\"
+            - Header Line 5: \"NO. PERIMETER POINTS {count}: x,y positions [pixel_x pixel_y]\"
+            - Data Lines: \"x.xxxx y.yyyy\" or \"x.xxxx y.yyyy pixel_x pixel_y\" (if map provided)
 
         Output Files:
             - Location: outputs/aoi/ directory
@@ -348,7 +355,7 @@ class ViewGenerator:
         if not hasattr(self, 'processed_room_boundaries_csv_path') or not self.processed_room_boundaries_csv_path.exists():
             logging.error("Processed CSV file not found. Ensure CSV parsing completed successfully.")
             return
-            
+
         try:
             # Read the CSV file into a pandas DataFrame
             df = pd.read_csv(self.processed_room_boundaries_csv_path)
@@ -358,6 +365,26 @@ class ViewGenerator:
         except Exception as e:
             logging.error(f"Error reading the CSV: {e}")
             return
+
+        # Load coordinate map if provided
+        coord_map_df = None
+        world_coords = None
+        if coordinate_map_path is not None and Path(coordinate_map_path).exists():
+            try:
+                logging.info(f"Loading coordinate map from: {coordinate_map_path}")
+                coord_map_df = pd.read_csv(
+                    coordinate_map_path,
+                    sep=r'\s+',  # whitespace delimiter
+                    comment='#',  # skip header comments
+                    names=['pixel_x', 'pixel_y', 'world_x', 'world_y']
+                )
+                # Extract world coordinates as numpy array for nearest neighbor lookup
+                world_coords = coord_map_df[['world_x', 'world_y']].values
+                logging.info(f"Loaded {len(coord_map_df)} coordinate mappings")
+            except Exception as e:
+                logging.error(f"Error loading coordinate map: {e}")
+                coord_map_df = None
+                world_coords = None
 
         # Group the DataFrame by the 'apartment_no' and 'room' columns
         grouped = df.groupby(["apartment_no", "room"])
@@ -391,12 +418,39 @@ class ViewGenerator:
             header_line2 = f"ASSOCIATED VIEW FILE: {associated_view_file}"
             header_line3 = f"FFL z height(m): {room_z_coord}"
             header_line4 = f"CENTRAL x,y: {centroid_x:.4f} {centroid_y:.4f}"
-            header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y positions"
+
+            # Update header to indicate pixel columns if coordinate map is available
+            if world_coords is not None:
+                header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y pixel_x pixel_y positions"
+            else:
+                header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y positions"
 
             # Coordinate data lines, formatted to 4 decimal places
             xy_coord_lines = []
             for index, row in group.iterrows():
-                line = f"{row['x_coords']:.4f} {row['y_coords']:.4f}"
+                world_x = row['x_coords']
+                world_y = row['y_coords']
+
+                # Base coordinate line with world coordinates
+                line = f"{world_x:.4f} {world_y:.4f}"
+
+                # Add pixel coordinates if coordinate map is available
+                if world_coords is not None and coord_map_df is not None:
+                    # Find nearest neighbor using simple numpy distance calculation
+                    # Calculate Euclidean distance: sqrt((x2-x1)^2 + (y2-y1)^2)
+                    distances = np.sqrt(
+                        (world_coords[:, 0] - world_x)**2 +
+                        (world_coords[:, 1] - world_y)**2
+                    )
+                    index_nearest = np.argmin(distances)
+
+                    # Get corresponding pixel coordinates
+                    pixel_x = int(coord_map_df.iloc[index_nearest]['pixel_x'])
+                    pixel_y = int(coord_map_df.iloc[index_nearest]['pixel_y'])
+
+                    # Append pixel coordinates to line
+                    line += f" {pixel_x} {pixel_y}"
+
                 xy_coord_lines.append(line)
 
             # Combine all parts into the final text content

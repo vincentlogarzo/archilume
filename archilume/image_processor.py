@@ -20,7 +20,29 @@ from itertools import product
 @dataclass
 class ImageProcessor:
     """
+    Post-processes rendered TIFF images with metadata annotations, AOI overlays, and animations.
 
+    Takes pre-rendered sunlight analysis images and produces compliance documentation including:
+    timestamped images, spatial boundary overlays, and temporal visualizations (GIF/MP4).
+
+    Attributes:
+        skyless_octree_path (Path): Base octree file without sky
+        overcast_sky_file_path (Path): Overcast sky reference file
+        sky_files_dir (Path): Directory containing .sky files
+        view_files_dir (Path): Directory containing .vp view files
+        image_dir (Path): Output directory for processed images
+        x_res (int): Horizontal resolution in pixels
+        y_res (int): Vertical resolution in pixels
+
+    Example:
+        >>> processor = ImageProcessor(
+        ...     skyless_octree_path=Path("scene.oct"),
+        ...     sky_files_dir=Path("outputs/sky_files"),
+        ...     view_files_dir=Path("outputs/view_files"),
+        ...     image_dir=Path("outputs/images"),
+        ...     x_res=1024, y_res=2048
+        ... )
+        >>> processor.sepp65_results_pipeline()
     """
 
     # Required fields - no defaults
@@ -46,7 +68,7 @@ class ImageProcessor:
 
     def __post_init__(self):
         """
-        Post-initialization to populate file lists from directories.
+        Auto-populates sky_files and view_files lists from directories, validates resolution.
         """
         # Populate sky files from directory
         self.sky_files = sorted([path for path in self.sky_files_dir.glob('*.sky')])
@@ -58,10 +80,22 @@ class ImageProcessor:
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
 
-
     def sepp65_results_pipeline(self):
         """
-        Render images for each combination of sky and view files.
+        Process rendered images into SEPP65 compliance documentation with annotations and animations.
+
+        Pipeline stages:
+        1. Stamp images with timestamp and location metadata
+        2. Overlay AOI (Area of Interest) boundaries with labels
+        3. Generate animated GIFs and MP4s for each view
+        4. Create grid visualizations combining all views
+
+        Prerequisites:
+            - TIFF files matching '*_combined.tiff' must exist in image_dir
+            - AOI files must be available for spatial boundary overlay
+
+        Returns:
+            None. Outputs processed files to image_dir.
         """
 
         # Phase 4: Establish Spatial-Temporal Coordinate Framework
@@ -90,7 +124,7 @@ class ImageProcessor:
             number_of_workers       = 10
             )
 
-        # Optimization Opportunity: Implement hierarchical stamping methodology for computational efficiency
+        # Optimization Opportunity: Implement hierarchical stamping methodology efficiency
 
 
 
