@@ -33,6 +33,7 @@ class ImageProcessor:
         image_dir (Path): Output directory for processed images
         x_res (int): Horizontal resolution in pixels
         y_res (int): Vertical resolution in pixels
+        latitude (float): Project latitude in decimal degrees (e.g., -33.8248567 for Melbourne)
 
     Example:
         >>> processor = ImageProcessor(
@@ -40,7 +41,8 @@ class ImageProcessor:
         ...     sky_files_dir=Path("outputs/sky_files"),
         ...     view_files_dir=Path("outputs/view_files"),
         ...     image_dir=Path("outputs/images"),
-        ...     x_res=1024, y_res=2048
+        ...     x_res=2048, y_res=2048,
+        ...     latitude=-33.8248567
         ... )
         >>> processor.sepp65_results_pipeline()
     """
@@ -53,18 +55,11 @@ class ImageProcessor:
     image_dir: Path
     x_res: int
     y_res: int
+    latitude: float
     
     # Fields that will be populated after initialization
     sky_files: List[Path]                   = field(default_factory=list, init=False)
     view_files: List[Path]                  = field(default_factory=list, init=False)
-    overcast_octree_command: str            = field(default="", init=False)
-    rpict_low_qual_commands: List[str]      = field(default_factory=list, init=False)
-    rpict_med_qual_commands: List[str]      = field(default_factory=list, init=False)
-    temp_octree_with_sky_paths: List[Path]  = field(default_factory=list, init=False)
-    oconv_commands: List[str]               = field(default_factory=list, init=False)
-    rpict_commands: List[str]               = field(default_factory=list, init=False)
-    pcomb_commands: List[str]               = field(default_factory=list, init=False)
-    ra_tiff_commands: List[str]             = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """
@@ -98,22 +93,20 @@ class ImageProcessor:
             None. Outputs processed files to image_dir.
         """
 
-        # Phase 4: Establish Spatial-Temporal Coordinate Framework
-
-        # Phase 4a: Apply Temporal and Contextual Annotations
+        # Phase 1: Apply Temporal and Contextual Annotations
         # Embed chronological and meteorological metadata for regulatory compliance verification
         tiff_files_to_stamp = [path for path in self.image_dir.glob('*_combined.tiff')]
-        
-        # TODO: implement dynamic geospatial coordinate system based on project location
-        utils.stamp_tiff_files(
-            tiff_files_to_stamp, 
-            font_size=24, 
+
+        utils.datetime_loc_stamp_tiff(
+            tiff_files_to_stamp,
+            latitude=self.latitude,
+            font_size=24,
             text_color=(255, 255, 255),  # Professional white annotation
-            background_alpha=180, 
+            background_alpha=180,
             number_of_workers=10
         )
 
-        # Phase 4b: Architectural Space Identification and Compliance Delineation
+        # Phase 2: Architectural Space Identification and Compliance Delineation
         # Overlay spatial boundaries with occupancy classifications for regulatory assessment
         utils.stamp_tiff_files_with_aoi(
             tiff_files_to_stamp, 
@@ -141,7 +134,7 @@ class ImageProcessor:
         # Phase 6: Generate Consolidated Multi-Perspective Analytics
         # Produce unified grid visualization integrating all viewpoint analyses for comprehensive assessment
         individual_view_mp4s = [path for path in self.image_dir.glob('animated_results_*.mp4')]
-        utils.create_grid_mp4(individual_view_mp4s, self.image_dir, grid_size=(3, 2), target_size=(1024, 1024), fps=2)
+        utils.create_grid_mp4(individual_view_mp4s, self.image_dir, grid_size=(3, 2), target_size=(2048, 2048), fps=2)
 
         individual_view_gifs = [path for path in self.image_dir.glob('animated_results_*.gif')]
         utils.create_grid_gif(individual_view_gifs, self.image_dir, grid_size=(3, 2), target_size=(2048, 2048), fps=2)

@@ -55,12 +55,15 @@ class SkyGenerator:
 
     Parameters:
         lat: Latitude in decimal degrees (positive = North, negative = South)
-        
+
     Output:
         Creates .sky files named as SS_MMDD_HHMM.sky in the output directory.
         Each file contains gensky command and sky/ground glow definitions.
         Sky orientation is aligned to true north with solar time positioning.
     """
+
+    # Required user input
+    lat: float
 
     # Fixed - not user configurable but accessible from instance
     sky_file_dir: Path = field(init = False, default = Path(__file__).parent.parent / "outputs" / "sky")
@@ -119,7 +122,7 @@ class SkyGenerator:
         except Exception as e:
             print(f"Error generating overcast sky file: {e}")
 
-    def generate_sunny_sky_series(self, lat: float, month: int, day: int, start_hour_24hr_format: int, end_hour_24hr_format: int, minute_increment: int = 5) -> None:
+    def generate_sunny_sky_series(self, month: int, day: int, start_hour_24hr_format: int, end_hour_24hr_format: int, minute_increment: int = 5) -> None:
         """
         Execute sky file generation for the configured time series.
 
@@ -140,7 +143,7 @@ class SkyGenerator:
 
         print(
             f"\nStarting sky generation for {month}/{day}/{year} from {start_hour_24hr_format}:00 to {end_hour_24hr_format}:00 "
-            f"at {str(lat)} lat.\n"
+            f"at {str(self.lat)} lat.\n"
         )
         
         # Create the output directory if it doesn't exist
@@ -160,7 +163,7 @@ class SkyGenerator:
             formatted_time_for_filename = current_dt.strftime("%H%M")  # e.g., "0900"
 
             self._generate_single_sunny_skyfile(
-                lat                 =str(lat),
+                lat                 =str(self.lat),
                 month               =current_dt.month,
                 day                 =current_dt.day,
                 time_hhmm           =formatted_time_for_gensky,

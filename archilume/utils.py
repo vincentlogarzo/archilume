@@ -611,14 +611,6 @@ def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=No
     
     print(f"Completed processing {len(view_files)} view animations")
 
-def combine_gifs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
-    """Legacy function that calls combine_tiffs_by_view for backward compatibility.
-    
-    This function is deprecated. Use combine_tiffs_by_view instead.
-    """
-    print("Warning: combine_gifs_by_view is deprecated. Use combine_tiffs_by_view instead.")
-    combine_tiffs_by_view(image_dir, view_files, fps, output_format, number_of_workers)
-
 def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3, 3), 
                    target_size: tuple=(200, 200), fps: float=1.0) -> None:
     """Create a grid layout GIF combining multiple individual GIFs.
@@ -1036,11 +1028,18 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
         print(f"Error creating pixel-to-world mapping: {e}")
         return None
 
+def datetime_loc_stamp_tiff(tiff_paths: list[Path], latitude: float, font_size: int = 24, text_color: tuple = (255, 255, 0), background_alpha: int = 0, padding: int = 10, number_of_workers: int = 4) -> None:
+    """Stamps TIFF files with location/datetime info in bottom right corner.
 
-
-
-def stamp_tiff_files(tiff_paths: list[Path], font_size: int = 24, text_color: tuple = (255, 255, 0), background_alpha: int = 0, padding: int = 10, number_of_workers: int = 4) -> None:
-    """Stamps TIFF files with location/datetime info in bottom right corner."""
+    Args:
+        tiff_paths: List of paths to TIFF files to stamp
+        latitude: Project latitude in decimal degrees (e.g., -33.8248567 for Melbourne)
+        font_size: Font size for text
+        text_color: RGB tuple for text color
+        background_alpha: Alpha value for background (0-255)
+        padding: Padding around text in pixels
+        number_of_workers: Number of parallel workers for processing
+    """
     
     if not tiff_paths:
         return
@@ -1060,8 +1059,7 @@ def stamp_tiff_files(tiff_paths: list[Path], font_size: int = 24, text_color: tu
             # Extract timestamp
             if ts := re.search(r'(\d{4}_\d{4})', filename):
                 ts_str = ts.group(1)
-                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
                 month = int(ts_str[:2]) - 1
                 day = int(ts_str[2:4])
                 hour = ts_str[5:7]
@@ -1073,8 +1071,7 @@ def stamp_tiff_files(tiff_paths: list[Path], font_size: int = 24, text_color: tu
                 level = f"L{level_match.group(1)}"
             
             # Create stamp text using f-string with actual variables
-            final_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Location: lat: -33.8248567"
-            #FIXME: the lat must be sourced from the radiance metadata if available, 
+            final_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Location: lat: {latitude}" 
             
             # Load font and image
             try:
@@ -1352,7 +1349,7 @@ def stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 5, font_
         return
     
     # Find AOI directory and mapping file
-    aoi_dir = Path("outputs/aoi")
+    aoi_dir = Path(__file__).parent.parent / "outputs" / "aoi"
     mapping_file = aoi_dir / "pixel_to_world_coordinate_map.txt"
     
     if not aoi_dir.exists():
