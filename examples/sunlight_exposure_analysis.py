@@ -40,13 +40,14 @@ def main():
     obj_paths = [
         Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building to analyze
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # These OBJ files must be exported from Revit in  meters.
-        ]    # FIXME: currently only takes in Obj files exported in meters. Future iteration should handle .obj file exported in milimeters to reduce error user error. 
+        ]    # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
 
 
     # --- Phase 1: Establish 3D Scene ---
     # Convert building and site geometry into octree structure with standard materials
     octree_generator = ObjToOctree(obj_paths) #FIXME move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here. 
     octree_generator.create_skyless_octree_for_analysis()
+
 
     # --- Phase 2: Define external sky conditions for each time step ---
     # Generate comprehensive solar position matrix for critical winter solstice temporal analysis
@@ -90,14 +91,14 @@ def main():
     renderer.sunlight_rendering_pipeline()
 
 
-    # --- Phase 5: Post-process all image frames into compliance video, gifs, and csv results ---
+    # --- Phase 5: Post-process all image frames into compliance mp3, gifs, and csv results ---
     print("\nImageProcessor getting started...\n")
 
     # Generate AOI perimeter points to stamp onto images using a rendered .HDR image
     coordinate_map_path = utils.create_pixel_to_world_coord_map(renderer.image_dir)
     view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path) #TODO: allow multiprocessing of the file generation. its relatiely time consuming to generate these serially. 
 
-    # --- 05.1 Third pass overlay of the results of each time step on each .gif gile for each aoi, there may need to be work to exclude full height or determine of % of compliant area. If its an absolute amount of area, then discrpancies between the AOI and say kitchen joinery does not need ot be considere , it is is a % of compliance area, then excluding part of the aoi that are acually our of bounds is important.Also output a csv file with the results of each aoi
+    # Third pass overlay of the results of each time step on each .gif file for each aoi, there may need to be work to exclude full height or determine of % of compliant area. If its an absolute amount of area, then discrpancies between the AOI and say kitchen joinery does not need ot be considere , it is is a % of compliance area, then excluding part of the aoi that are acually our of bounds is important.Also output a csv file with the results of each aoi
 
     image_processor = ImageProcessor(
         skyless_octree_path             = octree_generator.skyless_octree_path,
@@ -109,17 +110,12 @@ def main():
         y_res                           = renderer.y_res,
         latitude                        = sky_generator.lat
         )
-    image_processor.sepp65_results_pipeline()
+    image_processor.sepp65_results_pipeline() #FIXME automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
 
-        # Phase 4c: Quantitative Compliance Analysis and Data Export
-        # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
-        #TODO correctly implement AOI stamping onto tiff files. 
-        # TODO: Develop interactive interface for dynamic AOI adjustment with persistent configuration
+    # Phase 4c: Quantitative Compliance Analysis and Data Export
+    # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
+    # TODO: Develop interactive interface for dynamic AOI adjustment with persistence of aoi files for future analysis
     
-    # TODO implement the image processing pipeline to generate gifs, videos, and csv results.
-
-
-
 
     return True
 

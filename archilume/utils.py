@@ -915,10 +915,12 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
         # Example: -vh 50.0 -vv 30.0 means the image shows a 50m x 30m area
         # Calculate how many meters (or world units) each pixel represents
         # If image is 800 pixels wide and covers 50 meters, then each pixel = 50/800 = 0.0625m
-        world_units_per_pixel_x = vv / width
-        world_units_per_pixel_y = vh / height
+        # vh = horizontal view dimension (X-axis width)
+        # vv = vertical view dimension (Y-axis height)
+        world_units_per_pixel_x = vh / width
+        world_units_per_pixel_y = vv / height
 
-        print(f"World dimensions: {vv:.3f} x {vh:.3f} units")
+        print(f"World dimensions: {vh:.3f} x {vv:.3f} units")
         print(f"World units per pixel: x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
 
         # ===================================================================
@@ -938,7 +940,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
             # Write image dimensions as second header line
             f.write(f"# Image dimensions in pixels: width={width}, height={height}\n")
             # Write world dimensions as third header line
-            f.write(f"# World dimensions in meters: width={vv:.6f}, height={vh:.6f}\n")
+            f.write(f"# World dimensions in meters: width={vh:.6f}, height={vv:.6f}\n")
             # Write column header line
             f.write("# pixel_x pixel_y world_x world_y\n")
 
