@@ -8,8 +8,10 @@ from archilume.geometry_utils import (
 
 # Standard library imports
 import logging
+import multiprocessing
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -391,8 +393,10 @@ class ViewGenerator:
 
         print(f"Found {len(grouped)} unique apartment_no/room combinations.")
 
-        # Process each group
-        for name, group in grouped:
+        # Define worker function for parallel processing
+        def _process_single_room(group_data):
+            """Process a single room group to generate AOI file content and path."""
+            name, group = group_data
             apartment_name, room_name = name
             num_points = len(group)
 
@@ -400,10 +404,10 @@ class ViewGenerator:
 
             # get centre of mass of group
             centroid_x, centroid_y = calc_centroid_of_points(group[["x_coords", "y_coords"]])
-            
+
             # Determine associated view file based on z_coordinate
             room_z_coord = group['z_coords'].iloc[0]
-            
+
             # Get unique z coordinates and find which level this room belongs to
             all_z_coords = sorted(df['z_coords'].unique())
             try:
@@ -470,7 +474,19 @@ class ViewGenerator:
             with open(filepath, "w") as f:
                 f.write(file_content)
 
-            print(f"File generated: {filepath}")
+            return f"File generated: {filepath}"
+
+        # Process all rooms in parallel using CPU cores for workers
+        num_workers = min(multiprocessing.cpu_count(), len(grouped))
+
+        print(f"Processing {len(grouped)} rooms using {num_workers} workers...")
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            results = list(executor.map(_process_single_room, grouped))
+
+        # Print all results
+        for result in results:
+            print(result)
 
         return True  # Indicate success
 
