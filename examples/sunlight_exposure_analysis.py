@@ -36,10 +36,10 @@ from pathlib import Path
 def main():
     """Execute the winter solstice daylight analysis workflow."""
 
-    # List building, site, other obj files (i.e. adjacent buildings)
+    # List building, site and other adjacent building files
     obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building to analyze
-        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # These OBJ files must be exported from Revit in  meters.
+        Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building of interest
+        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters.
         ]    # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
 
 
@@ -53,7 +53,7 @@ def main():
     # Generate comprehensive solar position matrix for critical winter solstice temporal analysis
     print("\nGenerating sky files for winter solstice analysis 'outputs/sky/' directory\n")
 
-    sky_generator = SkyGenerator(lat=-37.8136)  # Input your projects latitude (Melbourne, Australia)
+    sky_generator = SkyGenerator(lat=-37.8136)  # Input your projects latitude to 4 decimal places
     sky_generator.generate_TenK_cie_overcast_skyfile()
     sky_generator.generate_sunny_sky_series(
         month                           = 6,        # June
@@ -87,7 +87,7 @@ def main():
         view_files_dir                  = view_generator.view_file_dir,
         x_res                           = 2048, # image x pixels 
         y_res                           = 2048  # image y pixels
-        )
+        ) #FIXME allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
     renderer.sunlight_rendering_pipeline()
 
 

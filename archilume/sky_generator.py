@@ -218,7 +218,7 @@ class SkyGenerator:
                     4 0 0 -1 180
                     """)
                 outfile.write(skyfunc_description)
-                # print(f"Successfully generated: {output_filepath}")
+                print(f"Successfully generated: {output_filepath}")
         except:
             print(f"Error running gensky for {time_hhmm}")
 

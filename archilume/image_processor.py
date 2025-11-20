@@ -47,11 +47,6 @@ class ImageProcessor:
                      if f.name != 'animated_results_grid_all_levels.gif']
         self._create_grid_gif(gif_files, grid_size=(3, 2), target_size=(self.x_res, self.y_res), fps=2)
 
-        self._combine_tiffs_by_view(output_format='mp4', number_of_workers=8)
-        mp4_files = [f for f in self.image_dir.glob('animated_results_*.mp4')
-                     if f.name != 'animated_results_grid_all_levels.mp4']
-        self._create_grid_mp4(mp4_files, grid_size=(3, 2), target_size=(self.x_res, self.y_res), fps=2)
-
         print("\nRendering sequence completed successfully.\n")
 
     def _combine_tiffs_by_view(self, fps: float = None, output_format: str = 'gif', number_of_workers: int = 4) -> None:
@@ -65,9 +60,12 @@ class ImageProcessor:
             elif output_format.lower() == 'mp4':
                 first_tiff = Image.open(tiff_paths[0])
                 width, height = first_tiff.size
-                fps_calc = 1000 / duration if duration > 0 else 10
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                fps_calc = max(1.0, 1000 / duration) if duration > 0 else 10
+                fourcc = cv2.VideoWriter_fourcc(*'avc1')
                 video_writer = cv2.VideoWriter(str(output_path), fourcc, fps_calc, (width, height))
+
+                if not video_writer.isOpened():
+                    raise RuntimeError(f"Failed to create video writer for {output_path}. Check codec availability.")
 
                 for tiff_path in tiff_paths:
                     tiff = Image.open(tiff_path)
@@ -238,8 +236,11 @@ class ImageProcessor:
 
         grid_width = cols * cell_width
         grid_height = rows * cell_height
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
         out = cv2.VideoWriter(str(output_path), fourcc, fps, (grid_width, grid_height))
+
+        if not out.isOpened():
+            raise RuntimeError(f"Failed to create grid video writer for {output_path}. Check codec availability.")
 
         for frame_idx in range(max_frames):
             grid_frame = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
