@@ -33,7 +33,7 @@ class ImageProcessor:
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
 
-    def sepp65_results_pipeline(self):
+    def nsw_adg_sunlight_access_results_pipeline(self):
         """Process rendered images: stamp with metadata/AOI, create animations and grids for NSW Apartment Design Guidelines Sunlight access compliance."""
         tiff_files = list(self.image_dir.glob('*_combined.tiff'))
 

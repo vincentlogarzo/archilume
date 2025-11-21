@@ -36,12 +36,24 @@ from pathlib import Path
 def main():
     """Execute the winter solstice daylight analysis workflow."""
 
-    # List building, site and other adjacent building files
+    # List building, site and other adjacent building files and input parameters
     obj_paths = [
         Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building of interest
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters.
         ]    # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
 
+    room_boundaries_csv_path = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv"
+
+    project_latitude = -33.8244778      # Input building projcts latitude to at least 4 decimal places
+    month = 6                           # June
+    day = 21                            # Winter solstice
+    start_hour = 9                      # 9:00 AM
+    end_hour = 15                       # 3:00 PM
+    timestep = 10                       # Minutes
+    finished_floor_level_offset = 1.0   # Meters above finished floor level for camera height
+    image_resolution = 2048              # Image size in pixels to be rendered
+    # TODO: add a variable here for the ADG compliance metric which is depended on systney metropolitan area or not. A simple TRUE/FALSE boolean variable would suffice.
+    
 
     # --- Phase 1: Establish 3D Scene ---
     # Convert building and site geometry into octree structure with standard materials
@@ -53,27 +65,27 @@ def main():
     # Generate comprehensive solar position matrix for critical winter solstice temporal analysis
     print("\nGenerating sky files for winter solstice analysis 'outputs/sky/' directory\n")
 
-    sky_generator = SkyGenerator(lat=-37.8136)  # Input your projects latitude to 4 decimal places
+    sky_generator = SkyGenerator(lat=project_latitude)  # Input building projcts latitude to at least 4 decimal places
     sky_generator.generate_TenK_cie_overcast_skyfile()
     sky_generator.generate_sunny_sky_series(
-        month                           = 6,        # June
-        day                             = 21,       # Winter solstice
-        start_hour_24hr_format          = 9,        # 9:00 AM
-        end_hour_24hr_format            = 15,       # 3:00 PM
-        minute_increment                = 10        # Minutes
-        )
+        month                           = month,
+        day                             = day,
+        start_hour_24hr_format          = start_hour,    
+        end_hour_24hr_format            = end_hour,
+        minute_increment                = timestep
+        ) #TODO: all classes here that utilise a number of workers should have a user input to define number of workers. Currently defaults to all available cores which may not be ideal for all users.
 
 
     # --- Phase 3: Configure camera view from which images will be taken ---
     # Establish strategic viewpoints for comprehensive architectural space evaluation and axonometric visualization
     print("\nGenerating view files for building analysis...\n")
 
-    # TODO: future iteration to allow input of .rvt file to extract room boundaries.
+    # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing. 
     view_generator = ViewGenerator(
-        room_boundaries_csv_path        = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv",
-        ffl_offset                      = 1.0 # Image height plane in meters above finished floor level
+        room_boundaries_csv_path        = room_boundaries_csv_path,
+        ffl_offset                      = finished_floor_level_offset
         )
-    view_generator.create_plan_view_files()
+    view_generator.create_plan_view_files() 
 
 
     # --- Phase 4: Execute Comprehensive Solar Analysis Pipeline
@@ -85,9 +97,9 @@ def main():
         overcast_sky_file_path          = sky_generator.TenK_cie_overcast_sky_file_path,
         sky_files_dir                   = sky_generator.sky_file_dir,
         view_files_dir                  = view_generator.view_file_dir,
-        x_res                           = 2048, # image x pixels 
-        y_res                           = 2048  # image y pixels
-        ) #FIXME allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
+        x_res                           = image_resolution, 
+        y_res                           = image_resolution
+        ) #TODO allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
     renderer.sunlight_rendering_pipeline()
 
 
@@ -96,9 +108,7 @@ def main():
 
     # Generate AOI perimeter points to stamp onto images using a rendered .HDR image
     coordinate_map_path = utils.create_pixel_to_world_coord_map(renderer.image_dir)
-    view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path) #TODO: allow multiprocessing of the file generation. its relatiely time consuming to generate these serially. 
-
-    # Third pass overlay of the results of each time step on each .gif file for each aoi, there may need to be work to exclude full height or determine of % of compliant area. If its an absolute amount of area, then discrpancies between the AOI and say kitchen joinery does not need ot be considere , it is is a % of compliance area, then excluding part of the aoi that are acually our of bounds is important.Also output a csv file with the results of each aoi
+    view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path) #TODO: allow multiprocessing of the file generation. its relatively time consuming to generate these sequentially
 
     image_processor = ImageProcessor(
         skyless_octree_path             = octree_generator.skyless_octree_path,
@@ -110,7 +120,7 @@ def main():
         y_res                           = renderer.y_res,
         latitude                        = sky_generator.lat
         )
-    image_processor.sepp65_results_pipeline() #FIXME automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
+    image_processor.nsw_adg_sunlight_access_results_pipeline() #FIXME automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
 
     # Phase 4c: Quantitative Compliance Analysis and Data Export
     # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
