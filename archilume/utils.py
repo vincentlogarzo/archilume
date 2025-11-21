@@ -288,7 +288,13 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
             try:
                 # Set up environment with RAYPATH for Radiance commands
                 env = os.environ.copy()
-                env['RAYPATH'] = r'C:\Radiance\lib'
+                # Use environment RAYPATH if set, otherwise use platform-specific default
+                if 'RAYPATH' not in env:
+                    import platform
+                    if platform.system() == 'Windows':
+                        env['RAYPATH'] = r'C:\Radiance\lib'
+                    else:
+                        env['RAYPATH'] = '/usr/local/radiance/lib'
 
                 # Check if command uses output redirection
                 has_output_redirect = ' > ' in command

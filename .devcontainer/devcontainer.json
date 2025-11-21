@@ -14,7 +14,11 @@
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
-        "ms-python.black-formatter"
+        "ms-python.black-formatter",
+        "Anthropic.claude-code",
+        "vscode-infra.image-viewer",
+        "mcrespo.veriv",
+        "elypia.magick-image-reader"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/python/current/bin/python",

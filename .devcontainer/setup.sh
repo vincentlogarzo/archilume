@@ -6,14 +6,18 @@ echo "🚀 Setting up Archilume development environment..."
 # Install system dependencies
 echo "📦 Installing system dependencies..."
 sudo apt-get update
-sudo apt-get install -y libgl1 libgomp1 libglib2.0-0
+sudo apt-get install -y libgl1 libgomp1 libglib2.0-0 git-lfs
+
+# Initialize Git LFS
+echo "🔧 Initializing Git LFS..."
+git lfs install
 
 # Install Radiance
 echo "🌟 Installing Radiance..."
 
 cd /tmp
-# Use local file instead of downloading
-unzip -q /workspaces/archilume/.devcontainer/radiance.zip
+# Use local file instead of downloading (force overwrite if exists)
+unzip -o -q /workspaces/archilume/.devcontainer/radiance.zip
 tar -xzf radiance-*.tar.gz
 sudo cp -r radiance-*/usr/local/radiance /usr/local/
 sudo chmod -R 755 /usr/local/radiance
@@ -31,11 +35,21 @@ fi
 echo "🐍 Installing Python dependencies..."
 if ! command -v uv &> /dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
+
+# Ensure uv is in PATH
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# Return to project directory for Python operations
+cd /workspaces/archilume
 
 # Sync Python dependencies
 uv sync --link-mode=copy
+
+# Install archilume package in editable mode
+echo "📦 Installing archilume package..."
+python -m pip install -e /workspaces/archilume
 
 # Verify Radiance installation
 echo "✅ Verifying Radiance installation..."
@@ -47,6 +61,14 @@ if command -v oconv &> /dev/null && command -v rpict &> /dev/null; then
     oconv 2>&1 | head -1 || echo "Radiance version: $(ls /usr/local/radiance/bin/oconv)"
 else
     echo "⚠️  Warning: Radiance may not be properly installed"
+fi
+
+# Verify archilume installation
+echo "✅ Verifying archilume installation..."
+if python -c "import archilume" 2>/dev/null; then
+    echo "✅ Archilume package installed successfully!"
+else
+    echo "⚠️  Warning: Archilume may not be properly installed"
 fi
 
 echo "🎉 Setup complete! Archilume development environment is ready."

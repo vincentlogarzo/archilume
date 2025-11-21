@@ -19,6 +19,12 @@ Analysis Period: 9:00 AM - 3:00 PM at 10-minute intervals
 Output: HDR images, view files, sky files, and coordinate mappings
 """
 
+# Set Radiance environment variables before any imports
+import os
+os.environ['RAYPATH'] = '/usr/local/radiance/lib'
+if '/usr/local/radiance/bin' not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = f"/usr/local/radiance/bin:{os.environ.get('PATH', '')}"
+
 # Archilume imports
 from archilume.sky_generator import SkyGenerator
 from archilume.view_generator import ViewGenerator
@@ -42,16 +48,15 @@ def main():
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters.
         ]    # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
 
-    room_boundaries_csv_path = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv"     # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-
-    project_latitude = -33.8244778      # Input building projcts latitude to at least 4 decimal places
-    month = 6                           # June
-    day = 21                            # Winter solstice
-    start_hour = 9                      # 9:00 AM
-    end_hour = 15                       # 3:00 PM
-    timestep = 10                       # Minutes
-    finished_floor_level_offset = 1.0   # Meters above finished floor level for camera height
-    image_resolution = 2048              # Image size in pixels to be rendered
+    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "RL_dyn_script_output_room_boundaries.csv"     # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
+    project_latitude                    = -33.8244778   # Input building projcts latitude to at least 4 decimal places
+    month                               = 6             # June
+    day                                 = 21            # Winter solstice
+    start_hour                          = 9             # 9:00 AM
+    end_hour                            = 15            # 3:00 PM
+    timestep                            = 10            # Minutes
+    finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
+    image_resolution                    = 2048          # Image size in pixels to be rendered
     # TODO: add a variable here for the ADG compliance metric which is depended on systney metropolitan area or not. A simple TRUE/FALSE boolean variable would suffice.
 
 
