@@ -19,6 +19,9 @@ Analysis Period: 9:00 AM - 3:00 PM at 10-minute intervals
 Output: HDR images, view files, sky files, and coordinate mappings
 """
 
+# fmt: off
+# autopep8: off
+
 # Set Radiance environment variables before any imports
 import os
 os.environ['RAYPATH'] = '/usr/local/radiance/lib'
@@ -31,6 +34,7 @@ from archilume.view_generator import ViewGenerator
 from archilume.obj_to_octree import ObjToOctree
 from archilume.rendering_pipelines import RenderingPipelines
 from archilume.image_processor import ImageProcessor
+from archilume import geometry_utils
 from archilume import utils
 
 # Standard library imports
@@ -42,7 +46,7 @@ from pathlib import Path
 def main():
     """Execute the winter solstice daylight analysis workflow."""
 
-    # List building, site and other adjacent building files and input parameters
+    # --- Inputs: List building, site and other adjacent building files and input parameters --- 
     obj_paths = [
         Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building of interest
         Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters.
@@ -57,12 +61,13 @@ def main():
     timestep                            = 10            # Minutes
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
     image_resolution                    = 2048          # Image size in pixels to be rendered
-    # TODO: add a variable here for the ADG compliance metric which is depended on systney metropolitan area or not. A simple TRUE/FALSE boolean variable would suffice.
+        # TODO: add a variable here for the ADG compliance metric which is depended on systney metropolitan area or not. A simple TRUE/FALSE boolean variable would suffice.
 
 
     # --- Phase 1: Establish 3D Scene ---
     # Convert building and site geometry into octree structure with standard materials
-    octree_generator = ObjToOctree(obj_paths) #FIXME move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here. 
+    octree_generator = ObjToOctree(obj_paths) 
+        # FIXME:  move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here. 
     octree_generator.create_skyless_octree_for_analysis()
 
 
@@ -78,7 +83,8 @@ def main():
         start_hour_24hr_format          = start_hour,    
         end_hour_24hr_format            = end_hour,
         minute_increment                = timestep
-        ) #TODO: all classes here that utilise a number of workers should have a user input to define number of workers. Currently defaults to all available cores which may not be ideal for all users.
+        ) 
+        # TODO: all classes here that utilise a number of workers should have a user input to define number of workers. Currently defaults to all available cores which may not be ideal for all users.
 
 
     # --- Phase 3: Configure camera view from which images will be taken ---
@@ -103,16 +109,35 @@ def main():
         view_files_dir                  = view_generator.view_file_dir,
         x_res                           = image_resolution, 
         y_res                           = image_resolution
-        ) #TODO allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
+        ) 
     renderer.sunlight_rendering_pipeline()
+        # TODO: allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
+        # TODO: implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
 
 
-    # --- Phase 5: Post-process all image frames into compliance mp3, gifs, and csv results ---
+    # --- Phase 5: Post-process all frames into csv results and gifs with complianc overlays ---
     print("\nImageProcessor getting started...\n")
 
-    # Generate AOI perimeter points to stamp onto images using a rendered .HDR image
+    # Generate Area of Interest (AOI) files
     coordinate_map_path = utils.create_pixel_to_world_coord_map(renderer.image_dir)
-    view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path) #TODO: allow multiprocessing of the file generation. its relatively time consuming to generate these sequentially
+    view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path) 
+        # TODO: Implement multiprocess for aoi file generation, it could be faster
+        # TODO: Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
+
+
+
+    # TODO: create a class that perform this function usinf multiprocess
+        # Generate Working Plan Data (WPD) results
+        # TODO: ensure there is implementation to utilise modified aoi files in place of source aoi if these exist.
+        # TODO: get the values from an hdr image using pvalue below. 
+            # pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr > outputs/wpd/points.txt
+        # TODO: post process this points file to retain non-zero lines
+        # Process this files to get the points that fall within the AOI polygons.
+            # geometry_utils.ray_casting_batch(points, polygon) #TODO: implement this on the set of point that come out of each image per timestep. 
+        # TODO: write the returned points to a .wpd file for each time step write file header and then all other data. 
+        # TODO: write all data to a single .csv file for easier analysis later on, time steps for columns and rows for various spaces. 
+
+   
 
     image_processor = ImageProcessor(
         skyless_octree_path             = octree_generator.skyless_octree_path,
@@ -124,12 +149,13 @@ def main():
         y_res                           = renderer.y_res,
         latitude                        = sky_generator.lat
         )
-    image_processor.nsw_adg_sunlight_access_results_pipeline() #FIXME automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
+    image_processor.nsw_adg_sunlight_access_results_pipeline() 
+        # TODO: 
+            # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib 
+                # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
+            # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
 
-    # Phase 4c: Quantitative Compliance Analysis and Data Export
-    # Calculate illumination metrics per spatial zone with regulatory threshold evaluation
-    # TODO: Develop interactive interface for dynamic AOI adjustment with persistence of aoi files for future analysis
-    
+    # TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing. 
 
     return True
 
