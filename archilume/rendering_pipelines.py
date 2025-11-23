@@ -33,18 +33,18 @@ class RenderingPipelines:
     Required Attributes:
         skyless_octree_path (Path): Base octree file path (typically skyless geometry)
         overcast_sky_file_path (Path): Overcast sky file for ambient lighting analysis
-        sky_files_dir (Path): Directory containing solar condition sky files
-        view_files_dir (Path): Directory containing architectural viewpoint files
+        skies_dir (Path): Directory containing solar condition sky files
+        views_dir (Path): Directory containing architectural viewpoint files
         image_dir (Path): Output directory for rendered images and analysis results
         x_res (int): Horizontal resolution for medium quality rendering (must be positive)
         y_res (int): Vertical resolution for medium quality rendering (must be positive)
 
     Auto-Generated Attributes (populated during initialization):
-        sky_files (List[Path]): Discovered sky files from sky_files_dir (*.sky)
-        view_files (List[Path]): Discovered view files from view_files_dir (*.vp)
+        sky_files (List[Path]): Discovered sky files from skies_dir (*.sky)
+        view_files (List[Path]): Discovered view files from views_dir (*.vp)
         overcast_octree_command (str): Command for overcast sky octree generation
         rpict_low_qual_commands (List[str]): Low quality rendering commands (512x512)
-        rpict_med_qual_commands (List[str]): Medium quality rendering commands (x_res × y_res)
+        rpict_med_qual_commands (List[str]): Medium quality rendering commands (x_res y_res)
         temp_octree_with_sky_paths (List[Path]): Temporary octree file paths
         oconv_commands (List[str]): Octree compilation commands
         rpict_commands (List[str]): Solar rendering commands
@@ -55,8 +55,8 @@ class RenderingPipelines:
     # Required fields - no defaults
     skyless_octree_path: Path
     overcast_sky_file_path: Path
-    sky_files_dir: Path
-    view_files_dir: Path
+    skies_dir: Path
+    views_dir: Path
     x_res: int
     y_res: int
     
@@ -65,11 +65,11 @@ class RenderingPipelines:
     sky_files: List[Path] = field(default_factory=list, init=False)
     view_files: List[Path] = field(default_factory=list, init=False)
     overcast_octree_command: str = field(default=None, init=False)
-    rpict_low_qual_commands: List[str] = field(default_factory=list, init=False)
-    rpict_med_qual_commands: List[str] = field(default_factory=list, init=False)
+    rpict_daylight_overture_commands: List[str] = field(default_factory=list, init=False)
+    rpict_daylight_med_qual_commands: List[str] = field(default_factory=list, init=False)
     temp_octree_with_sky_paths: List[Path] = field(default_factory=list, init=False)
     oconv_commands: List[str] = field(default_factory=list, init=False)
-    rpict_commands: List[str] = field(default_factory=list, init=False)
+    rpict_direct_sun_commands: List[str] = field(default_factory=list, init=False)
     pcomb_commands: List[str] = field(default_factory=list, init=False)
     ra_tiff_commands: List[str] = field(default_factory=list, init=False)
 
@@ -78,10 +78,10 @@ class RenderingPipelines:
         Post-initialization to populate file lists from directories.
         """
         # Populate sky files from directory
-        self.sky_files = sorted([path for path in self.sky_files_dir.glob('*.sky')])
+        self.sky_files = sorted([path for path in self.skies_dir.glob('*.sky')])
         
         # Populate view files from directory
-        self.view_files = sorted([path for path in self.view_files_dir.glob('*.vp')])
+        self.view_files = sorted([path for path in self.views_dir.glob('*.vp')])
         
         # Validate resolution values
         if self.x_res <= 0 or self.y_res <= 0:
@@ -94,13 +94,43 @@ class RenderingPipelines:
             except OSError as e:
                 print(f"Error creating directory {self.image_dir}: {e}")
         
+
+    def sunlight_rendering_pipeline(self) -> None:
+        """
+        Render images for each combination of sky and view files.
+        """
+        print("\nRenderingPipelines getting started...\n")
+
+        # --- Phase 0: Prepare commands ---
         # Generate overcast sky rendering commands
-        self.overcast_octree_command, self.rpict_overture_commands, self.rpict_med_qual_commands = self.__generate_overcast_sky_rendering_commands()
-
+        (self.overcast_octree_command,
+         self.rpict_daylight_overture_commands,
+         self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
         # Generate sunny sky rendering commands
-        self.temp_octree_with_sky_paths, self.oconv_commands, self.rpict_commands, self.pcomb_commands, self.ra_tiff_commands = self.__generate_sunny_sky_rendering_commands()
+        (self.temp_octree_with_sky_paths,
+         self.oconv_commands,
+         self.rpict_direct_sun_commands,
+         self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
 
-    def __generate_overcast_sky_rendering_commands(self, aa: float=0.1, ab: int=1, ad: int=4096, ar: int=1024, as_val: int=1024, dj: float=0.7, lr: int=12, lw: float=0.002, pj: int=1, ps: int=4, pt: float=0.05) -> tuple[str, list[str], list[str]]:
+        # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
+        # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
+        utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=1)
+        utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=8)
+        utils.execute_new_radiance_commands(self.rpict_daylight_med_qual_commands, number_of_workers=8)
+
+        # --- Phase 2: Synthesize octree files for all sky-view combinations ---
+        # Prepare temporary octree structures for comprehensive solar condition analysis
+        utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
+        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=6)
+        utils.delete_files(self.temp_octree_with_sky_paths)
+
+        # --- Phase 3: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
+        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=10)
+        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=14)
+
+        print("Rendering sequence completed successfully.")
+    
+    def _generate_overcast_sky_rendering_commands(self, aa: float=0.1, ab: int=1, ad: int=4096, ar: int=1024, as_val: int=1024, dj: float=0.7, lr: int=12, lw: float=0.002, pj: int=1, ps: int=4, pt: float=0.05) -> tuple[str, list[str], list[str]]:
         """
         Generates oconv, rpict warming run and rpict medium quality run for overcast sky view_file combinations.
 
@@ -116,7 +146,8 @@ class RenderingPipelines:
             - self.x_res, self.y_res: Resolution for medium quality rendering
 
         Args:
-            aa (float, optional): Ambient accuracy for rpict. Defaults to 0.1. If this value is set to zero then interpolations are not used
+            aa (float, optional): Ambient accuracy for rpict. Defaults to 0.1. 
+                If this value is set to zero then interpolations are not used
             ab (int, optional): Ambient bounces for rpict [low_qual=1, med_qual=2]. Defaults to 1.
             ad (int, optional): Ambient divisions for rpict [low_qual=2048, med_qual=4096]. Defaults to 4096.
             ar (int, optional): Ambient resolution for rpict [low_qual=512, med_qual=1024]. Defaults to 1024.
@@ -171,9 +202,9 @@ class RenderingPipelines:
 
         return overcast_octree_command, rpict_overture_commands, rpict_med_qual_commands   
 
-    def __generate_sunny_sky_rendering_commands(self, ab: int=0, ad: int=128, ar: int=64, as_val: int=64, ps: int=6, lw: float=0.00500) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
+    def _generate_sunny_sky_rendering_commands(self, ab: int=0, ad: int=128, ar: int=64, as_val: int=64, ps: int=6, lw: float=0.00500) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
         """
-        TODO: update the input variables with type and ranges of allowable inputs given information found online. 
+        TODO: increase the generic use of this function to include all parameters as optional for rpict.
         Generates oconv, rpict, and ra_tiff commands for rendering combinations of octree, sky, and view files.
 
         Creates all permutations of sky files and view files with a single octree file, generating
@@ -201,7 +232,7 @@ class RenderingPipelines:
             Duplicate oconv commands are automatically removed while preserving order.
         """
 
-        rpict_commands, oconv_commands, temp_octree_with_sky_paths, pcomb_commands, ra_tiff_commands = [], [], [], [], []
+        rpict_commands, oconv_commands, temp_octree_with_sky_paths, pcomb_ra_tiff_commands = [], [], [], []
 
         octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
 
@@ -216,18 +247,17 @@ class RenderingPipelines:
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
             temp_octree_with_sky_path = self.skyless_octree_path.parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
-            oconv_command, rpict_command, pcomb_command, ra_tiff_command = [
+            oconv_command, rpict_command, pcomb_ra_tiff_command = [
                 rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}" ,
                 rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
-                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} > {output_hdr_path_combined}',
-                rf"ra_tiff -e -2 {output_hdr_path_combined} {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}"
+                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | ra_tiff -e -2 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
             ]
 
             temp_octree_with_sky_paths.append(temp_octree_with_sky_path)
             oconv_commands.append(oconv_command)
             rpict_commands.append(rpict_command)
-            pcomb_commands.append(pcomb_command)
-            ra_tiff_commands.append(ra_tiff_command)
+            pcomb_ra_tiff_commands.append(pcomb_ra_tiff_command)
+
         
         # get rid of duplicate oconv commands while retaining list order
         oconv_commands = list(dict.fromkeys(oconv_commands))
@@ -235,42 +265,8 @@ class RenderingPipelines:
         # Log summary before exit
         logger.info(
             f"Generated sunny sky rendering commands: {len(oconv_commands)} oconv, "
-            f"{len(rpict_commands)} rpict, {len(pcomb_commands)} pcomb, {len(ra_tiff_commands)} ra_tiff "
-            f"for {len(self.sky_files)} sky files × {len(self.view_files)} views at resolution {self.x_res}x{self.y_res}"
+            f"{len(rpict_commands)} rpict, {len(pcomb_ra_tiff_commands)} pcomb_ra_tiff"
+            f"for {len(self.sky_files)} sky files {len(self.view_files)} views at resolution {self.x_res}x{self.y_res}"
         )
 
-        return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_commands, ra_tiff_commands
-
-    def sunlight_rendering_pipeline(self):
-        """
-        Render images for each combination of sky and view files.
-        """
-        print("\nRenderingPipelines getting started...\n")
-
-        # Phase 1: Generate ambient lighting foundation using overcast sky conditions
-        # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
-        utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=1)
-        utils.execute_new_radiance_commands(self.rpict_overture_commands, number_of_workers=8)
-        utils.execute_new_radiance_commands(self.rpict_med_qual_commands, number_of_workers=8)
-
-
-        # Phase 2: Synthesize octree files for all sky-view combinations
-        # Prepare temporary octree structures for comprehensive solar condition analysis
-        utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
-        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=6)
-        utils.delete_files(self.temp_octree_with_sky_paths)
-
-
-        # Phase 3: Execute High-Fidelity Solar Illumination Analysis
-        # Perform precision rendering of direct solar conditions across temporal variations
-        utils.execute_new_radiance_commands(self.rpict_commands, number_of_workers=10)
-        
-        # Phase 3a: Composite Direct and Ambient Illumination Components
-        # Synthesize comprehensive lighting conditions by merging solar and ambient contributions
-        utils.execute_new_radiance_commands(self.pcomb_commands, number_of_workers=14)
-        
-        # Phase 3b: Convert to Industry-Standard TIFF Format
-        # Transform HDR data to accessible format with optimized exposure mapping
-        utils.execute_new_radiance_commands(self.ra_tiff_commands, number_of_workers=10)  # TODO: automate exposure adjustment based on histogram analysis
-
-        print("Rendering sequence completed successfully.")
+        return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_ra_tiff_commands

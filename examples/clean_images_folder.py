@@ -1,5 +1,5 @@
 """Clean the images directory by removing all files.
-to run enter python examples/clean_images.py --force
+to run enter python examples/clean_images_folder.py --force
 """
 
 import shutil

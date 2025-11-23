@@ -44,7 +44,7 @@ class ViewGenerator:
         ffl_offset: Height above finished floor level for camera positioning (meters)
         processed_room_boundaries_csv_path: Path to processed/cleaned CSV output
         view_file_dir: Directory for generated view files (outputs/views_grids/)
-        aoi_file_dir: Directory for generated AOI files (outputs/aoi/)
+        aoi_dir: Directory for generated AOI files (outputs/aoi/)
         room_boundaries_df: Parsed DataFrame with coordinate data
         bounding_box_coordinates: 3D bounding box of all room boundaries
         x_coord_center, y_coord_center, z_coord_center: Building center coordinates
@@ -86,7 +86,7 @@ class ViewGenerator:
     # Fixed - not user configurable but accessible from instance
     processed_room_boundaries_csv_path: Path        = field(init=False)
     view_file_dir: Path = field(init                = False, default = Path(__file__).parent.parent / "outputs" / "views_grids")
-    aoi_file_dir: Path = field(init                 = False, default = Path(__file__).parent.parent / "outputs" / "aoi")
+    aoi_dir: Path = field(init                 = False, default = Path(__file__).parent.parent / "outputs" / "aoi")
     room_boundaries_df: pd.DataFrame | None         = field(init=False, default=None)
     bounding_box_coordinates: Any                   = field(init=False, default=None)
     x_coord_center: float | None                    = field(init=False, default=None)
@@ -120,7 +120,7 @@ class ViewGenerator:
             sys.exit(1)
 
         # Create the output directory if it doesn't exist
-        os.makedirs(self.aoi_file_dir, exist_ok=True)
+        os.makedirs(self.aoi_dir, exist_ok=True)
         os.makedirs(self.view_file_dir, exist_ok=True)
 
         # Run csv parser to restructure the room boundaries data for use
@@ -294,63 +294,19 @@ class ViewGenerator:
         return True  # Indicate success
 
     def create_aoi_files(self, coordinate_map_path: Path | None = None) -> bool:
-        """
-        Generate Area of Interest (AOI) files for each room from boundary data.
-
-        Creates individual AOI files containing room-specific information for daylight
-        analysis. Each file includes room metadata, boundary coordinates, centroid
-        calculations, and associated view file references organized by floor level.
+        """Generate AOI files for each room with boundary points and metadata.
 
         Args:
-            coordinate_map_path: Optional path to pixel-to-world coordinate map file.
-                                If provided, adds pixel coordinate columns via nearest
-                                neighbor lookup from world coordinates.
-
-        Processing Workflow:
-            1. Validates that processed CSV file exists from successful parsing
-            2. Loads and groups room boundary data by apartment and room
-            3. For each room group:
-               - Calculates room centroid from boundary points
-               - Determines associated view file based on floor level (Z coordinate)
-               - If coordinate_map_path provided, performs nearest pixel lookup
-               - Formats boundary coordinates to 4 decimal places
-               - Generates structured file content with headers and data
-               - Creates sanitized filename from apartment and room names
-               - Writes AOI file to output directory
-
-        Generated AOI File Format:
-            - Header Line 1: \"AOI Points File: {apartment} {room}\"
-            - Header Line 2: \"ASSOCIATED VIEW FILE: plan_L##.vp\"
-            - Header Line 3: \"FFL z height(m): {floor_level}\"
-            - Header Line 4: \"CENTRAL x,y: {centroid_x} {centroid_y}\"
-            - Header Line 5: \"NO. PERIMETER POINTS {count}: x,y positions [pixel_x pixel_y]\"
-            - Data Lines: \"x.xxxx y.yyyy\" or \"x.xxxx y.yyyy pixel_x pixel_y\" (if map provided)
-
-        Output Files:
-            - Location: outputs/aoi/ directory
-            - Naming: {apartment_no}_{sanitized_room_name}.aoi
-            - Content: Room boundary points and metadata for each room
-            - Count: One file per unique apartment_no/room combination
+            coordinate_map_path: Optional coordinate map file. If provided, adds pixel
+                               coordinates via nearest neighbor lookup.
 
         Returns:
-            bool: True if all AOI files generated successfully, False if validation
-                 fails or processed CSV file is not available
+            bool: True if successful, False if processed CSV not found.
 
-        Error Handling:
-            - Validates processed CSV file exists before proceeding
-            - Logs errors for missing files or read failures
-            - Handles special characters in room names for filename compatibility
-            - Provides fallback view file names for unmatched floor levels
-            - Continues processing other rooms if individual room processing fails
-
-        Prerequisites:
-            - CSV file must be successfully parsed during __post_init__
-            - processed_room_boundaries_csv_path must be set and file must exist
-
-        Side Effects:
-            - Creates AOI files in the aoi_file_dir
-            - Prints progress messages for each generated file
-            - Does not modify instance attributes (unlike create_view_files)
+        Output format per file:
+            - Headers: room info, view file, floor level, centroid
+            - Data: boundary points as "x.xxxx y.yyyy [pixel_x pixel_y]"
+            - Files written to outputs/aoi/ as {apartment}_{room}.aoi
         """
 
         # Check if processed CSV exists (from successful parsing)
@@ -468,7 +424,7 @@ class ViewGenerator:
             clean_room_name = re.sub(r"[^\w\s-]", "", room_name).strip()
             clean_room_name = re.sub(r"[-\s]+", "_", clean_room_name)
             filename = f"{apartment_name}_{clean_room_name}.aoi"
-            filepath = os.path.join(self.aoi_file_dir, filename)
+            filepath = os.path.join(self.aoi_dir, filename)
 
             # Write the content to the file
             with open(filepath, "w") as f:
@@ -519,7 +475,7 @@ class ViewGenerator:
             - z_coords: Z coordinate in meters (converted from mm)
             
         Side Effects:
-            - Creates processed CSV file in aoi_file_dir
+            - Creates processed CSV file in aoi_dir
             - Sets self.room_boundaries_df attribute
             - Sets self.processed_room_boundaries_csv_path attribute
             - Logs processing status and any errors
@@ -561,7 +517,7 @@ class ViewGenerator:
             logging.info("DataFrame parsed successfully.")
 
             # send processed room boundaries data to new csv
-            self.processed_room_boundaries_csv_path = Path(self.aoi_file_dir / f"{self.room_boundaries_csv_path.stem}_processed.csv")
+            self.processed_room_boundaries_csv_path = Path(self.aoi_dir / f"{self.room_boundaries_csv_path.stem}_processed.csv")
             df.to_csv(self.processed_room_boundaries_csv_path, index=False)
             
             logging.info(f"Processed DataFrame saved to: {self.processed_room_boundaries_csv_path}")

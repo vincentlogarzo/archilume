@@ -21,6 +21,9 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     rpict -w -t 5 -vf outputs/views_grids/plan_L02.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 -af outputs/images/indirect_overcast.amb -i outputs/octree/87cowles_BLD_noWindows_with_site_TenK_cie_overcast.oct > outputs/images/87cowles_BLD_noWindows_with_site_TenK_cie_overcast_indirect.hdr
     pcomb -e 'ro=ri(1)+ri(2);go=gi(1)+gi(2);bo=bi(1)+bi(2)' outputs/images/87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs/images/87cowles_BLD_noWindows_with_site_with_overcast_direct.hdr > outputs/images/87cowles_BLD_noWindows_with_site_combined.hdr
     ra_tiff outputs/images/87cowles_BLD_noWindows_with_site_with_overcast_indirect.hdr outputs/images/87cowles_BLD_noWindows_overcast_indirect.tiff
+        combined workflow
+            pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" outputs\images\87cowles_BLD_noWindows_with_site_plan_L00__TenK_cie_overcast.hdr outputs\images\87cowles_BLD_noWindows_with_site_plan_L00_SS_0621_0900.hdr | ra_tiff -e -2 - outputs\images\87cowles_BLD_noWindows_with_site_plan_L00_SS_0621_0900.tiff
+    pcond -h outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.hdr > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_visual_human.hdr
 
 --- 3. ---
 #testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
@@ -45,8 +48,9 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     rtrace -h -ab 4 -aa 0.1 scene.rad < camera_rays.txt | ra_rgbe > output.hdr
     #TODO test the above. 
 
-    FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908. 
-    pvalue -r -h -x 1908 -y 1908 outputs/wpd/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt > outputs/wpd/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02_rtrace.hdr
+    FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908.
+    pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr > outputs/wpd/points.txt
+    pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr | rcalc -e '$1=$1;$2=$2;$3=$3' -c '$3-1e-9' > outputs/wpd/points.txt
 
 
     

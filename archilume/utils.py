@@ -226,29 +226,53 @@ def copy_files(source_path: Union[Path, str], destination_paths: list[Path]) -> 
     except Exception as e:
         print(f"An error occurred during the copy operation: {e}")
 
-def delete_files(file_paths: list[Path]) -> None:
+def delete_files(file_paths: list[Path], number_of_workers: int = 1) -> None:
     """
     Deletes files from a list of Path objects using pathlib's unlink() method.
-    
+
     Args:
         file_paths (list[Path]): List of Path objects to delete.
+        number_of_workers (int): Number of worker threads for parallel deletion. Default is 1 (sequential).
     """
-    deleted_count = 0
-    skipped_count = 0
-    
-    for file_path in file_paths:
+    def _delete_single_file(file_path: Path) -> tuple[str, bool, Optional[str]]:
+        """Delete a single file and return status."""
         try:
             if file_path.exists():
                 file_path.unlink()
+                return (file_path.name, True, None)
+            else:
+                return (file_path.name, False, "not found")
+        except Exception as e:
+            return (file_path.name, False, str(e))
+
+    deleted_count = 0
+    skipped_count = 0
+
+    if number_of_workers > 1 and len(file_paths) > 1:
+        # Parallel deletion using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=number_of_workers) as executor:
+            results = executor.map(_delete_single_file, file_paths)
+
+            for filename, success, error in results:
+                if success:
+                    deleted_count += 1
+                    print(f"Deleted: {filename}")
+                else:
+                    skipped_count += 1
+                    msg = f"Skipped ({error}): {filename}" if error else f"Skipped: {filename}"
+                    print(msg)
+    else:
+        # Sequential deletion
+        for file_path in file_paths:
+            filename, success, error = _delete_single_file(file_path)
+            if success:
                 deleted_count += 1
-                print(f"Deleted: {file_path.name}")
+                print(f"Deleted: {filename}")
             else:
                 skipped_count += 1
-                print(f"Skipped (not found): {file_path.name}")
-        except Exception as e:
-            print(f"Error deleting {file_path.name}: {e}")
-            skipped_count += 1
-    
+                msg = f"Skipped ({error}): {filename}" if error else f"Skipped: {filename}"
+                print(msg)
+
     print(f"Deletion complete: {deleted_count} deleted, {skipped_count} skipped")
          
 def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_workers: int = 1) -> None:
@@ -407,6 +431,163 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         print(f"All new commands have successfully completed e.g. {commands[0]}")
     else:
         print("No commands were provided to execute.")
+
+def execute_new_pvalue_commands(commands: Union[str, list[str]], number_of_workers: int = 1, threshold: float = 0.0) -> None:
+    """
+    Executes pvalue commands with real-time filtering of output, processing only files that don't already exist.
+
+    This function takes pvalue commands (e.g., 'pvalue -b +di input.hdr > output.txt') and executes them
+    while filtering the output to include only lines where the 3rd column is greater than the threshold.
+    This is a cross-platform alternative to: pvalue ... | awk '$3 > 0' > output.txt
+
+    Optimized for large datasets (millions of lines) with:
+    - Inline filtering (no chunking overhead)
+    - Fast path for threshold <= 0 (no filtering)
+    - Large buffer sizes (512KB)
+    - ThreadPoolExecutor for I/O-bound parallelism
+
+    Args:
+        commands (str or list[str]): Single command string or list of pvalue command strings to execute.
+                                   Each command should be in format: 'pvalue -b +di input.hdr > output.txt'
+        number_of_workers (int, optional): Number of parallel workers for command execution. Defaults to 1.
+        threshold (float, optional): Minimum value for 3rd column to include in output. Defaults to 0.0.
+
+    Returns:
+        None: Function executes commands and prints completion message with point counts.
+
+    Note:
+        Commands are filtered based on whether their output files exist. The function
+        extracts the output path from the '>' operator and only processes commands whose
+        output files don't already exist.
+
+    Example:
+        >>> execute_new_pvalue_commands('pvalue -b +di input.hdr > output.txt', threshold=1e-9)
+        >>> execute_new_pvalue_commands(['pvalue -b +di in1.hdr > out1.txt', 'pvalue -b +di in2.hdr > out2.txt'], number_of_workers=4)
+    """
+
+    def _execute_pvalue_with_filter(command: str, threshold: float) -> int:
+        """Execute a single pvalue command with inline filtering - optimized for maximum speed."""
+        print(f"Starting: {command}")
+
+        try:
+            # Parse command to extract input file and output file
+            if ' > ' not in command:
+                raise ValueError(f"Command must include output redirection (>): {command}")
+
+            cmd_part, output_path = command.split(' > ', 1)
+            output_path = output_path.strip()
+
+            # Parse pvalue command parts
+            pvalue_cmd_parts = cmd_part.strip().split()
+
+            # Ensure output directory exists
+            output_file = Path(output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Set up environment with RAYPATH for Radiance commands
+            env = os.environ.copy()
+            env['RAYPATH'] = r'C:\Radiance\lib'
+
+            # Execute pvalue command and filter output
+            count = 0
+            with open(output_file, 'w', buffering=524288) as outfile:  # 512KB write buffer
+                process = subprocess.Popen(
+                    pvalue_cmd_parts,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=524288,  # 512KB buffer
+                    env=env
+                )
+
+                in_header = True
+
+                # OPTIMIZED: Direct line-by-line filtering (no chunking overhead)
+                if threshold <= 0:
+                    # Fast path: no filtering, write everything
+                    for line in process.stdout:
+                        if in_header:
+                            outfile.write(line)
+                            if line.strip().startswith('-Y') and '+X' in line:
+                                in_header = False
+                            continue
+                        outfile.write(line)
+                        count += 1
+                else:
+                    # Filter mode: inline filtering without chunking
+                    for line in process.stdout:
+                        if in_header:
+                            outfile.write(line)
+                            if line.strip().startswith('-Y') and '+X' in line:
+                                in_header = False
+                            continue
+
+                        # Fast inline filter - no intermediate storage
+                        parts = line.split()
+                        if len(parts) >= 3 and float(parts[2]) > threshold:
+                            outfile.write(line)
+                            count += 1
+
+                # Capture any stderr output
+                stderr_output = process.stderr.read()
+                if stderr_output:
+                    print(f"pvalue stderr: {stderr_output.strip()}")
+
+                # Wait for process to complete
+                return_code = process.wait()
+
+                if return_code == 0:
+                    print(f"Completed successfully: {command} -> Filtered {count:,} points")
+                    return count
+                else:
+                    print(f"Failed with return code {return_code}: {command}")
+                    return 0
+
+        except Exception as e:
+            print(f"Error executing command '{command}': {e}")
+            return 0
+
+    # Handle single command string input
+    if isinstance(commands, str):
+        commands = [commands]
+
+    # Filter out commands whose output files already exist
+    filtered_commands = []
+    for command in commands:
+        if ' > ' in command:
+            try:
+                output_path = command.split(' > ')[1].strip()
+                if not os.path.exists(output_path):
+                    filtered_commands.append(command)
+                else:
+                    print(f"Output already exists, skipping: {output_path}")
+            except IndexError:
+                filtered_commands.append(command)
+        else:
+            filtered_commands.append(command)
+
+    # Execute commands with filtering
+    total_points = 0
+    if number_of_workers == 1:
+        # Sequential execution
+        for command in filtered_commands:
+            total_points += _execute_pvalue_with_filter(command, threshold)
+    else:
+        # Parallel execution with ThreadPoolExecutor
+        # Note: ThreadPoolExecutor is appropriate here because most time is spent waiting
+        # on subprocess I/O (pvalue execution), not CPU-bound Python operations
+        with concurrent.futures.ThreadPoolExecutor(max_workers=number_of_workers) as executor:
+            futures = [executor.submit(_execute_pvalue_with_filter, command, threshold) for command in filtered_commands]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    total_points += future.result()
+                except Exception as e:
+                    print(f"Error in parallel execution: {e}")
+
+    if filtered_commands:
+        print(f"All pvalue commands completed. Total filtered points: {total_points}")
+    else:
+        print("No new pvalue commands to execute (all output files already exist).")
 
 def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
     """Create separate animated files grouped by view file names using parallel processing.
