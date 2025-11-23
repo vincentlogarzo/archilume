@@ -3,9 +3,11 @@ pyproject.toml
 archilume/__init__.py
 archilume/convert_2_radiance_mtl_file.py
 archilume/geometry_utils.py
+archilume/image_processor.py
 archilume/obj_to_octree.py
 archilume/radiance_materials.py
-archilume/radiance_renderer.py
+archilume/rendering_pipelines.py
+archilume/results_processor.py
 archilume/sky_generator.py
 archilume/utils.py
 archilume/view_generator.py

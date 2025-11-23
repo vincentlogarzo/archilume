@@ -6,22 +6,11 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Union
-from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime
+from PIL import Image
 import numpy as np
 import open3d as o3d
 import tkinter as tk
-from tkinter import filedialog
 
-def select_files(title: str = "Select file(s)") -> Optional[List[str]]:
-    """Open file dialog to select multiple files from inputs folder."""
-    root = tk.Tk()
-    root.withdraw()
-    inputs_dir = os.path.join(os.getcwd(), "inputs")
-    initial_dir = inputs_dir if os.path.exists(inputs_dir) else os.getcwd()
-    file_paths = filedialog.askopenfilenames(initialdir=initial_dir, title=title, parent=root)
-    root.destroy()
-    return list(file_paths) if file_paths else None
 
 def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     """Display OBJ files using open3d with enhanced visualization."""
@@ -176,12 +165,6 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     # Run the visualizer
     vis.run()
     vis.destroy_window()
-
-def display_ifc(filename: Path):
-    """
-    # TODO: Implement IFC file visualization using ifcopenshell, and allow colour checking and editing potentially through ThatOpenCompany
-    """
-    return None
 
 def copy_files(source_path: Union[Path, str], destination_paths: list[Path]) -> None:
     """
@@ -432,163 +415,6 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
     else:
         print("No commands were provided to execute.")
 
-def execute_new_pvalue_commands(commands: Union[str, list[str]], number_of_workers: int = 1, threshold: float = 0.0) -> None:
-    """
-    Executes pvalue commands with real-time filtering of output, processing only files that don't already exist.
-
-    This function takes pvalue commands (e.g., 'pvalue -b +di input.hdr > output.txt') and executes them
-    while filtering the output to include only lines where the 3rd column is greater than the threshold.
-    This is a cross-platform alternative to: pvalue ... | awk '$3 > 0' > output.txt
-
-    Optimized for large datasets (millions of lines) with:
-    - Inline filtering (no chunking overhead)
-    - Fast path for threshold <= 0 (no filtering)
-    - Large buffer sizes (512KB)
-    - ThreadPoolExecutor for I/O-bound parallelism
-
-    Args:
-        commands (str or list[str]): Single command string or list of pvalue command strings to execute.
-                                   Each command should be in format: 'pvalue -b +di input.hdr > output.txt'
-        number_of_workers (int, optional): Number of parallel workers for command execution. Defaults to 1.
-        threshold (float, optional): Minimum value for 3rd column to include in output. Defaults to 0.0.
-
-    Returns:
-        None: Function executes commands and prints completion message with point counts.
-
-    Note:
-        Commands are filtered based on whether their output files exist. The function
-        extracts the output path from the '>' operator and only processes commands whose
-        output files don't already exist.
-
-    Example:
-        >>> execute_new_pvalue_commands('pvalue -b +di input.hdr > output.txt', threshold=1e-9)
-        >>> execute_new_pvalue_commands(['pvalue -b +di in1.hdr > out1.txt', 'pvalue -b +di in2.hdr > out2.txt'], number_of_workers=4)
-    """
-
-    def _execute_pvalue_with_filter(command: str, threshold: float) -> int:
-        """Execute a single pvalue command with inline filtering - optimized for maximum speed."""
-        print(f"Starting: {command}")
-
-        try:
-            # Parse command to extract input file and output file
-            if ' > ' not in command:
-                raise ValueError(f"Command must include output redirection (>): {command}")
-
-            cmd_part, output_path = command.split(' > ', 1)
-            output_path = output_path.strip()
-
-            # Parse pvalue command parts
-            pvalue_cmd_parts = cmd_part.strip().split()
-
-            # Ensure output directory exists
-            output_file = Path(output_path)
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # Set up environment with RAYPATH for Radiance commands
-            env = os.environ.copy()
-            env['RAYPATH'] = r'C:\Radiance\lib'
-
-            # Execute pvalue command and filter output
-            count = 0
-            with open(output_file, 'w', buffering=524288) as outfile:  # 512KB write buffer
-                process = subprocess.Popen(
-                    pvalue_cmd_parts,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=524288,  # 512KB buffer
-                    env=env
-                )
-
-                in_header = True
-
-                # OPTIMIZED: Direct line-by-line filtering (no chunking overhead)
-                if threshold <= 0:
-                    # Fast path: no filtering, write everything
-                    for line in process.stdout:
-                        if in_header:
-                            outfile.write(line)
-                            if line.strip().startswith('-Y') and '+X' in line:
-                                in_header = False
-                            continue
-                        outfile.write(line)
-                        count += 1
-                else:
-                    # Filter mode: inline filtering without chunking
-                    for line in process.stdout:
-                        if in_header:
-                            outfile.write(line)
-                            if line.strip().startswith('-Y') and '+X' in line:
-                                in_header = False
-                            continue
-
-                        # Fast inline filter - no intermediate storage
-                        parts = line.split()
-                        if len(parts) >= 3 and float(parts[2]) > threshold:
-                            outfile.write(line)
-                            count += 1
-
-                # Capture any stderr output
-                stderr_output = process.stderr.read()
-                if stderr_output:
-                    print(f"pvalue stderr: {stderr_output.strip()}")
-
-                # Wait for process to complete
-                return_code = process.wait()
-
-                if return_code == 0:
-                    print(f"Completed successfully: {command} -> Filtered {count:,} points")
-                    return count
-                else:
-                    print(f"Failed with return code {return_code}: {command}")
-                    return 0
-
-        except Exception as e:
-            print(f"Error executing command '{command}': {e}")
-            return 0
-
-    # Handle single command string input
-    if isinstance(commands, str):
-        commands = [commands]
-
-    # Filter out commands whose output files already exist
-    filtered_commands = []
-    for command in commands:
-        if ' > ' in command:
-            try:
-                output_path = command.split(' > ')[1].strip()
-                if not os.path.exists(output_path):
-                    filtered_commands.append(command)
-                else:
-                    print(f"Output already exists, skipping: {output_path}")
-            except IndexError:
-                filtered_commands.append(command)
-        else:
-            filtered_commands.append(command)
-
-    # Execute commands with filtering
-    total_points = 0
-    if number_of_workers == 1:
-        # Sequential execution
-        for command in filtered_commands:
-            total_points += _execute_pvalue_with_filter(command, threshold)
-    else:
-        # Parallel execution with ThreadPoolExecutor
-        # Note: ThreadPoolExecutor is appropriate here because most time is spent waiting
-        # on subprocess I/O (pvalue execution), not CPU-bound Python operations
-        with concurrent.futures.ThreadPoolExecutor(max_workers=number_of_workers) as executor:
-            futures = [executor.submit(_execute_pvalue_with_filter, command, threshold) for command in filtered_commands]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    total_points += future.result()
-                except Exception as e:
-                    print(f"Error in parallel execution: {e}")
-
-    if filtered_commands:
-        print(f"All pvalue commands completed. Total filtered points: {total_points}")
-    else:
-        print("No new pvalue commands to execute (all output files already exist).")
-
 def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
     """Create separate animated files grouped by view file names using parallel processing.
     
@@ -824,121 +650,78 @@ def create_grid_gif(gif_paths: list[Path], image_dir: Path, grid_size: tuple=(3,
         )
         print(f"Created grid animation: {len(grid_frames)} frames, {len(gifs_data)} views in {cols}x{rows} grid")
 
-def create_grid_mp4(mp4_paths: list[Path], image_dir: Path, grid_size: tuple=(3, 3), 
-                    target_size: tuple=(200, 200), fps: int=1) -> None:
-    """Create a grid layout MP4 combining multiple individual MP4 files.
-    
-    Takes multiple MP4 files and combines them into a single MP4 with a grid layout.
-    Each individual MP4 is resized to fit within the grid cells.
-    
-    Args:
-        mp4_paths: List of Path objects pointing to input MP4 files
-        image_dir: Directory where the grid MP4 will be saved
-        grid_size: Tuple (cols, rows) defining the grid dimensions (default: 3x3)
-        target_size: Tuple (width, height) for each cell in pixels (default: 200x200)
-        fps: Frames per second for the output video (default: 1)
-        
-    Returns:
-        None
-        
-    Example:
-        >>> mp4_files = [Path('view1.mp4'), Path('view2.mp4'), Path('view3.mp4')]
-        >>> create_grid_mp4(mp4_files, Path('output'), grid_size=(2, 2))
+def get_hdr_resolution(hdr_file_path: Union[Path, str]) -> tuple[int, int]:
     """
+    Extract image resolution (width, height) from an HDR file header.
+
+    Reads the HDR file header to find the resolution line in the format:
+    "-Y <height> +X <width>" which is the standard Radiance HDR format.
+
+    Args:
+        hdr_file_path (Path or str): Path to the HDR file to read
+
+    Returns:
+        tuple[int, int]: A tuple containing (width, height) in pixels
+
+    Raises:
+        FileNotFoundError: If HDR file doesn't exist
+        ValueError: If resolution line cannot be found or parsed
+
+    Example:
+        >>> hdr_path = Path("outputs/images/room_combined.hdr")
+        >>> width, height = get_hdr_resolution(hdr_path)
+        >>> print(f"Image dimensions: {width}x{height}")
+        Image dimensions: 2048x2048
+    """
+    # Convert to Path object if string is provided
+    if isinstance(hdr_file_path, str):
+        hdr_file_path = Path(hdr_file_path)
+
+    # Validate that the file exists
+    if not hdr_file_path.exists():
+        raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
+
+    # Initialize dimension variables
+    width = None
+    height = None
+
     try:
-        import cv2
-    except ImportError:
-        raise ImportError("OpenCV (cv2) is required for MP4 processing. Install with: pip install opencv-python")
-    
-    if not mp4_paths:
-        print("No MP4 files provided for grid creation.")
-        return
-    
-    output_path = image_dir / "animated_results_grid_all_levels.mp4"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Delete existing output file if it exists
-    if output_path.exists():
-        output_path.unlink()
-    
-    cols, rows = grid_size
-    cell_width, cell_height = target_size
-    
-    # Load video properties and find maximum duration
-    video_info = []
-    max_frames = 0
-    
-    for mp4_path in mp4_paths[:cols * rows]:  # Limit to grid capacity
-        try:
-            cap = cv2.VideoCapture(str(mp4_path))
-            if not cap.isOpened():
-                print(f"Error opening {mp4_path}")
-                continue
-                
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            video_fps = cap.get(cv2.CAP_PROP_FPS)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
-            video_info.append({
-                'path': mp4_path,
-                'cap': cap,
-                'frame_count': frame_count,
-                'fps': video_fps,
-                'width': width,
-                'height': height
-            })
-            
-            max_frames = max(max_frames, frame_count)
-            
-        except Exception as e:
-            print(f"Error loading {mp4_path}: {e}")
-            continue
-    
-    if not video_info:
-        print("No valid MP4 files found.")
-        return
-    
-    # Set up output video writer
-    grid_width = cols * cell_width
-    grid_height = rows * cell_height
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_path), fourcc, fps, (grid_width, grid_height))
-    
-    # Process frames
-    for frame_idx in range(max_frames):
-        # Create grid frame
-        grid_frame = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
-        
-        for i, video in enumerate(video_info):
-            row = i // cols
-            col = i % cols
-            
-            # Calculate position in grid
-            y_start = row * cell_height
-            y_end = y_start + cell_height
-            x_start = col * cell_width
-            x_end = x_start + cell_width
-            
-            # Get frame from video (loop if needed)
-            video_frame_idx = frame_idx % video['frame_count']
-            video['cap'].set(cv2.CAP_PROP_POS_FRAMES, video_frame_idx)
-            ret, frame = video['cap'].read()
-            
-            if ret:
-                # Resize frame to cell size
-                resized_frame = cv2.resize(frame, (cell_width, cell_height))
-                grid_frame[y_start:y_end, x_start:x_end] = resized_frame
-        
-        # Write frame to output video
-        out.write(grid_frame)
-    
-    # Clean up
-    out.release()
-    for video in video_info:
-        video['cap'].release()
-    
-    print(f"Created grid MP4: {len(video_info)} views in {cols}x{rows} grid, {max_frames} frames at {fps} FPS")
+        # Open file with UTF-8 encoding, ignoring any decode errors
+        with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            line_count = 0
+            for line in f:
+                line_count += 1
+                line = line.strip()
+
+                # Look for the resolution line pattern: -Y height +X width
+                # This is the standard Radiance HDR format for image dimensions
+                if line.startswith('-Y') and '+X' in line:
+                    parts = line.split()  # Split line into individual tokens
+                    # Parse the dimensions from the format: -Y <height> +X <width>
+                    for i, part in enumerate(parts):
+                        if part == '-Y' and i + 1 < len(parts):
+                            height = int(parts[i + 1])
+                        elif part == '+X' and i + 1 < len(parts):
+                            width = int(parts[i + 1])
+                    # If we found both dimensions, we're done
+                    if width and height:
+                        print(f"HDR dimensions - width: {width}, height: {height}")
+                        break
+
+                # Safety check: Stop reading if we've gone too far or hit binary data
+                # HDR headers are typically < 100 lines, and binary data has non-printable chars
+                if line_count > 100 or (len(line) > 0 and any(ord(c) > 127 for c in line if not c.isprintable())):
+                    print(f"Stopped reading at line {line_count}")
+                    break
+
+        # Validate that we actually found the dimensions
+        if not width or not height:
+            raise ValueError("Could not find resolution line in HDR file header")
+
+        return (width, height)
+
+    except Exception as e:
+        raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
 
 def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
     """
@@ -974,12 +757,8 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
         ...     print(f"Mapping created from: {hdr_path}")
     """
     try:
-        # ===================================================================
-        # STEP 1: LOCATE AND VALIDATE HDR FILE
-        # ===================================================================
-        # Search for an HDR file in the specified directory
-        # The glob pattern '*.hdr' finds any HDR file
-        # next() returns the first match, or None if no files found
+        # Step 1: Locate and validate hdr file
+
         hdr_file_path = next(image_dir.glob('*.hdr'), None)
 
         if hdr_file_path is None:
@@ -992,53 +771,9 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
         if not hdr_file_path.exists():
             raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
 
-        # ===================================================================
-        # STEP 2: EXTRACT IMAGE DIMENSIONS FROM HDR FILE
-        # ===================================================================
-        # HDR files contain a header with metadata followed by binary image data
-        # We need to find a line like: "-Y 600 +X 800" which means:
-        #   - Image is 800 pixels wide (X dimension)
-        #   - Image is 600 pixels tall (Y dimension)
-        # Initialize dimension variables
-        
-        width = None
-        height = None
+        # Step 2: Extract image dimensions
 
-        try:
-            # Open file with UTF-8 encoding, ignoring any decode errors
-            with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                line_count = 0
-                for line in f:
-                    line_count += 1
-                    line = line.strip()
-
-                    # Look for the resolution line pattern: -Y height +X width
-                    # This is the standard Radiance HDR format for image dimensions
-                    if line.startswith('-Y') and '+X' in line:
-                        parts = line.split()  # Split line into individual tokens
-                        # Parse the dimensions from the format: -Y <height> +X <width>
-                        for i, part in enumerate(parts):
-                            if part == '-Y' and i + 1 < len(parts):
-                                height = int(parts[i + 1])
-                            elif part == '+X' and i + 1 < len(parts):
-                                width = int(parts[i + 1])
-                        # If we found both dimensions, we're done
-                        if width and height:
-                            print(f"HDR dimensions - width: {width}, height: {height}")
-                            break
-
-                    # Safety check: Stop reading if we've gone too far or hit binary data
-                    # HDR headers are typically < 100 lines, and binary data has non-printable chars
-                    if line_count > 100 or (len(line) > 0 and any(ord(c) > 127 for c in line if not c.isprintable())):
-                        print(f"Stopped reading at line {line_count}")
-                        break
-
-            # Validate that we actually found the dimensions
-            if not width or not height:
-                raise ValueError("Could not find resolution line in HDR file header")
-
-        except Exception as e:
-            raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
+        width, height = get_hdr_resolution(hdr_file_path)
 
         # ===================================================================
         # STEP 3: EXTRACT VIEW PARAMETERS FROM HDR FILE
