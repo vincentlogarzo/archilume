@@ -241,46 +241,147 @@ class ResultsProcessor:
         return dict(groups)
 
     def _process_view_groups_parallel(self, view_groups: Dict) -> None:
-        """Process view groups in parallel using ProcessPoolExecutor.
+        """Process HDR-AOI combinations in parallel using ProcessPoolExecutor.
+
+        This refactored version parallelizes at the HDR-AOI combination level instead of
+        view level, ensuring all available cores are utilized continuously.
 
         Args:
             view_groups: Dictionary of view groups from _group_files_by_view
         """
-        print("\n" + "=" * 80 + f"\nPROCESSING {len(view_groups)} VIEW GROUPS IN PARALLEL\n"
-              f"Using {self.max_workers} worker processes\nMain PID: {os.getpid()}\n" + "=" * 80)
+        # Step 3 Optimization: Create all HDR-AOI tasks upfront for fine-grained parallelization
+        print("\n" + "=" * 80 + "\nPREPARING HDR-AOI TASKS FOR PARALLEL PROCESSING\n" + "=" * 80)
 
-        # Prepare tasks
-        tasks = [
-            (view_name, group, self.pixel_threshold_value, self.wpd_dir)
-            for view_name, group in view_groups.items()
-        ]
+        # Pre-compute polygon masks once (reuse Step 1 optimization)
+        # Get image dimensions from first HDR file in any view group
+        mask_cache = None
+        width, height = None, None
 
-        print(f"Submitting {len(tasks)} tasks to ProcessPoolExecutor...")
+        for group in view_groups.values():
+            if group['hdr_files']:
+                try:
+                    first_hdr = group['hdr_files'][0]
+                    width, height = get_hdr_resolution(first_hdr)
+                    break
+                except Exception as e:
+                    print(f"Warning: Could not get resolution from {first_hdr}: {e}")
+                    continue
 
-        all_results = []
+        if width and height:
+            # Collect all unique AOI files across all views
+            all_aoi_files = set()
+            for group in view_groups.values():
+                all_aoi_files.update(group['aoi_files'])
+
+            all_aoi_files = list(all_aoi_files)
+            mask_cache = _create_polygon_mask_cache(all_aoi_files, width, height)
+
+        # Create individual HDR-AOI tasks for fine-grained parallelization
+        tasks = []
+        for view_name, group in view_groups.items():
+            for hdr_file in group['hdr_files']:
+                for aoi_file in group['aoi_files']:
+                    tasks.append({
+                        'hdr_file': hdr_file,
+                        'aoi_file': aoi_file,
+                        'view_name': view_name,
+                        'width': width,
+                        'height': height,
+                        'pixel_threshold': self.pixel_threshold_value,
+                        'mask_cache': mask_cache
+                    })
+
+        print(f"\nCreated {len(tasks)} HDR-AOI combination tasks")
+        print(f"Using {self.max_workers} worker processes")
+        print(f"Main PID: {os.getpid()}\n" + "=" * 80)
+
+        # Process all tasks in parallel with work-stealing
+        results_by_aoi = {}  # Store results grouped by AOI for WPD writing
+
+        print(f"\nProcessing {len(tasks)} tasks across all cores...\n")
 
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(_process_view_group_worker, task): task[0]
+                executor.submit(_process_single_hdr_aoi_task, task): task
                 for task in tasks
             }
 
-            print(f"Submitted {len(futures)} tasks\nProcessing in parallel...\n" + "=" * 80 + "\n")
-
-            # Collect results as they complete
+            completed = 0
             for future in as_completed(futures):
-                view_name = futures[future]
+                task = futures[future]
                 try:
-                    view_name_result, result_df = future.result()
-                    all_results.append(result_df)
+                    result = future.result()
+                    if result:
+                        hdr_file, aoi_file, total_pixels, passing_pixels = result
 
-                    print(f"\n{'='*80}\nCompleted: {view_name_result}\n"
-                          f"Progress: {len(all_results)}/{len(futures)} view groups completed\n{'='*80}\n")
+                        # Group results by AOI file for WPD generation
+                        if aoi_file not in results_by_aoi:
+                            results_by_aoi[aoi_file] = []
+
+                        # Strip everything before "plan_" from HDR filename
+                        hdr_name = hdr_file.name
+                        if 'plan_' in hdr_name:
+                            hdr_name = 'plan_' + hdr_name.split('plan_')[1]
+
+                        results_by_aoi[aoi_file].append({
+                            'hdr_file': hdr_name,
+                            'total_pixels': total_pixels,
+                            'passing_pixels': passing_pixels
+                        })
+
+                    completed += 1
+                    if completed % 100 == 0 or completed == len(tasks):
+                        print(f"Progress: {completed}/{len(tasks)} tasks completed ({completed/len(tasks)*100:.1f}%)")
 
                 except Exception as e:
-                    print(f"\nError processing {view_name}: {e}")
+                    print(f"\nError processing task: {e}")
                     import traceback
                     traceback.print_exc()
+
+        # Step 4: Write WPD files concurrently using ThreadPoolExecutor
+        print("\n" + "=" * 80 + "\nWriting .wpd files concurrently...\n" + "=" * 80)
+
+        from concurrent.futures import ThreadPoolExecutor as ThreadPool
+
+        def _write_wpd_file(aoi_file, aoi_data):
+            """Write a single WPD file (thread-safe I/O operation)."""
+            try:
+                # Sort by HDR filename in ascending order
+                aoi_data_sorted = sorted(aoi_data, key=lambda x: x['hdr_file'])
+
+                # Get total_pixels (should be same for all HDR files for this AOI)
+                total_pixels_in_polygon = aoi_data_sorted[0]['total_pixels'] if aoi_data_sorted else 0
+
+                # Create .wpd filename from AOI filename
+                wpd_filename = aoi_file.stem + '.wpd'
+                wpd_path = self.wpd_dir / wpd_filename
+
+                # Write .wpd file
+                with open(wpd_path, 'w') as f:
+                    f.write(f"total_pixels_in_polygon: {total_pixels_in_polygon}\n")
+                    f.write("hdr_file passing_pixels\n")
+
+                    for row in aoi_data_sorted:
+                        f.write(f"{row['hdr_file']} {row['passing_pixels']}\n")
+
+                return wpd_path
+            except Exception as e:
+                print(f"Error writing {aoi_file.name}: {e}")
+                return None
+
+        # Write all WPD files concurrently
+        with ThreadPool(max_workers=min(8, len(results_by_aoi))) as executor:
+            write_futures = {
+                executor.submit(_write_wpd_file, aoi_file, aoi_data): aoi_file
+                for aoi_file, aoi_data in results_by_aoi.items()
+            }
+
+            written_count = 0
+            for future in as_completed(write_futures):
+                if future.result():
+                    written_count += 1
+
+        print(f"\n✓ Wrote {written_count}/{len(results_by_aoi)} .wpd files to {self.wpd_dir}\n")
 
     def _generate_excel_report(self) -> None:
         """Generate Excel report from all .wpd files."""
@@ -661,7 +762,63 @@ class ResultsProcessor:
 
         worksheet.conditional_formatting.add(hours_range, color_scale_rule)
 
-# Module-level worker function (required for multiprocessing pickle)
+# Module-level worker functions (required for multiprocessing pickle)
+def _process_single_hdr_aoi_task(task: dict):
+    """Worker function to process a single HDR-AOI combination.
+
+    This fine-grained worker enables better parallelization by processing individual
+    HDR-AOI pairs instead of entire view groups.
+
+    Args:
+        task: Dictionary containing:
+            - hdr_file: Path to HDR file
+            - aoi_file: Path to AOI file
+            - view_name: View name for logging
+            - width: Image width
+            - height: Image height
+            - pixel_threshold: Threshold value
+            - mask_cache: Pre-computed polygon masks
+
+    Returns:
+        tuple: (hdr_file, aoi_file, total_pixels, passing_pixels) or None on error
+    """
+    hdr_file = task['hdr_file']
+    aoi_file = task['aoi_file']
+    width = task['width']
+    height = task['height']
+    pixel_threshold = task['pixel_threshold']
+    mask_cache = task['mask_cache']
+
+    try:
+        # Check if file is empty
+        if hdr_file.stat().st_size == 0:
+            return None
+
+        # Run pvalue to get binary data (HDR data not cached at this level)
+        cmd = ['pvalue', '-h', '-H', '-b', '-df', str(hdr_file)]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        raw_data = process.stdout.read()
+        stderr_data = process.stderr.read()
+        process.wait()
+
+        if process.returncode != 0:
+            return None
+
+        # Convert to 2D array
+        data = np.frombuffer(raw_data, dtype=np.float32)
+        data_2d = data.reshape((height, width))
+
+        # Process with cached mask
+        result = _process_single_aoi_with_cached_hdr(
+            hdr_file, aoi_file, data_2d, width, height, pixel_threshold, mask_cache
+        )
+
+        return result
+
+    except Exception as e:
+        # Silently skip errors (logged at higher level)
+        return None
+
 def _process_view_group_worker(args):
     """Worker function for ProcessPoolExecutor.
 
@@ -686,9 +843,65 @@ def _process_view_group_worker(args):
 
     return (view_name, result_df)
 
+def _create_polygon_mask_cache(aoi_files: List[Path], width: int, height: int) -> dict:
+    """Pre-compute polygon masks for all AOI files to eliminate redundant calculations.
+
+    This cache eliminates the need to regenerate masks for each HDR file, providing
+    significant performance improvement when processing many HDR files with the same AOIs.
+
+    Args:
+        aoi_files: List of AOI file paths
+        width: Image width in pixels
+        height: Image height in pixels
+
+    Returns:
+        dict: Cache mapping AOI file paths to (mask_2d, total_in_poly) tuples
+    """
+    print(f"\nPre-computing polygon masks for {len(aoi_files)} AOI files...")
+    print("=" * 80)
+
+    # Generate coordinate grid once for all masks
+    x, y = np.meshgrid(np.arange(width), np.arange(height))
+    x_flat = x.flatten()
+    y_flat = y.flatten()
+    points = np.vstack((x_flat, y_flat)).T
+
+    mask_cache = {}
+
+    for i, aoi_file in enumerate(aoi_files, 1):
+        # Read polygon coordinates from AOI file
+        polygon_coords = []
+        with open(aoi_file, 'r') as f:
+            lines = f.readlines()
+            for line in lines[5:]:  # Skip header lines
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    pixel_x = int(parts[2])
+                    pixel_y = int(parts[3])
+                    polygon_coords.append((pixel_x, pixel_y))
+
+        # Create polygon mask
+        path = MplPath(polygon_coords)
+        mask_flat = path.contains_points(points, radius=0)
+        mask_2d = mask_flat.reshape((height, width))
+
+        # Calculate total pixels in polygon
+        total_in_poly = np.count_nonzero(mask_2d)
+
+        # Store in cache
+        mask_cache[aoi_file] = (mask_2d, total_in_poly)
+
+        print(f"  [{i}/{len(aoi_files)}] Cached mask for {aoi_file.name} ({total_in_poly} pixels)")
+
+    print("=" * 80)
+    print(f"✓ Polygon mask cache created ({len(mask_cache)} masks)\n")
+
+    return mask_cache
+
 def _process_single_aoi_with_cached_hdr(hdr_file: Path, aoi_file: Path, data_2d: np.ndarray,
-                                       width: int, height: int, pixel_threshold_value: float = 0.0):
-    """Process a single AOI file using pre-loaded HDR data.
+                                       width: int, height: int, pixel_threshold_value: float = 0.0,
+                                       mask_cache: dict = None):
+    """Process a single AOI file using pre-loaded HDR data and cached polygon mask.
 
     Args:
         hdr_file: Path to HDR file (for record keeping)
@@ -697,38 +910,44 @@ def _process_single_aoi_with_cached_hdr(hdr_file: Path, aoi_file: Path, data_2d:
         width: Image width in pixels
         height: Image height in pixels
         pixel_threshold_value: Brightness threshold value
+        mask_cache: Pre-computed mask cache {aoi_file: (mask_2d, total_in_poly)}
 
     Returns:
         tuple: (hdr_file, aoi_file, total_in_poly, count_pass)
     """
-    # Read polygon coordinates from AOI file
-    polygon_coords = []
-    with open(aoi_file, 'r') as f:
-        lines = f.readlines()
-        for line in lines[5:]:  # Skip header lines
-            parts = line.strip().split()
-            if len(parts) >= 4:
-                pixel_x = int(parts[2])
-                pixel_y = int(parts[3])
-                polygon_coords.append((pixel_x, pixel_y))
+    # Use cached mask if available, otherwise compute on-the-fly
+    if mask_cache and aoi_file in mask_cache:
+        mask_2d, total_in_poly = mask_cache[aoi_file]
+    else:
+        # Fallback: compute mask on-the-fly (legacy behavior)
+        polygon_coords = []
+        with open(aoi_file, 'r') as f:
+            lines = f.readlines()
+            for line in lines[5:]:  # Skip header lines
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    pixel_x = int(parts[2])
+                    pixel_y = int(parts[3])
+                    polygon_coords.append((pixel_x, pixel_y))
 
-    # Generate coordinate grid
-    x, y = np.meshgrid(np.arange(width), np.arange(height))
-    x_flat = x.flatten()
-    y_flat = y.flatten()
-    points = np.vstack((x_flat, y_flat)).T
+        # Generate coordinate grid
+        x, y = np.meshgrid(np.arange(width), np.arange(height))
+        x_flat = x.flatten()
+        y_flat = y.flatten()
+        points = np.vstack((x_flat, y_flat)).T
 
-    # Create polygon mask
-    path = MplPath(polygon_coords)
-    mask_flat = path.contains_points(points, radius=0)
-    mask_2d = mask_flat.reshape((height, width))
+        # Create polygon mask
+        path = MplPath(polygon_coords)
+        mask_flat = path.contains_points(points, radius=0)
+        mask_2d = mask_flat.reshape((height, width))
 
-    # Apply filter
+        total_in_poly = np.count_nonzero(mask_2d)
+
+    # Apply filter using cached mask
     pixels_of_interest = data_2d[mask_2d & (data_2d > pixel_threshold_value)]
 
     # Calculate stats
     count_pass = pixels_of_interest.size
-    total_in_poly = np.count_nonzero(mask_2d)
 
     if total_in_poly == 0:
         print(f"Warning: {aoi_file.name} polygon is outside image bounds")
@@ -739,10 +958,11 @@ def _process_single_aoi_with_cached_hdr(hdr_file: Path, aoi_file: Path, data_2d:
 def _process_batch_with_caching(hdr_files: List[Path], aoi_files: List[Path],
                                pixel_threshold_value: float = 0.0,
                                wpd_output_dir: Path = None) -> pd.DataFrame:
-    """Efficiently process multiple HDR and AOI files by caching HDR data.
+    """Efficiently process multiple HDR and AOI files by caching HDR data and polygon masks.
 
     This function loads each HDR file once and processes all AOI files against it,
-    avoiding redundant HDR file reads and pvalue operations.
+    avoiding redundant HDR file reads and pvalue operations. It also pre-computes
+    polygon masks to eliminate redundant mask generation.
 
     Args:
         hdr_files: List of HDR file paths to process
@@ -764,6 +984,18 @@ def _process_batch_with_caching(hdr_files: List[Path], aoi_files: List[Path],
     current_operation = 0
 
     print(f"Processing {len(hdr_files)} HDR files × {len(aoi_files)} AOI files = {total_operations} operations\n" + "=" * 80)
+
+    # Pre-compute polygon masks once for all HDR files (Step 1 optimization)
+    # Get image dimensions from first HDR file
+    mask_cache = None
+    if hdr_files:
+        try:
+            first_hdr = hdr_files[0]
+            width, height = get_hdr_resolution(first_hdr)
+            mask_cache = _create_polygon_mask_cache(aoi_files, width, height)
+        except Exception as e:
+            print(f"Warning: Could not create mask cache: {e}")
+            print("Falling back to on-the-fly mask generation")
 
     for hdr_file in hdr_files:
         print(f"\nLoading HDR file: {hdr_file.name}")
@@ -808,12 +1040,12 @@ def _process_batch_with_caching(hdr_files: List[Path], aoi_files: List[Path],
 
         print(f"  Processing {len(aoi_files)} AOI files with cached HDR data...")
 
-        # Process all AOI files with this cached HDR data
+        # Process all AOI files with this cached HDR data and polygon masks
         for aoi_file in aoi_files:
             current_operation += 1
 
             hdr, aoi, total, passing = _process_single_aoi_with_cached_hdr(
-                hdr_file, aoi_file, data_2d, width, height, pixel_threshold_value
+                hdr_file, aoi_file, data_2d, width, height, pixel_threshold_value, mask_cache
             )
 
             # Strip everything before "plan_" from HDR filename

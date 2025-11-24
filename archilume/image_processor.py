@@ -376,6 +376,19 @@ def _stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 1, font
             print(f"Error parsing {aoi_path}: {e}")
             return None
 
+    # Step 2 Optimization: Pre-parse all AOI files once and create lookup dictionary
+    print(f"\nPre-parsing {len(aoi_files)} AOI files...")
+    aoi_lookup = {}  # {view_file: [aoi_data1, aoi_data2, ...]}
+
+    for aoi_file in aoi_files:
+        if aoi_data := _parse_aoi_file(aoi_file):
+            view_file = aoi_data['view_file']
+            if view_file not in aoi_lookup:
+                aoi_lookup[view_file] = []
+            aoi_lookup[view_file].append(aoi_data)
+
+    print(f"✓ Parsed {len(aoi_files)} AOI files into {len(aoi_lookup)} view groups\n")
+
     def _stamp(tiff_path: Path) -> str:
         try:
             if not tiff_path.exists():
@@ -385,8 +398,8 @@ def _stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 1, font
                 return f"No view match: {tiff_path.name}"
 
             view_file = f"{match.group(0)}.vp"
-            matching_aois = [aoi for aoi_file in aoi_files
-                            if (aoi := _parse_aoi_file(aoi_file)) and aoi['view_file'] == view_file]
+            # Use pre-parsed lookup instead of parsing files repeatedly
+            matching_aois = aoi_lookup.get(view_file, [])
 
             if not matching_aois:
                 return f"No AOI for {view_file}: {tiff_path.name}"
