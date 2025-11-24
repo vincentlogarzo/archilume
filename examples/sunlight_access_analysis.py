@@ -48,7 +48,7 @@ def main():
     # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
     obj_paths = [
         Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows_cleaned.obj", # first file must be building of interest
-        Path(__file__).parent.parent / "inputs" / "87cowles_site_cleaned.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line
+        Path(__file__).parent.parent / "inputs" / "87cowles_site_cleaned.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line, all adjacent buildings should have their geomety decimated to reduce file size and speed up processing times.
         ]    
         # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
     room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"     
@@ -59,9 +59,9 @@ def main():
     day                                 = 21            # Winter solstice
     start_hour                          = 9             # 9:00 AM
     end_hour                            = 15            # 3:00 PM
-    timestep                            = 15            # Minutes (must be greater than 5 min increments) 
+    timestep                            = 5            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
-    image_resolution                    = 1024          # Image size in pixels to be rendered
+    image_resolution                    = 2048          # Image size in pixels to be rendered
 
 
     # --- Phase 1: Establish 3D Scene ---
@@ -144,10 +144,12 @@ def main():
         aoi_dir                         = view_generator.aoi_dir,
         wpd_dir                         = Path(__file__).parent.parent / "outputs" / "wpd",
         pixel_threshold_value           = 0,
-        max_workers                     = 12,
+        max_workers                     = 20,
         pixel_to_world_map              = coordinate_map_path
         ) # TODO: ensure modified file are used when they exist.
     processor.nsw_adg_sunlight_sequence_wpd_extraction()
+        #TODO:             # serious optimisation of the wpd extraction needs to occur. 
+
 
     phase_timings["  5b: Generate WPD"], sub_phase_start = time.time() - sub_phase_start, time.time()
 
@@ -167,7 +169,7 @@ def main():
         # TODO:
             # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
                 # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
-            # create singular tiff image that overlays all time steps with a legend for time in mins that a point is sunlit with user editable thresholds and colours, could potentially have this as a background to the combined gifs so that a user can see the timelp and the final combined result together with the chart overlay.
+            # chart overlay onto combined gifs. 
             # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
 
     phase_timings["  5c: Stamp Images"] = time.time() - sub_phase_start
