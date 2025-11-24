@@ -321,6 +321,10 @@ class ResultsProcessor:
         # Step 4: Write WPD files concurrently using ThreadPoolExecutor
         print("\n" + "=" * 80 + "\nWriting .wpd files concurrently...\n" + "=" * 80)
 
+        if not results_by_aoi:
+            print("⚠️  No results to write (results_by_aoi is empty)\n")
+            return
+
         from concurrent.futures import ThreadPoolExecutor as ThreadPool
 
         def _write_wpd_file(aoi_file, aoi_data):
@@ -350,7 +354,8 @@ class ResultsProcessor:
                 return None
 
         # Write all WPD files concurrently
-        with ThreadPool(max_workers=min(8, len(results_by_aoi))) as executor:
+        num_workers = min(8, len(results_by_aoi))
+        with ThreadPool(max_workers=num_workers) as executor:
             write_futures = {
                 executor.submit(_write_wpd_file, aoi_file, aoi_data): aoi_file
                 for aoi_file, aoi_data in results_by_aoi.items()
