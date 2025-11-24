@@ -37,14 +37,15 @@ class ImageProcessor:
         """Process rendered images: stamp with metadata/AOI, create animations and grids for NSW Apartment Design Guidelines Sunlight access compliance."""
         tiff_files = list(self.image_dir.glob('*_combined.tiff'))
 
-        _stamp_tiff_files_with_metadata(tiff_files, self.latitude, font_size=24,
-                                            text_color=(255, 255, 255), background_alpha=180, number_of_workers=10)
-        _stamp_tiff_files_with_aoi(tiff_files, lineweight=2, font_size=32,
-                                   text_color=(255, 0, 0), background_alpha=180, number_of_workers=10)
+        # Combined stamping: 2x faster by opening/saving each file only once
+        _stamp_tiff_files_combined(tiff_files, self.latitude,
+                                   metadata_font_size=24, metadata_color=(255, 255, 255), metadata_bg_alpha=180,
+                                   aoi_lineweight=2, aoi_font_size=32, aoi_color=(255, 0, 0), aoi_bg_alpha=180,
+                                   number_of_workers=10)
 
         self._combine_tiffs_by_view(output_format='gif', number_of_workers=12)
-        gif_files = [f for f in self.image_dir.glob('animated_results_*.gif')
-                     if f.name != 'animated_results_grid_all_levels.gif']
+        # gif_files = [f for f in self.image_dir.glob('animated_results_*.gif')
+        #              if f.name != 'animated_results_grid_all_levels.gif']
         # self._create_grid_gif(gif_files, grid_size=(3, 2), target_size=(self.x_res, self.y_res), fps=2)
 
         print("\nRendering sequence completed successfully.\n")
@@ -185,90 +186,6 @@ class ImageProcessor:
                               duration=duration, loop=0)
             print(f"Created grid animation: {len(grid_frames)} frames, {len(gifs_data)} views in {cols}x{rows} grid")
 
-    def _create_grid_mp4(self, mp4_paths: list[Path], grid_size: tuple = (3, 3),
-                        target_size: tuple = (200, 200), fps: int = 1) -> None:
-        """Create a grid layout MP4 combining multiple individual MP4 files."""
-        if not mp4_paths:
-            print("No MP4 files provided for grid creation.")
-            return
-
-        output_path = self.image_dir / "animated_results_grid_all_levels.mp4"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if output_path.exists():
-            output_path.unlink()
-
-        cols, rows = grid_size
-        cell_width, cell_height = target_size
-
-        video_info = []
-        max_frames = 0
-
-        for mp4_path in mp4_paths[:cols * rows]:
-            try:
-                cap = cv2.VideoCapture(str(mp4_path))
-                if not cap.isOpened():
-                    print(f"Error opening {mp4_path}")
-                    continue
-
-                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                video_fps = cap.get(cv2.CAP_PROP_FPS)
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-                video_info.append({
-                    'path': mp4_path,
-                    'cap': cap,
-                    'frame_count': frame_count,
-                    'fps': video_fps,
-                    'width': width,
-                    'height': height
-                })
-
-                max_frames = max(max_frames, frame_count)
-            except Exception as e:
-                print(f"Error loading {mp4_path}: {e}")
-                continue
-
-        if not video_info:
-            print("No valid MP4 files found.")
-            return
-
-        grid_width = cols * cell_width
-        grid_height = rows * cell_height
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')
-        out = cv2.VideoWriter(str(output_path), fourcc, fps, (grid_width, grid_height))
-
-        if not out.isOpened():
-            raise RuntimeError(f"Failed to create grid video writer for {output_path}. Check codec availability.")
-
-        for frame_idx in range(max_frames):
-            grid_frame = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
-
-            for i, video in enumerate(video_info):
-                row = i // cols
-                col = i % cols
-                y_start = row * cell_height
-                y_end = y_start + cell_height
-                x_start = col * cell_width
-                x_end = x_start + cell_width
-
-                video_frame_idx = frame_idx % video['frame_count']
-                video['cap'].set(cv2.CAP_PROP_POS_FRAMES, video_frame_idx)
-                ret, frame = video['cap'].read()
-
-                if ret:
-                    resized_frame = cv2.resize(frame, (cell_width, cell_height))
-                    grid_frame[y_start:y_end, x_start:x_end] = resized_frame
-
-            out.write(grid_frame)
-
-        out.release()
-        for video in video_info:
-            video['cap'].release()
-
-        print(f"Created grid MP4: {len(video_info)} views in {cols}x{rows} grid, {max_frames} frames at {fps} FPS")
-
 def _process_parallel(items: list, worker_func, num_workers: int):
     """Execute worker function on items in parallel or sequentially."""
     if num_workers == 1:
@@ -286,19 +203,66 @@ def _load_font(font_size: int) -> ImageFont.FreeTypeFont:
     except (OSError, IOError):
         return ImageFont.load_default()
 
-def _stamp_tiff_files_with_metadata(tiff_paths: list[Path], latitude: float, font_size: int = 24,
-                             text_color: tuple = (255, 255, 0), background_alpha: int = 0,
-                             padding: int = 10, number_of_workers: int = 4) -> None:
-    """Stamp TIFF files with location/datetime info."""
+def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float,
+                               metadata_font_size: int = 24, metadata_color: tuple = (255, 255, 0),
+                               metadata_bg_alpha: int = 0, padding: int = 10,
+                               aoi_lineweight: int = 1, aoi_font_size: int = 32,
+                               aoi_color: tuple = (255, 0, 0), aoi_bg_alpha: int = 180,
+                               number_of_workers: int = 10) -> None:
+    """Stamp TIFF files with both metadata AND AOI polygons in a single pass.
+
+    Combines _stamp_tiff_files_with_metadata and _stamp_tiff_files_with_aoi
+    to eliminate redundant file I/O operations (2x faster than separate calls).
+    """
     if not tiff_paths:
         return
 
-    def _stamp(tiff_path: Path) -> str:
+    # Load AOI files once at the start
+    aoi_dir = Path(__file__).parent.parent / "outputs" / "aoi"
+    aoi_files = list(aoi_dir.glob("*.aoi")) if aoi_dir.exists() else []
+
+    # Parse all AOI files once (not per-image)
+    parsed_aois = {}
+    for aoi_file in aoi_files:
+        try:
+            with open(aoi_file, 'r') as f:
+                lines = [line.strip() for line in f.readlines()]
+
+            perimeter_pixels = [(int(parts[2]), int(parts[3]))
+                               for line in lines[5:] if line and ' ' in line
+                               if (parts := line.split()) and len(parts) >= 4]
+
+            central_pixel = (sum(p[0] for p in perimeter_pixels) // len(perimeter_pixels),
+                            sum(p[1] for p in perimeter_pixels) // len(perimeter_pixels)) if perimeter_pixels else None
+
+            aoi_data = {
+                'apartment_room': lines[0].replace("AOI Points File: ", ""),
+                'view_file': lines[1].replace("ASSOCIATED VIEW FILE: ", ""),
+                'z_height': float(lines[2].replace("FFL z height(m): ", "")),
+                'central_pixel': central_pixel,
+                'perimeter_pixels': perimeter_pixels
+            }
+
+            # Group by view file for faster lookup
+            view = aoi_data['view_file']
+            if view not in parsed_aois:
+                parsed_aois[view] = []
+            parsed_aois[view].append(aoi_data)
+        except Exception as e:
+            print(f"Error parsing {aoi_file}: {e}")
+
+    def _stamp_combined(tiff_path: Path) -> str:
         try:
             if not tiff_path.exists():
-                return f"File not found: {tiff_path.name}"
+                return f"Not found: {tiff_path.name}"
 
             filename = tiff_path.stem
+
+            # Open image once
+            image = Image.open(tiff_path).convert('RGBA')
+            draw = ImageDraw.Draw(image)
+
+            # ===== PART 1: Add Metadata Stamp =====
             current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
             level, timestep = "Unknown", "Unknown"
 
@@ -310,119 +274,65 @@ def _stamp_tiff_files_with_metadata(tiff_paths: list[Path], latitude: float, fon
             if level_match := re.search(r'[_]?L(\d+)', filename):
                 level = f"L{level_match.group(1)}"
 
-            text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Latitude: {latitude}"
+            metadata_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Latitude: {latitude}"
+            metadata_font = _load_font(metadata_font_size)
 
-            image = Image.open(tiff_path).convert('RGBA')
-            font = _load_font(font_size)
-
-            # Calculate text dimensions and position
-            temp_draw = ImageDraw.Draw(image)
-            bbox = temp_draw.textbbox((0, 0), text, font=font)
+            # Calculate metadata text position (bottom-right)
+            bbox = draw.textbbox((0, 0), metadata_text, font=metadata_font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x, y = image.width - tw - padding, image.height - th - padding
 
-            # Create a transparent overlay for the background
-            if background_alpha > 0:
+            # Draw metadata background
+            if metadata_bg_alpha > 0:
                 overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
                 overlay_draw = ImageDraw.Draw(overlay)
                 overlay_draw.rectangle([x - padding//2, y - padding//2, x + tw + padding//2, y + th + padding//2],
-                                      fill=(0, 0, 0, background_alpha))
+                                      fill=(0, 0, 0, metadata_bg_alpha))
                 image = Image.alpha_composite(image, overlay)
+                draw = ImageDraw.Draw(image)  # Recreate draw object after composite
 
-            # Draw text on the composited image
-            draw = ImageDraw.Draw(image)
-            draw.text((x, y), text, font=font, fill=text_color + (255,))
-            image.save(tiff_path, format='TIFF')
-            return f"Stamped {tiff_path.name}"
-        except Exception as e:
-            return f"Error: {tiff_path.name}: {e}"
+            # Draw metadata text
+            draw.text((x, y), metadata_text, font=metadata_font, fill=metadata_color + (255,))
 
-    print(f"Stamping {len(tiff_paths)} files with {number_of_workers} workers")
-    _process_parallel(tiff_paths, _stamp, number_of_workers)
-    print(f"Completed {len(tiff_paths)} files")
-
-def _stamp_tiff_files_with_aoi(tiff_paths: list[Path], lineweight: int = 1, font_size: int = 32,
-                              text_color: tuple = (255, 0, 0), background_alpha: int = 180,
-                              number_of_workers: int = 10) -> None:
-    """Stamp TIFF files with AOI polygons and room labels."""
-
-    aoi_dir = Path(__file__).parent.parent / "outputs" / "aoi"
-    aoi_files = list(aoi_dir.glob("*.aoi")) if aoi_dir.exists() else []
-
-    if not tiff_paths or not aoi_files:
-        print("AOI stamping skipped - missing files")
-        return
-
-    def _parse_aoi_file(aoi_path: Path) -> dict | None:
-        try:
-            with open(aoi_path, 'r') as f:
-                lines = [line.strip() for line in f.readlines()]
-
-            perimeter_pixels = [(int(parts[2]), int(parts[3]))
-                               for line in lines[5:] if line and ' ' in line
-                               if (parts := line.split()) and len(parts) >= 4]
-
-            central_pixel = (sum(p[0] for p in perimeter_pixels) // len(perimeter_pixels),
-                            sum(p[1] for p in perimeter_pixels) // len(perimeter_pixels)) if perimeter_pixels else None
-
-            return {
-                'apartment_room': lines[0].replace("AOI Points File: ", ""),
-                'view_file': lines[1].replace("ASSOCIATED VIEW FILE: ", ""),
-                'z_height': float(lines[2].replace("FFL z height(m): ", "")),
-                'central_pixel': central_pixel,
-                'perimeter_pixels': perimeter_pixels
-            }
-        except Exception as e:
-            print(f"Error parsing {aoi_path}: {e}")
-            return None
-
-    def _stamp(tiff_path: Path) -> str:
-        try:
-            if not tiff_path.exists():
-                return f"Not found: {tiff_path.name}"
-
-            if not (match := re.search(r'plan_L\d+', tiff_path.stem)):
-                return f"No view match: {tiff_path.name}"
-
-            view_file = f"{match.group(0)}.vp"
-            matching_aois = [aoi for aoi_file in aoi_files
-                            if (aoi := _parse_aoi_file(aoi_file)) and aoi['view_file'] == view_file]
-
-            if not matching_aois:
-                return f"No AOI for {view_file}: {tiff_path.name}"
-
-            image = Image.open(tiff_path).convert('RGBA')
-            draw = ImageDraw.Draw(image)
-            font = _load_font(font_size)
+            # ===== PART 2: Add AOI Polygons and Labels =====
             rooms = 0
+            if aoi_files and (match := re.search(r'plan_L\d+', filename)):
+                view_file = f"{match.group(0)}.vp"
+                matching_aois = parsed_aois.get(view_file, [])
 
-            for aoi in matching_aois:
-                if len(aoi['perimeter_pixels']) < 3:
-                    continue
+                if matching_aois:
+                    aoi_font = _load_font(aoi_font_size)
 
-                polygon = aoi['perimeter_pixels'] + [aoi['perimeter_pixels'][0]]
-                for i in range(len(polygon) - 1):
-                    draw.line([polygon[i], polygon[i + 1]], fill=text_color, width=lineweight)
+                    for aoi in matching_aois:
+                        if len(aoi['perimeter_pixels']) < 3:
+                            continue
 
-                if cp := aoi['central_pixel']:
-                    label = aoi['apartment_room']
-                    bbox = draw.textbbox((0, 0), label, font=font)
-                    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                    lx, ly = cp[0] - tw // 2, cp[1] - th // 2
+                        # Draw polygon perimeter
+                        polygon = aoi['perimeter_pixels'] + [aoi['perimeter_pixels'][0]]
+                        for i in range(len(polygon) - 1):
+                            draw.line([polygon[i], polygon[i + 1]], fill=aoi_color, width=aoi_lineweight)
 
-                    if background_alpha > 0:
-                        draw.rectangle([lx - 5, ly - 5, lx + tw + 5, ly + th + 5],
-                                      fill=(0, 0, 0, background_alpha))
-                    draw.text((lx, ly), label, font=font, fill=text_color + (255,))
-                    rooms += 1
+                        # Draw room label at center
+                        if cp := aoi['central_pixel']:
+                            label = aoi['apartment_room']
+                            bbox = draw.textbbox((0, 0), label, font=aoi_font)
+                            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                            lx, ly = cp[0] - tw // 2, cp[1] - th // 2
 
+                            if aoi_bg_alpha > 0:
+                                draw.rectangle([lx - 5, ly - 5, lx + tw + 5, ly + th + 5],
+                                              fill=(0, 0, 0, aoi_bg_alpha))
+                            draw.text((lx, ly), label, font=aoi_font, fill=aoi_color + (255,))
+                            rooms += 1
+
+            # Save once with all stamps applied
             image.save(tiff_path, format='TIFF')
-            return f"Stamped {tiff_path.name}: {rooms} rooms"
+            return f"Stamped {tiff_path.name}: metadata + {rooms} rooms"
         except Exception as e:
             return f"Error {tiff_path.name}: {e}"
 
-    print(f"Stamping {len(tiff_paths)} files with AOI using {number_of_workers} workers")
-    _process_parallel(tiff_paths, _stamp, number_of_workers)
-    print(f"Completed AOI stamping")
+    print(f"Combined stamping: {len(tiff_paths)} files with metadata + AOI using {number_of_workers} workers")
+    _process_parallel(tiff_paths, _stamp_combined, number_of_workers)
+    print(f"Completed combined stamping")
 
 

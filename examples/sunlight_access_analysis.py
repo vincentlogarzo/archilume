@@ -144,10 +144,10 @@ def main():
         aoi_dir                         = view_generator.aoi_dir,
         wpd_dir                         = Path(__file__).parent.parent / "outputs" / "wpd",
         pixel_threshold_value           = 0,
-        max_workers                     = 20,
+        max_workers                     = 12,
         pixel_to_world_map              = coordinate_map_path
         ) # TODO: ensure modified file are used when they exist.
-    processor.nsw_adg_sunlight_sequence_wpd_extraction()
+    processor.sunlight_sequence_wpd_extraction()
         #TODO:             # serious optimisation of the wpd extraction needs to occur. 
 
 
