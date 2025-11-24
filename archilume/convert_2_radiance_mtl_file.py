@@ -51,7 +51,8 @@ class Convert2RadianceMtlFile:
         """
         Extract modifier names from RAD file using rad2mgf.
         This can alternatively be performed with: obj2rad -n Untitled.obj > a.mat
-        example 1: obj2rad -n C:\Projects\archilume\inputs\87cowles_BLD_noWindows.obj > C:\Projects\archilume\outputs\rad\87cowles_BLD_noWindows.mat
+        example 1: obj2rad -n C:/Projects/archilume/inputs/87cowles_BLD_noWindows.obj > C:/Projects/archilume/outputs/rad/87cowles_BLD_noWindows.mat
+        rad2mgf was more effective and thus implmented below. 
         """
         
         if not rad_file_path.exists():
@@ -155,7 +156,19 @@ class Convert2RadianceMtlFile:
                 print(f"Created default material for unmatched modifier '{modifier}'")
 
         # Export to file (after processing all modifiers)
-        rm.export_materials_to_file(self.materials, self.output_mtl_path)     
+        rm.export_materials_to_file(self.materials, self.output_mtl_path)
+
+
+if __name__ == "__main__":
+    # Initialize processor
+    mtl_creator = Convert2RadianceMtlFile(
+        rad_paths=[Path("C:/Projects/archilume/outputs/rad/87cowles_BLD_noWindows.rad")],
+        mtl_paths=[Path("C:/Projects/archilume/inputs/87cowles_BLD_noWindows.mtl")]
+        )
+
+    # Run the pipeline
+    mtl_creator.create_radiance_mtl_file()
+
 
 
 

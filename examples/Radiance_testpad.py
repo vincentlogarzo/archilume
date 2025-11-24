@@ -5,11 +5,26 @@
 Use the below in the command prompt only not in powershell. Oconv required utf-8 encoding for the input files. 
 
     cd C:/Projects/archilume
+
+    obj2rad inputs/22041_AR_T01_BLD.obj > outputs/rad/22041_AR_T01_BLD.rad
     obj2rad inputs/87cowles_BLD_noWindows.obj > outputs/rad/87cowles_BLD_noWindows.rad
     obj2rad inputs/87cowles_site.obj > outputs/rad/87cowles_site.rad
-    cd C:/Projects/archilume/outputs
-    oconv -f rad/materials.mtl rad/87cowles_BLD_noWindows.rad rad/87cowles_site.rad > octree/87cowles_BLD_noWindows_with_site_skyless.oct
+    
+    obj2mesh inputs/22041_AR_T01_BLD.obj outputs/rad/22041_AR_T01_BLD.rtm
+    obj2mesh inputs/87cowles_BLD_noWindows.obj outputs/rad/87cowles_BLD_noWindows.rtm
+
+    rad2mgf outputs/rad/87cowles_site.rad > outputs/rad/87cowles_site.mgf
+    obj2rad -n inputs/87cowles_site.obj > outputs/rad/87cowles_site.qual 
+    obj2rad -n inputs/22041_T3_R25_BLD_COARSE.obj > outputs/rad/22041_T3_R25_BLD_COARSE.qual
+
+
+    oconv -f outputs/rad/materials.mtl outputs/rad/22041_T3_R25_BLD_COARSE.rad > outputs/octree/22041_T3_R25_BLD_COARSE.oct
+    oconv inputs/default_mat.rad outputs/rad/87cowles_BLD_noWindows.rtm > outputs/octree/87cowles_BLD_noWindows.oct
+
+
     oconv -i octree/87cowles_BLD_noWindows_with_site_skyless.oct sky/SS_0621_0900.sky > octree/87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
+
+
     rpict -w -t 5 -vf views_grids/plan_L02.vp -x 2048 -y 2048 -ab 0 -ad 2048 -ar 256 -as 512 -ps 4 -lw 0.004 octree/87cowles_BLD_noWindows_with_site_SS_0621_0900.oct > images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_0900.hdr
     ra_tiff -e -4 outputs/images/87cowles_BLD_noWindows_with_site_SS_0621_0900.hdr outputs/images/87cowles_BLD_noWindows_with_site_SS_0621_0900.tiff
  

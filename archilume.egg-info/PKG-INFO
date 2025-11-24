@@ -29,6 +29,15 @@ Requires-Dist: pyradiance>=1.1.5
 - **Parallel Execution** - Multi-core processing support for computationally intensive simulations
 - **Seasonal Analysis** - Pre-configured workflows for solstice studies and annual daylight assessments
 
+## Limitations
+
+⚠️ **This repository is not appropriate for use with large buildings containing many curved surfaces.** The current implementation is optimized for smaller to medium-sized buildings with primarily planar geometry. Complex curved geometries may result in:
+- Excessive computation times
+- High memory usage
+- Reduced accuracy in mesh conversion and rendering
+
+For projects with extensive curved surfaces or very large building models, consider using specialized Radiance workflows or simplified geometric representations.
+
 ## Quick Start
 
 ### Prerequisites

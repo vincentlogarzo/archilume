@@ -6,9 +6,9 @@ from pathlib import Path
 
 # Third-party imports
 
-   # Locate the room boundaries CSV file
+
 obj_paths = [
-    Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj",
+    Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows_simplified.obj",
     Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
     ]
 
