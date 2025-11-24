@@ -14,6 +14,7 @@ import os
 from typing import List
 from pathlib import Path
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 # Third-party imports
 from itertools import product
@@ -116,17 +117,22 @@ class RenderingPipelines:
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
         utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=1)
         utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=8)
-        utils.execute_new_radiance_commands(self.rpict_daylight_med_qual_commands, number_of_workers=8)
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(
+            utils.execute_new_radiance_commands,
+            self.rpict_daylight_med_qual_commands,
+            number_of_workers=8)
 
         # --- Phase 2: Synthesize octree files for all sky-view combinations ---
         # Prepare temporary octree structures for comprehensive solar condition analysis
         utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
-        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=6)
+        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=12)
         utils.delete_files(self.temp_octree_with_sky_paths)
 
         # --- Phase 3: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
-        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=10)
-        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=14)
+        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=12)
+        future.result()  # Ensure overcast rendering is complete before combining
+        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=12)
 
         print("Rendering sequence completed successfully.")
     

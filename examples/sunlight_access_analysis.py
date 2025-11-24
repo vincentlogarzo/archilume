@@ -47,8 +47,8 @@ def main():
 
     # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
     obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building of interest
-        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line
+        Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows_cleaned.obj", # first file must be building of interest
+        Path(__file__).parent.parent / "inputs" / "87cowles_site_cleaned.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line
         ]    
         # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
     room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"     
@@ -59,9 +59,9 @@ def main():
     day                                 = 21            # Winter solstice
     start_hour                          = 9             # 9:00 AM
     end_hour                            = 15            # 3:00 PM
-    timestep                            = 5            # Minutes (must be greater than 5 min increments) 
+    timestep                            = 15            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
-    image_resolution                    = 2048          # Image size in pixels to be rendered
+    image_resolution                    = 1024          # Image size in pixels to be rendered
 
 
     # --- Phase 1: Establish 3D Scene ---

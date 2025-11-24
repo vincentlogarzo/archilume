@@ -42,10 +42,10 @@ class ImageProcessor:
         _stamp_tiff_files_with_aoi(tiff_files, lineweight=2, font_size=32,
                                    text_color=(255, 0, 0), background_alpha=180, number_of_workers=10)
 
-        self._combine_tiffs_by_view(output_format='gif', number_of_workers=8)
+        self._combine_tiffs_by_view(output_format='gif', number_of_workers=12)
         gif_files = [f for f in self.image_dir.glob('animated_results_*.gif')
                      if f.name != 'animated_results_grid_all_levels.gif']
-        self._create_grid_gif(gif_files, grid_size=(3, 2), target_size=(self.x_res, self.y_res), fps=2)
+        # self._create_grid_gif(gif_files, grid_size=(3, 2), target_size=(self.x_res, self.y_res), fps=2)
 
         print("\nRendering sequence completed successfully.\n")
 
