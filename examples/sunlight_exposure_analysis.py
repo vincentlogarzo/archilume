@@ -117,6 +117,7 @@ def main():
         y_res                           = image_resolution
         )
     renderer.sunlight_rendering_pipeline()
+        # TODO: find a way to turn on/off the indirect lighting calculation to speed up rendering times.
         # TODO: allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
         # TODO: implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
         # TODO: implement pfilt to downsize images for smoothing and faster processing.
@@ -133,6 +134,7 @@ def main():
     view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
         # TODO: Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
         # TODO: set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
+        # TODO: vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 
 
     phase_timings["  5a: Generate AOI"], sub_phase_start = time.time() - sub_phase_start, time.time()
 
@@ -145,7 +147,7 @@ def main():
         max_workers                     = 12,
         pixel_to_world_map              = coordinate_map_path
         ) # TODO: ensure modified file are used when they exist.
-    processor.sunlight_sequence_wpd_extraction()
+    processor.nsw_adg_sunlight_sequence_wpd_extraction()
 
     phase_timings["  5b: Generate WPD"], sub_phase_start = time.time() - sub_phase_start, time.time()
 

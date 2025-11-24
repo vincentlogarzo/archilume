@@ -10,6 +10,7 @@ from archilume.utils import get_hdr_resolution
 # Standard library imports
 import subprocess
 import sys
+import math
 import numpy as np
 from matplotlib.path import Path as MplPath
 from pathlib import Path
@@ -22,7 +23,9 @@ import os
 import logging
 
 # Third-party imports
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, PatternFill, Border, Side
+from openpyxl.styles.colors import Color
+from openpyxl.formatting.rule import ColorScaleRule
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ class ResultsProcessor:
         # Calculate area per pixel and pixel increments from the pixel_to_world_map file
         self.area_per_pixel, self.pixel_increment_x, self.pixel_increment_y = self._calculate_area_per_pixel()
 
-    def sunlight_sequence_wpd_extraction(self) -> None:
+    def nsw_adg_sunlight_sequence_wpd_extraction(self) -> None:
         """Execute the complete WPD generation pipeline.
 
         Phases:
@@ -363,23 +366,103 @@ class ResultsProcessor:
                 fill_value=0
             )
 
-            # Get total_pixels for each AOI (same for all HDR files)
-            total_pixels_per_aoi = combined_results.groupby('aoi_file')['total_pixels'].first()
+            # Calculate timestep duration from column names (HDR filenames)
+            # Assumes format like "0621_0900.hdr", "0621_1000.hdr" etc.
+            if len(pivot_data.columns) >= 2:
+                # Parse times from first two timesteps
+                col1 = pivot_data.columns[0]
+                col2 = pivot_data.columns[1]
 
-            # Insert total_pixels as first column in pivot table
-            pivot_data.insert(0, 'total_pixels', total_pixels_per_aoi)
+                # Extract time portion (last 4 digits before .hdr)
+                time1_str = col1.split('_')[-1].replace('.hdr', '')
+                time2_str = col2.split('_')[-1].replace('.hdr', '')
 
-            pivot_data.to_excel(writer, sheet_name='Pivot - Passing Area (m²)', startrow=1, startcol=1)
+                # Convert to hours
+                hour1 = int(time1_str[:2]) + int(time1_str[2:]) / 60.0
+                hour2 = int(time2_str[:2]) + int(time2_str[2:]) / 60.0
+
+                timestep_hours = abs(hour2 - hour1)
+                print(f"\nDetected timestep interval: {timestep_hours} hours")
+            else:
+                timestep_hours = 1.0  # Default to 1 hour if can't determine
+                print(f"\nUsing default timestep interval: {timestep_hours} hours")
+
+            # Calculate consecutive timesteps with at least 1 m² of sunlight for each AOI
+            consecutive_counts = []
+            consecutive_hours = []
+
+            for aoi_name in pivot_data.index:
+                row_values = pivot_data.loc[aoi_name].values
+
+                # Count maximum consecutive timesteps >= 1.0 m²
+                max_consecutive = 0
+                current_consecutive = 0
+
+                for value in row_values:
+                    if value >= 1.0:
+                        current_consecutive += 1
+                        max_consecutive = max(max_consecutive, current_consecutive)
+                    else:
+                        current_consecutive = 0
+
+                consecutive_counts.append(max_consecutive)
+                # Calculate hours: consecutive steps × timestep duration, rounded down to 1 decimal place
+                hours_value = max_consecutive * timestep_hours
+                hours_rounded = math.floor(hours_value * 10) / 10
+                consecutive_hours.append(hours_rounded)
+
+            # Reorder columns: insert consecutive steps and hours after the index (AOI file)
+            # First, reset index to make aoi_file a column
+            pivot_data_reset = pivot_data.reset_index()
+
+            # Insert consecutive columns at position 1 (after aoi_file)
+            pivot_data_reset.insert(1, 'Consecutive Timesteps ≥1m²', consecutive_counts)
+            pivot_data_reset.insert(2, 'Hours of Direct Sun', consecutive_hours)
+
+            # Set aoi_file back as index for Excel output
+            pivot_data_reordered = pivot_data_reset.set_index('aoi_file')
+
+            # Create aggregation summary by splitting AOI file names
+            # Split by first "_" to get apartment and sub-space
+            summary_data = pivot_data_reset.copy()
+            summary_data['Apartment'] = summary_data['aoi_file'].str.split('_', n=1).str[0]
+            summary_data['Sub-Space'] = summary_data['aoi_file'].str.split('_', n=1).str[1]
+
+            # Remove .aoi extension from sub-space if present
+            summary_data['Sub-Space'] = summary_data['Sub-Space'].str.replace('.aoi', '', regex=False)
+
+            # Create pivot: Apartment (rows) x Sub-Space (columns) with Hours of Direct Sun values
+            summary_pivot = summary_data.pivot_table(
+                values='Hours of Direct Sun',
+                index='Apartment',
+                columns='Sub-Space',
+                aggfunc='first',  # Use first since each apartment-subspace combo is unique
+                fill_value=0
+            )
+
+            # Write aggregation summary at the top left (starting at row 1, column B)
+            summary_start_col = 1  # Column B in 0-indexed
+            summary_pivot.to_excel(writer, sheet_name='Pivot - Passing Area (m²)', startrow=1, startcol=summary_start_col)
+
+            # Calculate the number of rows the summary takes (including headers and data)
+            summary_rows = len(summary_pivot) + 2  # +2 for header row and index label row
+
+            # Calculate detailed pivot starting column: summary start + index column + number of data columns + 1 space
+            # summary_pivot.shape[1] gives the number of Sub-Space columns
+            # +1 for the index column (Apartment), +1 for spacing
+            detail_start_row = 1
+            detail_start_col = summary_start_col + 1 + summary_pivot.shape[1] + 1
+            pivot_data_reordered.to_excel(writer, sheet_name='Pivot - Passing Area (m²)', startrow=detail_start_row, startcol=detail_start_col)
 
             # Format Raw Data sheet
             self._format_raw_data_sheet(writer.sheets['Raw Data'])
 
-            # Format Pivot sheet
-            self._format_pivot_sheet(writer.sheets['Pivot - Passing Area (m²)'])
+            # Format Pivot sheet (need to pass summary and detail positions for proper formatting)
+            self._format_pivot_sheet(writer.sheets['Pivot - Passing Area (m²)'], summary_start_col, summary_pivot.shape[1], summary_rows, detail_start_row, detail_start_col)
 
         print(f"\nResults saved to: {output_excel}")
         print(f"  Sheet 1: 'Raw Data' - All combinations with passing_area_m2")
-        print(f"  Sheet 2: 'Pivot - Passing Area (m²)' - AOI x HDR matrix with total_pixels")
+        print(f"  Sheet 2: 'Pivot - Passing Area (m²)' - AOI x HDR matrix")
         print(f"  Metadata: Area per pixel = {self.area_per_pixel} m²")
         print("\n" + "=" * 80 + "\nSAMPLE RESULTS (first 10 rows)\n" + "=" * 80)
         print(combined_results.head(10).to_string(index=False))
@@ -404,60 +487,179 @@ class ResultsProcessor:
             adjusted_width = max_length + 2
             worksheet.column_dimensions[column_letter].width = adjusted_width
 
-    def _format_pivot_sheet(self, worksheet) -> None:
-        """Format Pivot sheet with rotated headers, autofit, and no gridlines.
+    def _format_pivot_sheet(self, worksheet, summary_start_col: int, summary_num_cols: int, summary_rows: int, detail_start_row: int, detail_start_col: int) -> None:
+        """Format Pivot sheet with rotated headers, fixed width columns, highlighting, and gridlines.
 
         Args:
             worksheet: openpyxl worksheet object
+            summary_start_col: Column where summary pivot starts (0-indexed)
+            summary_num_cols: Number of data columns in summary pivot
+            summary_rows: Number of rows in the summary section
+            detail_start_row: Row where detailed pivot data starts (1-indexed for Excel)
+            detail_start_col: Column where detailed pivot data starts (0-indexed)
         """
         worksheet.sheet_view.showGridLines = False
 
-        # Rotate header row text to vertical (90 degrees), except for total_pixels column
-        for idx, cell in enumerate(worksheet[2]):  # Row 2 is the header row
+        # Define styles
+        green_fill = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+        black_border = Border(
+            left=Side(style='thin', color='000000'),
+            right=Side(style='thin', color='000000'),
+            top=Side(style='thin', color='000000'),
+            bottom=Side(style='thin', color='000000')
+        )
+
+        # Get the actual used range
+        max_col = worksheet.max_column
+        max_row = worksheet.max_row
+
+        # Calculate summary section column range (1-indexed for Excel)
+        summary_index_col = summary_start_col + 1  # Apartment column
+        summary_first_data_col = summary_index_col + 1  # First Sub-Space column
+        summary_last_data_col = summary_first_data_col + summary_num_cols - 1  # Last Sub-Space column
+        summary_end_row = summary_rows  # End row of summary data (0-indexed row + headers)
+
+        # Rotate summary section column headers (Sub-Space columns) to vertical (90 degrees)
+        summary_header_row = 2  # Row 2 contains the Sub-Space column headers
+        for col_idx in range(summary_first_data_col, summary_last_data_col + 1):
+            cell = worksheet.cell(row=summary_header_row, column=col_idx)
             if cell.value is not None:
-                # Don't rotate the total_pixels column header (column B, idx=1)
-                if idx != 1:
+                cell.alignment = Alignment(textRotation=90)
+
+        # Apply green highlighting to summary section for values >= 2
+        for col_idx in range(summary_first_data_col, summary_last_data_col + 1):
+            for row_idx in range(3, summary_end_row + 1):  # Start at row 3 (data rows)
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                if cell.value is not None and isinstance(cell.value, (int, float)):
+                    if cell.value >= 2.0:
+                        cell.fill = green_fill
+
+        # Autofit summary index column (Apartment)
+        max_length = 0
+        for row_idx in range(2, summary_end_row + 1):
+            cell = worksheet.cell(row=row_idx, column=summary_index_col)
+            if cell.value:
+                cell_length = len(str(cell.value))
+                if cell_length > max_length:
+                    max_length = cell_length
+        if max_length > 0:
+            column_letter = worksheet.cell(row=1, column=summary_index_col).column_letter
+            worksheet.column_dimensions[column_letter].width = max_length + 2
+
+        # Format summary data columns with autofit
+        for col_idx in range(summary_first_data_col, summary_last_data_col + 1):
+            max_length = 0
+            for row_idx in range(2, summary_end_row + 1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                if cell.value:
+                    cell_length = len(str(cell.value))
+                    if cell_length > max_length:
+                        max_length = cell_length
+            if max_length > 0:
+                column_letter = worksheet.cell(row=1, column=col_idx).column_letter
+                worksheet.column_dimensions[column_letter].width = max(max_length + 2, 8)  # Min width 8
+
+        # Format detailed section headers (row detail_start_row + 1 for detailed pivot)
+        # Rotate header row text to vertical (90 degrees) for detailed section
+        # Column layout: A=empty, B-C=summary, D=empty (detailed index col), E=aoi_file, F=Consecutive Steps, G=Hours of Direct Sun, H onwards=timestep data
+        detail_header_row = detail_start_row + 1
+        # Calculate the first timestep column index (1-indexed: detail_start_col + 4 + 1)
+        first_timestep_col = detail_start_col + 4 + 1
+        for idx, cell in enumerate(worksheet[detail_header_row]):
+            if cell.value is not None:
+                # Only rotate timestep column headers (columns at first_timestep_col onwards)
+                # Don't rotate: empty col, summary cols, detailed index, aoi_file, Consecutive Steps, Hours of Direct Sun
+                if idx + 1 >= first_timestep_col:
                     cell.alignment = Alignment(textRotation=90)
 
-        # Autofit columns
-        for idx, column in enumerate(worksheet.columns):
-            column_letter = column[0].column_letter
+        # Set column widths and apply formatting
+        # Calculate detailed section column indices (1-indexed for Excel)
+        detail_aoi_col = detail_start_col + 1 + 1  # +1 for index column, +1 for 1-indexed
+        detail_consecutive_col = detail_start_col + 2 + 1
+        detail_hours_col = detail_start_col + 3 + 1
 
-            # First column (AOI files) - fit to content width
-            if idx == 0:
+        for col_idx in range(1, max_col + 1):
+            column_letter = worksheet.cell(row=1, column=col_idx).column_letter
+
+            # Column A is empty (since startcol=1, data starts at B)
+            if col_idx == 1:
+                worksheet.column_dimensions[column_letter].width = 2
+
+            # AOI file column in detailed section - fit to content with black borders for detailed section only
+            elif col_idx == detail_aoi_col:
                 max_length = 0
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
+                for row_idx in range(2, max_row + 1):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                    # Apply black borders to detailed section data rows only (detail_start_row + 2 onwards)
+                    if row_idx >= detail_start_row + 2:
+                        cell.border = black_border
                 adjusted_width = max_length + 2
                 worksheet.column_dimensions[column_letter].width = adjusted_width
-            # Second column (total_pixels) - fit to content width
-            elif idx == 1:
+
+            # Consecutive Steps column in detailed section - fit to content with black borders for detailed section only
+            elif col_idx == detail_consecutive_col:
                 max_length = 0
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
+                for row_idx in range(2, max_row + 1):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                    # Apply black borders to detailed section data rows only (detail_start_row + 2 onwards)
+                    if row_idx >= detail_start_row + 2:
+                        cell.border = black_border
                 adjusted_width = max_length + 2
                 worksheet.column_dimensions[column_letter].width = adjusted_width
-            else:
-                # Data columns with rotated headers
+
+            # Hours of Direct Sun column in detailed section - fit to content with black borders for detailed section only
+            elif col_idx == detail_hours_col:
                 max_length = 0
-                for cell in column[2:]:  # Skip header rows
-                    try:
-                        if cell.value is not None:
-                            cell_len = len(str(cell.value))
-                            if cell_len > max_length:
-                                max_length = cell_len
-                    except:
-                        pass
-                adjusted_width = max(max_length + 2, 6)
+                for row_idx in range(2, max_row + 1):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                    # Apply black borders to detailed section data rows only (detail_start_row + 2 onwards)
+                    if row_idx >= detail_start_row + 2:
+                        cell.border = black_border
+                adjusted_width = max_length + 2
                 worksheet.column_dimensions[column_letter].width = adjusted_width
+
+            # Timestep data columns - fixed width 7.29 and apply green highlighting
+            elif col_idx >= first_timestep_col:
+                worksheet.column_dimensions[column_letter].width = 7.29
+
+                # Apply green highlighting to cells >= 1.0 m²
+                for row_idx in range(3, max_row + 1):  # Skip header rows
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    if cell.value is not None and isinstance(cell.value, (int, float)):
+                        if cell.value >= 1.0:
+                            cell.fill = green_fill
+
+        # Apply conditional formatting color scale to Hours of Direct Sun column in detailed section only
+        # Range starts at detail_start_row + 2 (data rows of detailed section)
+        detail_hours_start = detail_start_row + 2
+        hours_col_letter = worksheet.cell(row=1, column=detail_hours_col).column_letter
+        hours_range = f"{hours_col_letter}{detail_hours_start}:{hours_col_letter}{max_row}"
+
+        # Create 3-color scale: white (min=2) -> yellow (midpoint=3) -> light red (max=highest value)
+        color_scale_rule = ColorScaleRule(
+            start_type='num',
+            start_value=2,
+            start_color='FFFFFF',  # White
+            mid_type='num',
+            mid_value=3,
+            mid_color='FFFF99',  # Light yellow
+            end_type='max',
+            end_color='FFB6C1'  # Light red
+        )
+
+        worksheet.conditional_formatting.add(hours_range, color_scale_rule)
 
 # Module-level worker function (required for multiprocessing pickle)
 def _process_view_group_worker(args):
@@ -676,4 +878,4 @@ if __name__ == "__main__":
     )
 
     # Run the pipeline
-    processor.sunlight_sequence_wpd_extraction()
+    processor.nsw_adg_sunlight_sequence_wpd_extraction()
