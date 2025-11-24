@@ -125,8 +125,8 @@ class RenderingPipelines:
         utils.delete_files(self.temp_octree_with_sky_paths)
 
         # --- Phase 3: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
-        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=10)
-        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=14)
+        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=12)
+        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=12)
 
         print("Rendering sequence completed successfully.")
     

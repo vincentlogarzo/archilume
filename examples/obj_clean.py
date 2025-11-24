@@ -90,33 +90,46 @@ def simplify_obj(input_path, output_path):
 
 
 if __name__ == "__main__":
-    # Example usage
-    input_path = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine.obj"
+    # List of OBJ files to process
+    input_files = [
+        "87cowles_BLD_noWindows.obj",
+        "87cowles_site.obj",
+        # Add more files here as needed
+    ]
 
     # IMPORTANT: For Radiance sunlight analysis, decimation is NOT recommended because:
     # 1. Material assignments are lost (glass, walls, etc. become indistinguishable)
     # 2. Small features like windows may be simplified away
     # 3. Affects shadow accuracy and light transmission calculations
-    
+
     # RECOMMENDED: Only strip texture/normal references (preserves all geometry + materials)
 
-    print("=" * 60)
-    print("Cleaning OBJ file (removing texture/normal references)")
-    print("Materials and geometry preserved for accurate Radiance analysis")
-    print("=" * 60)
-    output_path = Path(__file__).parent.parent / "inputs" / f"{input_path.stem}_cleaned.obj"
-    simplify_obj(input_path=input_path, output_path=output_path)
+    inputs_dir = Path(__file__).parent.parent / "inputs"
 
-    # OPTIONAL: Decimation (NOT RECOMMENDED for Radiance analysis)
-    # Uncomment below only if file is too large AND you don't need material accuracy
-    """
-    print("\n" + "=" * 60)
-    print("WARNING: Decimating mesh (materials will be lost!)")
-    print("=" * 60)
-    decimated_path = Path(__file__).parent.parent / "inputs" / f"{input_path.stem}_decimated.obj"
-    simplify_mesh_open3d(
-        input_path=output_path,
-        output_path=decimated_path,
-        target_triangle_ratio=0.5  # Conservative 50% for analysis
-    )
-    """
+    for filename in input_files:
+        input_path = inputs_dir / filename
+
+        if not input_path.exists():
+            print(f"⚠️  Skipping {filename} (file not found)")
+            continue
+
+        print(f"\nProcessing: {filename}\n")
+
+        # Option 1: Clean only (recommended for Radiance analysis)
+        print("\nCleaning OBJ file (removing texture/normal references)")
+        print("Materials and geometry preserved for accurate Radiance analysis")
+        output_path = inputs_dir / f"{input_path.stem}_cleaned.obj"
+        simplify_obj(input_path=input_path, output_path=output_path)
+
+        # Option 2: Decimation (NOT RECOMMENDED for Radiance analysis)
+        # Uncomment below only if file is too large AND you don't need material accuracy
+        print("\nWARNING: Decimating mesh (materials will be lost!)\n")
+        decimated_path = inputs_dir / f"{input_path.stem}_decimated.obj"
+        simplify_mesh_open3d(
+            input_path=output_path,
+            output_path=decimated_path,
+            target_triangle_ratio=0.5  # Conservative 50% for analysis
+        )
+
+    print("\nBatch processing complete!\n")
+    

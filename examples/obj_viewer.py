@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 obj_paths = [
-    Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine_simplified.obj",
-    Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
+    Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows_decimated.obj",
+    Path(__file__).parent.parent / "inputs" / "87cowles_site_decimated.obj"
     ]
 
 if obj_paths:

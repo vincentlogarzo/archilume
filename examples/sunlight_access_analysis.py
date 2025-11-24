@@ -45,11 +45,11 @@ def main():
 
     print(f"\n{'=' * 80}\nARCHILUME - Winter Solstice Sunlight Exposure Analysis\n{'=' * 80}")
 
-    # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
-    obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows.obj", # first file must be building of interest
-        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line
-        ]    
+    # --- Phase 0: List building, site and other adjacent building files and input parameters ---
+    # REVIT .obj files must be exported in meters as coarse export with 3d view visual style set to hidden line
+    obj_paths = [Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows_decimated.obj", # first file must be building of interest
+                 Path(__file__).parent.parent / "inputs" / "87cowles_site_decimated.obj" 
+                ]    
         # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
     room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"     
         # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
