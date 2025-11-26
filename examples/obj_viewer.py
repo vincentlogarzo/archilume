@@ -27,12 +27,12 @@ Available options:
 
 
 obj_paths = [
-    Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine_cleaned.obj",
+    Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj",
     # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
     ]
 
 # MTL file for material definitions (glass will be colored ocean blue)
-mtl_path = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine.mtl"
+mtl_path = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.mtl"
 
 # Optional: customize glass color (default is ocean blue [0.0, 0.4, 0.7])
 # glass_color = [0.0, 0.5, 0.8]  # Lighter blue

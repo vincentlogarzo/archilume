@@ -40,9 +40,12 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
             pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" outputs\images\87cowles_BLD_noWindows_with_site_plan_L00__TenK_cie_overcast.hdr outputs\images\87cowles_BLD_noWindows_with_site_plan_L00_SS_0621_0900.hdr | ra_tiff -e -2 - outputs\images\87cowles_BLD_noWindows_with_site_plan_L00_SS_0621_0900.tiff
     pcond -h outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.hdr > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_visual_human.hdr
 
+
+
+
 --- 3. ---
 #testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
-    #TODO: rtpict does not appear to work due to an internal quoatation erorr, this progamme is not viable for now untill it is rectified.
+    #TODO: rtpict does not appear to work due to an internal quotation erorr, this progam is not viable on Windows
     rtpict -n 2 -vf view.vp -af ambfile.amb octree_with_sky.oct > output_rtpict.hdr
     rtpict -n 2 -t 5 -vtv -vf outputs/views_grids/plan_L02.vp -af outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.amb outputs/octree/87cowles_BLD_noWindows_with_site_skyless.oct > outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_rtpict.hdr
      
@@ -67,6 +70,11 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr > outputs/wpd/points.txt
     pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr | rcalc -e '$1=$1;$2=$2;$3=$3' -c '$3-1e-9' > outputs/wpd/points.txt
 
+    
+--- 5. ---
+# testing of post processing of HDR images extracted at other view points into colourfill images. 
+    falsecolor -i "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.tiff"
+    falsecolor -i "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.tiff"
 
     
 rpict quality settings reference 

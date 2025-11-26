@@ -47,21 +47,21 @@ def main():
 
     # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
     obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "87Cowles_BLD_withWindows.obj", # first file must be building of interest
-        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line, all adjacent buildings should have their geomety decimated to reduce file size and speed up processing times.
+        Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj", # first file must be building of interest
+        # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line. Geometry decimation in blender also possible for very large projects
         ]    
         # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
-    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"     
+    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_room_boundaries.csv"     
         # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
 
-    project_latitude                    = -33.8244778   # Input building projcts latitude to at least 4 decimal places
+    project_latitude                    = -37.8134564   # Input building projcts latitude to at least 4 decimal places
     month                               = 6             # June
     day                                 = 21            # Winter solstice
     start_hour                          = 9             # 9:00 AM
-    end_hour                            = 15            # 3:00 PM
+    end_hour                            = 10            # 3:00 PM
     timestep                            = 15            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
-    image_resolution                    = 2048          # Image size in pixels to be rendered
+    image_resolution                    = 1024          # Image size in pixels to be rendered
 
 
     # --- Phase 1: Establish 3D Scene ---
@@ -117,6 +117,7 @@ def main():
     rendering_phase_timings = renderer.sunlight_rendering_pipeline()
         # TODO: find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not visual validation.
         # TODO: allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
+        # TODO: Allow deletion of temp octrees immediately after oconv of the temp file occurs with the sky file. This will conserve storage 
         # TODO: implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
         # TODO: implement low resolution fist pass rendering for visual validation, if higher resolution is needed then second pass at a higher resolution can be executed without much further cost.
         # TODO: implement pfilt to downsize images for smoothing and faster processing.
