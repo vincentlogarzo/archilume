@@ -12,6 +12,7 @@ Requires-Dist: openpyxl>=3.1.5
 Requires-Dist: pandas>=2.3.1
 Requires-Dist: pillow>=11.3.0
 Requires-Dist: pyradiance>=1.1.5
+Requires-Dist: pyvista>=0.46.4
 
 # Archilume
 

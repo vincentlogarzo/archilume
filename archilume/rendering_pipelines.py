@@ -96,13 +96,20 @@ class RenderingPipelines:
                 print(f"Error creating directory {self.image_dir}: {e}")
         
 
-    def sunlight_rendering_pipeline(self) -> None:
+    def sunlight_rendering_pipeline(self) -> dict:
         """
         Render images for each combination of sky and view files.
+
+        Returns:
+            dict: Dictionary containing timing information for each rendering phase.
         """
+        import time
+
+        phase_timings = {}
         print("\nRenderingPipelines getting started...\n")
 
         # --- Phase 0: Prepare commands ---
+        phase_start = time.time()
         # Generate overcast sky rendering commands
         (self.overcast_octree_command,
          self.rpict_daylight_overture_commands,
@@ -112,11 +119,19 @@ class RenderingPipelines:
          self.oconv_commands,
          self.rpict_direct_sun_commands,
          self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
+        phase_timings["    Command preparation"] = time.time() - phase_start
 
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
+        phase_start = time.time()
         utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=1)
+        phase_timings["    Overcast octree creation"] = time.time() - phase_start
+
+        phase_start = time.time()
         utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=8)
+        phase_timings["    Ambient file warming (overture)"] = time.time() - phase_start
+
+        phase_start = time.time()
         executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(
             utils.execute_new_radiance_commands,
@@ -125,16 +140,27 @@ class RenderingPipelines:
 
         # --- Phase 2: Synthesize octree files for all sky-view combinations ---
         # Prepare temporary octree structures for comprehensive solar condition analysis
+        phase_start = time.time()
         utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
         utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=12)
         utils.delete_files(self.temp_octree_with_sky_paths)
+        phase_timings["    Sunny sky octrees"] = time.time() - phase_start
 
         # --- Phase 3: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
+        phase_start = time.time()
         utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=20)
+        phase_timings["    Sunlight rendering"] = time.time() - phase_start
+
+        phase_start = time.time()
         future.result()  # Ensure overcast rendering is complete before combining
+        phase_timings["    Indirect diffuse rendering"] = time.time() - phase_start
+
+        phase_start = time.time()
         utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=20)
+        phase_timings["    HDR combination & TIFF conversion"] = time.time() - phase_start
 
         print("Rendering sequence completed successfully.")
+        return phase_timings
     
     def _generate_overcast_sky_rendering_commands(self, aa: float=0.1, ab: int=1, ad: int=4096, ar: int=1024, as_val: int=1024, dj: float=0.7, lr: int=12, lw: float=0.002, pj: int=1, ps: int=4, pt: float=0.05) -> tuple[str, list[str], list[str]]:
         """

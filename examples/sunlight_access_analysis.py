@@ -47,8 +47,8 @@ def main():
 
     # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
     obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "87cowles_BLD_noWindows_cleaned.obj", # first file must be building of interest
-        Path(__file__).parent.parent / "inputs" / "87cowles_site_cleaned.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line, all adjacent buildings should have their geomety decimated to reduce file size and speed up processing times.
+        Path(__file__).parent.parent / "inputs" / "87Cowles_BLD_withWindows.obj", # first file must be building of interest
+        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line, all adjacent buildings should have their geomety decimated to reduce file size and speed up processing times.
         ]    
         # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
     room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"     
@@ -59,7 +59,7 @@ def main():
     day                                 = 21            # Winter solstice
     start_hour                          = 9             # 9:00 AM
     end_hour                            = 15            # 3:00 PM
-    timestep                            = 5            # Minutes (must be greater than 5 min increments) 
+    timestep                            = 15            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
     image_resolution                    = 2048          # Image size in pixels to be rendered
 
@@ -114,12 +114,15 @@ def main():
         x_res                           = image_resolution,
         y_res                           = image_resolution
         )
-    renderer.sunlight_rendering_pipeline()
+    rendering_phase_timings = renderer.sunlight_rendering_pipeline()
         # TODO: find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not visual validation.
         # TODO: allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
         # TODO: implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
-        # TODO: implement low resolution fist pass rendering for visual validation, if higher resolution is needed then second pass at a higher resolution can be executed without much further cost.  
+        # TODO: implement low resolution fist pass rendering for visual validation, if higher resolution is needed then second pass at a higher resolution can be executed without much further cost.
         # TODO: implement pfilt to downsize images for smoothing and faster processing.
+
+    # Merge rendering sub-phase timings into main phase_timings
+    phase_timings.update(rendering_phase_timings)
     phase_timings["Phase 4: Rendering"], phase_start = time.time() - phase_start, time.time()
 
 
@@ -130,6 +133,15 @@ def main():
     # --- Phase 5a: Generate Area of Interest (AOI) files ---
     sub_phase_start = time.time()
     coordinate_map_path = utils.create_pixel_to_world_coord_map(renderer.image_dir)
+
+    if coordinate_map_path is None:
+        print("\n" + "=" * 80)
+        print("ERROR: Failed to create pixel-to-world coordinate mapping.")
+        print("This usually means no HDR files were found in the image directory.")
+        print(f"Image directory: {renderer.image_dir}")
+        print("=" * 80)
+        return False
+
     view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
         # TODO: Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
         # TODO: set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
@@ -188,12 +200,38 @@ def main():
     total_runtime = time.time() - script_start_time
     print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 + "\n\nExecution Time Summary:\n" + "-" * 80)
 
-    # Print each phase timing
-    for phase_name, duration in phase_timings.items():
-        percentage = (duration / total_runtime) * 100
-        print(f"{phase_name:<30} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+    # Define the order of phases for organized output
+    main_phases = ["Phase 1: 3D Scene", "Phase 2: Sky Conditions", "Phase 3: Camera Views", "Phase 4: Rendering", "Phase 5: Post-Processing"]
+    rendering_subphases = ["    Command preparation", "    Overcast octree creation",
+                          "    Ambient file warming (overture)", "    Indirect diffuse rendering",
+                          "    Sunny sky octrees", "    Sunlight rendering",
+                          "    HDR combination & TIFF conversion"]
+    postprocessing_subphases = ["  5a: Generate AOI", "  5b: Generate WPD", "  5c: Stamp Images"]
 
-    print("-" * 80 + f"\n{'Total Runtime':<30} {total_runtime:>8.2f}s  ({total_runtime/60:>5.1f} min)\n" + "=" * 80 + f"\n\nOutput directory: {Path(__file__).parent.parent / 'outputs'}\n" + "=" * 80)
+    # Print in organized order
+    for phase_name in main_phases:
+        if phase_name in phase_timings:
+            duration = phase_timings[phase_name]
+            percentage = (duration / total_runtime) * 100
+            print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+            # Print sub-phases after Phase 4
+            if phase_name == "Phase 4: Rendering":
+                for subphase in rendering_subphases:
+                    if subphase in phase_timings:
+                        duration = phase_timings[subphase]
+                        percentage = (duration / total_runtime) * 100
+                        print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+            # Print sub-phases after Phase 5
+            elif phase_name == "Phase 5: Post-Processing":
+                for subphase in postprocessing_subphases:
+                    if subphase in phase_timings:
+                        duration = phase_timings[subphase]
+                        percentage = (duration / total_runtime) * 100
+                        print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+    print("-" * 80 + f"\n{'Total Runtime':<45} {total_runtime:>8.2f}s  ({total_runtime/60:>5.1f} min)\n" + "=" * 80 + f"\n\nOutput directory: {Path(__file__).parent.parent / 'outputs'}\n" + "=" * 80)
 
     return True
 

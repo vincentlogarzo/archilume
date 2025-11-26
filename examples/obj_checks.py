@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 
-filepath = Path(r"C:\Projects\archilume\inputs\22041_AR_T01_BLD.obj")
+filepath = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine_decimated.obj"
 
 # Get file size
 file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
@@ -18,6 +18,10 @@ groups = 0
 materials = 0
 lines_total = 0
 
+# Bounding box tracking
+min_x = min_y = min_z = float('inf')
+max_x = max_y = max_z = float('-inf')
+
 object_faces = {}
 current_object = "unnamed"
 
@@ -26,6 +30,16 @@ with open(filepath, "r") as f:
         lines_total += 1
         if line.startswith("v "):
             vertices += 1
+            # Parse vertex coordinates for bounding box
+            parts = line.split()
+            if len(parts) >= 4:
+                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
+                min_z = min(min_z, z)
+                max_z = max(max_z, z)
         elif line.startswith("f "):
             faces += 1
             object_faces[current_object] = object_faces.get(current_object, 0) + 1
@@ -51,6 +65,21 @@ print(f"Texture coords: {textures:,}")
 print(f"Objects: {objects:,}")
 print(f"Groups: {groups:,}")
 print(f"Material switches: {materials:,}\n")
+
+# Bounding box information
+if vertices > 0:
+    width = max_x - min_x
+    height = max_y - min_y
+    depth = max_z - min_z
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    center_z = (min_z + max_z) / 2
+
+    print("Bounding Box:")
+    print(f"  X: {min_x:.3f} to {max_x:.3f} (width: {width:.3f})")
+    print(f"  Y: {min_y:.3f} to {max_y:.3f} (height: {height:.3f})")
+    print(f"  Z: {min_z:.3f} to {max_z:.3f} (depth: {depth:.3f})")
+    print(f"  Center: ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})\n")
 
 # Top objects by face count
 print("Top 20 objects by face count:")

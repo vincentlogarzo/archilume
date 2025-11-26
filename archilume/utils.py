@@ -12,10 +12,96 @@ import open3d as o3d
 import tkinter as tk
 
 
-def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
-    """Display OBJ files using open3d with enhanced visualization."""
+def parse_mtl_file(mtl_path: Path) -> dict:
+    """Parse MTL file and return material definitions.
+
+    Returns a dictionary mapping material names to their properties:
+    {
+        'material_name': {
+            'Kd': [r, g, b],  # diffuse color
+            'd': float,       # transparency (dissolve)
+            'is_glass': bool  # True if material contains 'glass' or has low opacity
+        }
+    }
+    """
+    materials = {}
+    current_material = None
+
+    if not mtl_path.exists():
+        print(f"Warning: MTL file not found: {mtl_path}")
+        return materials
+
+    with open(mtl_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('newmtl '):
+                current_material = line[7:].strip()
+                materials[current_material] = {
+                    'Kd': [0.8, 0.8, 0.8],
+                    'd': 1.0,
+                    'is_glass': False
+                }
+            elif line.startswith('Kd ') and current_material:
+                parts = line.split()
+                if len(parts) >= 4:
+                    materials[current_material]['Kd'] = [float(parts[1]), float(parts[2]), float(parts[3])]
+            elif line.startswith('d ') and current_material:
+                parts = line.split()
+                if len(parts) >= 2:
+                    materials[current_material]['d'] = float(parts[1])
+
+    # Identify glass materials based on name or transparency
+    for mat_name, props in materials.items():
+        mat_lower = mat_name.lower()
+        if 'glass' in mat_lower or 'gl' in mat_lower or 'glaz' in mat_lower or props['d'] < 0.5:
+            props['is_glass'] = True
+
+    return materials
+
+
+def parse_obj_materials(obj_path: Path) -> dict:
+    """Parse OBJ file to extract face-to-material mapping.
+
+    Returns a dictionary:
+    {
+        'materials': ['mat1', 'mat2', ...],  # material name for each face
+        'face_count': int                     # total number of faces
+    }
+    """
+    face_materials = []
+    current_material = None
+
+    with open(obj_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('usemtl '):
+                current_material = line[7:].strip()
+            elif line.startswith('f '):
+                face_materials.append(current_material)
+
+    return {
+        'materials': face_materials,
+        'face_count': len(face_materials)
+    }
+
+
+def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
+                mtl_path: Optional[Path] = None,
+                glass_color: Optional[List[float]] = None):
+    """Display OBJ files using open3d with enhanced visualization.
+
+    Args:
+        filenames: OBJ file path(s) to display
+        mtl_path: Optional MTL file path for material definitions
+        glass_color: Optional RGB color for glass materials [r, g, b] in range [0, 1]
+                    Default is ocean blue [0.0, 0.4, 0.7]
+    """
     if isinstance(filenames, (str, Path)):
         filenames = [filenames]
+
+    # Default ocean blue for glass
+    if glass_color is None:
+        glass_color = [0.0, 0.4, 0.7]
 
     def set_view(front, up):
         def _set(vis):
@@ -36,43 +122,145 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
         return False
     
     print(f"Visualizing {len(filenames)} OBJ file(s) with open3d...")
-    
+
+    # Parse MTL file if provided
+    materials = {}
+    if mtl_path:
+        print(f"Loading materials from: {mtl_path.name}")
+        materials = parse_mtl_file(mtl_path)
+        glass_materials = [name for name, props in materials.items() if props['is_glass']]
+        if glass_materials:
+            print(f"Found {len(glass_materials)} glass materials: {', '.join(glass_materials[:5])}{' ...' if len(glass_materials) > 5 else ''}")
+
     combined_mesh = o3d.geometry.TriangleMesh()
     valid_files = []
-    
+
     # Load and combine all meshes
     for filename in filenames:
         # Convert to Path object if string
         if isinstance(filename, str):
             filename = Path(filename)
-        
+
         print(f"Loading: {filename.name}")
-        
+
         # Read the mesh from the file
         mesh = o3d.io.read_triangle_mesh(str(filename))
 
         if len(mesh.vertices) == 0:
             print(f"Warning: No vertices found in {filename.name}")
             continue
-        
+
         valid_files.append(filename)
-        
+
         # Compute normals for proper lighting
         if not mesh.has_vertex_normals():
             mesh.compute_vertex_normals()
 
-        # Apply different colors for each mesh for distinction
-        color_index = len(valid_files) - 1
-        colors = [[0.8, 0.2, 0.2], [0.2, 0.8, 0.2], [0.2, 0.2, 0.8], [0.8, 0.8, 0.2], [0.8, 0.2, 0.8], [0.2, 0.8, 0.8]]
-        mesh.paint_uniform_color(colors[color_index % len(colors)])
-        
+        # Apply material-based coloring if MTL file is provided
+        if mtl_path and materials:
+            # Parse OBJ file to get face-to-material mapping
+            obj_face_info = parse_obj_materials(filename)
+            face_materials = obj_face_info['materials']
+
+            # Create per-vertex color array
+            num_triangles = len(mesh.triangles)
+            vertex_colors = np.zeros((len(mesh.vertices), 3))
+            vertex_color_count = np.zeros(len(mesh.vertices))
+
+            # Assign colors per face based on material
+            default_color = [0.7, 0.7, 0.7]  # Default gray for non-glass materials
+
+            for face_idx, mat_name in enumerate(face_materials):
+                if face_idx >= num_triangles:
+                    break
+
+                # Determine color for this face
+                if mat_name and mat_name in materials:
+                    mat_props = materials[mat_name]
+                    if mat_props['is_glass']:
+                        face_color = glass_color
+                    else:
+                        face_color = mat_props['Kd']
+                else:
+                    face_color = default_color
+
+                # Apply color to the three vertices of this triangle
+                triangle = mesh.triangles[face_idx]
+                for vertex_idx in triangle:
+                    vertex_colors[vertex_idx] += face_color
+                    vertex_color_count[vertex_idx] += 1
+
+            # Average colors for shared vertices
+            for i in range(len(mesh.vertices)):
+                if vertex_color_count[i] > 0:
+                    vertex_colors[i] /= vertex_color_count[i]
+
+            mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
+            print(f"Applied material-based coloring to {filename.name}")
+        else:
+            # Apply different colors for each mesh for distinction (fallback)
+            color_index = len(valid_files) - 1
+            colors = [[0.8, 0.2, 0.2], [0.2, 0.8, 0.2], [0.2, 0.2, 0.8], [0.8, 0.8, 0.2], [0.8, 0.2, 0.8], [0.2, 0.8, 0.8]]
+            mesh.paint_uniform_color(colors[color_index % len(colors)])
+
         # Combine meshes
         combined_mesh += mesh
     
     if len(valid_files) == 0:
         print("No valid OBJ files found.")
         return
-    
+
+    # Add ground plane if only one OBJ file
+    if len(valid_files) == 1:
+        # Calculate bounding box of the combined mesh
+        bbox = combined_mesh.get_axis_aligned_bounding_box()
+        min_bound = bbox.min_bound
+        max_bound = bbox.max_bound
+
+        # Calculate X and Y extents
+        x_extent = max_bound[0] - min_bound[0]
+        y_extent = max_bound[1] - min_bound[1]
+        center_x = (min_bound[0] + max_bound[0]) / 2
+        center_y = (min_bound[1] + max_bound[1]) / 2
+
+        # Ground plane size: at least 10x the X,Y bounding box extents
+        plane_width = max(x_extent, y_extent) * 10
+        plane_height = max(x_extent, y_extent) * 10
+
+        # Create ground plane at the minimum Z level
+        ground_z = min_bound[2]
+
+        # Create a simple plane mesh using two triangles
+        plane_mesh = o3d.geometry.TriangleMesh()
+
+        # Define the four corners of the plane centered on the model's X,Y center
+        half_w = plane_width / 2
+        half_h = plane_height / 2
+        vertices = [
+            [center_x - half_w, center_y - half_h, ground_z],
+            [center_x + half_w, center_y - half_h, ground_z],
+            [center_x + half_w, center_y + half_h, ground_z],
+            [center_x - half_w, center_y + half_h, ground_z]
+        ]
+
+        # Two triangles to form the rectangle
+        triangles = [
+            [0, 1, 2],
+            [0, 2, 3]
+        ]
+
+        plane_mesh.vertices = o3d.utility.Vector3dVector(vertices)
+        plane_mesh.triangles = o3d.utility.Vector3iVector(triangles)
+        plane_mesh.compute_vertex_normals()
+
+        # Color the ground plane light gray
+        plane_mesh.paint_uniform_color([0.6, 0.6, 0.6])
+
+        # Add plane to combined mesh
+        combined_mesh += plane_mesh
+
+        print(f"Ground plane added: {plane_width:.2f} x {plane_height:.2f} units at Z={ground_z:.2f}")
+
     # Create coordinate frame for reference
     coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0)
     
@@ -104,7 +292,7 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]]):
     render_opt.show_coordinate_frame = True
     render_opt.background_color = [0.1, 0.1, 0.1]  # Dark background
     render_opt.mesh_show_back_face = True
-    render_opt.mesh_show_wireframe = True  # Show wireframe by default
+    render_opt.mesh_show_wireframe = False  # Wireframe off by default
     render_opt.point_size = 2.0
     render_opt.line_width = 1.0
     
@@ -180,15 +368,25 @@ def copy_files(source_path: Union[Path, str], destination_paths: list[Path]) -> 
         list: A list of destination paths that were successfully copied to.
     """
     try:
-        # Filter out destination paths that already exist
-        filtered_paths = [dest for dest in destination_paths if not os.path.exists(dest)]
-        
+        # Filter out destination paths where the final file (without _temp suffix) already exists
+        def check_file_exists(dest_path):
+            """Check if destination or its non-temp equivalent exists."""
+            dest_str = str(dest_path)
+            # If this is a temp file, check if the final (non-temp) version exists
+            if '_temp.' in dest_str:
+                final_path = dest_str.replace('_temp.', '.')
+                return os.path.exists(final_path)
+            # Otherwise just check the destination itself
+            return os.path.exists(dest_path)
+
+        filtered_paths = [dest for dest in destination_paths if not check_file_exists(dest)]
+
         if not filtered_paths:
-            print(f"All destination paths already exist. No files to copy.")
-        
+            print(f"All destination paths (or their final versions) already exist. No files to copy.")
+
         if len(filtered_paths) < len(destination_paths):
             skipped_count = len(destination_paths) - len(filtered_paths)
-            print(f"Skipping {skipped_count} existing destination(s).")
+            print(f"Skipping {skipped_count} existing destination(s) (checking for final file versions).")
         
         # Use a ThreadPoolExecutor to manage the concurrent copy operations.
         with ThreadPoolExecutor() as executor:
