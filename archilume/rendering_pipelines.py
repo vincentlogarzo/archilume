@@ -187,6 +187,7 @@ class RenderingPipelines:
             dj (float, optional): Direct jitter for rpict. Defaults to 0.7.
             lr (int, optional): Limit reflection for rpict. Defaults to 12.
             lw (float, optional): Limit weight for rpict. Defaults to 0.002.
+            i : irradiance calculation on, limits blurry images with high contrast (i.e. deep buildings)
             pj (int, optional): Pixel jitter for rpict. Defaults to 1.
             ps (int, optional): Pixel sample spacing for rpict [low_qual=1, med_qual=4]. Defaults to 4.
             pt (float, optional): Pixel threshold for rpict [low_qual=0.06, med_qual=0.05]. Defaults to 0.05.
@@ -217,12 +218,12 @@ class RenderingPipelines:
             output_hdr_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
-            rpict_low_qual_command, rpict_med_qual_command = [
-                rf"rpict -w -t 2 -vf {view_file_path} -x {x_res_overture} -y {y_res_overture} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path}",
-                rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
+            rpict_overture_command, rpict_med_qual_command = [
+                rf"rpict -w -t 2 -vf {view_file_path} -x {x_res_overture} -y {y_res_overture} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}",
+                rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
             ]
 
-            rpict_overture_commands.append(rpict_low_qual_command)
+            rpict_overture_commands.append(rpict_overture_command)
             rpict_med_qual_commands.append(rpict_med_qual_command)
 
         # Log summary before exit

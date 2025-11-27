@@ -17,10 +17,8 @@ Use the below in the command prompt only not in powershell. Oconv required utf-8
     obj2rad -n inputs/87cowles_site.obj > outputs/rad/87cowles_site.qual 
     obj2rad -n inputs/22041_T3_R25_BLD_COARSE.obj > outputs/rad/22041_T3_R25_BLD_COARSE.qual
 
-
     oconv -f outputs/rad/materials.mtl outputs/rad/22041_T3_R25_BLD_COARSE.rad > outputs/octree/22041_T3_R25_BLD_COARSE.oct
     oconv inputs/default_mat.rad outputs/rad/87cowles_BLD_noWindows.rtm > outputs/octree/87cowles_BLD_noWindows.oct
-
 
     oconv -i octree/87cowles_BLD_noWindows_with_site_skyless.oct sky/SS_0621_0900.sky > octree/87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
 
@@ -76,7 +74,33 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     falsecolor -i "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.tiff"
     falsecolor -i "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.tiff"
 
-    
+
+
+--- 6. ---
+# Testing using of accelerad binaries. 
+    #Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency. 
+    .\examples\render.bat plan_L08 22041_AR_T01_v2_with_site_TenK_cie_overcast 4096
+
+
+---7. ---
+# Approaches for splotchiness. 
+    For splotchy ambient cache artifacts:
+        pfilt -r 0.8 -1 outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
+    For Monte Carlo noise:
+        pfilt -r 0.5 -1 outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr | pcond -a - > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
+            pfilt -r 0.5 -1 outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
+    For high-contrast splotches:
+        pcond -s outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr | pfilt -r 0.4 > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
+    Parameters to Experiment With
+        -r values: 0.3 (subtle) → 1.0 (heavy blur)
+        -1: Forces one pass (faster)
+        -e: Exposure adjustment (+/- stops)
+        pcond -s: Use scotopic vision (darker scenes)
+
+        The most effective approach is usually: pfilt with modest radius (0.5-0.7) + pcond tone mapping.
+
+
+
 rpict quality settings reference 
 ----------------------------------------------------------------------------
 
@@ -92,6 +116,62 @@ The following table provides a guide to adjusting rpict parameters for faster re
         -ar          1024          128-256       Medium          Low
         -pt          0.04          0.15          Medium          Low
         -lr          12            4-6           Low-Medium      Low
+
+accelerad_rpict -defaults
+-vtv                            # view type perspective
+-vp 0.000000 0.000000 0.000000  # view point
+-vd 0.000000 1.000000 0.000000  # view direction
+-vu 0.000000 0.000000 1.000000  # view up
+-vh 45.000000                   # view horizontal size
+-vv 45.000000                   # view vertical size
+-vo 0.000000                    # view fore clipping plane
+-va 0.000000                    # view aft clipping plane
+-vs 0.000000                    # view shift
+-vl 0.000000                    # view lift
+-x  512                         # x resolution
+-y  512                         # y resolution
+-pa 1.000000                    # pixel aspect ratio
+-pj 0.670000                    # pixel jitter
+-pm 0.000000                    # pixel motion
+-pd 0.000000                    # pixel depth-of-field
+-ps 4                           # pixel sample
+-pt 0.050000                    # pixel threshold
+-t  0                           # time between reports
+-w+                             # warning messages on
+-g+                             # GPU acceleration on
+-i-                             # irradiance calculation off
+-u-                             # correlated quasi-Monte Carlo sampling
+-bv+                            # back face visibility on
+-dt 0.050000                    # direct threshold
+-dc 0.500000                    # direct certainty
+-dj 0.000000                    # direct jitter
+-ds 0.250000                    # direct sampling
+-dr 1                           # direct relays
+-dp 512                         # direct pretest density
+-dv+                            # direct visibility on
+-ss 1.000000                    # specular sampling
+-st 0.150000                    # specular threshold
+-av 0.000000 0.000000 0.000000  # ambient value
+-aw 0                           # ambient value weight
+-ab 0                           # ambient bounces
+-aa 0.200000                    # ambient accuracy
+-ar 64                          # ambient resolution
+-ad 512                         # ambient divisions
+-as 128                         # ambient super-samples
+-al 0                           # ambient sample spacing (GPU only)
+-ag -1                          # ambient infill divisions (GPU only)
+-az 0                           # ambient grid density (GPU only)
+-ac 4096                        # ambient k-means clusters (GPU only)
+-an 100                         # ambient k-means iterations (GPU only)
+-at 0.050000                    # ambient k-means threshold (GPU only)
+-ax 1.000000                    # ambient k-means weighting factor (GPU only)
+-me 0.00e+000 0.00e+000 0.00e+000       # mist extinction coefficient
+-ma 0.000000 0.000000 0.000000  # mist scattering albedo
+-mg 0.000000                    # mist scattering eccentricity
+-ms 0.000000                    # mist sampling distance
+-lr 7                           # limit reflection
+-lw 1.00e-003                   # limit weight
+-am 0.0                         # max photon search radius
 
 
 rpict -defaults 

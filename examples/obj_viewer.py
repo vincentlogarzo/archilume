@@ -28,6 +28,7 @@ Available options:
 
 obj_paths = [
     Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj",
+    Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine_cleaned.obj",
     # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj"
     ]
 

@@ -46,13 +46,6 @@ def main():
     print(f"\n{'=' * 80}\nARCHILUME - Winter Solstice Sunlight Exposure Analysis\n{'=' * 80}")
 
     # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
-    obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj", # first file must be building of interest
-        # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # REVIT .obj files must be exported in meters, coarse with visual style set to hidden line. Geometry decimation in blender also possible for very large projects
-        ]    
-        # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
-    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_room_boundaries.csv"     
-        # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
 
     project_latitude                    = -37.8134564   # Input building projcts latitude to at least 4 decimal places
     month                               = 6             # June
@@ -61,7 +54,15 @@ def main():
     end_hour                            = 10            # 3:00 PM
     timestep                            = 15            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
-    image_resolution                    = 1024          # Image size in pixels to be rendered
+    image_resolution                    = 2048          # Image size in pixels to be rendered
+    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2_room_boundaries.csv"
+        # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
+
+    obj_paths = [
+        Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj", # first file must be building of interest
+        # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # .obj files must be exported in meters + coarse + 3d view visual style as hidden line. Geometry decimation optional via blender
+        ]    
+        # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
 
 
     # --- Phase 1: Establish 3D Scene ---
@@ -121,6 +122,7 @@ def main():
         # TODO: implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
         # TODO: implement low resolution fist pass rendering for visual validation, if higher resolution is needed then second pass at a higher resolution can be executed without much further cost.
         # TODO: implement pfilt to downsize images for smoothing and faster processing.
+        # TODO: ensure when moving to daylight factor imaging to use the -i flag in rpict commands to calculate illuminance in a scene. 
 
     # Merge rendering sub-phase timings into main phase_timings
     phase_timings.update(rendering_phase_timings)

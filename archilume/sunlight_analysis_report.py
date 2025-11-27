@@ -713,7 +713,7 @@ def main():
     area_per_pixel = 0.0002  # Area per pixel in m²
     pixel_increment_x = 0.014  # Pixel increment X in meters
     pixel_increment_y = 0.014  # Pixel increment Y in meters
-    pixel_to_world_map = Path(__file__).parent.parent / "outputs" / "aoi" / "pixel_to_world_map.txt"
+    pixel_to_world_map = Path(__file__).parent.parent / "outputs" / "aoi" / "pixel_to_world_coordinate_map.txt"
 
     report = SunlightAnalysisReport(
         wpd_dir=wpd_dir,
