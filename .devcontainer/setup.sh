@@ -19,6 +19,34 @@ sudo cp -r radiance-*/usr/local/radiance /usr/local/
 sudo chmod -R 755 /usr/local/radiance
 rm -rf radiance-*
 
+# Install Accelerad (GPU-accelerated Radiance)
+echo "⚡ Installing Accelerad..."
+echo "Note: GPU acceleration requires NVIDIA GPU and proper Docker GPU passthrough"
+
+# Install build dependencies for Accelerad
+sudo apt-get install -y build-essential git cmake libx11-dev tcl-dev tk-dev
+
+# Clone Accelerad repository
+cd /tmp
+if [ ! -d "Accelerad" ]; then
+    git clone https://github.com/nljones/Accelerad.git
+fi
+
+cd Accelerad
+
+# Build and install Accelerad
+# Note: This will build CPU fallback if CUDA is not available
+if ./makeall install clean 2>&1 | tee /tmp/accelerad_install.log; then
+    echo "✅ Accelerad installed successfully!"
+    echo "Note: GPU acceleration requires CUDA toolkit and NVIDIA GPU"
+else
+    echo "⚠️  Accelerad installation encountered issues - check /tmp/accelerad_install.log"
+    echo "Continuing with setup..."
+fi
+
+cd /tmp
+rm -rf Accelerad
+
 # Add environment variables to bash profile
 echo "🔧 Configuring environment variables..."
 if ! grep -q "RAYPATH" ~/.bashrc; then
@@ -66,6 +94,22 @@ if command -v oconv &> /dev/null && command -v rpict &> /dev/null; then
     oconv 2>&1 | head -1 || echo "Radiance version: $(ls /usr/local/radiance/bin/oconv)"
 else
     echo "⚠️  Warning: Radiance may not be properly installed"
+fi
+
+# Verify Accelerad installation
+echo "✅ Verifying Accelerad installation..."
+if command -v rcontrib &> /dev/null; then
+    echo "✅ Accelerad commands available!"
+    # Check if CUDA is available
+    if command -v nvidia-smi &> /dev/null; then
+        echo "🎮 NVIDIA GPU detected - GPU acceleration available"
+        nvidia-smi --query-gpu=name --format=csv,noheader
+    else
+        echo "⚠️  No NVIDIA GPU detected - Accelerad will run in CPU fallback mode"
+        echo "   For GPU acceleration, ensure Docker has GPU passthrough configured"
+    fi
+else
+    echo "⚠️  Accelerad commands not found - may not be properly installed"
 fi
 
 echo "🎉 Setup complete! Archilume development environment is ready."

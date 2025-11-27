@@ -6,6 +6,7 @@ This directory contains the development container configuration for Archilume.
 
 - **Python 3.12** development environment
 - **Radiance 6.1** (build 5085332d) - Lighting simulation tools
+- **Accelerad** - GPU-accelerated Radiance (requires NVIDIA GPU for acceleration)
 - **OpenGL libraries** - Required for Open3D visualization
 - **Git & GitHub CLI** - Version control tools
 - **uv** - Fast Python package installer
@@ -69,16 +70,27 @@ bash .devcontainer/setup.sh
 source ~/.bashrc
 ```
 
-## Radiance Tools Available
+## Radiance & Accelerad Tools Available
 
-After setup, these Radiance commands are available:
+After setup, these Radiance/Accelerad commands are available:
 
 - `oconv` - Convert scenes to octree format
-- `rpict` - Render pictures from octrees
+- `rpict` - Render pictures from octrees (CPU-based)
+- `rcontrib` - Accelerad GPU-accelerated rendering
 - `gensky` - Generate sky conditions
 - `obj2rad` - Convert OBJ files to Radiance format
 - `pcomb` - Combine/process HDR images
 - `ra_tiff` - Convert Radiance HDR to TIFF
+
+### GPU Acceleration Notes
+
+Accelerad is installed but **GPU acceleration requires**:
+1. NVIDIA GPU on the host machine
+2. NVIDIA Docker runtime configured
+3. Docker GPU passthrough enabled
+4. CUDA toolkit installed
+
+Without GPU access, Accelerad commands will fall back to CPU rendering. See [Accelerad GitHub](https://github.com/nljones/Accelerad) for more details.
 
 ## Troubleshooting
 
@@ -121,6 +133,29 @@ source ~/.bashrc
 # Or add to PATH manually
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
+
+### Accelerad GPU not working
+
+To enable GPU acceleration in the devcontainer:
+
+1. Install NVIDIA Docker runtime on your host:
+   ```bash
+   # Ubuntu/Debian
+   distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+   curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+   curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+   sudo apt-get update && sudo apt-get install -y nvidia-docker2
+   sudo systemctl restart docker
+   ```
+
+2. Update `.devcontainer/devcontainer.json` to add:
+   ```json
+   "runArgs": ["--gpus", "all"]
+   ```
+
+3. Rebuild the container
+
+Without GPU, Accelerad will still work in CPU fallback mode.
 
 ## Using uv Package Manager
 
