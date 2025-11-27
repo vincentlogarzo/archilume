@@ -37,6 +37,36 @@ import time
 
 # Third-party imports
 
+# TODO: execute sky view and aoi generator while the initial octree is being compiled with oconv as it is a heavy process currently only utilising 1 core of the CPU.
+# TODO: The view generator does not deal well hen levels are deleted from the room boundaries, it does number levles corrector. Perhaps the Level number should be RL for reference line.
+
+# FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
+# FIXME: obj_paths variable -> currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
+# FIXME:  ObjToOctree -> move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here.
+# TODO: SkyGenerator -> all classes here that utilise a number of workers should have a user input to define number of workers. Currently defaults to all available cores which may not be ideal for all users.
+# TODO: ViewGenerator -> for buildings with large podiums and smaller towers the view generator should dynamically determine that levels bounding box and use this as the input view parameters instead of generically applything the same view width and height for each level regardless. This will result in higher effieicny on the number of pixels to be rendered, especially when moving to rtrace implementation. 
+# TODO: RenderingPipelines -> find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not visual validation.
+# TODO: RenderingPipelines ->  introduce accelerad implemntation in place of daylight calcualtion for backing image. rendering speeds and high quality could be realised The user needs to be aware of drivre installs and accelerad installs, this stuff is likely not possible in the dev container situation, though it should be investigated. 
+# TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate
+# TODO: RenderingPipelines ->  implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
+# TODO: RenderingPipelines ->  Allow deletion of temp octrees immediately after oconv of the temp file occurs with the sky file. This will conserve storage for very large files. Thought this wone matter if the above rtrace is implement, as octree_skyless can be combined with each sky file in the rtrace call. These do not need to be precompiled into thier own octrees for rendering. 
+# TODO: Rendering pipelineRenderingPipelines ->  implement low resolution fist pass rendering for visual validation, if higher resolution is needed then second pass at a higher resolution can be executed without much further cost.
+# TODO: RenderingPipelines -> implement pfilt to downsize images for smoothing and faster processing.
+# TODO: view_generator.create_aoi_files -> 
+    # Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
+    # set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
+# TODO: view_generator.create_aoi_files -> 
+    # vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 
+    # move this generator upfront, it does not need a rendered hdr image to operate. This could be done upfonrt with the room boundaries data, in parallel with octree generation processes. 
+#TODO: ResultsProcessor -> 
+    # serious optimisation of the wpd extraction needs to occur. 
+    # ensure modified file are used when they exist.
+# TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
+    # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
+        # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
+    # chart overlay onto combined gifs. 
+    # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
+# TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing.
 
 def main():
     # Start runtime tracking
@@ -56,13 +86,10 @@ def main():
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
     image_resolution                    = 2048          # Image size in pixels to be rendered
     room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2_room_boundaries.csv"
-        # FIXME: the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-
     obj_paths = [
         Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj", # first file must be building of interest
         # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # .obj files must be exported in meters + coarse + 3d view visual style as hidden line. Geometry decimation optional via blender
         ]    
-        # FIXME: currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
 
 
     # --- Phase 1: Establish 3D Scene ---
@@ -70,7 +97,6 @@ def main():
     phase_start = time.time()
 
     octree_generator = ObjToOctree(obj_paths)
-        # FIXME:  move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here.
     octree_generator.create_skyless_octree_for_analysis()
 
     phase_timings["Phase 1: 3D Scene"], phase_start = time.time() - phase_start, time.time()
@@ -88,7 +114,6 @@ def main():
         end_hour_24hr_format            = end_hour,
         minute_increment                = timestep
         )
-        # TODO: all classes here that utilise a number of workers should have a user input to define number of workers. Currently defaults to all available cores which may not be ideal for all users.
     phase_timings["Phase 2: Sky Conditions"], phase_start = time.time() - phase_start, time.time()
 
 
@@ -116,15 +141,7 @@ def main():
         y_res                           = image_resolution
         )
     rendering_phase_timings = renderer.sunlight_rendering_pipeline()
-        # TODO: find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not visual validation.
-        # TODO: allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents.
-        # TODO: Allow deletion of temp octrees immediately after oconv of the temp file occurs with the sky file. This will conserve storage 
-        # TODO: implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images.
-        # TODO: implement low resolution fist pass rendering for visual validation, if higher resolution is needed then second pass at a higher resolution can be executed without much further cost.
-        # TODO: implement pfilt to downsize images for smoothing and faster processing.
-        # TODO: ensure when moving to daylight factor imaging to use the -i flag in rpict commands to calculate illuminance in a scene. 
 
-    # Merge rendering sub-phase timings into main phase_timings
     phase_timings.update(rendering_phase_timings)
     phase_timings["Phase 4: Rendering"], phase_start = time.time() - phase_start, time.time()
 
@@ -132,26 +149,12 @@ def main():
     # --- Phase 5: Post-process all frames into .csv .wpd results and .gif with compliance stamps ---
     print(f"\nPhase 5: Execute Post-Processing of Results...\n{'=' * 80}")
 
-
     # --- Phase 5a: Generate Area of Interest (AOI) files ---
     sub_phase_start = time.time()
     coordinate_map_path = utils.create_pixel_to_world_coord_map(renderer.image_dir)
-
-    if coordinate_map_path is None:
-        print("\n" + "=" * 80)
-        print("ERROR: Failed to create pixel-to-world coordinate mapping.")
-        print("This usually means no HDR files were found in the image directory.")
-        print(f"Image directory: {renderer.image_dir}")
-        print("=" * 80)
-        return False
-
     view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
-        # TODO: Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
-        # TODO: set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
-        # TODO: vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 
-
+ 
     phase_timings["  5a: Generate AOI"], sub_phase_start = time.time() - sub_phase_start, time.time()
-
 
     # --- Phase 5b: Generate Working plane data (WPD) and .csv results for sunlit areas ---
     processor = ResultsProcessor(
@@ -161,10 +164,8 @@ def main():
         pixel_threshold_value           = 0,
         max_workers                     = 12,
         pixel_to_world_map              = coordinate_map_path
-        ) # TODO: ensure modified file are used when they exist.
+        ) 
     processor.sunlight_sequence_wpd_extraction()
-        #TODO:             # serious optimisation of the wpd extraction needs to occur. 
-
 
     phase_timings["  5b: Generate WPD"], sub_phase_start = time.time() - sub_phase_start, time.time()
 
@@ -181,11 +182,7 @@ def main():
         latitude                        = sky_generator.lat
         )
     image_processor.nsw_adg_sunlight_access_results_pipeline()
-        # TODO:
-            # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
-                # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
-            # chart overlay onto combined gifs. 
-            # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
+
 
     phase_timings["  5c: Stamp Images"] = time.time() - sub_phase_start
     phase_timings["Phase 5: Post-Processing"] = time.time() - phase_start
@@ -193,48 +190,16 @@ def main():
 
     # --- Phase 6: Final Packaging of Results ---
     print(f"\nPhase 6: Packaging Final Results...\n{'=' * 80}")
-    # TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing.
-
-
 
 
 
     # Print final summary with timing breakdown
     total_runtime = time.time() - script_start_time
-    print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 + "\n\nExecution Time Summary:\n" + "-" * 80)
-
-    # Define the order of phases for organized output
-    main_phases = ["Phase 1: 3D Scene", "Phase 2: Sky Conditions", "Phase 3: Camera Views", "Phase 4: Rendering", "Phase 5: Post-Processing"]
-    rendering_subphases = ["    Command preparation", "    Overcast octree creation",
-                          "    Ambient file warming (overture)", "    Indirect diffuse rendering",
-                          "    Sunny sky octrees", "    Sunlight rendering",
-                          "    HDR combination & TIFF conversion"]
-    postprocessing_subphases = ["  5a: Generate AOI", "  5b: Generate WPD", "  5c: Stamp Images"]
-
-    # Print in organized order
-    for phase_name in main_phases:
-        if phase_name in phase_timings:
-            duration = phase_timings[phase_name]
-            percentage = (duration / total_runtime) * 100
-            print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
-
-            # Print sub-phases after Phase 4
-            if phase_name == "Phase 4: Rendering":
-                for subphase in rendering_subphases:
-                    if subphase in phase_timings:
-                        duration = phase_timings[subphase]
-                        percentage = (duration / total_runtime) * 100
-                        print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
-
-            # Print sub-phases after Phase 5
-            elif phase_name == "Phase 5: Post-Processing":
-                for subphase in postprocessing_subphases:
-                    if subphase in phase_timings:
-                        duration = phase_timings[subphase]
-                        percentage = (duration / total_runtime) * 100
-                        print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
-
-    print("-" * 80 + f"\n{'Total Runtime':<45} {total_runtime:>8.2f}s  ({total_runtime/60:>5.1f} min)\n" + "=" * 80 + f"\n\nOutput directory: {Path(__file__).parent.parent / 'outputs'}\n" + "=" * 80)
+    utils.print_timing_report(
+        phase_timings=phase_timings,
+        total_runtime=total_runtime,
+        output_dir=Path(__file__).parent.parent / 'outputs'
+    )
 
     return True
 

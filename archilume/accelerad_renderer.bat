@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 REM Usage: render.bat [VIEW_NAME] [OCTREE_NAME] [QUALITY] [HIGHRES]
 REM Example: render.bat plan_L08 22041_AR_T01_v2_with_site_TenK_cie_overcast detailed 2048
 REM Quality options: fast, medium, detailed, ultra
@@ -38,17 +39,28 @@ set OUTPUT_FILE=outputs/images/%OUTPUT_NAME%.hdr
 REM Quality preset selection
 if /i "%QUALITY%"=="fast" (
     echo Using FAST quality preset
-    set AA=0.15
-    set AB=2
+    set AA=0.05
+    set AB=3
     set AD=512
     set AS=256
-    set AR=64
+    set AR=128
     set PS=4
-    set PT=0.15
-    set LR=8
-    set LW=0.004
+    set PT=0.12
+    set LR=12
+    set LW=0.002
 ) else if /i "%QUALITY%"=="medium" (
     echo Using MEDIUM quality preset
+    set AA=0.05
+    set AB=3
+    set AD=1024
+    set AS=256
+    set AR=128
+    set PS=4
+    set PT=0.1
+    set LR=12
+    set LW=0.001
+) else if /i "%QUALITY%"=="high" (
+    echo Using HIGH quality preset
     set AA=0.05
     set AB=3
     set AD=1024
@@ -90,6 +102,18 @@ accelerad_rpict -w+ -t 1 -vf %VIEW_FILE% -x %HIGHRES% -y %HIGHRES% -aa %AA% -ab 
 if %errorlevel% neq 0 (
     echo Error in render
     exit /b 1
+)
+
+REM Apply pfilt noise reduction for high-resolution renders (4096+)
+if %HIGHRES% GEQ 4096 (
+    echo Applying pfilt noise reduction for high-resolution render...
+    set DOWNSAMPLED_FILE=outputs/images/%OUTPUT_NAME%_filtered.hdr
+    pfilt -x /2 -y /2 %OUTPUT_FILE% > !DOWNSAMPLED_FILE!
+    if !errorlevel! neq 0 (
+        echo Warning: pfilt failed, keeping original render
+    ) else (
+        echo Filtered output: !DOWNSAMPLED_FILE!
+    )
 )
 
 REM Calculate elapsed time

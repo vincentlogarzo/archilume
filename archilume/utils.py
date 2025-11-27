@@ -960,8 +960,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
         hdr_file_path = next(image_dir.glob('*.hdr'), None)
 
         if hdr_file_path is None:
-            print(f"Warning: No '*_combined.hdr' file found in {image_dir}")
-            return None
+            raise FileNotFoundError(f"No HDR files found in {image_dir}")
 
         print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
 
@@ -1087,5 +1086,77 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
     except Exception as e:
         print(f"Error creating pixel-to-world mapping: {e}")
         return None
+
+
+def print_timing_report(
+    phase_timings: dict,
+    total_runtime: float,
+    output_dir: Optional[Path] = None,
+    main_phases: Optional[list] = None,
+    rendering_subphases: Optional[list] = None,
+    postprocessing_subphases: Optional[list] = None
+) -> None:
+    """
+    Print a formatted timing report for analysis pipeline execution.
+
+    Args:
+        phase_timings: Dictionary mapping phase names to their execution times in seconds
+        total_runtime: Total script execution time in seconds
+        output_dir: Optional path to output directory to display at end of report
+        main_phases: Optional list of main phase names in display order
+        rendering_subphases: Optional list of rendering sub-phase names
+        postprocessing_subphases: Optional list of post-processing sub-phase names
+
+    Example:
+        >>> phase_timings = {"Phase 1: Setup": 5.2, "Phase 2: Render": 120.5}
+        >>> print_timing_report(phase_timings, 125.7)
+    """
+    # Default phase ordering if not provided
+    if main_phases is None:
+        main_phases = ["Phase 1: 3D Scene", "Phase 2: Sky Conditions",
+                      "Phase 3: Camera Views", "Phase 4: Rendering",
+                      "Phase 5: Post-Processing"]
+
+    if rendering_subphases is None:
+        rendering_subphases = ["    Command preparation", "    Overcast octree creation",
+                              "    Ambient file warming (overture)", "    Indirect diffuse rendering",
+                              "    Sunny sky octrees", "    Sunlight rendering",
+                              "    HDR combination & TIFF conversion"]
+
+    if postprocessing_subphases is None:
+        postprocessing_subphases = ["  5a: Generate AOI", "  5b: Generate WPD", "  5c: Stamp Images"]
+
+    print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 +
+          "\n\nExecution Time Summary:\n" + "-" * 80)
+
+    # Print in organized order
+    for phase_name in main_phases:
+        if phase_name in phase_timings:
+            duration = phase_timings[phase_name]
+            percentage = (duration / total_runtime) * 100
+            print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+            # Print sub-phases after Phase 4
+            if phase_name == "Phase 4: Rendering":
+                for subphase in rendering_subphases:
+                    if subphase in phase_timings:
+                        duration = phase_timings[subphase]
+                        percentage = (duration / total_runtime) * 100
+                        print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+            # Print sub-phases after Phase 5
+            elif phase_name == "Phase 5: Post-Processing":
+                for subphase in postprocessing_subphases:
+                    if subphase in phase_timings:
+                        duration = phase_timings[subphase]
+                        percentage = (duration / total_runtime) * 100
+                        print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+    print("-" * 80 + f"\n{'Total Runtime':<45} {total_runtime:>8.2f}s  ({total_runtime/60:>5.1f} min)")
+
+    if output_dir:
+        print("=" * 80 + f"\n\nOutput directory: {output_dir}\n" + "=" * 80)
+    else:
+        print("=" * 80)
 
 
