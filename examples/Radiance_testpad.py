@@ -79,11 +79,16 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 --- 6. ---
 # Testing using of accelerad binaries. 
     #Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency. 
-    .\examples\render.bat plan_L08 22041_AR_T01_v2_with_site_TenK_cie_overcast 4096
+    
+    .\archilume\accelerad_renderer.bat plan_L08 22041_AR_T01_v2_with_site_TenK_cie_overcast fast 1024
 
+    
 
 ---7. ---
 # Approaches for splotchiness. 
+
+    pfilt -x /2 -y /2 outputs/images/22041_AR_T01_v2_with_site_TenK_cie_overcast__plan_L08.hdr > outputs/images/22041_AR_T01_v2_with_site_TenK_cie_overcast__plan_L08_downsized.hdr
+
     For splotchy ambient cache artifacts:
         pfilt -r 0.8 -1 outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
     For Monte Carlo noise:
