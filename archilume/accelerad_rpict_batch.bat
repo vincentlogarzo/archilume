@@ -32,7 +32,7 @@ set VIEWS_DIR=outputs/views_grids
 REM Quality preset selection
 if /i "%QUALITY%"=="fast" (
     echo Using FAST quality preset
-    set AA=0.05
+    set AA=0.2
     set AB=3
     set AD=512
     set AS=256
@@ -159,8 +159,22 @@ goto :AfterRenderView
 
     REM Set file paths for this view
     set VIEW_FILE=!VIEW_PATH!
-    set AMB_FILE=outputs/images/%OCTREE_NAME%__!VIEW_FULL_NAME!.amb
-    set OUTPUT_NAME=%OCTREE_NAME%__!VIEW_FULL_NAME!_%QUALITY%
+
+    REM Extract building/site and sky condition from octree name
+    REM Format: {building}_with_site_{skyCondition}
+    REM Split at "_with_site_" to get building and sky parts
+    set "FULL_NAME=%OCTREE_NAME%"
+
+    REM Replace _with_site_ with a delimiter, then split
+    set "TEMP_NAME=!FULL_NAME:_with_site_=§!"
+    for /f "tokens=1,2 delims=§" %%a in ("!TEMP_NAME!") do (
+        set "BUILDING_PART=%%a"
+        set "SKY_PART=%%b"
+    )
+
+    REM Construct new naming: building_with_site_view__skyCondition
+    set AMB_FILE=outputs/images/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!.amb
+    set OUTPUT_NAME=!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!_%QUALITY%
     set OUTPUT_FILE=outputs/images/!OUTPUT_NAME!.hdr
 
     REM Start timer for this view
