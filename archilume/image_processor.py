@@ -43,25 +43,26 @@ class ImageProcessor:
                                    aoi_lineweight=2, aoi_font_size=32, aoi_color=(255, 0, 0), aoi_bg_alpha=180,
                                    number_of_workers=10)
 
-        self._combine_tiffs_by_view(output_format='gif', number_of_workers=12)
+        self._combine_tiffs_by_view(output_format='gif', fps=2, number_of_workers=12)
         # gif_files = [f for f in self.image_dir.glob('animated_results_*.gif')
         #              if f.name != 'animated_results_grid_all_levels.gif']
         # self._create_grid_gif(gif_files, grid_size=(3, 2), target_size=(self.x_res, self.y_res), fps=2)
 
         print("\nRendering sequence completed successfully.\n")
 
-    def _combine_tiffs_by_view(self, fps: float = None, output_format: str = 'gif', number_of_workers: int = 4) -> None:
+    def _combine_tiffs_by_view(self, output_format: str = 'gif', fps: int = None, number_of_workers: int = 4) -> None:
         """Create separate animated files grouped by view file names using parallel processing."""
 
-        def _combine_tiffs(tiff_paths: list[Path], output_path: Path, duration: int = 100, output_format: str = 'gif') -> None:
-            """Combine multiple TIFF files into a single animated file."""
+        def _combine_tiffs(tiff_paths: list[Path], output_path: Path, fps: int = 2, output_format: str = 'gif') -> None:
+            """Combine multiple TIFF files into a single animated file. Default is 2 fps."""
+            duration = int(1000 / fps)  # Convert fps to milliseconds per frame
             if output_format.lower() == 'gif':
                 tiffs = [Image.open(f) for f in tiff_paths]
                 tiffs[0].save(output_path, save_all=True, append_images=tiffs[1:], duration=duration, loop=0)
             elif output_format.lower() == 'mp4':
                 first_tiff = Image.open(tiff_paths[0])
                 width, height = first_tiff.size
-                fps_calc = max(1.0, 1000 / duration) if duration > 0 else 10
+                fps_calc = fps
                 fourcc = cv2.VideoWriter_fourcc(*'avc1')
                 video_writer = cv2.VideoWriter(str(output_path), fourcc, fps_calc, (width, height))
 
