@@ -4,7 +4,7 @@ REM Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME
 REM Example (all views): .\archilume\accelerad_rpict_batch.bat octree detailed 2048
 REM Example (single view): .\archilume\accelerad_rpict_batch.bat octree detailed 2048 plan_L01
 REM If VIEW_NAME is omitted, ALL view files in outputs/views_grids/ will be rendered
-REM Quality options: fast, medium, high, detailed, test, ark
+REM Quality options: fast, med, high, detailed, test, ark
 REM .\archilume\accelerad_rpict_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L02
 
 
@@ -17,7 +17,7 @@ set SINGLE_VIEW=%4
 if "%OCTREE_NAME%"=="" (
     echo Error: OCTREE_NAME required
     echo Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
-    echo Quality options: fast, medium, high, detailed, test, ark
+    echo Quality options: fast, med, high, detailed, test, ark
     echo Example all views: .\archilume\accelerad_rpict_batch.bat octree high 512
     echo Example single view: .\archilume\accelerad_renderer_batch.bat octree detailed 2048 plan_L01
     exit /b 1
@@ -33,8 +33,8 @@ set VIEWS_DIR=outputs/views_grids
 
 REM Quality preset definitions:
 REM                           AA    AB    AD    AS    AR   PS   PT     LR   LW
-set "PRESET_fast=            0.1    3   1024   256   128    2   0.12    8   0.002"
-set "PRESET_medium=         0.05    3   1024   256   512    2   0.1    12   0.001"
+set "PRESET_fast=           0.07    3   1024   256   124    2   0.1    12   0.001"
+set "PRESET_med=            0.05    3   1024   256   512    2   0.1    12   0.001"
 set "PRESET_high=           0.01    3   1024   512   512    2   0.1    12   0.001"
 set "PRESET_detailed=       0       1   2048  1024   124    1   0.02   12   0.0001"
 set "PRESET_test=           0.05    8   1024   256   512    2   0.12   12   0.0005"
@@ -44,7 +44,7 @@ REM AR=ambient resolution, PS=pixel sample, PT=pixel threshold, LR=limit reflect
 
 REM Validate and load selected preset
 if /i "%QUALITY%"=="fast" set "PRESET_VALUES=!PRESET_fast!"
-if /i "%QUALITY%"=="medium" set "PRESET_VALUES=!PRESET_medium!"
+if /i "%QUALITY%"=="med" set "PRESET_VALUES=!PRESET_med!"
 if /i "%QUALITY%"=="high" set "PRESET_VALUES=!PRESET_high!"
 if /i "%QUALITY%"=="detailed" set "PRESET_VALUES=!PRESET_detailed!"
 if /i "%QUALITY%"=="test" set "PRESET_VALUES=!PRESET_test!"
@@ -52,7 +52,7 @@ if /i "%QUALITY%"=="ark" set "PRESET_VALUES=!PRESET_ark!"
 
 if "!PRESET_VALUES!"=="" (
     echo Error: Invalid quality setting '%QUALITY%'
-    echo Valid options: fast, medium, high, detailed, test, ark
+    echo Valid options: fast, med, high, detailed, test, ark
     exit /b 1
 )
 
@@ -142,8 +142,8 @@ goto :AfterRenderView
     )
 
     REM Construct new naming: building_with_site_view__skyCondition
-    set AMB_FILE=outputs/images/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!_%QUALITY%.amb
-    set OUTPUT_NAME=!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!_%QUALITY%
+    set AMB_FILE=outputs/images/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!.amb
+    set OUTPUT_NAME=!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!
     set OUTPUT_FILE=outputs/images/!OUTPUT_NAME!.hdr
 
     REM Start timer for this view
@@ -159,7 +159,7 @@ goto :AfterRenderView
         REM Use half AD and AS values for faster overture calculation
         set /a AD_OVERTURE=%AD%/2
         set /a AS_OVERTURE=%AS%/2
-        accelerad_rpict -w+ -t 1 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > NUL
+        accelerad_rpict -w+ -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > NUL
         set OVERTURE_ERROR=!errorlevel!
         if !OVERTURE_ERROR! neq 0 (
             echo   WARNING: Overture failed ^(exit code: !OVERTURE_ERROR!^), continuing with render anyway...
@@ -168,7 +168,7 @@ goto :AfterRenderView
 
     REM Single-pass render using generated ambient file
     echo   Main render pass with ambient file...
-    accelerad_rpict -w+ -t 1 -vf "!VIEW_FILE!" -x %RES% -y %RES% -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > "!OUTPUT_FILE!"
+    accelerad_rpict -w+ -t 5 -vf "!VIEW_FILE!" -x %RES% -y %RES% -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > "!OUTPUT_FILE!"
     set RENDER_ERROR=!errorlevel!
     if !RENDER_ERROR! neq 0 (
         echo   ERROR: Render failed for !VIEW_FULL_NAME! ^(exit code: !RENDER_ERROR!^)

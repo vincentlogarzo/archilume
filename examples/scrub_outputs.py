@@ -1,49 +1,41 @@
 """Clean up the outputs folder to prepare for fresh rendering."""
 
-import shutil
 from pathlib import Path
 
 
 def clear_outputs_folder(retain_amb_files: bool = False) -> None:
     """
-    Remove all files from the outputs folder.
+    Remove all files from the outputs folder while preserving directory structure.
 
     Args:
         retain_amb_files: If True, keeps .amb files in the images directory.
-                         If False, removes everything.
+                         If False, removes all files.
     """
-    outputs_dir = Path(__file__).parent / "outputs"
+    outputs_dir = Path(__file__).parent.parent / "outputs"
 
     if not outputs_dir.exists():
         print(f"Outputs directory does not exist: {outputs_dir}")
         return
 
-    # Remove all contents
-    for item in outputs_dir.iterdir():
-        if item.is_file():
-            item.unlink()
-            print(f"Removed file: {item.name}")
-        elif item.is_dir():
-            # Handle images directory specially if retaining .amb files
-            if retain_amb_files and item.name == "images":
-                for file in item.iterdir():
-                    if file.is_file() and file.suffix != ".amb":
-                        file.unlink()
-                        print(f"Removed file: images/{file.name}")
-                    elif file.is_dir():
-                        shutil.rmtree(file)
-                        print(f"Removed directory: images/{file.name}")
-                # Remove images dir if empty (no .amb files were present)
-                if not any(item.iterdir()):
-                    item.rmdir()
-                    print(f"Removed empty directory: {item.name}")
-            else:
-                shutil.rmtree(item)
-                print(f"Removed directory: {item.name}")
+    # Recursively remove files while preserving directories
+    def clear_directory(directory: Path, keep_amb: bool = False):
+        for item in directory.iterdir():
+            if item.is_file():
+                # Skip .amb files if retain_amb_files is True and we're in images directory
+                if keep_amb and item.suffix == ".amb":
+                    print(f"Retained: {item.relative_to(outputs_dir)}")
+                    continue
+                item.unlink()
+                print(f"Removed: {item.relative_to(outputs_dir)}")
+            elif item.is_dir():
+                # Apply amb retention only to images directory
+                should_keep_amb = retain_amb_files and item.name == "images"
+                clear_directory(item, keep_amb=should_keep_amb)
 
-    print("Outputs folder cleanup complete.")
+    clear_directory(outputs_dir)
+    print(f"\nOutputs folder cleanup complete. Directory structure preserved.")
 
 
 if __name__ == "__main__":
     # Set to True to keep .amb files in images directory
-    clear_outputs_folder(retain_amb_files=True)
+    clear_outputs_folder(retain_amb_files=False)

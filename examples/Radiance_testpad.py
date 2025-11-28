@@ -74,35 +74,27 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     falsecolor -i "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.tiff"
     falsecolor -i "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.tiff"
 
+    falsecolor -i "C:\Projects\archilume\outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_detailed_filtered.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -2 - "C:\Projects\archilume\outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_detailed_filtered.tiff"
+
+    
+FUTURE implementaiton A of RenderingPipelines
+   
+    rpict -w -t 2 -vf outputs\views_grids\plan_L01.vp -x 1024 -y 1024 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 -af outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.amb -i outputs\octree\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.oct > outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.hdr && echo "First command succeeded" && falsecolor -i outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.hdr -s 1000 -l lux -n 10 -lw 0 | ra_tiff -e -2 - outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.tiff
 
 
 --- 6. ---
 # Testing using of accelerad binaries. 
-    #Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency. 
-
-    .\archilume\accelerad_renderer.bat plan_L08 22041_AR_T01_v2_with_site_TenK_cie_overcast medium 2048
+    #Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency.
+    #  
+    .\archilume\accelerad_rpict_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast high 512
 
     
 
 ---7. ---
 # Approaches for splotchiness. 
 
-    pfilt -x /2 -y /2 outputs/images/22041_AR_T01_v2_with_site_TenK_cie_overcast__plan_L08.hdr > outputs/images/22041_AR_T01_v2_with_site_TenK_cie_overcast__plan_L08_downsized.hdr
+    pfilt -x /2 -y /2 outputs/images/87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_medium.hdr > outputs/images/87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_medium_cleaned.hdr
 
-    For splotchy ambient cache artifacts:
-        pfilt -r 0.8 -1 outputs/images/22041_AR_T01_v2_with_site_TenK_cie_overcast__plan_L08_fast.hdr > outputs/images/22041_AR_T01_v2_with_site_TenK_cie_overcast__plan_L08_fast_cleaned.hdr
-    For Monte Carlo noise:
-        pfilt -r 0.5 -1 outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr | pcond -a - > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
-            pfilt -r 0.5 -1 outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
-    For high-contrast splotches:
-        pcond -s outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step.hdr | pfilt -r 0.4 > outputs/images/22041_AR_T01_v2_with_site_plan_L02__TenK_cie_overcast_2step_cleaned.hdr
-    Parameters to Experiment With
-        -r values: 0.3 (subtle) → 1.0 (heavy blur)
-        -1: Forces one pass (faster)
-        -e: Exposure adjustment (+/- stops)
-        pcond -s: Use scotopic vision (darker scenes)
-
-        The most effective approach is usually: pfilt with modest radius (0.5-0.7) + pcond tone mapping.
 
 
 

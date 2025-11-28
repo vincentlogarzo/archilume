@@ -39,6 +39,7 @@ import time
 
 # TODO: execute sky view and aoi generator while the initial octree is being compiled with oconv as it is a heavy process currently only utilising 1 core of the CPU.
 # TODO: The view generator does not deal well hen levels are deleted from the room boundaries, it does number levles corrector. Perhaps the Level number should be RL for reference line.
+# TODO: see future implementation A in radiance_testpad.py to introduce optional falsecolour of the output images before stamping. See the command needed under this ection. 
 
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
 # FIXME: obj_paths variable -> currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
@@ -73,7 +74,7 @@ def main():
     script_start_time = time.time()
     phase_timings = {}  # Store phase execution times
 
-    print(f"\n{'=' * 80}\nARCHILUME - Winter Solstice Sunlight Exposure Analysis\n{'=' * 80}")
+    print(f"\n{'=' * 100}\nARCHILUME - Winter Solstice Sunlight Exposure Analysis\n{'=' * 100}")
 
     # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
 
@@ -84,16 +85,16 @@ def main():
     end_hour                            = 10            # 3:00 PM
     timestep                            = 15            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
-    image_resolution                    = 2048          # Image size in pixels to be rendered
-    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2_room_boundaries.csv"
+    image_resolution                    = 1024          # Image size in pixels to be rendered (must <= 2048)
+    room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"
     obj_paths = [
-        Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj", # first file must be building of interest
-        # Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # .obj files must be exported in meters + coarse + 3d view visual style as hidden line. Geometry decimation optional via blender
+        Path(__file__).parent.parent / "inputs" / "87Cowles_BLD_withWindows.obj", # first file must be building of interest
+        Path(__file__).parent.parent / "inputs" / "87cowles_site.obj" # .obj files must be exported in meters + coarse + 3d view visual style as hidden line. Geometry decimation optional via blender
         ]    
 
 
     # --- Phase 1: Establish 3D Scene ---
-    print(f"\n{'=' * 80}\nPhase 1: Establishing 3D Scene...\n{'=' * 80}")
+    print(f"\n{'=' * 100}\nPhase 1: Establishing 3D Scene...\n{'=' * 100}")
     phase_start = time.time()
 
     octree_generator = ObjToOctree(obj_paths)
@@ -103,7 +104,7 @@ def main():
 
 
     # --- Phase 2: Generate Sky Conditions for Analysis Period ---
-    print(f"\n{'=' * 80}\nPhase 2: Generatore Sky Conditions for Analysis period...\n{'=' * 80}")
+    print(f"\n{'=' * 100}\nPhase 2: Generatore Sky Conditions for Analysis period...\n{'=' * 100}")
 
     sky_generator = SkyGenerator(lat=project_latitude)  # Input building projcts latitude to at least 4 decimal places
     sky_generator.generate_TenK_cie_overcast_skyfile()
@@ -118,7 +119,7 @@ def main():
 
 
     # --- Phase 3: Generate Camera Views ---
-    print(f"\n{'=' * 80}\nPhase 3: Configuring Camera Views...\n{'=' * 80}")
+    print(f"\n{'=' * 100}\nPhase 3: Configuring Camera Views...\n{'=' * 100}")
 
     view_generator = ViewGenerator(
         room_boundaries_csv_path        = room_boundaries_csv_path,
@@ -130,7 +131,7 @@ def main():
 
 
     # --- Phase 4: Execute Rendering Pipeline ---
-    print(f"\n{'=' * 80}\nPhase 4: Executing Rendering Pipeline...\n{'=' * 80}")
+    print(f"\n{'=' * 100}\nPhase 4: Executing Rendering Pipeline...\n{'=' * 100}")
 
     renderer = RenderingPipelines(
         skyless_octree_path             = octree_generator.skyless_octree_path,
@@ -140,14 +141,14 @@ def main():
         x_res                           = image_resolution,
         y_res                           = image_resolution
         )
-    rendering_phase_timings = renderer.sunlight_rendering_pipeline()
+    rendering_phase_timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='fast')
 
     phase_timings.update(rendering_phase_timings)
     phase_timings["Phase 4: Rendering"], phase_start = time.time() - phase_start, time.time()
 
 
     # --- Phase 5: Post-process all frames into .csv .wpd results and .gif with compliance stamps ---
-    print(f"\nPhase 5: Execute Post-Processing of Results...\n{'=' * 80}")
+    print(f"\nPhase 5: Execute Post-Processing of Results...\n{'=' * 100}")
 
     # --- Phase 5a: Generate Area of Interest (AOI) files ---
     sub_phase_start = time.time()
@@ -189,7 +190,7 @@ def main():
 
 
     # --- Phase 6: Final Packaging of Results ---
-    print(f"\nPhase 6: Packaging Final Results...\n{'=' * 80}")
+    print(f"\nPhase 6: Packaging Final Results...\n{'=' * 100}")
 
 
 

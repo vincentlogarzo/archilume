@@ -15,6 +15,8 @@ from typing import List
 from pathlib import Path
 import logging
 from concurrent.futures import ThreadPoolExecutor
+import time
+import subprocess
 
 # Third-party imports
 from itertools import product
@@ -96,14 +98,47 @@ class RenderingPipelines:
                 print(f"Error creating directory {self.image_dir}: {e}")
         
 
-    def sunlight_rendering_pipeline(self) -> dict:
+    def sunlight_rendering_pipeline(self, render_mode: str = 'cpu', gpu_quality: str = 'med') -> dict:
         """
         Render images for each combination of sky and view files.
 
+        Args:
+            render_mode (str, optional): Rendering backend selection. Defaults to 'cpu'.
+                Valid options:
+                - 'cpu': Uses rpict for CPU-based rendering (separate overture and final passes)
+                - 'gpu': Uses Accelerad for GPU-accelerated rendering (combined overture + final)
+
+            gpu_quality (str, optional): Quality preset for GPU rendering. Defaults to 'med'.
+                Only used when render_mode='gpu'. Valid options:
+                - 'fast': Quick preview (AA=0.07, AB=3, AD=1024, AS=256, AR=124)
+                - 'med': Medium quality (AA=0.05, AB=3, AD=1024, AS=256, AR=512)
+                - 'high': High quality (AA=0.01, AB=3, AD=1024, AS=512, AR=512)
+                - 'detailed': Maximum quality (AA=0, AB=1, AD=2048, AS=1024, AR=124)
+                - 'test': Testing configuration (AA=0.05, AB=8, AD=1024, AS=256, AR=512)
+                - 'ark': Architecture quality (AA=0.01, AB=8, AD=4096, AS=1024, AR=1024)
+
         Returns:
             dict: Dictionary containing timing information for each rendering phase.
+
+        Raises:
+            ValueError: If render_mode or gpu_quality contains invalid values.
+
+        Example:
+            >>> # CPU rendering (default)
+            >>> timings = renderer.sunlight_rendering_pipeline()
+
+            >>> # GPU rendering with medium quality
+            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='med')
+
+            >>> # GPU rendering with high quality
+            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='high')
         """
-        import time
+
+        # Validate inputs
+        if render_mode not in (valid_modes := ['cpu', 'gpu']):
+            raise ValueError(f"Invalid render_mode '{render_mode}'. Valid options: {', '.join(valid_modes)}")
+        if gpu_quality not in (valid_quals := ['fast', 'med', 'high', 'detailed', 'test', 'ark']):
+            raise ValueError(f"Invalid gpu_quality '{gpu_quality}'. Valid options: {', '.join(valid_quals)}")
 
         phase_timings = {}
         print("\nRenderingPipelines getting started...\n")
@@ -114,6 +149,11 @@ class RenderingPipelines:
         (self.overcast_octree_command,
          self.rpict_daylight_overture_commands,
          self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
+
+
+
+
+
         # Generate sunny sky rendering commands
         (self.temp_octree_with_sky_paths,
          self.oconv_commands,
@@ -127,16 +167,61 @@ class RenderingPipelines:
         utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=1)
         phase_timings["    Overcast octree creation"] = time.time() - phase_start
 
-        phase_start = time.time()
-        utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=8)
-        phase_timings["    Ambient file warming (overture)"] = time.time() - phase_start
+        if render_mode == 'gpu':
+            # GPU mode: Combined overture + rendering using Accelerad batch
+            phase_start = time.time()
+            octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
+            octree_name = f"{octree_base_name}_{self.overcast_sky_file_path.stem}"
 
-        phase_start = time.time()
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(
-            utils.execute_new_radiance_commands,
-            self.rpict_daylight_med_qual_commands,
-            number_of_workers=8)
+            # Construct batch command
+            batch_command = rf".\archilume\accelerad_rpict_batch.bat {octree_name} {gpu_quality} {self.x_res}"
+
+            # Get current working directory to ensure batch runs from project root
+            project_root = os.getcwd()
+
+            print(f"\n{'='*80}")
+            print(f"GPU RENDERING DIAGNOSTICS:")
+            print(f"Working Directory: {project_root}")
+            print(f"Batch Command: {batch_command}")
+            print(f"Octree Name: {octree_name}")
+            print(f"Quality: {gpu_quality}")
+            print(f"Resolution: {self.x_res}")
+            print(f"{'='*80}\n")
+
+            # Execute batch file with modified environment (RAYPATH)
+            raypath = r"C:\Radiance\lib;C:\Program Files\Accelerad\lib"
+
+            # Copy current environment and set RAYPATH
+            env = os.environ.copy()
+            env['RAYPATH'] = raypath
+
+            print(f"Launching GPU rendering...")
+            print(f"RAYPATH: {raypath}")
+            print(f"Batch Command: {batch_command}")
+
+            # Run batch file directly with modified environment
+            result = subprocess.run(batch_command, shell=True, env=env, cwd=project_root)
+
+            if result.returncode != 0:
+                print(f"\nWarning: GPU rendering exited with code {result.returncode}")
+            else:
+                print("\nGPU rendering completed successfully")
+
+            # Create dummy future for compatibility with future.result() call later
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(lambda: None)
+        else:
+            # CPU mode: Separate overture and rendering passes
+            phase_start = time.time()
+            utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=8)
+            phase_timings["    Ambient file warming (overture)"] = time.time() - phase_start
+
+            phase_start = time.time()
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(
+                utils.execute_new_radiance_commands,
+                self.rpict_daylight_med_qual_commands,
+                number_of_workers=8)
 
         # --- Phase 2: Synthesize octree files for all sky-view combinations ---
         # Prepare temporary octree structures for comprehensive solar condition analysis
@@ -153,7 +238,10 @@ class RenderingPipelines:
 
         phase_start = time.time()
         future.result()  # Ensure overcast rendering is complete before combining
-        phase_timings["    Indirect diffuse rendering"] = time.time() - phase_start
+        if render_mode == 'gpu':
+            phase_timings["    Ambient file warming & rendering (GPU)"] = time.time() - phase_start
+        else:
+            phase_timings["    Indirect diffuse rendering"] = time.time() - phase_start
 
         phase_start = time.time()
         utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=20)
@@ -210,7 +298,7 @@ class RenderingPipelines:
         overcast_octree_command = str(rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}")
 
         rpict_overture_commands, rpict_med_qual_commands = [], []
-        x_res_overture, y_res_overture = 512, 512
+        x_res_overture, y_res_overture = 64, 64
 
         for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
             
@@ -219,9 +307,11 @@ class RenderingPipelines:
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
             rpict_overture_command, rpict_med_qual_command = [
-                rf"rpict -w -t 2 -vf {view_file_path} -x {x_res_overture} -y {y_res_overture} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}",
+                rf"rpict -w -t 2 -vf {view_file_path} -x {x_res_overture} -y {y_res_overture} -aa {aa} -ab {ab} -ad {ad/2} -ar {ar} -as {as_val/2} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}",
                 rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
             ]
+
+            
 
             rpict_overture_commands.append(rpict_overture_command)
             rpict_med_qual_commands.append(rpict_med_qual_command)
@@ -285,6 +375,7 @@ class RenderingPipelines:
                 rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
                 rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | ra_tiff -e -2 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
             ]
+    
 
             temp_octree_with_sky_paths.append(temp_octree_with_sky_path)
             oconv_commands.append(oconv_command)
