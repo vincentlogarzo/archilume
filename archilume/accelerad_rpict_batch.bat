@@ -1,10 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
 REM Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
-REM Example (all views): accelerad_renderer_batch.bat octree detailed 2048
-REM Example (single view): accelerad_renderer_batch.bat octree detailed 2048 plan_L01
+REM Example (all views): .\archilume\accelerad_rpict_batch.bat octree detailed 2048
+REM Example (single view): .\archilume\accelerad_rpict_batch.bat octree detailed 2048 plan_L01
 REM If VIEW_NAME is omitted, ALL view files in outputs/views_grids/ will be rendered
 REM Quality options: fast, medium, high, detailed, test, ark
+REM .\archilume\accelerad_rpict_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L02
+
 
 REM Arguments
 set OCTREE_NAME=%1
@@ -16,8 +18,8 @@ if "%OCTREE_NAME%"=="" (
     echo Error: OCTREE_NAME required
     echo Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
     echo Quality options: fast, medium, high, detailed, test, ark
-    echo Example all views: accelerad_renderer_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast detailed 2048
-    echo Example single view: accelerad_renderer_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast detailed 2048 plan_L01
+    echo Example all views: .\archilume\accelerad_rpict_batch.bat octree high 512
+    echo Example single view: .\archilume\accelerad_renderer_batch.bat octree detailed 2048 plan_L01
     exit /b 1
 )
 
@@ -29,77 +31,44 @@ REM Configuration
 set OCTREE=outputs/octree/%OCTREE_NAME%.oct
 set VIEWS_DIR=outputs/views_grids
 
-REM Quality preset selection
-if /i "%QUALITY%"=="fast" (
-    echo Using FAST quality preset
-    set AA=0.2
-    set AB=3
-    set AD=512
-    set AS=256
-    set AR=128
-    set PS=4
-    set PT=0.12
-    set LR=12
-    set LW=0.002
-) else if /i "%QUALITY%"=="medium" (
-    echo Using MEDIUM quality preset
-    set AA=0.05
-    set AB=3
-    set AD=1024
-    set AS=256
-    set AR=128
-    set PS=4
-    set PT=0.1
-    set LR=12
-    set LW=0.001
-) else if /i "%QUALITY%"=="high" (
-    echo Using HIGH quality preset
-    set AA=0.05
-    set AB=3
-    set AD=1024
-    set AS=256
-    set AR=128
-    set PS=2
-    set PT=0.1
-    set LR=12
-    set LW=0.001
-) else if /i "%QUALITY%"=="detailed" (
-    echo Using DETAILED quality preset
-    set AA=0
-    set AB=1
-    set AD=2048
-    set AS=1024
-    set AR=128
-    set PS=1
-    set PT=0.02
-    set LR=12
-    set LW=0.0001
-) else if /i "%QUALITY%"=="test" (
-    echo Using TEST quality preset
-    set AA=0.05
-    set AB=8
-    set AD=1024
-    set AS=256
-    set AR=512
-    set PS=2
-    set PT=0.12
-    set LR=12
-    set LW=0.0005
-) else if /i "%QUALITY%"=="ark" (
-    echo Using ARK quality preset
-    set AA=0.01
-    set AB=8
-    set AD=4096
-    set AS=1024
-    set AR=1024
-    set PS=4
-    set PT=0.05
-    set LR=16
-    set LW=0.0002
-) else (
+REM Quality preset definitions:
+REM                           AA    AB    AD    AS    AR   PS   PT     LR   LW
+set "PRESET_fast=            0.1    3   1024   256   128    2   0.12    8   0.002"
+set "PRESET_medium=         0.05    3   1024   256   512    2   0.1    12   0.001"
+set "PRESET_high=           0.01    3   1024   512   512    2   0.1    12   0.001"
+set "PRESET_detailed=       0       1   2048  1024   124    1   0.02   12   0.0001"
+set "PRESET_test=           0.05    8   1024   256   512    2   0.12   12   0.0005"
+set "PRESET_ark=            0.01    8   4096  1024  1024    4   0.05   16   0.0002"
+REM AA=ambient accuracy, AB=ambient bounces, AD=ambient divisions, AS=ambient super-samples
+REM AR=ambient resolution, PS=pixel sample, PT=pixel threshold, LR=limit reflection, LW=limit weight
+
+REM Validate and load selected preset
+if /i "%QUALITY%"=="fast" set "PRESET_VALUES=!PRESET_fast!"
+if /i "%QUALITY%"=="medium" set "PRESET_VALUES=!PRESET_medium!"
+if /i "%QUALITY%"=="high" set "PRESET_VALUES=!PRESET_high!"
+if /i "%QUALITY%"=="detailed" set "PRESET_VALUES=!PRESET_detailed!"
+if /i "%QUALITY%"=="test" set "PRESET_VALUES=!PRESET_test!"
+if /i "%QUALITY%"=="ark" set "PRESET_VALUES=!PRESET_ark!"
+
+if "!PRESET_VALUES!"=="" (
     echo Error: Invalid quality setting '%QUALITY%'
     echo Valid options: fast, medium, high, detailed, test, ark
     exit /b 1
+)
+
+echo Using %QUALITY% quality preset
+
+REM Parse and assign parameters (space-delimited)
+for /f "tokens=1-9" %%a in ("!PRESET_VALUES!") do (
+    set AA=%%a
+    set AB=%%b
+    set AD=%%c
+    set AS=%%d
+    set AR=%%e
+    set PS=%%f
+    set PT=%%g
+    set LR=%%h
+    set LW=%%i
 )
 
 REM CUDA cache
@@ -173,7 +142,7 @@ goto :AfterRenderView
     )
 
     REM Construct new naming: building_with_site_view__skyCondition
-    set AMB_FILE=outputs/images/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!.amb
+    set AMB_FILE=outputs/images/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!_%QUALITY%.amb
     set OUTPUT_NAME=!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!_%QUALITY%
     set OUTPUT_FILE=outputs/images/!OUTPUT_NAME!.hdr
 
@@ -187,7 +156,10 @@ goto :AfterRenderView
         echo   Overture: Using existing ambient file !AMB_FILE!
     ) else (
         echo   Overture: Generating ambient file !AMB_FILE!
-        accelerad_rpict -w+ -t 1 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > NUL
+        REM Use half AD and AS values for faster overture calculation
+        set /a AD_OVERTURE=%AD%/2
+        set /a AS_OVERTURE=%AS%/2
+        accelerad_rpict -w+ -t 1 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > NUL
         set OVERTURE_ERROR=!errorlevel!
         if !OVERTURE_ERROR! neq 0 (
             echo   WARNING: Overture failed ^(exit code: !OVERTURE_ERROR!^), continuing with render anyway...
@@ -218,12 +190,12 @@ goto :AfterRenderView
         REM Calculate elapsed time for this view
         set END_TIME=!TIME!
 
-        REM Convert times to seconds for calculation
+        REM Convert times to seconds for calculation (strip leading zeros to avoid octal interpretation)
         for /f "tokens=1-4 delims=:." %%a in ("!START_TIME!") do (
-            set /a START_SEC=%%a*3600 + %%b*60 + %%c
+            set /a START_SEC=1%%a%%100*3600 + 1%%b%%100*60 + 1%%c%%100
         )
         for /f "tokens=1-4 delims=:." %%a in ("!END_TIME!") do (
-            set /a END_SEC=%%a*3600 + %%b*60 + %%c
+            set /a END_SEC=1%%a%%100*3600 + 1%%b%%100*60 + 1%%c%%100
         )
 
         set /a ELAPSED_SEC=END_SEC-START_SEC
@@ -242,11 +214,12 @@ goto :AfterRenderView
 REM Calculate total batch time
 set BATCH_END_TIME=%TIME%
 
+REM Convert times to seconds (strip leading zeros to avoid octal interpretation)
 for /f "tokens=1-4 delims=:." %%a in ("%BATCH_START_TIME%") do (
-    set /a BATCH_START_SEC=%%a*3600 + %%b*60 + %%c
+    set /a BATCH_START_SEC=1%%a%%100*3600 + 1%%b%%100*60 + 1%%c%%100
 )
 for /f "tokens=1-4 delims=:." %%a in ("%BATCH_END_TIME%") do (
-    set /a BATCH_END_SEC=%%a*3600 + %%b*60 + %%c
+    set /a BATCH_END_SEC=1%%a%%100*3600 + 1%%b%%100*60 + 1%%c%%100
 )
 
 set /a BATCH_ELAPSED_SEC=BATCH_END_SEC-BATCH_START_SEC
