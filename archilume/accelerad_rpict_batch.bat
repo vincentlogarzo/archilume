@@ -146,6 +146,13 @@ goto :AfterRenderView
     set OUTPUT_NAME=!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!
     set OUTPUT_FILE=outputs/images/!OUTPUT_NAME!.hdr
 
+    REM Skip if output file already exists
+    if exist "!OUTPUT_FILE!" (
+        echo   [!CURRENT_VIEW!/!VIEW_COUNT!] Skipping !VIEW_FULL_NAME! - output already exists: !OUTPUT_FILE!
+        echo.
+        exit /b 0
+    )
+
     REM Start timer for this view
     set START_TIME=!TIME!
     echo   Rendering: !VIEW_FULL_NAME! ^> !OUTPUT_NAME!.hdr (!RES!px)

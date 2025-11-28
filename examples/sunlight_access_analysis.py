@@ -68,6 +68,8 @@ import time
     # chart overlay onto combined gifs. 
     # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value.
 # TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing.
+# TODO: add custom parameters input into the gpu_quality, which should be albelelled rendering parameters that work for both these workflows if user does not want to use a preconfigured set of parameters. 
+# TODO: potentiall simpler implemntation of gpu rendering using os.system(".\archilume\accelerad_rpict_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L02") instead of the current in rendering_pipelines.py.
 
 def main():
     # Start runtime tracking
@@ -76,16 +78,20 @@ def main():
 
     print(f"\n{'=' * 100}\nARCHILUME - Winter Solstice Sunlight Exposure Analysis\n{'=' * 100}")
 
-    # --- Phase 0: List building, site and other adjacent building files and input parameters --- 
 
+    # ========================================================================================================
+    # Phase 0: List building, site and other adjacent building files and input parameters
+    # ========================================================================================================
     project_latitude                    = -37.8134564   # Input building projcts latitude to at least 4 decimal places
     month                               = 6             # June
     day                                 = 21            # Winter solstice
     start_hour                          = 9             # 9:00 AM
-    end_hour                            = 10            # 3:00 PM
+    end_hour                            = 15            # 3:00 PM
     timestep                            = 15            # Minutes (must be greater than 5 min increments) 
     finished_floor_level_offset         = 1.0           # Meters above finished floor level for camera height
-    image_resolution                    = 1024          # Image size in pixels to be rendered (must <= 2048)
+    image_resolution                    = 2048          # Image size in pixels to be rendered (must <= 2048)
+    rendering_mode                      = 'gpu'         # select from convention cpu rendering or accelerated gpu rendering
+    rendering_quality                   = 'high'        # select from a range of rendering quality options: fast, med, high, detailed, test, ark
     room_boundaries_csv_path            = Path(__file__).parent.parent / "inputs" / "87cowles_BLD_room_boundaries.csv"
     obj_paths = [
         Path(__file__).parent.parent / "inputs" / "87Cowles_BLD_withWindows.obj", # first file must be building of interest
@@ -93,7 +99,9 @@ def main():
         ]    
 
 
-    # --- Phase 1: Establish 3D Scene ---
+    # ========================================================================================================
+    # Phase 1: Establish 3D Scene
+    # ========================================================================================================
     print(f"\n{'=' * 100}\nPhase 1: Establishing 3D Scene...\n{'=' * 100}")
     phase_start = time.time()
 
@@ -103,10 +111,12 @@ def main():
     phase_timings["Phase 1: 3D Scene"], phase_start = time.time() - phase_start, time.time()
 
 
-    # --- Phase 2: Generate Sky Conditions for Analysis Period ---
+    # ========================================================================================================
+    # Phase 2: Generate Sky Conditions for Analysis Period
+    # ========================================================================================================
     print(f"\n{'=' * 100}\nPhase 2: Generatore Sky Conditions for Analysis period...\n{'=' * 100}")
 
-    sky_generator = SkyGenerator(lat=project_latitude)  # Input building projcts latitude to at least 4 decimal places
+    sky_generator = SkyGenerator(lat=project_latitude)  # Input projcts latitude to at least 4 decimal places
     sky_generator.generate_TenK_cie_overcast_skyfile()
     sky_generator.generate_sunny_sky_series(
         month                           = month,
@@ -118,7 +128,9 @@ def main():
     phase_timings["Phase 2: Sky Conditions"], phase_start = time.time() - phase_start, time.time()
 
 
-    # --- Phase 3: Generate Camera Views ---
+    # ========================================================================================================
+    # Phase 3: Generate Camera Views
+    # ========================================================================================================
     print(f"\n{'=' * 100}\nPhase 3: Configuring Camera Views...\n{'=' * 100}")
 
     view_generator = ViewGenerator(
@@ -130,7 +142,9 @@ def main():
     phase_timings["Phase 3: Camera Views"], phase_start = time.time() - phase_start, time.time()
 
 
-    # --- Phase 4: Execute Rendering Pipeline ---
+    # ========================================================================================================
+    # Phase 4: Execute Rendering Pipeline
+    # ========================================================================================================
     print(f"\n{'=' * 100}\nPhase 4: Executing Rendering Pipeline...\n{'=' * 100}")
 
     renderer = RenderingPipelines(
@@ -141,23 +155,32 @@ def main():
         x_res                           = image_resolution,
         y_res                           = image_resolution
         )
-    rendering_phase_timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='fast')
+    rendering_phase_timings = renderer.sunlight_rendering_pipeline(
+        render_mode                     =rendering_mode, 
+        gpu_quality                     =rendering_quality
+        )
 
     phase_timings.update(rendering_phase_timings)
     phase_timings["Phase 4: Rendering"], phase_start = time.time() - phase_start, time.time()
 
 
-    # --- Phase 5: Post-process all frames into .csv .wpd results and .gif with compliance stamps ---
+    # ========================================================================================================
+    # Phase 5: Post-process all frames into .csv .wpd results and .gif with compliance stamps
+    # ========================================================================================================
     print(f"\nPhase 5: Execute Post-Processing of Results...\n{'=' * 100}")
 
-    # --- Phase 5a: Generate Area of Interest (AOI) files ---
+    # --------------------------------------------------------------------------------------------------------
+    # Phase 5a: Generate Area of Interest (AOI) files
+    # --------------------------------------------------------------------------------------------------------
     sub_phase_start = time.time()
     coordinate_map_path = utils.create_pixel_to_world_coord_map(renderer.image_dir)
     view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
  
     phase_timings["  5a: Generate AOI"], sub_phase_start = time.time() - sub_phase_start, time.time()
-
-    # --- Phase 5b: Generate Working plane data (WPD) and .csv results for sunlit areas ---
+    
+    # --------------------------------------------------------------------------------------------------------
+    # Phase 5b: Generate Working plane data (WPD) and .csv results for sunlit areas ---
+    # --------------------------------------------------------------------------------------------------------
     processor = ResultsProcessor(
         image_dir                       = renderer.image_dir,
         aoi_dir                         = view_generator.aoi_dir,
@@ -170,8 +193,9 @@ def main():
 
     phase_timings["  5b: Generate WPD"], sub_phase_start = time.time() - sub_phase_start, time.time()
 
-
-   # --- Phase 5c: Stamp results onto images and generate combined gifs ---
+    # --------------------------------------------------------------------------------------------------------
+    # Phase 5c: Stamp results onto images and generate combined gifs
+    # --------------------------------------------------------------------------------------------------------
     image_processor = ImageProcessor(
         skyless_octree_path             = octree_generator.skyless_octree_path,
         overcast_sky_file_path          = sky_generator.TenK_cie_overcast_sky_file_path,
@@ -189,7 +213,9 @@ def main():
     phase_timings["Phase 5: Post-Processing"] = time.time() - phase_start
 
 
-    # --- Phase 6: Final Packaging of Results ---
+    # ========================================================================================================
+    # Phase 6: Final Packaging of Results
+    # ========================================================================================================
     print(f"\nPhase 6: Packaging Final Results...\n{'=' * 100}")
 
 

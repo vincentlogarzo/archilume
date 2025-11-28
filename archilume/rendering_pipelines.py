@@ -98,7 +98,7 @@ class RenderingPipelines:
                 print(f"Error creating directory {self.image_dir}: {e}")
         
 
-    def sunlight_rendering_pipeline(self, render_mode: str = 'cpu', gpu_quality: str = 'med') -> dict:
+    def sunlight_rendering_pipeline(self, render_mode: str = 'cpu', gpu_quality: str = 'fast') -> dict:
         """
         Render images for each combination of sky and view files.
 
@@ -373,7 +373,7 @@ class RenderingPipelines:
             oconv_command, rpict_command, pcomb_ra_tiff_command = [
                 rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}" ,
                 rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
-                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | ra_tiff -e -2 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
+                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | ra_tiff -e -4 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
             ]
     
 
