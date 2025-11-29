@@ -21,10 +21,11 @@ from pathlib import Path
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
-import os
 import logging
+import os
+from skimage.draw import polygon
 
 # Third-party imports
 from openpyxl.styles import Alignment, PatternFill, Border, Side
@@ -35,263 +36,161 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ViewGroupProcessor:
-    """Processes a chunk of AOI files against all HDR files for a specific view.
-
-    This class is designed to be instantiated once per worker process.
-    It handles loading HDR files sequentially, applying AOI masks, and writing .wpd files.
-
-    Architecture:
-    - Each instance processes a subset of AOI files for one view level
-    - All HDR files for that view are processed sequentially
-    - Results are written to .wpd files before the instance exits
-    - Designed for parallel execution via ProcessPoolExecutor
-
-    Optimizations:
-    - Pre-parses AOI files and caches polygon coordinates (FIX #3)
-    - Pre-computes shared coordinate grid once per worker (FIX #1)
-    - Uses bounding box filtering for ray casting (FIX #2)
     """
-
+    Optimized Processor. 
+    Uses pre-computed boolean masks and bitwise operations for maximum speed.
+    """
     view_name: str
     aoi_files: List[Path]
     hdr_files: List[Path]
     pixel_threshold_value: float
     wpd_output_dir: Path
 
-    # Cached data (initialized in __post_init__)
-    _aoi_cache: Dict[Path, Dict] = None
-    _coord_grid: np.ndarray = None
-    _grid_width: int = None
-    _grid_height: int = None
+    # Cache for boolean masks: {Path: np.ndarray(bool)}
+    _aoi_masks: Dict[Path, np.ndarray] = field(default_factory=dict)
+    # Cache for pixel counts: {Path: int}
+    _aoi_pixel_counts: Dict[Path, int] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Initialize cached data for performance optimization."""
-        # FIX #3: Pre-parse all AOI files once
-        self._aoi_cache = {}
+        """Pre-rasterize all AOI polygons into boolean masks."""
+        if not self.hdr_files or not self.aoi_files:
+            return
+
+        # 1. Get resolution from the first HDR file to initialize masks
+        # Assumption: All HDRs in a specific view group share the same resolution.
+        try:
+            self.width, self.height = utils.get_hdr_resolution(self.hdr_files[0])
+        except Exception as e:
+            print(f"Error getting resolution from {self.hdr_files[0]}: {e}")
+            return
+
+        print(f"[PID {os.getpid()}] Pre-computing masks for {len(self.aoi_files)} AOIs ({self.width}x{self.height})...")
+
+        # 2. Convert every AOI file into a Boolean Mask immediately
         for aoi_file in self.aoi_files:
             try:
                 with open(aoi_file, 'r') as f:
                     lines = f.readlines()
 
                 # Parse polygon coordinates
-                polygon_coords = []
-                for line in lines[5:]:
+                # Format expected: ... pixel_x pixel_y ...
+                xs = []
+                ys = []
+                for line in lines[5:]: # Skip header
                     parts = line.strip().split()
                     if len(parts) >= 4:
-                        pixel_x = int(parts[2])
-                        pixel_y = int(parts[3])
-                        polygon_coords.append((pixel_x, pixel_y))
+                        xs.append(int(parts[2]))
+                        ys.append(int(parts[3]))
 
-                if polygon_coords:
-                    # Calculate bounding box for FIX #2
-                    xs = [p[0] for p in polygon_coords]
-                    ys = [p[1] for p in polygon_coords]
-                    bbox = {
-                        'xmin': max(0, min(xs)),
-                        'xmax': max(xs),
-                        'ymin': max(0, min(ys)),
-                        'ymax': max(ys)
-                    }
+                if xs:
+                    # Create a blank boolean mask (False = black)
+                    mask = np.zeros((self.height, self.width), dtype=bool)
+                    
+                    # Efficiently fill the polygon with True
+                    # note: polygon takes (row, col) which corresponds to (y, x)
+                    rr, cc = polygon(ys, xs, shape=(self.height, self.width))
+                    mask[rr, cc] = True
 
-                    self._aoi_cache[aoi_file] = {
-                        'polygon_coords': polygon_coords,
-                        'bbox': bbox
-                    }
+                    # Store the mask and the total pixel count
+                    self._aoi_masks[aoi_file] = mask
+                    self._aoi_pixel_counts[aoi_file] = np.count_nonzero(mask)
+                    
             except Exception as e:
-                print(f"Error parsing {aoi_file.name}: {e}")
-
-        print(f"[PID {os.getpid()}] Pre-cached {len(self._aoi_cache)} AOI files with bounding boxes")
+                print(f"Error parsing/masking {aoi_file.name}: {e}")
 
     def process(self) -> pd.DataFrame:
-        """Process all HDR files against all assigned AOI files.
-
-        Returns:
-            DataFrame with results for all combinations
-        """
-        if not self.aoi_files or not self.hdr_files:
+        """Process HDRs using vectorized bitwise operations."""
+        if not self._aoi_masks:
             return pd.DataFrame()
 
-        # Dictionary to store results grouped by AOI file
-        aoi_results = {aoi_file: [] for aoi_file in self.aoi_files}
+        aoi_results = {aoi: [] for aoi in self.aoi_files if aoi in self._aoi_masks}
         results = []
-        total_operations = len(self.hdr_files) * len(self.aoi_files)
-        current_operation = 0
+        
+        total_ops = len(self.hdr_files)
+        print(f"[PID {os.getpid()}] Processing {total_ops} HDRs against {len(self._aoi_masks)} AOI masks...")
 
-        print(f"\n{'='*80}\n[PID {os.getpid()}] Processing {self.view_name}: {len(self.hdr_files)} HDRs × {len(self.aoi_files)} AOIs = {total_operations} operations\n{'='*80}")
-
-        for hdr_file in self.hdr_files:
-            # Check if file is empty
-            if hdr_file.stat().st_size == 0:
-                print(f"  Skipping: {hdr_file.name} (empty)")
-                continue
-
-            # Load HDR data once
+        for idx, hdr_file in enumerate(self.hdr_files):
+            # 1. READ BINARY DATA (Fastest Method)
             try:
-                width, height = utils.get_hdr_resolution(hdr_file)
-            except (ValueError, FileNotFoundError) as e:
-                print(f"  Skipping: {hdr_file.name} (resolution error: {e})")
-                continue
-
-            # Run pvalue to get binary data
-            cmd = ['pvalue', '-h', '-H', '-b', '-df', str(hdr_file)]
-            try:
+                cmd = ['pvalue', '-h', '-H', '-b', '-df', str(hdr_file)]
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                raw_data = process.stdout.read()
-                stderr_data = process.stderr.read()
-                process.wait()
+                raw_data, _ = process.communicate()
 
                 if process.returncode != 0:
-                    print(f"  Skipping: {hdr_file.name} (pvalue failed: {process.returncode})")
                     continue
-            except FileNotFoundError:
-                print("Error: 'pvalue' command not found.")
-                sys.exit(1)
 
-            # Convert to 2D array
-            try:
+                # 2. CONVERT TO NUMPY
+                # buffer -> flat array -> 2D array
                 data = np.frombuffer(raw_data, dtype=np.float32)
-                data_2d = data.reshape((height, width))
-            except ValueError as e:
-                print(f"  Skipping: {hdr_file.name} (reshape error: {e})")
+                data_2d = data.reshape((self.height, self.width))
+
+            except (ValueError, IndexError, OSError) as e:
+                print(f"  Skipping {hdr_file.name}: {e}")
                 continue
 
-            # FIX #1: Generate coordinate grid once per worker (first HDR only)
-            if self._coord_grid is None or self._grid_width != width or self._grid_height != height:
-                print(f"  [PID {os.getpid()}] Generating shared coordinate grid: {width}×{height} = {width*height:,} points")
-                x, y = np.meshgrid(np.arange(width), np.arange(height))
-                x_flat = x.flatten()
-                y_flat = y.flatten()
-                self._coord_grid = np.vstack((x_flat, y_flat)).T
-                self._grid_width = width
-                self._grid_height = height
-                print(f"  Grid cached in memory ({self._coord_grid.nbytes / 1024 / 1024:.1f} MB)")
+            # 3. GLOBAL THRESHOLD (Vectorized)
+            # Create a True/False map of the whole image once.
+            # "Is the pixel bright enough?"
+            bright_pixels_mask = data_2d > self.pixel_threshold_value
 
-            # Process all assigned AOI files with this cached HDR data
-            for aoi_file in self.aoi_files:
-                current_operation += 1
+            # Clean filename for output
+            hdr_name = hdr_file.name
+            if 'plan_' in hdr_name:
+                hdr_name = 'plan_' + hdr_name.split('plan_')[1]
 
-                hdr, aoi, total, passing = self._process_single_aoi(
-                    hdr_file, aoi_file, data_2d, width, height
-                )
+            # 4. APPLY MASKS (The Optimized Loop)
+            # Instead of ray-casting, we just overlay the masks.
+            for aoi_file, aoi_mask in self._aoi_masks.items():
+                
+                # BITWISE AND: Intersection of Room and Bright Pixels
+                # This runs at memory bandwidth speed (extremely fast)
+                passing_mask = np.logical_and(aoi_mask, bright_pixels_mask)
+                
+                passing_count = np.count_nonzero(passing_mask)
+                total_count = self._aoi_pixel_counts[aoi_file]
 
-                # Strip everything before "plan_" from HDR filename
-                hdr_name = hdr.name
-                if 'plan_' in hdr_name:
-                    hdr_name = 'plan_' + hdr_name.split('plan_')[1]
-
-                # Store results for this AOI
-                aoi_results[aoi_file].append({
+                # Store result
+                entry = {
                     'hdr_file': hdr_name,
-                    'total_pixels': total,
-                    'passing_pixels': passing
-                })
-
+                    'total_pixels': total_count,
+                    'passing_pixels': passing_count
+                }
+                aoi_results[aoi_file].append(entry)
+                
+                # Add to flat results for DataFrame
                 results.append({
-                    'aoi_file': aoi.name,
+                    'aoi_file': aoi_file.name,
                     'hdr_file': hdr_name,
-                    'total_pixels': total,
-                    'passing_pixels': passing,
+                    'total_pixels': total_count,
+                    'passing_pixels': passing_count,
                 })
 
-                if current_operation % 50 == 0:  # Progress every 50 operations
-                    print(f"  [{current_operation}/{total_operations}] {aoi.name}: {passing}/{total} pixels")
+            # Progress update
+            if idx > 0 and idx % 10 == 0:
+                print(f"  [PID {os.getpid()}] Processed {idx}/{total_ops} HDRs")
 
-        # Write .wpd files for each AOI
+        # Write physical files
         self._write_wpd_files(aoi_results)
-
-        print(f"[PID {os.getpid()}] Completed {self.view_name}: {total_operations} operations")
         return pd.DataFrame(results)
 
-    def _process_single_aoi(self, hdr_file: Path, aoi_file: Path, data_2d: np.ndarray,
-                           width: int, height: int) -> Tuple[Path, Path, int, int]:
-        """Process a single AOI file against HDR data with optimizations.
-
-        Optimizations applied:
-        - Uses pre-cached polygon coordinates (no file I/O)
-        - Uses pre-computed shared coordinate grid (no regeneration)
-        - Uses bounding box to filter candidates before ray casting
-        """
-        # Get cached AOI data
-        aoi_data = self._aoi_cache.get(aoi_file)
-        if not aoi_data:
-            return (hdr_file, aoi_file, 0, 0)
-
-        polygon_coords = aoi_data['polygon_coords']
-        bbox = aoi_data['bbox']
-
-        # FIX #2: Extract bounding box region for ray casting
-        xmin, xmax = bbox['xmin'], bbox['xmax']
-        ymin, ymax = bbox['ymin'], bbox['ymax']
-
-        # Ensure bounds are within image dimensions
-        xmin = max(0, xmin)
-        xmax = min(width - 1, xmax)
-        ymin = max(0, ymin)
-        ymax = min(height - 1, ymax)
-
-        # Create bounding box mask to filter candidate points
-        # Only test points within bounding box (massive speedup!)
-        bbox_mask = (
-            (self._coord_grid[:, 0] >= xmin) &
-            (self._coord_grid[:, 0] <= xmax) &
-            (self._coord_grid[:, 1] >= ymin) &
-            (self._coord_grid[:, 1] <= ymax)
-        )
-
-        # Extract only candidate points within bounding box
-        candidate_points = self._coord_grid[bbox_mask]
-
-        if len(candidate_points) == 0:
-            return (hdr_file, aoi_file, 0, 0)
-
-        # Ray casting on filtered candidates only (not entire image!)
-        path = MplPath(polygon_coords)
-        mask_candidates = path.contains_points(candidate_points, radius=0)
-
-        # Map back to full image coordinates
-        mask_2d = np.zeros((height, width), dtype=bool)
-        candidate_indices = np.where(bbox_mask)[0]
-        inside_indices = candidate_indices[mask_candidates]
-
-        # Convert flat indices to 2D coordinates
-        inside_y = inside_indices // width
-        inside_x = inside_indices % width
-        mask_2d[inside_y, inside_x] = True
-
-        # Apply illuminance threshold filter
-        pixels_of_interest = data_2d[mask_2d & (data_2d > self.pixel_threshold_value)]
-
-        # Calculate stats
-        count_pass = pixels_of_interest.size
-        total_in_poly = np.count_nonzero(mask_2d)
-
-        if total_in_poly == 0:
-            return (hdr_file, aoi_file, 0, 0)
-
-        return (hdr_file, aoi_file, total_in_poly, count_pass)
-
     def _write_wpd_files(self, aoi_results: Dict[Path, List[Dict]]) -> None:
-        """Write .wpd files for all processed AOIs."""
-        for aoi_file, aoi_data in aoi_results.items():
-            if not aoi_data:
+        """Write .wpd files (Unchanged logic, just cleaner)."""
+        for aoi_file, data_list in aoi_results.items():
+            if not data_list:
                 continue
 
-            # Sort by HDR filename
-            aoi_data_sorted = sorted(aoi_data, key=lambda x: x['hdr_file'])
-
-            # Get total_pixels (should be same for all HDR files)
-            total_pixels_in_polygon = aoi_data_sorted[0]['total_pixels'] if aoi_data_sorted else 0
-
-            # Create .wpd filename
-            wpd_filename = aoi_file.stem + '.wpd'
-            wpd_path = self.wpd_output_dir / wpd_filename
-
-            # Write .wpd file
+            # Sort by filename to ensure temporal order
+            data_list.sort(key=lambda x: x['hdr_file'])
+            
+            # Use cached total pixels
+            total_pixels = self._aoi_pixel_counts[aoi_file]
+            
+            wpd_path = self.wpd_output_dir / (aoi_file.stem + '.wpd')
+            
             with open(wpd_path, 'w') as f:
-                f.write(f"total_pixels_in_polygon: {total_pixels_in_polygon}\n")
+                f.write(f"total_pixels_in_polygon: {total_pixels}\n")
                 f.write("hdr_file passing_pixels\n")
-
-                for row in aoi_data_sorted:
+                for row in data_list:
                     f.write(f"{row['hdr_file']} {row['passing_pixels']}\n")
 
 @dataclass
@@ -546,7 +445,7 @@ class Hdr2Wpd:
             chunk_size = max(1, len(aoi_files) // chunks_per_view)
             aoi_chunks = [aoi_files[i:i + chunk_size] for i in range(0, len(aoi_files), chunk_size)]
 
-            print(f"{view_name}: {len(aoi_files)} AOIs → {len(aoi_chunks)} chunks of ~{chunk_size} AOIs each")
+            print(f"{view_name}: {len(aoi_files)} AOIs -> {len(aoi_chunks)} chunks of ~{chunk_size} AOIs each")
 
             # Create processor for each chunk
             for chunk_idx, aoi_chunk in enumerate(aoi_chunks):

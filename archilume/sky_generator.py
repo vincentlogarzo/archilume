@@ -146,7 +146,7 @@ class SkyGenerator:
             f"\nStarting sky generation for {month}/{day}/{year} from {start_hour_24hr_format}:00 to {end_hour_24hr_format}:00 "
             f"at {str(self.lat)} lat.\n"
         )
-        
+
         # Create the output directory if it doesn't exist
         if not os.path.exists(self.sky_file_dir):
             os.makedirs(self.sky_file_dir)
@@ -159,22 +159,30 @@ class SkyGenerator:
         time_delta = timedelta(minutes=minute_increment)
         current_dt = start_dt
 
+        generated_files = []
         while current_dt <= end_dt:
             formatted_time_for_gensky = current_dt.strftime("%H:%M")  # e.g., "09:00"
             formatted_time_for_filename = current_dt.strftime("%H%M")  # e.g., "0900"
 
-            self._generate_single_sunny_skyfile(
+            filepath = self._generate_single_sunny_skyfile(
                 lat                 =str(self.lat),
                 month               =current_dt.month,
                 day                 =current_dt.day,
                 time_hhmm           =formatted_time_for_gensky,
                 output_time_suffix  =formatted_time_for_filename,
             )
+            if filepath:
+                generated_files.append(filepath)
             current_dt += time_delta
-        
-        print("\nSky generation series complete.\n")
+
+        if generated_files:
+            print(f"\nAll sky files have been successfully created ({len(generated_files)} files).")
+            print(f"First: {generated_files[0]}")
+            print(f"Last:  {generated_files[-1]}\n")
+        else:
+            print("\nNo sky files were generated.\n")
     
-    def _generate_single_sunny_skyfile(self, lat: str, month: int, day: int, time_hhmm: str, output_time_suffix: str) -> None:
+    def _generate_single_sunny_skyfile(self, lat: str, month: int, day: int, time_hhmm: str, output_time_suffix: str) -> Path:
         """
         Generates a single sky file for a specific date and time using gensky.
 
@@ -186,6 +194,9 @@ class SkyGenerator:
             day (int): The day of the month.
             time_hhmm_str (str): The time in "HH:MM" format (e.g., "09:00").
             output_time_suffix_str (str): A string used in the output filename (e.g., "0900" for 9 AM).
+
+        Returns:
+            Path: The filepath of the generated sky file, or None if generation failed.
         """
 
         # Construct a descriptive filename using month and day arguments
@@ -193,8 +204,6 @@ class SkyGenerator:
         day_str = f"{day:02d}"
         output_filename = f"SS_{month_str}{day_str}_{output_time_suffix}.sky"
         output_filepath = self.sky_file_dir / output_filename
-
-        print(f"Outputting to: {output_filepath}")
 
         try:
             # Append skyfunc lines that create more realistic sky
@@ -219,8 +228,9 @@ class SkyGenerator:
                     4 0 0 -1 180
                     """)
                 outfile.write(skyfunc_description)
-                print(f"Successfully generated: {output_filepath}")
-        except:
-            print(f"Error running gensky for {time_hhmm}")
+            return output_filepath
+        except Exception as e:
+            print(f"Error generating sky file for {time_hhmm}: {e}")
+            return None
 
 

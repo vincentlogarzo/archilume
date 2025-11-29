@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 REM Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
 REM Example (all views): .\archilume\accelerad_rpict.bat octree detailed 2048
 REM Example (single view): .\archilume\accelerad_rpict.bat octree detailed 2048 plan_L01
-REM If VIEW_NAME is omitted, ALL view files in outputs/views_grids/ will be rendered
+REM If VIEW_NAME is omitted, ALL view files in outputs/view/ will be rendered
 REM Quality options: fast, med, high, detailed, test, ark
 REM .\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L04
 REM .\archilume\accelerad_rpict.bat 20240711_1761A_2_Frederick_St_Daylight fast 512 20240711_1761A_2_Frederick_St_Daylight
@@ -18,7 +18,7 @@ if "%OCTREE_NAME%"=="" (
     echo Error: OCTREE_NAME required
     echo Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
     echo Quality options: fast, med, high, detailed, test, ark
-    echo Example all views: .\archilume\accelerad_rpict_batch.bat octree high 512
+    echo Example all views: .\archilume\accelerad_rpict.bat octree high 512
     echo Example single view: .\archilume\accelerad_renderer_batch.bat octree detailed 2048 view_position
     exit /b 1
 )
@@ -39,7 +39,7 @@ set "PRESET_fast=           0.07    3   1024   256   124    2   0.1    12   0.00
 set "PRESET_med=            0.05    3   1024   256   512    2   0.1    12   0.001"
 set "PRESET_high=           0.01    3   1024   512   512    2   0.1    12   0.001"
 set "PRESET_detailed=       0       1   2048  1024   124    1   0.02   12   0.0001"
-set "PRESET_test=           0.10    12  4096  1024  1024    4   0.05   16   0.00001"
+set "PRESET_test=           0.01    8   4096  1024  1024    2   0.05   16   0.00001"
 set "PRESET_ark=            0.01    8   4096  1024  1024    4   0.05   16   0.0002"
 
 REM Validate and load selected preset
@@ -169,7 +169,7 @@ REM Loop through view files
 set CURRENT_VIEW=0
 for %%f in (!VIEW_PATTERN!) do (
     set /a CURRENT_VIEW+=1
-    set VIEW_PATH=%%f
+    set VIEW_PATH=%VIEW_DIR%/%%f
     set VIEW_FULL_NAME=%%~nf
     call :RenderView
 )
@@ -218,7 +218,7 @@ goto :AfterRenderView
         REM Use half AD and AS values for faster overture calculation
         set /a AD_OVERTURE=%AD%/2
         set /a AS_OVERTURE=%AS%/2
-        accelerad_rpict -w+ -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > NUL
+        accelerad_rpict -w+ -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" >nul 2>&1
         set OVERTURE_ERROR=!errorlevel!
         if !OVERTURE_ERROR! neq 0 (
             echo   WARNING: Overture failed ^(exit code: !OVERTURE_ERROR!^), continuing with render anyway...

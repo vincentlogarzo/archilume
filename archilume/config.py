@@ -65,8 +65,8 @@ WORKERS = {
     "rpict_medium_quality"      : min(8, DEFAULT_MAX_WORKERS),
     "oconv_compile"             : min(12, DEFAULT_MAX_WORKERS),
     "rpict_direct_sun"          : min(20, DEFAULT_MAX_WORKERS),
-    "pcomb_tiff_conversion"     : min(20, DEFAULT_MAX_WORKERS),
-    "metadata_stamping"         : min(10, DEFAULT_MAX_WORKERS),
+    "pcomb_tiff_conversion"     : min(12, DEFAULT_MAX_WORKERS),
+    "metadata_stamping"         : min(12, DEFAULT_MAX_WORKERS),
     "gif_animation"             : min(12, DEFAULT_MAX_WORKERS),
     "wpd_processing"            : min(12, DEFAULT_MAX_WORKERS),
 }
@@ -113,44 +113,44 @@ class InputValidator:
 
     def _validate(self):
         # --- Geographic ---
-        if not isinstance(self.project_latitude, (int, float)): 
-            self._errors.append("❌ project_latitude: Must be numeric.")
-        elif not -90 <= self.project_latitude <= 90: 
-            self._errors.append("❌ project_latitude: Must be -90 to 90.")
+        if not isinstance(self.project_latitude, (int, float)):
+            self._errors.append("[X] project_latitude: Must be numeric.")
+        elif not -90 <= self.project_latitude <= 90:
+            self._errors.append("[X] project_latitude: Must be -90 to 90.")
 
         # --- Time ---
-        if not (0 <= self.start_hour <= 23): self._errors.append("❌ start_hour: Must be 0-23.")
-        if not (0 <= self.end_hour <= 23): self._errors.append("❌ end_hour: Must be 0-23.")
-        if self.start_hour >= self.end_hour: self._errors.append("❌ Time range: end_hour must be > start_hour.")
-        
-        if self.timestep < 1: self._errors.append("❌ timestep: Must be >= 1.")
-        elif self.timestep < 5: self._warnings.append(f"⚠️  timestep ({self.timestep} min) is very low. High computation time.")
+        if not (0 <= self.start_hour <= 23): self._errors.append("[X] start_hour: Must be 0-23.")
+        if not (0 <= self.end_hour <= 23): self._errors.append("[X] end_hour: Must be 0-23.")
+        if self.start_hour >= self.end_hour: self._errors.append("[X] Time range: end_hour must be > start_hour.")
+
+        if self.timestep < 1: self._errors.append("[X] timestep: Must be >= 1.")
+        elif self.timestep < 5: self._warnings.append(f"[!] timestep ({self.timestep} min) is very low. High computation time.")
 
         # --- Rendering ---
-        if self.image_resolution < 128: self._errors.append("❌ resolution: Must be >= 128.")
-        elif self.image_resolution > 2048: self._warnings.append(f"⚠️  resolution ({self.image_resolution}) exceeds recommended 2048px.")
-        
+        if self.image_resolution < 128: self._errors.append("[X] resolution: Must be >= 128.")
+        elif self.image_resolution > 2048: self._warnings.append(f"[!] resolution ({self.image_resolution}) exceeds recommended 2048px.")
+
         valid_modes = ['cpu', 'gpu']
         if self.rendering_mode.lower() not in valid_modes:
-            self._errors.append(f"❌ rendering_mode: Must be one of {valid_modes}")
+            self._errors.append(f"[X] rendering_mode: Must be one of {valid_modes}")
 
         # --- Files ---
-        if not self.room_boundaries_csv_path.exists(): 
-            self._errors.append(f"❌ CSV not found: {self.room_boundaries_csv_path}")
-        
+        if not self.room_boundaries_csv_path.exists():
+            self._errors.append(f"[X] CSV not found: {self.room_boundaries_csv_path}")
+
         # --- Geometry ---
-        if not self.obj_paths: self._errors.append("❌ obj_paths: List is empty.")
+        if not self.obj_paths: self._errors.append("[X] obj_paths: List is empty.")
         else:
             for idx, obj in enumerate(self.obj_paths):
                 if not obj.exists():
-                    self._errors.append(f"❌ obj_paths[{idx}]: Not found: {obj}")
+                    self._errors.append(f"[X] obj_paths[{idx}]: Not found: {obj}")
                     continue
                 if not obj.with_suffix('.mtl').exists():
-                    self._errors.append(f"❌ obj_paths[{idx}]: Missing .mtl file.")
-                
+                    self._errors.append(f"[X] obj_paths[{idx}]: Missing .mtl file.")
+
                 # Check Units
                 is_m, max_c, diag = self._check_obj_units(obj)
-                if not is_m: self._errors.append(f"❌ obj_paths[{idx}] is in MILLIMETERS (max: {max_c:,.0f}). Re-export in Meters.")
+                if not is_m: self._errors.append(f"[X] obj_paths[{idx}] is in MILLIMETERS (max: {max_c:,.0f}). Re-export in Meters.")
 
     def _check_obj_units(self, path):
         try:
@@ -175,7 +175,7 @@ class InputValidator:
         # 1. Handle Blocking Errors
         if self._errors:
             print("\n" + "="*100)
-            print("❌ INPUT VALIDATION FAILED - EXECUTION BLOCKED")
+            print("INPUT VALIDATION FAILED - EXECUTION BLOCKED")
             print("="*100)
             for e in self._errors: print(f" {e}")
             if self._warnings:
@@ -186,7 +186,7 @@ class InputValidator:
 
         # 2. Print Detailed Success Receipt
         print("\n" + "="*100)
-        print(f"{'✓ CONFIGURATION VALIDATED SUCCESSFULLY':^100}")
+        print(f"{'CONFIGURATION VALIDATED SUCCESSFULLY':^100}")
         print("="*100)
         
         # Print Table Header
@@ -222,7 +222,7 @@ class InputValidator:
         # 3. Print Warnings (Non-blocking)
         if self._warnings:
             print("\n" + "="*100)
-            print("⚠️  WARNINGS DETECTED (Script will continue)")
+            print("WARNINGS DETECTED (Script will continue)")
             for w in self._warnings: print(f" {w}")
         
         print("="*100 + "\n")

@@ -86,7 +86,7 @@ FUTURE implementaiton A of RenderingPipelines
 # Testing using of accelerad binaries. 
     #Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency.
     #  
-    .\archilume\accelerad_rpict_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast high 512
+    .\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast high 512
 
     
 

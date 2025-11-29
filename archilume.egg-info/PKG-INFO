@@ -6,7 +6,6 @@ Requires-Python: >=3.12
 Description-Content-Type: text/markdown
 Requires-Dist: ifcopenshell>=0.8.3.post1
 Requires-Dist: numpy>=2.3.2
-Requires-Dist: nvmath-python>=0.7.0
 Requires-Dist: open3d>=0.19.0
 Requires-Dist: opencv-python>=4.11.0.86
 Requires-Dist: openpyxl>=3.1.5
@@ -14,6 +13,7 @@ Requires-Dist: pandas>=2.3.1
 Requires-Dist: pillow>=11.3.0
 Requires-Dist: pyradiance>=1.1.5
 Requires-Dist: pyvista>=0.46.4
+Requires-Dist: scikit-image>=0.25.2
 
 # Archilume
 

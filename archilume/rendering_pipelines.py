@@ -178,7 +178,7 @@ class RenderingPipelines:
             octree_name = f"{octree_base_name}_{self.overcast_sky_file_path.stem}"
 
             # Construct batch command
-            batch_command = rf".\archilume\accelerad_rpict_batch.bat {octree_name} {gpu_quality} {self.x_res}"
+            batch_command = rf".\archilume\accelerad_rpict.bat {octree_name} {gpu_quality} {self.x_res}"
 
             # Get current working directory to ensure batch runs from project root
             project_root = os.getcwd()
