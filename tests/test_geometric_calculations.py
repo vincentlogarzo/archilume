@@ -1,5 +1,5 @@
 # Archilume imports
-from archilume.geometry_utils import (
+from archilume.utils import (
     calc_centroid_of_points,
     calculate_dimensions_from_points,
     get_center_of_bounding_box,

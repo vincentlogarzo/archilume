@@ -11,8 +11,12 @@ import subprocess
 # Third-party imports
 import pyradiance as pr
 
+# Material default constants
+DEFAULT_MATERIAL_KD = [0.5, 0.5, 0.5]  # Medium gray for default materials
+DEFAULT_OPACITY = 1.0  # Fully opaque by default
+
 @dataclass
-class Convert2RadianceMtlFile:
+class MtlConverter:
     """
     Processes a Radiance .rad file and an accompanying .mtl file to find
     modifiers defined in the .rad file that are missing from the .mtl file,
@@ -125,13 +129,13 @@ class Convert2RadianceMtlFile:
                         material_block = match.group(1)
                         
                         # Extract Kd values (RGB diffuse color)
-                        kd_values = [0.5, 0.5, 0.5]  # Default gray
+                        kd_values = DEFAULT_MATERIAL_KD
                         kd_match = re.search(r'Kd\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', material_block)
                         if kd_match:
                             kd_values = [float(kd_match.group(1)), float(kd_match.group(2)), float(kd_match.group(3))]
-                        
+
                         # Extract d value (transparency/dissolve)
-                        d_value = 1.0  # Default opaque
+                        d_value = DEFAULT_OPACITY
                         d_match = re.search(r'^d\s+([\d.]+)', material_block, re.MULTILINE)
                         if d_match:
                             d_value = float(d_match.group(1))
@@ -151,8 +155,7 @@ class Convert2RadianceMtlFile:
             # If no match found in any MTL file, create a default material
             if not material_found:
                 # Create a default gray plastic material for unmatched modifiers
-                default_color = [0.5, 0.5, 0.5]  # Medium gray
-                self.materials.append(rm.create_plastic_material(f"{modifier}", default_color))
+                self.materials.append(rm.create_plastic_material(f"{modifier}", DEFAULT_MATERIAL_KD))
                 print(f"Created default material for unmatched modifier '{modifier}'")
 
         # Export to file (after processing all modifiers)
@@ -161,7 +164,7 @@ class Convert2RadianceMtlFile:
 
 if __name__ == "__main__":
     # Initialize processor
-    mtl_creator = Convert2RadianceMtlFile(
+    mtl_creator = MtlConverter(
         rad_paths=[Path("C:/Projects/archilume/outputs/rad/87cowles_BLD_noWindows.rad")],
         mtl_paths=[Path("C:/Projects/archilume/inputs/87cowles_BLD_noWindows.mtl")]
         )

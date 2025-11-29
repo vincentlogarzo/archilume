@@ -6,7 +6,7 @@ REM Example (single view): .\archilume\accelerad_rpict.bat octree detailed 2048 
 REM If VIEW_NAME is omitted, ALL view files in outputs/views_grids/ will be rendered
 REM Quality options: fast, med, high, detailed, test, ark
 REM .\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L04
-
+REM .\archilume\accelerad_rpict.bat 20240711_1761A_2_Frederick_St_Daylight fast 512 20240711_1761A_2_Frederick_St_Daylight
 
 REM Arguments
 set OCTREE_NAME=%1
@@ -19,7 +19,7 @@ if "%OCTREE_NAME%"=="" (
     echo Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
     echo Quality options: fast, med, high, detailed, test, ark
     echo Example all views: .\archilume\accelerad_rpict_batch.bat octree high 512
-    echo Example single view: .\archilume\accelerad_renderer_batch.bat octree detailed 2048 plan_L01
+    echo Example single view: .\archilume\accelerad_renderer_batch.bat octree detailed 2048 view_position
     exit /b 1
 )
 
@@ -39,7 +39,7 @@ set "PRESET_fast=           0.07    3   1024   256   124    2   0.1    12   0.00
 set "PRESET_med=            0.05    3   1024   256   512    2   0.1    12   0.001"
 set "PRESET_high=           0.01    3   1024   512   512    2   0.1    12   0.001"
 set "PRESET_detailed=       0       1   2048  1024   124    1   0.02   12   0.0001"
-set "PRESET_test=           0.05    8   1024   256   512    2   0.12   12   0.0005"
+set "PRESET_test=           0.10    12  4096  1024  1024    4   0.05   16   0.00001"
 set "PRESET_ark=            0.01    8   4096  1024  1024    4   0.05   16   0.0002"
 
 REM Validate and load selected preset

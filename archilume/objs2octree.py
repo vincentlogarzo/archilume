@@ -1,6 +1,8 @@
 # Archilume imports
-from archilume.convert_2_radiance_mtl_file import Convert2RadianceMtlFile
-from archilume import config
+from archilume import (
+    MtlConverter,
+    config
+    )
 
 # Standard library imports
 import os
@@ -12,7 +14,7 @@ from pathlib import Path
 import pyradiance
 
 @dataclass
-class ObjToOctree:
+class Objs2Octree:
     """
     Converts material definitions from Wavefront .mtl files
     (e.g., exported from Revit) into Radiance material description files.
@@ -88,7 +90,7 @@ class ObjToOctree:
         
         # --- Step 2: Create radiance materials description from all mtl files and cross reference modifiers contained in rad files created ---
         if self.output_rad_paths:
-            mtl_creator = Convert2RadianceMtlFile(
+            mtl_creator = MtlConverter(
                 rad_paths=self.output_rad_paths,
                 mtl_paths=self.input_mtl_paths
             )
@@ -101,7 +103,7 @@ class ObjToOctree:
         # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
         self.__rad2octree()
 
-    def __obj2rad_with_os_system(self, exe_path: Path = Path(r"C:/Radiance/bin/obj2rad.exe")) -> int:
+    def __obj2rad_with_os_system(self, exe_path: Path = config.RADIANCE_BIN_PATH / "obj2rad.exe") -> int:
         """
         Convert OBJ files to RAD format using obj2rad from pyradiance or system Radiance.
         """

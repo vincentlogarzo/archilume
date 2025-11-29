@@ -6,11 +6,27 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 from PIL import Image
 import numpy as np
 import open3d as o3d
+import pandas as pd
 import tkinter as tk
+from archilume import config
+
+# Visualization color constants
+DEFAULT_GLASS_COLOR = [0.0, 0.4, 0.7]  # Ocean blue for glass materials
+DEFAULT_MATERIAL_COLOR = [0.7, 0.7, 0.7]  # Gray for non-glass materials
+MESH_PALETTE_COLORS = [
+    [0.8, 0.2, 0.2],  # Red
+    [0.2, 0.8, 0.2],  # Green
+    [0.2, 0.2, 0.8],  # Blue
+    [0.8, 0.8, 0.2],  # Yellow
+    [0.8, 0.2, 0.8],  # Magenta
+    [0.2, 0.8, 0.8]   # Cyan
+]
+WIREFRAME_COLOR = [0.2, 0.2, 0.2]  # Dark gray for wireframe
+BACKGROUND_COLOR = [0.1, 0.1, 0.1]  # Dark background
 
 
 class Timekeeper:
@@ -183,7 +199,7 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
 
     # Default ocean blue for glass
     if glass_color is None:
-        glass_color = [0.0, 0.4, 0.7]
+        glass_color = DEFAULT_GLASS_COLOR
 
     def set_view(front, up):
         def _set(vis):
@@ -250,8 +266,6 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
             vertex_color_count = np.zeros(len(mesh.vertices))
 
             # Assign colors per face based on material
-            default_color = [0.7, 0.7, 0.7]  # Default gray for non-glass materials
-
             for face_idx, mat_name in enumerate(face_materials):
                 if face_idx >= num_triangles:
                     break
@@ -264,7 +278,7 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
                     else:
                         face_color = mat_props['Kd']
                 else:
-                    face_color = default_color
+                    face_color = DEFAULT_MATERIAL_COLOR
 
                 # Apply color to the three vertices of this triangle
                 triangle = mesh.triangles[face_idx]
@@ -282,8 +296,7 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
         else:
             # Apply different colors for each mesh for distinction (fallback)
             color_index = len(valid_files) - 1
-            colors = [[0.8, 0.2, 0.2], [0.2, 0.8, 0.2], [0.2, 0.2, 0.8], [0.8, 0.8, 0.2], [0.8, 0.2, 0.8], [0.2, 0.8, 0.8]]
-            mesh.paint_uniform_color(colors[color_index % len(colors)])
+            mesh.paint_uniform_color(MESH_PALETTE_COLORS[color_index % len(MESH_PALETTE_COLORS)])
 
         # Combine meshes
         combined_mesh += mesh
@@ -348,7 +361,7 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
     
     # Create wireframe for better structure visualization
     wireframe = o3d.geometry.LineSet.create_from_triangle_mesh(combined_mesh)
-    wireframe.paint_uniform_color([0.2, 0.2, 0.2])
+    wireframe.paint_uniform_color(WIREFRAME_COLOR)
 
     # Create a visualizer with custom controls
     file_names = [f.name for f in valid_files]
@@ -372,7 +385,7 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
     # Get render option and enable additional features
     render_opt = vis.get_render_option()
     render_opt.show_coordinate_frame = True
-    render_opt.background_color = [0.1, 0.1, 0.1]  # Dark background
+    render_opt.background_color = BACKGROUND_COLOR  # Dark background
     render_opt.mesh_show_back_face = True
     render_opt.mesh_show_wireframe = False  # Wireframe off by default
     render_opt.point_size = 2.0
@@ -575,7 +588,7 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
             try:
                 # Set up environment with RAYPATH for Radiance commands
                 env = os.environ.copy()
-                env['RAYPATH'] = r'C:\Radiance\lib'
+                env['RAYPATH'] = config.RAYPATH
 
                 # Check if command uses output redirection
                 has_output_redirect = ' > ' in command
@@ -1241,4 +1254,206 @@ def print_timing_report(
     else:
         print("=" * 80)
 
+
+# ============================================================================
+# GEOMETRY UTILITIES
+# ============================================================================
+
+def get_bounding_box_from_point_coordinates(point_dataframe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Generates a Pandas DataFrame containing the 8 corner coordinates of a 3D bounding box
+    from an input Pandas DataFrame containing 'x_coords', 'y_coords', and 'z_coords' columns.
+
+    Args:
+        point_dataframe (pd.DataFrame): A Pandas DataFrame that must include
+                                        'x_coords', 'y_coords', and 'z_coords' columns
+                                        representing the coordinates of the points.
+
+    Returns:
+        pd.DataFrame: A Pandas DataFrame with 8 rows (one for each corner) and
+                      columns ['x_coords', 'y_coords', 'z_coords'].
+                      Returns an empty DataFrame if the input DataFrame is empty, doesn't
+                      have the required columns, is not a DataFrame, or if an error occurs
+                      during min/max calculation.
+    """
+    # --- 1. Input Validation ---
+    # Check if the input is a Pandas DataFrame
+    if not isinstance(point_dataframe, pd.DataFrame):
+        print("Error: Input must be a Pandas DataFrame.")
+        return pd.DataFrame()  # Return an empty DataFrame
+
+    # Check if the DataFrame is empty
+    if point_dataframe.empty:
+        print("Warning: Input DataFrame is empty. Returning an empty DataFrame.")
+        return pd.DataFrame()  # Return an empty DataFrame
+
+    # Check for required columns
+    required_columns = ["x_coords", "y_coords", "z_coords"]
+    for col in required_columns:
+        if col not in point_dataframe.columns:
+            print(f"Error: DataFrame is missing the required column '{col}'.")
+            return pd.DataFrame()  # Return an empty DataFrame
+
+    # --- 2. Check for numeric data and Find Min/Max Coordinates ---
+    try:
+        # Check if all required columns contain numeric data
+        for col in required_columns:
+            if not pd.api.types.is_numeric_dtype(point_dataframe[col]):
+                print(f"Error: Column '{col}' must contain numeric data.")
+                return pd.DataFrame()
+
+        min_x = point_dataframe["x_coords"].min()
+        max_x = point_dataframe["x_coords"].max()
+        min_y = point_dataframe["y_coords"].min()
+        max_y = point_dataframe["y_coords"].max()
+        min_z = point_dataframe["z_coords"].min()
+        max_z = point_dataframe["z_coords"].max()
+    except TypeError:
+        # This can happen if columns are not numeric
+        print("Error: Columns 'x_coords', 'y_coords', 'z_coords' must contain numeric data.")
+        return pd.DataFrame()  # Return an empty DataFrame
+    except Exception as e:
+        print(f"Error during min/max calculation: {e}")
+        return pd.DataFrame()  # Return an empty DataFrame
+
+    # --- 3. Construct Corner Points ---
+    # Based on the min/max values extracted, define the 8 corners.
+    corners_list = [
+        (min_x, min_y, min_z),  # Bottom-left-front
+        (max_x, min_y, min_z),  # Bottom-right-front
+        (min_x, max_y, min_z),  # Top-left-front
+        (max_x, max_y, min_z),  # Top-right-front
+        (min_x, min_y, max_z),  # Bottom-left-back
+        (max_x, min_y, max_z),  # Bottom-right-back
+        (min_x, max_y, max_z),  # Top-left-back
+        (max_x, max_y, max_z),  # Top-right-back
+    ]
+
+    # --- 4. Convert list of corners to DataFrame ---
+    # The DataFrame will have the same column names as the input for consistency.
+    corners_df = pd.DataFrame(corners_list, columns=["x_coords", "y_coords", "z_coords"])
+
+    return corners_df
+
+def get_center_of_bounding_box(box_corners_df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
+    """
+    Calculates the center coordinate of a 3D bounding box and returns it as a tuple.
+
+    Args:
+        box_corners_df (pd.DataFrame): A Pandas DataFrame with columns
+                                       ['x_coords', 'y_coords', 'z_coords']
+                                       representing the corner coordinates.
+
+    Returns:
+        tuple: A tuple (x, y, z) representing the center coordinate.
+               Returns None if input is invalid.
+    """
+    # --- 1. Input Validation ---
+    if (
+        not isinstance(box_corners_df, pd.DataFrame)
+        or box_corners_df.empty
+        or not all(col in box_corners_df.columns for col in ["x_coords", "y_coords", "z_coords"])
+    ):
+        # print("Error or Warning: Input DataFrame invalid, empty, or missing required columns.") # Optional: keep print for debugging
+        return None
+
+    # --- 2. Calculate Min/Max Coordinates ---
+    try:
+        min_x = box_corners_df["x_coords"].min()
+        max_x = box_corners_df["x_coords"].max()
+        min_y = box_corners_df["y_coords"].min()
+        max_y = box_corners_df["y_coords"].max()
+        min_z = box_corners_df["z_coords"].min()
+        max_z = box_corners_df["z_coords"].max()
+    except (TypeError, Exception):
+        # print("Error: Non-numeric data or other issue during min/max calculation.") # Optional
+        return None
+
+    # --- 3. Calculate Center Coordinates ---
+    x_coord_center = (min_x + max_x) / 2
+    y_coord_center = (min_y + max_y) / 2
+    z_coord_center = (min_z + max_z) / 2
+
+    # --- 4. Return as tuple ---
+    return (x_coord_center, y_coord_center, z_coord_center)
+
+def calculate_dimensions_from_points(df_points: pd.DataFrame, x_col: str = "x_coords", y_col: str = "y_coords") -> Tuple[Optional[float], Optional[float]]:
+    """
+    Calculates the width (x_max - x_min) and depth (y_max - y_min)
+    from a DataFrame of points.
+
+    Args:
+        df_points (pd.DataFrame): DataFrame containing the point coordinates.
+                                  It must have columns for x and y values.
+        x_col (str): The name of the column containing the x-coordinates.
+                     Defaults to 'x_coords'.
+        y_col (str): The name of the column containing the y-coordinates.
+                     Defaults to 'y_coords'.
+
+    Returns:
+        tuple[float | None, float | None]: A tuple containing two float values:
+                                           (width, depth).
+                                           Returns (None, None) if the input
+                                           DataFrame is empty, if specified
+                                           columns are not found, or if an
+                                           error occurs during calculation.
+    """
+    if df_points.empty:
+        return None, None
+
+    if x_col not in df_points.columns or y_col not in df_points.columns:
+        return None, None
+
+    try:
+        # Ensure columns are numeric and handle potential NaNs that could arise from non-numeric data
+        # If min/max is called on an entirely non-numeric or empty (after dropping NaNs) series, it can raise.
+        if not pd.api.types.is_numeric_dtype(
+            df_points[x_col]
+        ) or not pd.api.types.is_numeric_dtype(df_points[y_col]):
+            # Attempt to convert to numeric, coercing errors to NaN
+            x_series = pd.to_numeric(df_points[x_col], errors="coerce")
+            y_series = pd.to_numeric(df_points[y_col], errors="coerce")
+            if x_series.isnull().all() or y_series.isnull().all():  # if all values became NaN
+                return None, None
+        else:
+            x_series = df_points[x_col]
+            y_series = df_points[y_col]
+
+        x_min = x_series.min()
+        x_max = x_series.max()
+        y_min = y_series.min()
+        y_max = y_series.max()
+
+        # If min or max returned NaN (e.g., if all values were NaN after coercion)
+        if pd.isna(x_min) or pd.isna(x_max) or pd.isna(y_min) or pd.isna(y_max):
+            return None, None
+
+        width = x_max - x_min
+        depth = y_max - y_min
+
+        return float(width), float(depth)
+
+    except Exception:
+        return None, None
+
+def calc_centroid_of_points(df: pd.DataFrame, x_col: str = "x_coords", y_col: str = "y_coords") -> Optional[Tuple[float, float]]:
+    """
+    Calculates the centroid from coordinates in a pandas DataFrame.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing the coordinates.
+        x_col (str): The name of the column containing x-coordinates.
+        y_col (str): The name of the column containing y-coordinates.
+
+    Returns:
+        tuple or None: A tuple (x, y) for the centroid, or None if the DataFrame is empty.
+    """
+    if df.empty:
+        return None
+
+    # Use the built-in .mean() method for efficiency
+    centroid_x = df[x_col].mean()
+    centroid_y = df[y_col].mean()
+
+    return (centroid_x, centroid_y)
 

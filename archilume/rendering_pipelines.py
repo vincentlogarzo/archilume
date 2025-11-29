@@ -6,8 +6,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 """
 
 # Archilume imports
-from archilume import utils
-from archilume import config
+from archilume import utils, config
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -23,6 +22,10 @@ import subprocess
 from itertools import product
 
 logger = logging.getLogger(__name__)
+
+# Rendering constants
+X_RES_OVERTURE = 64
+Y_RES_OVERTURE = 64
 
 @dataclass
 class RenderingPipelines:
@@ -155,10 +158,6 @@ class RenderingPipelines:
          self.rpict_daylight_overture_commands,
          self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
 
-
-
-
-
         # Generate sunny sky rendering commands
         (self.temp_octree_with_sky_paths,
          self.oconv_commands,
@@ -169,7 +168,7 @@ class RenderingPipelines:
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
         phase_start = time.time()
-        utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=1)
+        utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=config.WORKERS["overcast_octree"])
         phase_timings["    Overcast octree creation"] = time.time() - phase_start
 
         if render_mode == 'gpu':
@@ -194,14 +193,12 @@ class RenderingPipelines:
             print(f"{'='*80}\n")
 
             # Execute batch file with modified environment (RAYPATH)
-            raypath = r"C:\Radiance\lib;C:\Program Files\Accelerad\lib"
-
             # Copy current environment and set RAYPATH
             env = os.environ.copy()
-            env['RAYPATH'] = raypath
+            env['RAYPATH'] = config.RAYPATH
 
             print(f"Launching GPU rendering...")
-            print(f"RAYPATH: {raypath}")
+            print(f"RAYPATH: {config.RAYPATH}")
             print(f"Batch Command: {batch_command}")
 
             # Run batch file directly with modified environment
@@ -218,7 +215,7 @@ class RenderingPipelines:
         else:
             # CPU mode: Separate overture and rendering passes
             phase_start = time.time()
-            utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=8)
+            utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=config.WORKERS["rpict_overture"])
             phase_timings["    Ambient file warming (overture)"] = time.time() - phase_start
 
             phase_start = time.time()
@@ -226,19 +223,19 @@ class RenderingPipelines:
             future = executor.submit(
                 utils.execute_new_radiance_commands,
                 self.rpict_daylight_med_qual_commands,
-                number_of_workers=8)
+                number_of_workers=config.WORKERS["rpict_medium_quality"])
 
         # --- Phase 2: Synthesize octree files for all sky-view combinations ---
         # Prepare temporary octree structures for comprehensive solar condition analysis
         phase_start = time.time()
         utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
-        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=12)
+        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=config.WORKERS["oconv_compile"])
         utils.delete_files(self.temp_octree_with_sky_paths)
         phase_timings["    Sunny sky octrees"] = time.time() - phase_start
 
         # --- Phase 3: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
         phase_start = time.time()
-        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=20)
+        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
         phase_timings["    Sunlight rendering"] = time.time() - phase_start
 
         phase_start = time.time()
@@ -249,7 +246,7 @@ class RenderingPipelines:
             phase_timings["    Indirect diffuse rendering"] = time.time() - phase_start
 
         phase_start = time.time()
-        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=20)
+        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
         phase_timings["    HDR combination & TIFF conversion"] = time.time() - phase_start
 
         print("Rendering sequence completed successfully.")
@@ -303,16 +300,15 @@ class RenderingPipelines:
         overcast_octree_command = str(rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}")
 
         rpict_overture_commands, rpict_med_qual_commands = [], []
-        x_res_overture, y_res_overture = 64, 64
 
         for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
-            
+
             ambient_file_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.amb"
             output_hdr_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
             rpict_overture_command, rpict_med_qual_command = [
-                rf"rpict -w -t 2 -vf {view_file_path} -x {x_res_overture} -y {y_res_overture} -aa {aa} -ab {ab} -ad {ad/2} -ar {ar} -as {as_val/2} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}",
+                rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} -aa {aa} -ab {ab} -ad {ad/2} -ar {ar} -as {as_val/2} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}",
                 rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
             ]
 

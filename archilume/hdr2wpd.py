@@ -1,11 +1,15 @@
-"""Results Processor for Working Plan Data (WPD) Generation.
+"""HDR to Working Plan Data (WPD) Converter.
 
-This module handles the extraction and processing of illuminance data from HDR images,
-filtering points within Areas of Interest (AOI), and generating compliance reports.
+This module converts High Dynamic Range (HDR) images to Working Plan Data (WPD) files
+by extracting illuminance data, filtering points within Areas of Interest (AOI),
+and generating compliance reports.
 """
 
 # Archilume imports
-from archilume.utils import get_hdr_resolution
+from archilume import (
+    utils, 
+    config
+    )
 
 # Standard library imports
 import subprocess
@@ -123,7 +127,7 @@ class ViewGroupProcessor:
 
             # Load HDR data once
             try:
-                width, height = get_hdr_resolution(hdr_file)
+                width, height = utils.get_hdr_resolution(hdr_file)
             except (ValueError, FileNotFoundError) as e:
                 print(f"  Skipping: {hdr_file.name} (resolution error: {e})")
                 continue
@@ -291,8 +295,8 @@ class ViewGroupProcessor:
                     f.write(f"{row['hdr_file']} {row['passing_pixels']}\n")
 
 @dataclass
-class ResultsProcessor:
-    """Main processor for generating Working Plan Data from HDR images.
+class Hdr2Wpd:
+    """Converts HDR images to Working Plan Data (WPD) files.
 
     This class handles:
     - Extracting point data from HDR images using pvalue
@@ -303,16 +307,25 @@ class ResultsProcessor:
     """
 
     # Input parameters
-    image_dir: Path
-    aoi_dir: Path
-    wpd_dir: Path
     pixel_to_world_map: Path
+    image_dir: Path = None
+    aoi_dir: Path = None
+    wpd_dir: Path = None
     pixel_threshold_value: float = 0.0
-    max_workers: int = 12
-    
+    max_workers: int = None
 
     def __post_init__(self):
-        """Initialize output directories."""
+        """Initialize output directories and set default values from config."""
+        # Set defaults from config if not provided
+        if self.image_dir is None:
+            self.image_dir = config.IMAGE_DIR
+        if self.aoi_dir is None:
+            self.aoi_dir = config.AOI_DIR
+        if self.wpd_dir is None:
+            self.wpd_dir = config.WPD_DIR
+        if self.max_workers is None:
+            self.max_workers = config.WORKERS["wpd_processing"]
+
         self.wpd_dir.mkdir(parents=True, exist_ok=True)
 
         # Calculate area per pixel and pixel increments from the pixel_to_world_map file
@@ -958,15 +971,10 @@ class ResultsProcessor:
 
 
 if __name__ == "__main__":
-    # Initialize processor
-    processor = ResultsProcessor(
-        image_dir=Path(r"C:/Projects/archilume/outputs/images"),
-        aoi_dir=Path(r"C:/Projects/archilume/outputs/aoi"),
-        wpd_dir=Path(r"C:/Projects/archilume/outputs/wpd"),
-        pixel_to_world_map=Path(r"C:/Projects/archilume/outputs/aoi/pixel_to_world_coordinate_map.txt"),
-        pixel_threshold_value=0,
-        max_workers=12
+    # Initialize HDR to WPD converter with defaults from config
+    converter = Hdr2Wpd(
+        pixel_to_world_map=config.AOI_DIR / "pixel_to_world_coordinate_map.txt"
     )
 
-    # Run the pipeline
-    processor.sunlight_sequence_wpd_extraction()
+    # Run the conversion pipeline
+    converter.sunlight_sequence_wpd_extraction()

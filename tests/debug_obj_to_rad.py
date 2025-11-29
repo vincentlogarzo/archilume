@@ -3,7 +3,7 @@ Debug script to test the _obj_files_to_rad function specifically
 """
 import os
 from pathlib import Path
-from archilume.obj_to_octree import ObjToOctree
+from archilume.objs2octree import Objs2Octree
 
 def debug_obj_files_to_rad():
     """Test the _obj_files_to_rad function with debug output"""
@@ -19,7 +19,7 @@ def debug_obj_files_to_rad():
     print()
     
     # Create the octree generator
-    octree_generator = ObjToOctree(
+    octree_generator = Objs2Octree(
         obj_file_paths=test_obj_files,
         mtl_file_paths=test_mtl_files
     )

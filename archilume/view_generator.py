@@ -1,5 +1,5 @@
 # Archilume imports
-from archilume.geometry_utils import (
+from archilume.utils import (
     calc_centroid_of_points,
     calculate_dimensions_from_points,
     get_center_of_bounding_box,
@@ -21,6 +21,10 @@ from typing import Any
 # Third-party imports
 import pandas as pd
 import numpy as np
+
+# CSV parsing constants
+REQUIRED_COORDINATE_COLUMNS = ["x_coords", "y_coords", "z_coords"]
+COORDINATE_PATTERN = r"X_(-?\d+\.?\d*)\s+Y_(-?\d+\.?\d*)\s+Z_(-?\d+\.?\d*)"
 
 # Configure basic logging
 logging.basicConfig(
@@ -198,10 +202,9 @@ class ViewGenerator:
             return False
 
         try:
-            required_cols = ["x_coords", "y_coords", "z_coords"]
-            if not all(col in self.room_boundaries_df.columns for col in required_cols):
+            if not all(col in self.room_boundaries_df.columns for col in REQUIRED_COORDINATE_COLUMNS):
                 return False
-            points_df = self.room_boundaries_df[required_cols].dropna()
+            points_df = self.room_boundaries_df[REQUIRED_COORDINATE_COLUMNS].dropna()
             if points_df.empty:
                 return False
 
@@ -488,9 +491,6 @@ class ViewGenerator:
         """
         logging.info(f"Loading and parsing data from: {self.room_boundaries_csv_path}")
         try:
-            coord_cols = ["x_coords", "y_coords", "z_coords"]
-            pattern = r"X_(-?\d+\.?\d*)\s+Y_(-?\d+\.?\d*)\s+Z_(-?\d+\.?\d*)"
-
             df = (
                 pd.read_csv(self.room_boundaries_csv_path, delimiter=",", header=None)
                 .melt(id_vars=[0, 1], value_name="coordinate_string")
@@ -500,17 +500,17 @@ class ViewGenerator:
                 .pipe(
                     lambda df: df.join(
                         df["coordinate_string"]
-                        .str.extract(pattern)
-                        .rename(columns=dict(enumerate(coord_cols)))
+                        .str.extract(COORDINATE_PATTERN)
+                        .rename(columns=dict(enumerate(REQUIRED_COORDINATE_COLUMNS)))
                     )
                 )
                 .assign(
                     **{
                         col: lambda d, c=col: pd.to_numeric(d[c], errors="coerce") / 1000
-                        for col in coord_cols
+                        for col in REQUIRED_COORDINATE_COLUMNS
                     }
                 )
-                .dropna(subset=coord_cols)
+                .dropna(subset=REQUIRED_COORDINATE_COLUMNS)
                 .sort_values(by=["z_coords", "apartment_no", "room"])
                 .reset_index(drop=True)
             )

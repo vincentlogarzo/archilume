@@ -1,5 +1,7 @@
-"""Image processing for Radiance rendered outputs."""
+# Archilume imports
+from archilume import config
 
+# Standard library imports
 from dataclasses import dataclass, field
 from typing import List
 from pathlib import Path
@@ -10,10 +12,15 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import cv2
 import re
-from archilume import config
+
+# Third-party imports
+
+
+# Date formatting constants
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 @dataclass
-class ImageProcessor:
+class Tiff2Animation:
     """Post-processes rendered TIFF images with metadata annotations, AOI overlays, and animations."""
 
     skyless_octree_path: Path
@@ -21,6 +28,7 @@ class ImageProcessor:
     x_res: int
     y_res: int
     latitude: float
+    ffl_offset: float
 
     # Optional fields with config defaults
     sky_files_dir: Path = field(default_factory=lambda: config.SKY_DIR)
@@ -43,12 +51,12 @@ class ImageProcessor:
         tiff_files = list(self.image_dir.glob('*_combined.tiff'))
 
         # Combined stamping: 2x faster by opening/saving each file only once
-        _stamp_tiff_files_combined(tiff_files, self.latitude,
+        _stamp_tiff_files_combined(tiff_files, self.latitude, self.ffl_offset,
                                    metadata_font_size=24, metadata_color=(255, 255, 255), metadata_bg_alpha=180,
                                    aoi_lineweight=2, aoi_font_size=32, aoi_color=(255, 0, 0), aoi_bg_alpha=180,
-                                   number_of_workers=10)
+                                   number_of_workers=config.WORKERS["metadata_stamping"])
 
-        self._combine_tiffs_by_view(output_format='gif', fps=2, number_of_workers=12)
+        self._combine_tiffs_by_view(output_format='gif', fps=2, number_of_workers=config.WORKERS["gif_animation"])
 
         print("\nRendering sequence completed successfully.\n")
 
@@ -206,7 +214,7 @@ def _load_font(font_size: int) -> ImageFont.FreeTypeFont:
     except (OSError, IOError):
         return ImageFont.load_default()
 
-def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float,
+def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offset: float,
                                metadata_font_size: int = 24, metadata_color: tuple = (255, 255, 0),
                                metadata_bg_alpha: int = 0, padding: int = 10,
                                aoi_lineweight: int = 1, aoi_font_size: int = 32,
@@ -271,13 +279,12 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float,
 
             if ts := re.search(r'(\d{4}_\d{4})', filename):
                 ts_str = ts.group(1)
-                months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-                timestep = f"{months[int(ts_str[:2])-1]} {int(ts_str[2:4])} {ts_str[5:7]}:{ts_str[7:9]}"
+                timestep = f"{MONTH_NAMES[int(ts_str[:2])-1]} {int(ts_str[2:4])} {ts_str[5:7]}:{ts_str[7:9]}"
 
             if level_match := re.search(r'[_]?L(\d+)', filename):
                 level = f"L{level_match.group(1)}"
 
-            metadata_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Latitude: {latitude}"
+            metadata_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Latitude: {latitude}, FFL Offset: {ffl_offset}m"
             metadata_font = _load_font(metadata_font_size)
 
             # Calculate metadata text position (bottom-right)
