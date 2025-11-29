@@ -1,14 +1,34 @@
 @echo off
 setlocal enabledelayedexpansion
-REM Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
+REM Usage: accelerad_rpict_local.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
 REM Example (all views): .\archilume\accelerad_rpict.bat octree detailed 2048
 REM Example (single view): .\archilume\accelerad_rpict.bat octree detailed 2048 plan_L01
 REM If VIEW_NAME is omitted, ALL view files in outputs/view/ will be rendered
 REM Quality options: fast, med, high, detailed, test, ark
-REM .\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L04
-REM .\archilume\accelerad_rpict.bat 20240711_1761A_2_Frederick_St_Daylight fast 512 20240711_1761A_2_Frederick_St_Daylight
+REM
+REM This version uses the bundled Accelerad from .devcontainer instead of PATH
 
-REM Arguments
+REM ============================================================================
+REM CONFIGURE ACCELERAD PATH
+REM ============================================================================
+REM Set the path to the bundled Accelerad executable
+set "ACCELERAD_EXE=%~dp0..\\.devcontainer\\accelerad_07_beta_win64\\bin\\accelerad_rpict.exe"
+
+REM Verify Accelerad executable exists
+if not exist "!ACCELERAD_EXE!" (
+    echo ERROR: Accelerad executable not found at:
+    echo !ACCELERAD_EXE!
+    echo.
+    echo Please ensure the Accelerad binaries are installed in the .devcontainer folder
+    exit /b 1
+)
+
+echo Using bundled Accelerad: !ACCELERAD_EXE!
+echo.
+
+REM ============================================================================
+REM ARGUMENT PARSING
+REM ============================================================================
 set OCTREE_NAME=%1
 set QUALITY=%2
 set RES=%3
@@ -16,10 +36,10 @@ set SINGLE_VIEW=%4
 
 if "%OCTREE_NAME%"=="" (
     echo Error: OCTREE_NAME required
-    echo Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
+    echo Usage: accelerad_rpict_local.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
     echo Quality options: fast, med, high, detailed, test, ark
-    echo Example all views: .\archilume\accelerad_rpict.bat octree high 512
-    echo Example single view: .\archilume\accelerad_renderer_batch.bat octree detailed 2048 view_position
+    echo Example all views: .\archilume\accelerad_rpict_local.bat octree high 512
+    echo Example single view: .\archilume\accelerad_rpict_local.bat octree detailed 2048 view_position
     exit /b 1
 )
 
@@ -31,7 +51,9 @@ REM Configuration
 set OCTREE=outputs/octree/%OCTREE_NAME%.oct
 set VIEW_DIR=outputs/view
 
-REM Quality preset definitions:
+REM ============================================================================
+REM QUALITY PRESET DEFINITIONS
+REM ============================================================================
 REM AA=ambient accuracy, AB=ambient bounces, AD=ambient divisions, AS=ambient super-samples
 REM AR=ambient resolution, PS=pixel sample, PT=pixel threshold, LR=limit reflection, LW=limit weight
 REM                           AA    AB    AD    AS    AR   PS   PT     LR   LW
@@ -128,7 +150,9 @@ echo.
 
 :SkipGPUConfig
 
-REM Start batch timer
+REM ============================================================================
+REM START BATCH RENDERING
+REM ============================================================================
 set BATCH_START_TIME=%TIME%
 echo.
 echo ============================================================================
@@ -169,7 +193,7 @@ REM Loop through view files
 set CURRENT_VIEW=0
 for %%f in (!VIEW_PATTERN!) do (
     set /a CURRENT_VIEW+=1
-    set VIEW_PATH=%VIEW_DIR%/%%f
+    set VIEW_PATH=%%f
     set VIEW_FULL_NAME=%%~nf
     call :RenderView
 )
@@ -183,7 +207,6 @@ goto :AfterRenderView
 
     REM Extract building/site and sky condition from octree name
     REM Format: {building}_with_site_{skyCondition}
-    REM Split at "_with_site_" to get building and sky parts
     set "FULL_NAME=%OCTREE_NAME%"
 
     REM Replace _with_site_ with a delimiter, then split
@@ -218,7 +241,7 @@ goto :AfterRenderView
         REM Use half AD and AS values for faster overture calculation
         set /a AD_OVERTURE=%AD%/2
         set /a AS_OVERTURE=%AS%/2
-        accelerad_rpict -w+ -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" >nul 2>&1
+        "!ACCELERAD_EXE!" -w+ -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 -aa %AA% -ab %AB% -ad !AD_OVERTURE! -as !AS_OVERTURE! -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" >nul 2>&1
         set OVERTURE_ERROR=!errorlevel!
         if !OVERTURE_ERROR! neq 0 (
             echo   WARNING: Overture failed ^(exit code: !OVERTURE_ERROR!^), continuing with render anyway...
@@ -227,7 +250,7 @@ goto :AfterRenderView
 
     REM Single-pass render using generated ambient file
     echo   Main render pass with ambient file...
-    accelerad_rpict -w+ -t 5 -vf "!VIEW_FILE!" -x %RES% -y %RES% -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > "!OUTPUT_FILE!"
+    "!ACCELERAD_EXE!" -w+ -t 5 -vf "!VIEW_FILE!" -x %RES% -y %RES% -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB_FILE!" "%OCTREE%" > "!OUTPUT_FILE!"
     set RENDER_ERROR=!errorlevel!
     if !RENDER_ERROR! neq 0 (
         echo   ERROR: Render failed for !VIEW_FULL_NAME! ^(exit code: !RENDER_ERROR!^)

@@ -196,7 +196,7 @@ if __name__ == "__main__":
 # TODO: RenderingPipelines -> find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not need visual validation.
 # TODO: Pre-processing of .obj is recommended for speed  after decimation in blender has occured depending on model use case
 # FIXME:  ObjToOctree -> move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here.
-
+#TODO: investgate https://www.schorsch.com/en/download/rradout/ as an export solution
 # TODO: view_generator.create_aoi_files -> 
     # Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
     # set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
@@ -219,3 +219,4 @@ if __name__ == "__main__":
     # vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 
 # TODO: ViewGenerator -> for buildings with large podiums and smaller towers the view generator should dynamically determine that levels bounding box and use this as the input view parameters instead of generically applything the same view width and height for each level regardless. This will result in higher effieicny on the number of pixels to be rendered, especially when moving to rtrace implementation. it will also introduce a grwat amount of work to resize all aoi and room boundaries to be stamped. 
 # TODO: invesitgate cloud computing, specifically costs of G4 compute on https://docs.cloud.google.com/compute/docs/gpus/create-vm-with-gpus. $1.73 per hour of us 34 core CPU and 1 x cuda GPU NVIDIA 
+# TODO: create a scheduling system for overnight runs, multiple different models groups and perhpas even subsequent convergence runs on the same model groups. 
