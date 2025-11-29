@@ -5,6 +5,7 @@ from archilume.geometry_utils import (
     get_center_of_bounding_box,
     get_bounding_box_from_point_coordinates,
 )
+from archilume import config
 
 # Standard library imports
 import logging
@@ -85,8 +86,8 @@ class ViewGenerator:
 
     # Fixed - not user configurable but accessible from instance
     processed_room_boundaries_csv_path: Path        = field(init=False)
-    view_file_dir: Path = field(init                = False, default = Path(__file__).parent.parent / "outputs" / "views_grids")
-    aoi_dir: Path = field(init                 = False, default = Path(__file__).parent.parent / "outputs" / "aoi")
+    view_file_dir: Path = field(init                = False, default_factory=lambda: config.VIEW_DIR)
+    aoi_dir: Path = field(init                 = False, default_factory=lambda: config.AOI_DIR)
     room_boundaries_df: pd.DataFrame | None         = field(init=False, default=None)
     bounding_box_coordinates: Any                   = field(init=False, default=None)
     x_coord_center: float | None                    = field(init=False, default=None)

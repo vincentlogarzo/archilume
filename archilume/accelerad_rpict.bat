@@ -1,11 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
 REM Usage: accelerad_renderer_batch.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
-REM Example (all views): .\archilume\accelerad_rpict_batch.bat octree detailed 2048
-REM Example (single view): .\archilume\accelerad_rpict_batch.bat octree detailed 2048 plan_L01
+REM Example (all views): .\archilume\accelerad_rpict.bat octree detailed 2048
+REM Example (single view): .\archilume\accelerad_rpict.bat octree detailed 2048 plan_L01
 REM If VIEW_NAME is omitted, ALL view files in outputs/views_grids/ will be rendered
 REM Quality options: fast, med, high, detailed, test, ark
-REM .\archilume\accelerad_rpict_batch.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L02
+REM .\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L04
 
 
 REM Arguments
@@ -29,9 +29,11 @@ if "%RES%"=="" set RES=1024
 
 REM Configuration
 set OCTREE=outputs/octree/%OCTREE_NAME%.oct
-set VIEWS_DIR=outputs/views_grids
+set VIEW_DIR=outputs/view
 
 REM Quality preset definitions:
+REM AA=ambient accuracy, AB=ambient bounces, AD=ambient divisions, AS=ambient super-samples
+REM AR=ambient resolution, PS=pixel sample, PT=pixel threshold, LR=limit reflection, LW=limit weight
 REM                           AA    AB    AD    AS    AR   PS   PT     LR   LW
 set "PRESET_fast=           0.07    3   1024   256   124    2   0.1    12   0.001"
 set "PRESET_med=            0.05    3   1024   256   512    2   0.1    12   0.001"
@@ -39,8 +41,6 @@ set "PRESET_high=           0.01    3   1024   512   512    2   0.1    12   0.00
 set "PRESET_detailed=       0       1   2048  1024   124    1   0.02   12   0.0001"
 set "PRESET_test=           0.05    8   1024   256   512    2   0.12   12   0.0005"
 set "PRESET_ark=            0.01    8   4096  1024  1024    4   0.05   16   0.0002"
-REM AA=ambient accuracy, AB=ambient bounces, AD=ambient divisions, AS=ambient super-samples
-REM AR=ambient resolution, PS=pixel sample, PT=pixel threshold, LR=limit reflection, LW=limit weight
 
 REM Validate and load selected preset
 if /i "%QUALITY%"=="fast" set "PRESET_VALUES=!PRESET_fast!"
@@ -71,15 +71,67 @@ for /f "tokens=1-9" %%a in ("!PRESET_VALUES!") do (
     set LW=%%i
 )
 
-REM CUDA cache
+REM ============================================================================
+REM AUTO-CONFIGURE CUDA SETTINGS BASED ON GPU
+REM ============================================================================
+echo Detecting GPU configuration...
+
+REM Query GPU VRAM using nvidia-smi (returns MB)
+for /f "skip=1 tokens=*" %%i in ('nvidia-smi --query-gpu^=memory.total --format^=csv^,nounits 2^>nul') do set GPU_VRAM_MB=%%i
+
+REM Check if nvidia-smi succeeded
+if not defined GPU_VRAM_MB (
+    echo WARNING: Could not detect GPU, using default CUDA settings ^(1GB cache^)
+    set CUDA_CACHE_DISABLE=0
+    set CUDA_CACHE_MAXSIZE=1073741824
+    set CUDA_FORCE_PTX_JIT=1
+    goto :SkipGPUConfig
+)
+
+REM Convert VRAM to GB for display (integer division)
+set /a GPU_VRAM_GB=GPU_VRAM_MB/1024
+
+REM Calculate optimal cache size based on VRAM (in bytes)
+REM Strategy: 25-50% of VRAM for cache depending on total VRAM
+if !GPU_VRAM_MB! LSS 4096 (
+    REM Less than 4GB VRAM: 25% cache, max 1GB
+    set /a CACHE_MB=GPU_VRAM_MB*25/100
+    if !CACHE_MB! GTR 1024 set CACHE_MB=1024
+    set CUDA_FORCE_PTX_JIT=0
+) else if !GPU_VRAM_MB! LSS 8192 (
+    REM 4-8GB VRAM: 30% cache
+    set /a CACHE_MB=GPU_VRAM_MB*30/100
+    set CUDA_FORCE_PTX_JIT=0
+) else if !GPU_VRAM_MB! LSS 12288 (
+    REM 8-12GB VRAM: 35% cache
+    set /a CACHE_MB=GPU_VRAM_MB*35/100
+    set CUDA_FORCE_PTX_JIT=1
+) else (
+    REM 12GB+ VRAM: 40% cache, max 16GB
+    set /a CACHE_MB=GPU_VRAM_MB*40/100
+    if !CACHE_MB! GTR 16384 set CACHE_MB=16384
+    set CUDA_FORCE_PTX_JIT=1
+)
+
+REM Convert cache size from MB to bytes
+set /a CUDA_CACHE_MAXSIZE=CACHE_MB*1024*1024
+
+REM Always enable CUDA cache
 set CUDA_CACHE_DISABLE=0
-set CUDA_CACHE_MAXSIZE=1073741824
-set CUDA_FORCE_PTX_JIT=1
+
+REM Display GPU configuration
+echo GPU VRAM: !GPU_VRAM_MB! MB ^(!GPU_VRAM_GB! GB^)
+set /a CACHE_GB_DISPLAY=CACHE_MB/1024
+echo CUDA Cache: !CACHE_MB! MB ^(!CACHE_GB_DISPLAY! GB^)
+echo CUDA PTX JIT: !CUDA_FORCE_PTX_JIT!
+echo.
+
+:SkipGPUConfig
 
 REM Start batch timer
 set BATCH_START_TIME=%TIME%
 echo.
-echo ========================================
+echo ============================================================================
 if "%SINGLE_VIEW%"=="" (
     echo Starting batch render - ALL VIEWS
 ) else (
@@ -89,14 +141,14 @@ if "%SINGLE_VIEW%"=="" (
 echo Octree: %OCTREE_NAME%
 echo Quality: %QUALITY%
 echo Resolution: %RES%px
-echo ========================================
+echo ============================================================================
 echo.
 
 REM Determine view file pattern
 if "%SINGLE_VIEW%"=="" (
-    set VIEW_PATTERN=%VIEWS_DIR%\*.vp
+    set VIEW_PATTERN=%VIEW_DIR%/*.vp
 ) else (
-    set VIEW_PATTERN=%VIEWS_DIR%\%SINGLE_VIEW%.vp
+    set VIEW_PATTERN=%VIEW_DIR%/%SINGLE_VIEW%.vp
 )
 
 REM Count total views
@@ -142,9 +194,9 @@ goto :AfterRenderView
     )
 
     REM Construct new naming: building_with_site_view__skyCondition
-    set AMB_FILE=outputs/images/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!.amb
+    set AMB_FILE=outputs/image/!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!.amb
     set OUTPUT_NAME=!BUILDING_PART!_with_site_!VIEW_FULL_NAME!__!SKY_PART!
-    set OUTPUT_FILE=outputs/images/!OUTPUT_NAME!.hdr
+    set OUTPUT_FILE=outputs/image/!OUTPUT_NAME!.hdr
 
     REM Skip if output file already exists
     if exist "!OUTPUT_FILE!" (
@@ -185,7 +237,7 @@ goto :AfterRenderView
         REM Apply pfilt noise reduction for high-resolution renders (4096+)
         if %RES% GEQ 4096 (
             echo   Applying pfilt noise reduction for high-resolution render...
-            set DOWNSAMPLED_FILE=outputs/images/!OUTPUT_NAME!_filtered.hdr
+            set DOWNSAMPLED_FILE=outputs/image/!OUTPUT_NAME!_filtered.hdr
             pfilt -x /2 -y /2 "!OUTPUT_FILE!" > "!DOWNSAMPLED_FILE!"
             if !errorlevel! neq 0 (
                 echo   Warning: pfilt failed, keeping original render
@@ -235,7 +287,7 @@ if !BATCH_ELAPSED_SEC! LSS 0 set /a BATCH_ELAPSED_SEC+=86400
 set /a BATCH_ELAPSED_MIN=BATCH_ELAPSED_SEC/60
 set /a BATCH_ELAPSED_SEC_REMAIN=BATCH_ELAPSED_SEC%%60
 
-echo ========================================
+echo ============================================================================
 if "%SINGLE_VIEW%"=="" (
     echo Batch render complete
     echo Total views rendered: !VIEW_COUNT!
@@ -244,4 +296,4 @@ if "%SINGLE_VIEW%"=="" (
     echo View: %SINGLE_VIEW%
 )
 echo Total time: !BATCH_ELAPSED_MIN!m !BATCH_ELAPSED_SEC_REMAIN!s
-echo ========================================
+echo ============================================================================

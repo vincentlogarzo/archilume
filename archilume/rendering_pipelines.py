@@ -7,6 +7,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 
 # Archilume imports
 from archilume import utils
+from archilume import config
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class RenderingPipelines:
     """
     Comprehensive solar illumination analysis engine for architectural daylight evaluation.
-    
+
     This dataclass orchestrates the complete pipeline for analyzing sunlight exposure in
     architectural spaces, from geometric setup through final visualization generation.
     Implements industry-standard Radiance rendering with automated post-processing for
@@ -36,21 +37,23 @@ class RenderingPipelines:
     Required Attributes:
         skyless_octree_path (Path): Base octree file path (typically skyless geometry)
         overcast_sky_file_path (Path): Overcast sky file for ambient lighting analysis
-        skies_dir (Path): Directory containing solar condition sky files
-        views_dir (Path): Directory containing architectural viewpoint files
-        image_dir (Path): Output directory for rendered images and analysis results
         x_res (int): Horizontal resolution for medium quality rendering (must be positive)
         y_res (int): Vertical resolution for medium quality rendering (must be positive)
 
+    Optional Attributes (default from config):
+        skies_dir (Path): Directory containing solar condition sky files (default: config.SKY_DIR)
+        views_dir (Path): Directory containing architectural viewpoint files (default: config.VIEW_DIR)
+
     Auto-Generated Attributes (populated during initialization):
+        image_dir (Path): Output directory for rendered images (default: config.IMAGE_DIR)
         sky_files (List[Path]): Discovered sky files from skies_dir (*.sky)
         view_files (List[Path]): Discovered view files from views_dir (*.vp)
         overcast_octree_command (str): Command for overcast sky octree generation
-        rpict_low_qual_commands (List[str]): Low quality rendering commands (512x512)
-        rpict_med_qual_commands (List[str]): Medium quality rendering commands (x_res y_res)
+        rpict_daylight_overture_commands (List[str]): Overture rendering commands
+        rpict_daylight_med_qual_commands (List[str]): Medium quality rendering commands
         temp_octree_with_sky_paths (List[Path]): Temporary octree file paths
         oconv_commands (List[str]): Octree compilation commands
-        rpict_commands (List[str]): Solar rendering commands
+        rpict_direct_sun_commands (List[str]): Direct sun rendering commands
         pcomb_commands (List[str]): Image composite commands
         ra_tiff_commands (List[str]): TIFF conversion commands
     """
@@ -58,13 +61,15 @@ class RenderingPipelines:
     # Required fields - no defaults
     skyless_octree_path: Path
     overcast_sky_file_path: Path
-    skies_dir: Path
-    views_dir: Path
     x_res: int
     y_res: int
-    
+
+    # Optional fields with config defaults
+    skies_dir: Path = field(default_factory=lambda: config.SKY_DIR)
+    views_dir: Path = field(default_factory=lambda: config.VIEW_DIR)
+
     # Fields that will be populated after initialization
-    image_dir: Path = field(init = False, default = Path(__file__).parent.parent / "outputs" / "images")
+    image_dir: Path = field(init = False, default_factory=lambda: config.IMAGE_DIR)
     sky_files: List[Path] = field(default_factory=list, init=False)
     view_files: List[Path] = field(default_factory=list, init=False)
     overcast_octree_command: str = field(default=None, init=False)

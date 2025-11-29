@@ -4,6 +4,7 @@ to run enter python examples/clean_images_folder.py --force
 
 import shutil
 from pathlib import Path
+from archilume import config
 
 
 def clean_images_directory(images_path: str = None, dry_run: bool = False) -> None:
@@ -16,8 +17,7 @@ def clean_images_directory(images_path: str = None, dry_run: bool = False) -> No
     """
     # Default to outputs/images relative to project root
     if images_path is None:
-        project_root = Path(__file__).parent.parent
-        images_dir = project_root / "outputs" / "images"
+        images_dir = config.IMAGE_DIR
     else:
         images_dir = Path(images_path)
 

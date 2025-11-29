@@ -6,6 +6,7 @@ Requires-Python: >=3.12
 Description-Content-Type: text/markdown
 Requires-Dist: ifcopenshell>=0.8.3.post1
 Requires-Dist: numpy>=2.3.2
+Requires-Dist: nvmath-python>=0.7.0
 Requires-Dist: open3d>=0.19.0
 Requires-Dist: opencv-python>=4.11.0.86
 Requires-Dist: openpyxl>=3.1.5
@@ -26,6 +27,7 @@ Requires-Dist: pyvista>=0.46.4
 - **3D Model Conversion** - Convert OBJ/MTL building models to Radiance octree format with automatic material processing
 - **Sky Generation** - Create physically accurate sky models for any date, time, and geographic location
 - **View Setup** - Generate camera view parameters for interior and exterior analysis
+- **GPU Acceleration** - Optional Accelerad integration for 10-50x faster rendering with NVIDIA GPUs
 - **Image Processing** - Advanced rendering pipelines with automated post-processing capabilities
 - **Parallel Execution** - Multi-core processing support for computationally intensive simulations
 - **Seasonal Analysis** - Pre-configured workflows for solstice studies and annual daylight assessments
@@ -45,12 +47,35 @@ For projects with extensive curved surfaces or very large building models, consi
 
 - **Python 3.12+** - [Download Python](https://www.python.org/downloads/)
 - **Radiance** - [Install Radiance](https://www.radiance-online.org/)
+- **Accelerad** (Optional) - [Install Accelerad](https://nljones.github.io/Accelerad/) for GPU-accelerated rendering
 
-**Windows Users**: Radiance must be installed to `C:\Radiance\bin\`. If you encounter "Warning! PATH too long" during installation, manually set environment variables:
+#### Windows Installation
+
+**Radiance Setup**
+
+Radiance must be installed to `C:\Radiance\bin\`. If you encounter "Warning! PATH too long" during installation, manually set environment variables:
 
 ```cmd
 setx PATH "%PATH%;C:\Radiance\bin"
 setx RAYPATH "C:\Radiance\lib"
+```
+
+**Accelerad Setup (Optional - GPU Rendering)**
+
+For GPU-accelerated rendering, install Accelerad to `C:\Program Files\Accelerad\`. After installation, update the RAYPATH environment variable to include both Radiance and Accelerad libraries:
+
+```cmd
+setx RAYPATH "C:\Radiance\lib;C:\Program Files\Accelerad\lib"
+```
+
+**Important**: Accelerad requires NVIDIA GPU with CUDA support. Verify your system meets these requirements:
+- NVIDIA GPU with compute capability 5.0 or higher
+- NVIDIA display drivers with CUDA support (12.0+)
+- OptiX 6.x or higher (usually included with display drivers)
+
+To verify Accelerad installation, run:
+```cmd
+accelerad_rpict -version
 ```
 
 ### Installation
@@ -192,6 +217,254 @@ views = ViewGenerator(
 )
 views.create_aoi_and_view_files()
 ```
+
+## GPU Rendering with Accelerad
+
+Archilume supports GPU-accelerated rendering through Accelerad, providing significant performance improvements for overcast daylight simulations. GPU rendering can be **10-50x faster** than CPU rendering depending on scene complexity and GPU hardware.
+
+### Overview
+
+The GPU rendering pipeline replaces both the overture (ambient file warming) and medium quality rendering steps with a single accelerated batch process. This provides:
+
+- **Faster rendering**: GPU parallelization dramatically reduces render times
+- **Ambient file caching**: Reuses pre-computed ambient files across rendering sessions
+- **Quality presets**: Six built-in quality configurations from preview to production
+- **Automatic fallback**: Seamlessly falls back to CPU rendering if GPU unavailable
+
+### Requirements
+
+**Hardware:**
+- NVIDIA GPU with compute capability 5.0+ (Maxwell architecture or newer)
+- Minimum 2GB VRAM (4GB+ recommended for high-resolution renders)
+- Compatible GPUs: GTX 900 series, RTX series, Quadro/RTX professional cards
+
+**Software:**
+- Accelerad installed to `C:\Program Files\Accelerad\`
+- NVIDIA display drivers with CUDA 12.0+ support
+- OptiX 6.8+ (included with recent NVIDIA drivers)
+- RAYPATH environment variable configured correctly
+
+### RAYPATH Configuration
+
+The RAYPATH environment variable must include both Radiance and Accelerad library paths. Accelerad searches RAYPATH for required PTX (CUDA compiled kernel) files.
+
+**Verify RAYPATH is set correctly:**
+
+```cmd
+echo %RAYPATH%
+```
+
+Expected output:
+```
+C:\Radiance\lib;C:\Program Files\Accelerad\lib
+```
+
+If RAYPATH is incorrect or missing Accelerad libraries, you'll see errors like:
+```
+accelerad_rpict: system - File rpict.ptx not found in RAYPATH.
+```
+
+**Fix RAYPATH issues:**
+
+```cmd
+setx RAYPATH "C:\Radiance\lib;C:\Program Files\Accelerad\lib"
+```
+
+**Note**: After setting environment variables, restart your terminal/IDE for changes to take effect.
+
+### Usage
+
+Enable GPU rendering by setting `render_mode='gpu'` in the `sunlight_rendering_pipeline()` method:
+
+```python
+from archilume.rendering_pipelines import RenderingPipelines
+
+renderer = RenderingPipelines(
+    skyless_octree_path=octree_path,
+    overcast_sky_file_path=overcast_sky_path,
+    skies_dir=sky_files_dir,
+    views_dir=view_files_dir,
+    x_res=1024,
+    y_res=1024
+)
+
+# GPU rendering with medium quality preset
+timings = renderer.sunlight_rendering_pipeline(
+    render_mode='gpu',
+    gpu_quality='med'
+)
+```
+
+### Quality Presets
+
+Six quality presets are available, balancing speed vs accuracy:
+
+| Preset | Use Case | AA | AB | AD | AS | AR | Speed | Quality |
+|--------|----------|----|----|----|----|-------|-------|---------|
+| `fast` | Quick preview | 0.07 | 3 | 1024 | 256 | 124 | ⚡⚡⚡⚡ | ⭐ |
+| `med` | Standard analysis | 0.05 | 3 | 1024 | 256 | 512 | ⚡⚡⚡ | ⭐⭐ |
+| `high` | High quality | 0.01 | 3 | 1024 | 512 | 512 | ⚡⚡ | ⭐⭐⭐ |
+| `detailed` | Maximum quality | 0 | 1 | 2048 | 1024 | 124 | ⚡ | ⭐⭐⭐⭐ |
+| `test` | Testing/debugging | 0.05 | 8 | 1024 | 256 | 512 | ⚡⚡⚡ | ⭐⭐ |
+| `ark` | Architecture grade | 0.01 | 8 | 4096 | 1024 | 1024 | ⚡ | ⭐⭐⭐⭐⭐ |
+
+**Parameter definitions:**
+- **AA** (Ambient Accuracy): Lower = more accurate indirect lighting (0-1)
+- **AB** (Ambient Bounces): Number of indirect light bounces (0-10)
+- **AD** (Ambient Divisions): Ray sampling density (512-4096)
+- **AS** (Ambient Super-samples): Additional samples for accuracy (128-1024)
+- **AR** (Ambient Resolution): Spatial resolution of ambient cache (32-1024)
+
+### Complete GPU Rendering Example
+
+```python
+from pathlib import Path
+from archilume.obj_to_octree import ObjToOctree
+from archilume.sky_generator import SkyGenerator
+from archilume.view_generator import ViewGenerator
+from archilume.rendering_pipelines import RenderingPipelines
+
+# 1. Setup geometry
+octree_generator = ObjToOctree(['building.obj', 'site.obj'])
+octree_generator.create_skyless_octree_for_analysis()
+
+# 2. Generate sky conditions
+sky_generator = SkyGenerator(lat=-37.8136)
+sky_generator.generate_TenK_cie_overcast_skyfile()
+sky_generator.generate_sunny_sky_series(
+    month=6, day=21,
+    start_hour_24hr_format=9,
+    end_hour_24hr_format=15,
+    minute_increment=10
+)
+
+# 3. Create views
+view_generator = ViewGenerator(
+    room_boundaries_csv_path='rooms.csv',
+    ffl_offset=1.0
+)
+view_generator.create_plan_view_files()
+
+# 4. GPU-accelerated rendering
+renderer = RenderingPipelines(
+    skyless_octree_path=octree_generator.skyless_octree_path,
+    overcast_sky_file_path=sky_generator.TenK_cie_overcast_sky_file_path,
+    skies_dir=sky_generator.sky_file_dir,
+    views_dir=view_generator.view_file_dir,
+    x_res=1024,
+    y_res=1024
+)
+
+# Render with GPU using 'fast' preset for quick preview
+phase_timings = renderer.sunlight_rendering_pipeline(
+    render_mode='gpu',
+    gpu_quality='fast'
+)
+
+print(f"GPU rendering completed in {phase_timings['    Ambient file warming & rendering (GPU)']:.1f}s")
+```
+
+### Performance Considerations
+
+**Ambient File Reuse**
+
+GPU rendering generates `.amb` files that cache indirect lighting calculations. These files are automatically reused in subsequent renders with matching:
+- Octree geometry
+- View parameters
+- Sky conditions
+- Quality settings
+
+**Benefits:**
+- First render: Full overture + rendering (~2-5 minutes per view)
+- Subsequent renders: Skip overture, reuse `.amb` files (~30-60 seconds per view)
+
+**Storage:** Ambient files are stored in `outputs/images/` and typically range from 1-50MB depending on scene complexity.
+
+**When to Clear Ambient Files:**
+
+Use the `scrub_outputs.py` utility to manage ambient file caching:
+
+```python
+# Clear all outputs including ambient files (fresh start)
+from examples.scrub_outputs import clear_outputs_folder
+clear_outputs_folder(retain_amb_files=False)
+
+# Clear outputs but keep ambient files (faster re-rendering)
+clear_outputs_folder(retain_amb_files=True)
+```
+
+**Resolution Guidelines**
+
+Higher resolutions require more VRAM and processing time:
+
+| Resolution | VRAM Usage | Render Time (per view) | Recommended For |
+|------------|------------|------------------------|-----------------|
+| 512px | ~1GB | 30-60s | Quick previews |
+| 1024px | ~2GB | 1-3min | Standard analysis |
+| 2048px | ~4GB | 4-8min | High-quality output |
+| 4096px | ~8GB+ | 10-20min | Publication quality |
+
+**Multi-View Rendering**
+
+The GPU batch renderer processes all views sequentially. For projects with many views:
+- Total time = (number of views) × (time per view)
+- Example: 10 views at 1024px with 'fast' preset = ~10-30 minutes total
+
+### Troubleshooting
+
+**Error: "File rpict.ptx not found in RAYPATH"**
+
+The RAYPATH environment variable doesn't include Accelerad's library path.
+
+**Solution:**
+```cmd
+setx RAYPATH "C:\Radiance\lib;C:\Program Files\Accelerad\lib"
+```
+
+Restart your terminal/IDE after setting the environment variable.
+
+**Error: "No CUDA-capable device detected"**
+
+Accelerad cannot find a compatible NVIDIA GPU.
+
+**Solutions:**
+1. Verify NVIDIA GPU is installed: `nvidia-smi`
+2. Update NVIDIA drivers to latest version
+3. Check GPU compute capability: Must be 5.0 or higher
+4. Fallback to CPU rendering: `render_mode='cpu'`
+
+**Warning: "unknown object type 'specpict'"**
+
+This warning can be safely ignored. It indicates Accelerad encountered a Radiance primitive type that doesn't affect rendering results.
+
+**Render appears too dark/bright**
+
+Adjust the quality preset or rendering parameters:
+- Darker images: Increase AB (ambient bounces) or AS (super-samples)
+- Brighter images: Decrease AD (ambient divisions) or increase AR (ambient resolution)
+- Try different presets: `fast` → `med` → `high` → `detailed`
+
+**GPU rendering slower than expected**
+
+Possible causes:
+1. First render (generating ambient files): Expected, subsequent renders will be faster
+2. Low VRAM: Reduce resolution or use simpler geometry
+3. Thermal throttling: Ensure adequate GPU cooling
+4. Other GPU processes: Close GPU-intensive applications
+
+### CPU vs GPU Rendering Comparison
+
+| Aspect | CPU (rpict) | GPU (Accelerad) |
+|--------|-------------|-----------------|
+| **Speed** | Baseline | 10-50x faster |
+| **Quality** | Identical | Identical |
+| **Hardware** | Any CPU | NVIDIA GPU required |
+| **Ambient files** | Separate overture pass | Combined overture + render |
+| **Multi-view** | Parallel processing | Sequential batching |
+| **Memory** | RAM-limited | VRAM-limited |
+| **Best for** | Parallel multi-scene | Single-scene high-res |
+
+**Recommendation**: Use GPU rendering for iterative design workflows where you render the same views repeatedly. Use CPU rendering for one-off analyses or when GPU hardware is unavailable.
 
 ## Testing
 

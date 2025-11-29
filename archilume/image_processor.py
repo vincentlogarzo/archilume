@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import cv2
 import re
+from archilume import config
 
 @dataclass
 class ImageProcessor:
@@ -17,12 +18,16 @@ class ImageProcessor:
 
     skyless_octree_path: Path
     overcast_sky_file_path: Path
-    sky_files_dir: Path
-    view_files_dir: Path
-    image_dir: Path
     x_res: int
     y_res: int
     latitude: float
+
+    # Optional fields with config defaults
+    sky_files_dir: Path = field(default_factory=lambda: config.SKY_DIR)
+    view_files_dir: Path = field(default_factory=lambda: config.VIEW_DIR)
+    image_dir: Path = field(default_factory=lambda: config.IMAGE_DIR)
+
+    # Auto-populated fields
     sky_files: List[Path] = field(default_factory=list, init=False)
     view_files: List[Path] = field(default_factory=list, init=False)
 
@@ -216,7 +221,7 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float,
         return
 
     # Load AOI files once at the start
-    aoi_dir = Path(__file__).parent.parent / "outputs" / "aoi"
+    aoi_dir = config.AOI_DIR
     aoi_files = list(aoi_dir.glob("*.aoi")) if aoi_dir.exists() else []
 
     # Parse all AOI files once (not per-image)

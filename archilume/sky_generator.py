@@ -10,6 +10,7 @@ which calculates sun positions based on solar time rather than local standard ti
 """
 
 # Archilume imports
+from archilume import config
 
 # Standard library imports
 import logging
@@ -66,8 +67,8 @@ class SkyGenerator:
     lat: float
 
     # Fixed - not user configurable but accessible from instance
-    sky_file_dir: Path = field(init = False, default = Path(__file__).parent.parent / "outputs" / "sky")
-    TenK_cie_overcast_sky_file_path: Path = field(init=False, default=Path(__file__).parent.parent / "outputs" / "sky" / "TenK_cie_overcast.rad")
+    sky_file_dir: Path = field(init = False, default_factory=lambda: config.SKY_DIR)
+    TenK_cie_overcast_sky_file_path: Path = field(init=False, default_factory=lambda: config.SKY_DIR / "TenK_cie_overcast.rad")
 
     def __post_init__(self):
         """

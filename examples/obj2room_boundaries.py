@@ -8,6 +8,7 @@ rectangular room boundaries for each level at specified intervals.
 import csv
 import os
 from pathlib import Path
+from archilume import config
 
 
 def parse_obj_bounding_box(filepath: Path) -> dict:
@@ -243,7 +244,7 @@ def main(
 
 if __name__ == "__main__":
     # Configuration variables for faster prototyping
-    obj_file            = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_v2.obj"
+    obj_file            = config.INPUTS_DIR / "22041_AR_T01_v2.obj"
     output_csv          = None      # Auto-generate from obj filename
     level_height        = 3.0       # Height interval between levels (meters)
     room_type           = "FLOOR"   # Room type label

@@ -1,6 +1,7 @@
 """Clean up the outputs folder to prepare for fresh rendering."""
 
 from pathlib import Path
+from archilume import config
 
 def clear_outputs_folder(retain_amb_files: bool = False, retain_octree: bool = False) -> None:
     """
@@ -12,7 +13,7 @@ def clear_outputs_folder(retain_amb_files: bool = False, retain_octree: bool = F
         retain_octree: If True, keeps the entire octree folder and its contents.
                       If False, removes octree files like other folders.
     """
-    outputs_dir = Path(__file__).parent.parent / "outputs"
+    outputs_dir = config.OUTPUTS_DIR
 
     if not outputs_dir.exists():
         print(f"Outputs directory does not exist: {outputs_dir}")

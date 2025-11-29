@@ -1,5 +1,6 @@
 # Archilume imports
 from archilume.convert_2_radiance_mtl_file import Convert2RadianceMtlFile
+from archilume import config
 
 # Standard library imports
 import os
@@ -33,7 +34,7 @@ class ObjToOctree:
     input_mtl_paths: list[Path]             = field(init=False, default=None)
     combined_radiance_mtl_path: str | None  = field(init=False, default=None)
     output_rad_paths: list[str]             = field(init=False, default=None)
-    output_dir: Path                        = field(init=False, default=Path(__file__).parent.parent / "outputs" / "octree")
+    output_dir: Path                        = field(init=False, default_factory=lambda: config.OCTREE_DIR)
     skyless_octree_path: Path               = field(init=False, default=None)
     
     def __post_init__(self):
@@ -106,7 +107,7 @@ class ObjToOctree:
         """
         for input_obj_path in self.input_obj_paths:
             
-            output_rad_path = Path(__file__).parent.parent / "outputs" / "rad" / input_obj_path.with_suffix('.rad').name
+            output_rad_path = config.RAD_DIR / input_obj_path.with_suffix('.rad').name
             self.output_rad_paths.append(output_rad_path)
             
             # Build the command string

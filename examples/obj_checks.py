@@ -1,8 +1,9 @@
 import os
 from pathlib import Path
+from archilume import config
 
 
-filepath = Path(__file__).parent.parent / "inputs" / "22041_AR_T01_BLD_hiddenLine_cleaned.obj"
+filepath = config.INPUTS_DIR / "22041_AR_T01_BLD_hiddenLine_cleaned.obj"
 
 # Get file size
 file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
