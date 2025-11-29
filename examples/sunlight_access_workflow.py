@@ -185,8 +185,13 @@ if __name__ == "__main__":
 # TODO: there should be an overwrite input that checks that changes in inputs, and determine whether the .amb files can be retained or chucked, and then the scrub_ouptuts function is called to clean the correct outputs before re-run.
 # TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries form being simulated separately.
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
-# TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
+    # See example below for use of x as only input and radiance auto calculates other aspects. This means you only need one input the width of pixels. 
+        # You only specify X (-x 1000). 
+        # Radiance automatically calculates Y (-y 500) based on the .vp file.
+        # rpict -vf myview.vp -x 1000 scene.oct > output.hdr
 
+
+# TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
 # TODO: Implement checks on site rotation, validate simulation to be conducted at low res render and then set the rotation if it is off.
 # TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
