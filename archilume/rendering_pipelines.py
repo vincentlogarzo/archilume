@@ -197,21 +197,33 @@ class RenderingPipelines:
             env = os.environ.copy()
             env['RAYPATH'] = config.RAYPATH
 
-            print(f"Launching GPU rendering...")
+            print(f"Launching GPU rendering in background...")
             print(f"RAYPATH: {config.RAYPATH}")
             print(f"Batch Command: {batch_command}")
+            print(f"Note: Phase 2 & 3 will run in parallel with GPU rendering\n")
 
-            # Run batch file directly with modified environment
-            result = subprocess.run(batch_command, shell=True, env=env, cwd=project_root)
+            # Launch batch file as non-blocking subprocess
+            process = subprocess.Popen(
+                batch_command,
+                shell=True,
+                env=env,
+                cwd=project_root,
+                stdout=subprocess.DEVNULL,  # Suppress output (Option A - no progress monitoring)
+                stderr=subprocess.DEVNULL
+            )
 
-            if result.returncode != 0:
-                print(f"\nWarning: GPU rendering exited with code {result.returncode}")
-            else:
-                print("\nGPU rendering completed successfully")
+            # Create future that will wait for process completion
+            def wait_for_gpu_process():
+                """Wait for GPU batch to complete and check return code."""
+                returncode = process.wait()
+                if returncode != 0:
+                    print(f"\nWarning: GPU rendering exited with code {returncode}")
+                else:
+                    print("\nGPU rendering completed successfully")
+                return returncode
 
-            # Create dummy future for compatibility with future.result() call later
             executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(lambda: None)
+            future = executor.submit(wait_for_gpu_process)
         else:
             # CPU mode: Separate overture and rendering passes
             phase_start = time.time()

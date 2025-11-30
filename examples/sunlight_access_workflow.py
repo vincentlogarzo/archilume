@@ -183,6 +183,8 @@ def main():
 if __name__ == "__main__":
     main()
 
+# TODO: Enabled simultaneous operation of gpu rendering and rest of the workflow front load heavy oconv
+# TODO: Implement checks on site rotation, validate simulation to be conducted at low res render and then set the rotation if it is off.
 # TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
     # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
         # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
@@ -200,12 +202,12 @@ if __name__ == "__main__":
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
 
 
+# TODO: invesitgate a simpler implemntation of file paths, currently this prints out the full path, but surely there is a way to allow relative paths to be used to simplify the terminal printouts for readability.
 # TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
-# TODO: Implement checks on site rotation, validate simulation to be conducted at low res render and then set the rotation if it is off.
+
 # TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
 
-# TODO: Enabled simultaneous operation of gpu rendering and rest of the workflow front load heavy oconv
 #TODO code is not equipped to handle vertical view positions in the file naming conventions. This feature would need to be added for future use and tested. Vertical view positions, would need to be named as such. Instead of plan, elevation_aoi_x_surfaceA.vp
 # TODO: setup .bat files to run radiance executables with radiance binaries that are not on path, with binaries that are in the radiance distribution.
 # TODO: RenderingPipelines -> find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not need visual validation.
