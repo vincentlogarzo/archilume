@@ -36,21 +36,23 @@ RAD_DIR             = OUTPUTS_DIR / "rad"
 # ============================================================================
 # EXTERNAL TOOL PATHS (Radiance/Accelerad)
 # ============================================================================
+# Use bundled Accelerad from .devcontainer by default
+# Users can set ACCELERAD_ROOT env var to override with system installation
+BUNDLED_ACCELERAD_ROOT = PROJECT_ROOT / ".devcontainer" / "accelerad_07_beta_Windows"
+ACCELERAD_ROOT      = Path(os.getenv("ACCELERAD_ROOT", str(BUNDLED_ACCELERAD_ROOT)))
+ACCELERAD_BIN_PATH  = ACCELERAD_ROOT / "bin"
+ACCELERAD_LIB_PATH  = ACCELERAD_ROOT / "lib"
+
 # Detect Radiance installation from environment variable or use default
 # Users can set RADIANCE_ROOT env var to override default location
 RADIANCE_ROOT       = Path(os.getenv("RADIANCE_ROOT", r"C:/Radiance"))
 RADIANCE_BIN_PATH   = RADIANCE_ROOT / "bin"
 RADIANCE_LIB_PATH   = RADIANCE_ROOT / "lib"
 
-# Detect Accelerad installation from environment variable or use default
-# Users can set ACCELERAD_ROOT env var to override default location
-ACCELERAD_ROOT      = Path(os.getenv("ACCELERAD_ROOT", r"C:/Program Files/Accelerad"))
-ACCELERAD_BIN_PATH  = ACCELERAD_ROOT / "bin"
-ACCELERAD_LIB_PATH  = ACCELERAD_ROOT / "lib"
-
 # RAYPATH environment variable for Radiance tools
 # Users can also set RAYPATH directly via environment to override
-RAYPATH = os.getenv("RAYPATH", f"{RADIANCE_LIB_PATH};{ACCELERAD_LIB_PATH}")
+# Use bundled Accelerad lib first, then fall back to system Radiance if available
+RAYPATH = os.getenv("RAYPATH", f"{ACCELERAD_LIB_PATH};{RADIANCE_LIB_PATH}")
 
 # ============================================================================
 # PARALLEL EXECUTION SETTINGS
@@ -64,11 +66,11 @@ WORKERS = {
     "rpict_overture"            : min(8, DEFAULT_MAX_WORKERS),
     "rpict_medium_quality"      : min(8, DEFAULT_MAX_WORKERS),
     "oconv_compile"             : min(12, DEFAULT_MAX_WORKERS),
-    "rpict_direct_sun"          : min(20, DEFAULT_MAX_WORKERS),
-    "pcomb_tiff_conversion"     : min(12, DEFAULT_MAX_WORKERS),
-    "metadata_stamping"         : min(12, DEFAULT_MAX_WORKERS),
-    "gif_animation"             : min(12, DEFAULT_MAX_WORKERS),
-    "wpd_processing"            : min(12, DEFAULT_MAX_WORKERS),
+    "rpict_direct_sun"          : min(14, DEFAULT_MAX_WORKERS),
+    "pcomb_tiff_conversion"     : min(14, DEFAULT_MAX_WORKERS),
+    "metadata_stamping"         : min(14, DEFAULT_MAX_WORKERS),
+    "gif_animation"             : min(14, DEFAULT_MAX_WORKERS),
+    "wpd_processing"            : min(14, DEFAULT_MAX_WORKERS),
 }
 
 class InputValidator:

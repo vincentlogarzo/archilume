@@ -177,7 +177,7 @@ class RenderingPipelines:
             octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
             octree_name = f"{octree_base_name}_{self.overcast_sky_file_path.stem}"
 
-            # Construct batch command
+            # Construct batch command - use backslashes for Windows
             batch_command = rf".\archilume\accelerad_rpict.bat {octree_name} {gpu_quality} {self.x_res}"
 
             # Get current working directory to ensure batch runs from project root
@@ -200,17 +200,28 @@ class RenderingPipelines:
             print(f"Launching GPU rendering in background...")
             print(f"RAYPATH: {config.RAYPATH}")
             print(f"Batch Command: {batch_command}")
+            print(f"CWD: {project_root}")
             print(f"Note: Phase 2 & 3 will run in parallel with GPU rendering\n")
 
-            # Launch batch file as non-blocking subprocess
-            process = subprocess.Popen(
-                batch_command,
-                shell=True,
-                env=env,
-                cwd=project_root,
-                stdout=subprocess.DEVNULL,  # Suppress output (Option A - no progress monitoring)
-                stderr=subprocess.DEVNULL
-            )
+            # Create log files to capture output for debugging
+            log_dir = config.OUTPUTS_DIR / "logs"
+            log_dir.mkdir(exist_ok=True)
+            stdout_log = log_dir / "accelerad_stdout.log"
+            stderr_log = log_dir / "accelerad_stderr.log"
+
+            print(f"Logging to: {stdout_log}")
+            print(f"Errors to: {stderr_log}\n")
+
+            # Launch batch file as non-blocking subprocess with logging
+            with open(stdout_log, 'w') as out_file, open(stderr_log, 'w') as err_file:
+                process = subprocess.Popen(
+                    batch_command,
+                    shell=True,
+                    env=env,
+                    cwd=project_root,
+                    stdout=out_file,  # Capture output for debugging
+                    stderr=err_file   # Capture errors for debugging
+                )
 
             # Create future that will wait for process completion
             def wait_for_gpu_process():
@@ -386,7 +397,7 @@ class RenderingPipelines:
             oconv_command, rpict_command, pcomb_ra_tiff_command = [
                 rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}" ,
                 rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
-                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | ra_tiff -e -4 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
+                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | pfilt -1 | ra_tiff -e -4 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
             ]
     
 
