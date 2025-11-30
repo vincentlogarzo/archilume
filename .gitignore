@@ -7,3 +7,6 @@ outputs/*
 # Keep directory structure but ignore content
 !inputs/.gitkeep
 !outputs/.gitkeep
+
+# Ignore test/scratch files
+examples/radiance_testpad.py

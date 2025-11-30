@@ -340,7 +340,7 @@ class Hdr2Wpd:
             aoi_file: Path to AOI file
 
         Returns:
-            View name (e.g., "plan_L02") or None if not found
+            View name (e.g., "plan_ffl_90000") or None if not found
         """
         with open(aoi_file, 'r') as f:
             lines = f.readlines()

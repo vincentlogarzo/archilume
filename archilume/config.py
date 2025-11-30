@@ -87,7 +87,7 @@ class InputValidator:
         image_resolution: int,
         rendering_mode: str,
         rendering_quality: str,
-        room_boundaries_csv_path: Path,
+        room_boundaries_csv: Path,
         obj_paths: List[Path]
     ):
         # Store values
@@ -101,7 +101,7 @@ class InputValidator:
         self.image_resolution = image_resolution
         self.rendering_mode = rendering_mode
         self.rendering_quality = rendering_quality
-        self.room_boundaries_csv_path = room_boundaries_csv_path
+        self.room_boundaries_csv = room_boundaries_csv
         self.obj_paths = obj_paths
         
         self._errors = []
@@ -135,8 +135,8 @@ class InputValidator:
             self._errors.append(f"[X] rendering_mode: Must be one of {valid_modes}")
 
         # --- Files ---
-        if not self.room_boundaries_csv_path.exists():
-            self._errors.append(f"[X] CSV not found: {self.room_boundaries_csv_path}")
+        if not self.room_boundaries_csv.exists():
+            self._errors.append(f"[X] CSV not found: {self.room_boundaries_csv}")
 
         # --- Geometry ---
         if not self.obj_paths: self._errors.append("[X] obj_paths: List is empty.")
@@ -211,7 +211,7 @@ class InputValidator:
         print(f"{'Quality Preset':<30} {self.rendering_quality.upper():<30} {'Valid preset name'}")
 
         # Files
-        print(f"{'Room Boundaries CSV':<30} {self.room_boundaries_csv_path.name:<30} {'File exists & extension is .csv'}")
+        print(f"{'Room Boundaries CSV':<30} {self.room_boundaries_csv.name:<30} {'File exists & extension is .csv'}")
 
         print("-" * 100)
         print(f"GEOMETRY FILES ({len(self.obj_paths)})")

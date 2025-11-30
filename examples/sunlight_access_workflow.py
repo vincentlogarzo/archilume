@@ -1,6 +1,6 @@
 """
 Archilume Example: Winter Solstice Sunlight Exposure Analysis
-==============================================================
+==========================================================================================================
 
 This example demonstrates a complete sunlight analysis workflow using Archilume
 to evaluate daylight conditions during the winter solstice (June 21st in the
@@ -53,22 +53,29 @@ def main():
     # ====================================================================================================
 
     inputs = config.InputValidator(
-        project_latitude            = -37.8134564,      # Input building latitude to 4 decimal places
-        month                       = 6,                # June
-        day                         = 21,               # Winter solstice
-        start_hour                  = 9,                # 9:00 AM
-        end_hour                    = 15,               # 3:00 PM
-        timestep                    = 15,               # Minutes (recommended >= 5 min)
-        ffl_offset                  = 1.0,              # Camera height above finished floor level (FFL)
-        image_resolution            = 2048,             # Image size in pixels (recommnded <= 2048)
-        rendering_mode              = 'gpu',            # select one option: cpu, gpu
-        rendering_quality           = 'high',           # select one option: fast, med, high, detailed, test, ark
-        room_boundaries_csv_path    = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
-        # .obj file exports must be coarse, in meters with hidden line visual style
-        obj_paths = [config.INPUTS_DIR / f for f in [
-                        "87Cowles_BLD_withWindows.obj", # Assessed building must be first 
-                        "87cowles_site.obj"             
-                    ]])
+        # ------------------------------------------------------------------------------------------------
+        # FIXED INPUTS (Rarely changed)
+        # ------------------------------------------------------------------------------------------------
+        project_latitude            = -37.8134564,  # Building latitude to 4 decimal places
+        month                       = 6,            # June
+        day                         = 21,           # Winter solstice
+        start_hour                  = 9,            # Analysis start: 9:00 AM
+        end_hour                    = 15,           # Analysis end: 3:00 PM
+        ffl_offset                  = 1.0,          # Camera height above finished floor level (meters)        
+        room_boundaries_csv         = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
+        obj_paths = 
+        [config.INPUTS_DIR / f for f in [
+                "87Cowles_BLD_withWindows.obj",     # Assessed building (must be first)
+                "87cowles_site.obj"                 # Site context
+                    ]],                             # Note: OBJ exports must be coarse, in meters, hidden line visual style
+        # ------------------------------------------------------------------------------------------------
+        # RENDERING SETTINGS (Modify per simulation run - balance quality vs speed)
+        # ------------------------------------------------------------------------------------------------
+        timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
+        image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
+        rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
+        rendering_quality           = "med",        # Options: 'fast', 'med', 'high', 'detailed', 'test', 'ark'
+    )
 
 
 
@@ -101,7 +108,7 @@ def main():
     print(f"\n{'=' * 100}\nPhase 3: Prepare Camera Views...\n{'=' * 100}")
     # ====================================================================================================
     view_generator = ViewGenerator(
-        room_boundaries_csv_path    = inputs.room_boundaries_csv_path,
+        room_boundaries_csv_path    = inputs.room_boundaries_csv,
         ffl_offset                  = inputs.ffl_offset
         )
     view_generator.create_plan_view_files()
@@ -183,12 +190,14 @@ if __name__ == "__main__":
     # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value. 
 #TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured. 
 # TODO: there should be an overwrite input that checks that changes in inputs, and determine whether the .amb files can be retained or chucked, and then the scrub_ouptuts function is called to clean the correct outputs before re-run.
-# TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries form being simulated separately.
+# TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries from being simulated separately.
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
     # See example below for use of x as only input and radiance auto calculates other aspects. This means you only need one input the width of pixels. 
         # You only specify X (-x 1000). 
         # Radiance automatically calculates Y (-y 500) based on the .vp file.
         # rpict -vf myview.vp -x 1000 scene.oct > output.hdr
+# TODO: for cross machines compatibility, implement .bat files for all radiance executables to run through the command prompt and use the radiacne .exe files in the .devcontainer. This will mean that a user will not need to download or install these external programme, they need only have the correct nvidia drivers (just in case their computer did not come with the correct drivers) installed to allow use of the computers GPUs and cuda capability.
+# FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
 
 
 # TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
@@ -197,6 +206,7 @@ if __name__ == "__main__":
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
 
 # TODO: Enabled simultaneous operation of gpu rendering and rest of the workflow front load heavy oconv
+#TODO code is not equipped to handle vertical view positions in the file naming conventions. This feature would need to be added for future use and tested. Vertical view positions, would need to be named as such. Instead of plan, elevation_aoi_x_surfaceA.vp
 # TODO: setup .bat files to run radiance executables with radiance binaries that are not on path, with binaries that are in the radiance distribution.
 # TODO: RenderingPipelines -> find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not need visual validation.
 # TODO: Pre-processing of .obj is recommended for speed  after decimation in blender has occured depending on model use case
@@ -210,12 +220,10 @@ if __name__ == "__main__":
     # ensure modified file are used when they exist.
 # TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing.
 # TODO: add custom parameters input into the gpu_quality, which should be albelelled rendering parameters that work for both these workflows if user does not want to use a preconfigured set of parameters. 
-# TODO: potentiall simpler implemntation of gpu rendering using os.system(".\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_L02") instead of the current in rendering_pipelines.py.
+# TODO: potentiall simpler implemntation of gpu rendering using os.system(".\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_ffl_90000") instead of the current in rendering_pipelines.py.
 # TODO: execute sky view and aoi generator while the initial octree is being compiled with oconv as it is a heavy process currently only utilising 1 core of the CPU.
-# TODO: The view generator does not deal well hen levels are deleted from the room boundaries, it does number levles corrector. Perhaps the Level number should be RL for reference line.
 # TODO: see future implementation A in radiance_testpad.py to introduce optional falsecolour of the output images before stamping. See the command needed under this ection. 
-# FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-# FIXME: obj_paths variable -> currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce error user error. 
+# FIXME: obj_paths variable -> currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce user error
 # TODO: view_generator.create_aoi_files -> 
     # move this generator upfront, it does not need a rendered hdr image to operate. This could be done upfonrt with the room boundaries data, in parallel with octree generation processes. 
 # TODO: RenderingPipelines ->  implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images for those without a compatible cuda enabled GPU.

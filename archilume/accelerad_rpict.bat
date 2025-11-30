@@ -1,10 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
 REM Usage: accelerad_rpict_local.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
-REM Example (all views): .\archilume\accelerad_rpict.bat octree detailed 2048
-REM Example (single view): .\archilume\accelerad_rpict.bat octree detailed 2048 plan_L01
+REM Example (all views): .\archilume\accelerad_rpict.bat octree fast 512
+REM Example (single view): .\archilume\accelerad_rpict.bat octree fast 512 plan_ffl_90000
 REM If VIEW_NAME is omitted, ALL view files in outputs/view/ will be rendered
 REM Quality options: fast, med, high, detailed, test, ark
+REM Note: View names use millimeters as integers 
+REM (e.g., 90.0m = plan_ffl_90000, 103.18m = plan_ffl_103180)
 REM
 REM This version uses the bundled Accelerad from .devcontainer instead of PATH
 
@@ -12,7 +14,7 @@ REM ============================================================================
 REM CONFIGURE ACCELERAD PATH
 REM ============================================================================
 REM Set the path to the bundled Accelerad executable
-set "ACCELERAD_EXE=%~dp0..\\.devcontainer\\accelerad_07_beta_win64\\bin\\accelerad_rpict.exe"
+set "ACCELERAD_EXE=%~dp0..\\.devcontainer\\accelerad_07_beta_Windows\\bin\\accelerad_rpict.exe"
 
 REM Verify Accelerad executable exists
 if not exist "!ACCELERAD_EXE!" (
@@ -39,7 +41,7 @@ if "%OCTREE_NAME%"=="" (
     echo Usage: accelerad_rpict_local.bat [OCTREE_NAME] [QUALITY] [RES] [VIEW_NAME]
     echo Quality options: fast, med, high, detailed, test, ark
     echo Example all views: .\archilume\accelerad_rpict_local.bat octree high 512
-    echo Example single view: .\archilume\accelerad_rpict_local.bat octree detailed 2048 view_position
+    echo Example single view: .\archilume\accelerad_rpict_local.bat octree detailed 2048 view_name
     exit /b 1
 )
 
@@ -54,15 +56,16 @@ set VIEW_DIR=outputs/view
 REM ============================================================================
 REM QUALITY PRESET DEFINITIONS
 REM ============================================================================
-REM AA=ambient accuracy, AB=ambient bounces, AD=ambient divisions, AS=ambient super-samples
-REM AR=ambient resolution, PS=pixel sample, PT=pixel threshold, LR=limit reflection, LW=limit weight
-REM                           AA    AB    AD    AS    AR   PS   PT     LR   LW
-set "PRESET_fast=           0.07    3   1024   256   124    2   0.1    12   0.001"
-set "PRESET_med=            0.05    3   1024   256   512    2   0.1    12   0.001"
-set "PRESET_high=           0.01    3   1024   512   512    2   0.1    12   0.001"
-set "PRESET_detailed=       0       1   2048  1024   124    1   0.02   12   0.0001"
-set "PRESET_test=           0.01    8   4096  1024  1024    2   0.05   16   0.00001"
-set "PRESET_ark=            0.01    8   4096  1024  1024    4   0.05   16   0.0002"
+REM AA=ambient accuracy, AB=ambient bounces, AD=ambient divisions, 
+REM AS=ambient super-samples, AR=ambient resolution, PS=pixel sample
+REM PT=pixel threshold, LR=limit reflection, LW=limit weight
+REM                     AA    AB    AD    AS    AR   PS   PT     LR   LW
+set "PRESET_fast=     0.07    3   1024   256   124    2   0.1    12   0.001"
+set "PRESET_med=      0.05    3   1024   256   512    2   0.1    12   0.001"
+set "PRESET_high=     0.01    3   1024   512   512    2   0.1    12   0.001"
+set "PRESET_detailed= 0       1   2048  1024  1024    1   0.02   12   0.0001"
+set "PRESET_test=     0.01    8   4096  1024  1024    2   0.05   16   0.00001"
+set "PRESET_ark=      0.01    8   4096  1024  1024    4   0.05   16   0.0002"
 
 REM Validate and load selected preset
 if /i "%QUALITY%"=="fast" set "PRESET_VALUES=!PRESET_fast!"
@@ -193,8 +196,12 @@ REM Loop through view files
 set CURRENT_VIEW=0
 for %%f in (!VIEW_PATTERN!) do (
     set /a CURRENT_VIEW+=1
-    set VIEW_PATH=%%f
-    set VIEW_FULL_NAME=%%~nf
+    REM Construct full path: VIEW_DIR + filename (%%f only gives filename with wildcard patterns)
+    set VIEW_PATH=%VIEW_DIR%/%%f
+    REM Extract filename with extension, then strip .vp manually to handle dots in filename
+    set VIEW_NAME_WITH_EXT=%%~nxf
+    REM Remove .vp extension (last 3 characters)
+    set VIEW_FULL_NAME=!VIEW_NAME_WITH_EXT:~0,-3!
     call :RenderView
 )
 goto :AfterRenderView

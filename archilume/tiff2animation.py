@@ -306,7 +306,8 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
 
             # ===== PART 2: Add AOI Polygons and Labels =====
             rooms = 0
-            if aoi_files and (match := re.search(r'plan_L\d+', filename)):
+            # Match pattern: plan_ffl_90000 or plan_ffl_-02500 (millimeters as integer)
+            if aoi_files and (match := re.search(r'plan_ffl_-?\d+', filename)):
                 view_file = f"{match.group(0)}.vp"
                 matching_aois = parsed_aois.get(view_file, [])
 

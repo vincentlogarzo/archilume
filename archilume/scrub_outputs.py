@@ -46,7 +46,7 @@ def clear_outputs_folder(retain_amb_files: bool = False, retain_octree: bool = F
 if __name__ == "__main__":
     # Set to True to keep .amb files in images directory
     # Set retain_octree to True to keep octree folder and its contents
-    retain_for_rerun = True
+    retain_for_rerun = False
 
     clear_outputs_folder(
         retain_amb_files=retain_for_rerun,

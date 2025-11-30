@@ -725,7 +725,7 @@ def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=No
         None
         
     Example:
-        >>> view_files = [Path('plan_L02.vp'), Path('section_A.vp')]
+        >>> view_files = [Path('plan_ffl_90000.vp'), Path('section_A.vp')]
         >>> combine_tiffs_by_view(Path('outputs/images'), view_files, fps=2.0, output_format='mp4', number_of_workers=6)
         >>> combine_tiffs_by_view(Path('outputs/images'), view_files, output_format='gif')  # Uses 1 FPS with 4 workers
     """

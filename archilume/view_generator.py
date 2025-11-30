@@ -157,7 +157,7 @@ class ViewGenerator:
 
         Generated View Files:
             - Location: outputs/views_grids/ directory
-            - Naming: plan_L00.vp (ground floor), plan_L01.vp (second floor), etc.
+            - Naming: plan_ffl_{millimeters}.vp (e.g., plan_ffl_90000.vp for 90.0m, plan_ffl_103180.vp for 103.18m)
             - Content: Complete Radiance view parameter string for each floor
             - Camera setup: Top-down orthographic view from building center
 
@@ -368,14 +368,21 @@ class ViewGenerator:
             # Determine associated view file based on z_coordinate
             room_z_coord = group['z_coords'].iloc[0]
 
-            # Get unique z coordinates and find which level this room belongs to
-            all_z_coords = sorted(df['z_coords'].unique())
-            try:
-                level_index = all_z_coords.index(room_z_coord)
-                associated_view_file = f"plan_L{level_index:02}.vp"
-            except ValueError:
-                # Fallback if z_coord not found in unique list
-                associated_view_file = "plan_L#ERROR_LVL_NOT_FOUND.vp"
+            # Convert meters to millimeters (integer) for filename
+            # Calculate padding width based on all z-coordinates in dataset
+            all_z_coords = df['z_coords'].values
+            all_z_mm = [int(round(z * 1000)) for z in all_z_coords]
+            max_abs_mm = max(abs(z_mm) for z_mm in all_z_mm)
+            mm_width = len(str(max_abs_mm))
+
+            # Convert current room z-coordinate to millimeters
+            room_z_mm = int(round(room_z_coord * 1000))
+
+            # Format filename with zero-padded millimeter value
+            if room_z_mm < 0:
+                associated_view_file = f"plan_ffl_-{abs(room_z_mm):0{mm_width}d}.vp"
+            else:
+                associated_view_file = f"plan_ffl_{room_z_mm:0{mm_width}d}.vp"
 
             # Header lines
             header_line1 = f"AOI Points File: {apartment_name} {room_name}"
@@ -546,23 +553,24 @@ class ViewGenerator:
         Returns:
             DataFrame with columns:
                 - ffl_z_coord: Floor finished level Z coordinate (meters)
-                - view_file_path: Path to corresponding view file (plan_L00.vp, etc.)
+                - view_file_path: Path to corresponding view file (plan_ffl_90000.vp, etc.)
                 - ffl_z_coord_with_offset: Camera Z position (floor level + offset)
             Returns None if processing fails or no valid Z coordinates found
-            
+
         Processing Steps:
             1. Extract and validate Z coordinates from room data
             2. Find unique Z coordinate values representing different floor levels
             3. Sort floor levels from lowest to highest
-            4. Generate view file paths with sequential naming (plan_L00, plan_L01, etc.)
-            5. Calculate camera positions by adding offset to floor levels
-            6. Create output directory if it doesn't exist
-            
+            4. Convert meter values to millimeters (integer) for filenames
+            5. Generate view file paths with millimeter-based naming
+            6. Calculate camera positions by adding offset to floor levels
+            7. Create output directory if it doesn't exist
+
         Generated View File Names:
-            - plan_L00.vp: Ground/lowest floor level
-            - plan_L01.vp: Second floor level  
-            - plan_L02.vp: Third floor level
-            - etc.
+            - plan_ffl_00000.vp: Ground level (0.0m)
+            - plan_ffl_90000.vp: Floor at 90.0m height
+            - plan_ffl_103180.vp: Floor at 103.18m height
+            - etc. (zero-padded millimeter values for correct alphabetical sorting)
             
         Error Handling:
             - Logs errors for invalid Z coordinates or directory creation failures
@@ -590,10 +598,28 @@ class ViewGenerator:
             logging.error(f"Failed to create directory {view_dir_path} for floor level DF: {e}")
             return None
 
-        floor_level_data = [
-            {"ffl_z_coord": z_val, "view_file_path": view_dir_path / f"plan_L{i:02}.vp"}
-            for i, z_val in enumerate(sorted_unique_z_coords)
-        ]
+        # Convert meters to millimeters (integer) to avoid decimal points in filenames
+        # e.g., 90.0m -> 90000mm, 103.18m -> 103180mm, -2.5m -> -02500mm
+        z_coords_mm = [int(round(z * 1000)) for z in sorted_unique_z_coords]
+
+        # Determine padding width based on maximum absolute value in millimeters
+        max_abs_mm = max(abs(z_mm) for z_mm in z_coords_mm)
+        mm_width = len(str(max_abs_mm))
+
+        floor_level_data = []
+        for z_val, z_mm in zip(sorted_unique_z_coords, z_coords_mm):
+            # Format: zero-padded millimeter value with negative sign if needed
+            # Examples: 90000, 103180, -02500
+            if z_mm < 0:
+                filename = f"plan_ffl_-{abs(z_mm):0{mm_width}d}"
+            else:
+                filename = f"plan_ffl_{z_mm:0{mm_width}d}"
+
+            floor_level_data.append({
+                "ffl_z_coord": z_val,
+                "view_file_path": view_dir_path / f"{filename}.vp"
+            })
+
         output_df = pd.DataFrame(floor_level_data)
         output_df["ffl_z_coord_with_offset"] = output_df["ffl_z_coord"] + ffl_offset
 
