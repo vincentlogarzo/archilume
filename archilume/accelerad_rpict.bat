@@ -181,20 +181,34 @@ REM ============================================================================
 
     REM Overture (generate ambient file if missing)
     if not exist "!AMB!" (
+        echo -------------------------------------------------------------------
         echo   Overture: Generating ambient file
-        set /a AD_HALF=AD/2
-        set /a AS_HALF=AS/2
-        "%ACCELERAD_EXE%" -w+ -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 ^
+        echo   ACCELERAD_EXE: %ACCELERAD_EXE%
+        echo   OCTREE:        %OCTREE%
+        echo   VIEW_FILE:     !VIEW_FILE!
+        echo   AMB_FILE:      !AMB!
+        echo -------------------------------------------------------------------
+        set /a AD_HALF=AD
+        set /a AS_HALF=AS
+        "%ACCELERAD_EXE%" -w -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 ^
             -aa %AA% -ab %AB% -ad !AD_HALF! -as !AS_HALF! -ar %AR% ^
-            -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB!" "%OCTREE%" >nul 2>&1
+            -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB!" "%OCTREE%"
         if !errorlevel! neq 0 echo   Warning: Overture failed, continuing...
+        if not exist "!AMB!" echo   ERROR: Ambient file was not created!
     ) else (
         echo   Overture: Using existing ambient
     )
 
     REM Main render
+    echo -------------------------------------------------------------------
     echo   Render: !VIEW_NAME! ^> %RES%px
-    "%ACCELERAD_EXE%" -w+ -t 5 -vf "!VIEW_FILE!" -x %RES% -y %RES% ^
+    echo   ACCELERAD_EXE: %ACCELERAD_EXE%
+    echo   OCTREE:        %OCTREE%
+    echo   VIEW_FILE:     !VIEW_FILE!
+    echo   AMB_FILE:      !AMB!
+    echo   HDR_FILE:      !HDR!
+    echo -------------------------------------------------------------------
+    "%ACCELERAD_EXE%" -w -t 5 -vf "!VIEW_FILE!" -x %RES% -y %RES% ^
         -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% ^
         -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB!" "%OCTREE%" > "!HDR!"
 

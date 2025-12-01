@@ -67,16 +67,21 @@ def main():
         [config.INPUTS_DIR / f for f in [
                 "87Cowles_BLD_withWindows.obj",     # Assessed building (must be first)
                 "87cowles_site.obj"                 # Site context
-                    ]],                             # Note: OBJ exports must be coarse, in meters, hidden line visual style
+                    ]],                             # OBJ exports must be coarse, in meters, hidden line visual style
         # ------------------------------------------------------------------------------------------------
         # RENDERING SETTINGS (Modify per simulation run - balance quality vs speed)
         # ------------------------------------------------------------------------------------------------
         timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
         image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
         rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
-        rendering_quality           = "med",        # Options: 'fast', 'med', 'high', 'detailed', 'test', 'ark'
+        rendering_quality           = "high",   # Options: 'fast', 'med', 'high', 'detailed', 'test', 'ark'
     )
 
+    # TODO: logic to be introduce here upon subequent re runs, 
+    #   1. if time step is different, keep overcast hdr + .amb files and delete everything else in /image, 
+    #   2. if image resolution has increased remove all .hdr and .tiff files from /image
+    #   3. if quality has increased, only re-run the overcast hdrs
+    #   4. if 
 
 
     # ====================================================================================================
@@ -183,7 +188,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# TODO: Enabled simultaneous operation of gpu rendering and rest of the workflow front load heavy oconv
+
 # TODO: Implement checks on site rotation, validate simulation to be conducted at low res render and then set the rotation if it is off.
 # TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
     # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
@@ -200,7 +205,7 @@ if __name__ == "__main__":
         # rpict -vf myview.vp -x 1000 scene.oct > output.hdr
 # TODO: for cross machines compatibility, implement .bat files for all radiance executables to run through the command prompt and use the radiacne .exe files in the .devcontainer. This will mean that a user will not need to download or install these external programme, they need only have the correct nvidia drivers (just in case their computer did not come with the correct drivers) installed to allow use of the computers GPUs and cuda capability.
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-
+#TODO: implement correctlt ambient file handling in accelerad_rpict, this ambient file should be updated when new paramters are credta. amb is created once, and never updated, even if higher paramter or resolution are used. This will not help when performing subsquent re-runs. it needs to be identify when higher values are used, and then re-run an overture using the higher parameters relative to the simulation the user wishes to run. 
 
 # TODO: invesitgate a simpler implemntation of file paths, currently this prints out the full path, but surely there is a way to allow relative paths to be used to simplify the terminal printouts for readability.
 # TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 

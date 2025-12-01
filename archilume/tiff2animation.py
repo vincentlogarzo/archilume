@@ -323,16 +323,14 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
                         for i in range(len(polygon) - 1):
                             draw.line([polygon[i], polygon[i + 1]], fill=aoi_color, width=aoi_lineweight)
 
-                        # Draw room label at center
+                        # Draw room label at center (text only, no background)
                         if cp := aoi['central_pixel']:
                             label = aoi['apartment_room']
                             bbox = draw.textbbox((0, 0), label, font=aoi_font)
                             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
                             lx, ly = cp[0] - tw // 2, cp[1] - th // 2
 
-                            if aoi_bg_alpha > 0:
-                                draw.rectangle([lx - 5, ly - 5, lx + tw + 5, ly + th + 5],
-                                              fill=(0, 0, 0, aoi_bg_alpha))
+                            # Draw text with no background (transparent)
                             draw.text((lx, ly), label, font=aoi_font, fill=aoi_color + (255,))
                             rooms += 1
 
