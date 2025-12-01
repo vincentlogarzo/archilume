@@ -5,29 +5,25 @@ REM ============================================================================
 REM Simplified Accelerad Batch Renderer
 REM ============================================================================
 REM Usage: accelerad_rpict_v2.bat OCTREE_NAME [QUALITY] [RES] [VIEW_NAME]
-REM Example: ./archilume/accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_ffl_090000
+REM Example: ./archilume/accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast preview plan_ffl_090000
 
 REM ============================================================================
 REM 1. VALIDATE INPUTS
 REM ============================================================================
 if "%~1"=="" (
     echo ERROR: OCTREE_NAME required
-    echo Usage: %~nx0 OCTREE_NAME [QUALITY] [RES] [VIEW_NAME]
+    echo Usage: %~nx0 [OCTREE_NAME] [QUALITY] [VIEW_NAME]
     exit /b 1
 )
 
 set OCTREE_NAME=%~1
 set QUALITY=%~2
-set RES=%~3
-set SINGLE_VIEW=%~4
+set SINGLE_VIEW=%~3
 
 REM Defaults
-if "%QUALITY%"=="" set QUALITY=fast
-if "%RES%"=="" set RES=1024
+if "%QUALITY%"=="" set QUALITY=prev
 
-REM ============================================================================
-REM 2. SETUP PATHS
-REM ============================================================================
+REM --- 2. SETUP PATHS ---
 set ACCELERAD_EXE=%~dp0../.devcontainer/accelerad_07_beta_Windows/bin/accelerad_rpict.exe
 set OCTREE=outputs/octree/%OCTREE_NAME%.oct
 set VIEW_DIR=outputs/view
@@ -43,48 +39,79 @@ if not exist "%OCTREE%" (
     exit /b 1
 )
 
-REM ============================================================================
-REM 3. QUALITY PRESETS                  (AA   AB AD  AS   AR   PS PT  LR LW)
-REM ============================================================================
-if /i "%QUALITY%"=="fast"     set PARAMS=0.07 3 1024 0256 0124 2 0.10 12 0.0010
-if /i "%QUALITY%"=="med"      set PARAMS=0.05 3 1024 0256 0512 2 0.10 12 0.0010
-if /i "%QUALITY%"=="high"     set PARAMS=0.02 3 1024 0512 0512 2 0.10 12 0.0010
-if /i "%QUALITY%"=="detailed" set PARAMS=0.01 1 2048 1024 1024 1 0.02 12 0.0001
-if /i "%QUALITY%"=="test"     set PARAMS=0.01 8 4096 1024 1024 2 0.05 12 0.0001
-if /i "%QUALITY%"=="ark"      set PARAMS=0.01 8 4096 1024 1024 4 0.05 12 0.0002
+
+REM when using .amb, same combination of ambient parameters for every rendering
+REM that uses the ambient file. For susequent runs using an amb file 
+REM you may reduce -ad and -as by < 50% + increase -aa by 0.05 or 0.1
+
+set RES_OV=64
+set AD_OV=2048
+set AA_OV=0.01
+set AB_OV=3
+set AS_OV=1024
+set AR_OV=1024
+set /a LR_AMB=%AB_OV%+2
+
+REM --- 3. QUALITY PRESETS ---           (RES    AA   AB      AD   AS   AR     PS  PT   LR       LW     DJ   DS   DT   DC   DR  DP  )
+
+if /i "%QUALITY%"=="prev"       set PARAMS=256   0.01 %AB_OV% 2048 1024 %AR_OV% 4  0.15 %LR_AMB% 0.0010 0.0  0.25 0.50 0.25 0   512
+if /i "%QUALITY%"=="draft"      set PARAMS=512   0.02 %AB_OV% 1792 1094 %AR_OV% 2  0.12 %LR_AMB% 0.0010 0.5  0.35 0.35 0.40 1   256
+if /i "%QUALITY%"=="stand"      set PARAMS=1024  0.03 %AB_OV% 1536 718  %AR_OV% 2  0.10 %LR_AMB% 0.0010 0.7  0.50 0.25 0.50 1   256
+if /i "%QUALITY%"=="prod"       set PARAMS=1536  0.03 %AB_OV% 1280 924  %AR_OV% 1  0.07 %LR_AMB% 0.0010 0.9  0.70 0.15 0.75 2   128
+if /i "%QUALITY%"=="final"      set PARAMS=2048  0.03 %AB_OV% 1024 512  %AR_OV% 1  0.05 %LR_AMB% 0.0010 1.0  0.90 0.05 0.90 3   64
+if /i "%QUALITY%"=="4K"         set PARAMS=4096  0.03 %AB_OV% 1024 512  %AR_OV% 1  0.05 %LR_AMB% 0.0010 1.0  0.90 0.05 0.90 3   64
+if /i "%QUALITY%"=="custom"     set PARAMS=1024  0.01 8       4096 1024 1024    2  0.05 12       0.0001 0.7  0.50 0.25 0.50 1   256
 
 if not defined PARAMS (
     echo ERROR: Invalid quality '%QUALITY%'
-    echo Valid: fast, med, high, detailed, test, ark
+    echo Valid: prev, draft, stand, prod, final, 4K, custom
     exit /b 1
 )
 
 REM Parse parameters
-for /f "tokens=1-9" %%a in ("%PARAMS%") do (
-    set AA=%%a
-    set AB=%%b
-    set AD=%%c
-    set AS=%%d
-    set AR=%%e
-    set PS=%%f
-    set PT=%%g
-    set LR=%%h
-    set LW=%%i
+for /f "tokens=1-16" %%a in ("%PARAMS%") do (
+    set RES=%%a
+    set AA=%%b
+    set AB=%%c
+    set AD=%%d
+    set AS=%%e
+    set AR=%%f
+    set PS=%%g
+    set PT=%%h
+    set LR=%%i
+    set LW=%%j
+    set DJ=%%k
+    set DS=%%l
+    set DT=%%m
+    set DC=%%n
+    set DR=%%o
+    set DP=%%p
 )
 
-REM ============================================================================
-REM 4. GPU CONFIGURATION
-REM ============================================================================
-for /f "skip=1 tokens=*" %%i in ('nvidia-smi --query-gpu=memory.total --format=csv,nounits 2^>nul') do set GPU_VRAM_MB=%%i
+
+REM --- 4. GPU CONFIGURATION ---
+echo Checking for GPU...
+nvidia-smi --query-gpu=memory.total --format=csv,nounits 2>nul | findstr /R "^[0-9]" > "%TEMP%\gpu_mem.txt" 2>nul
+set /p GPU_VRAM_MB=<"%TEMP%\gpu_mem.txt" 2>nul
+del "%TEMP%\gpu_mem.txt" 2>nul
 
 if defined GPU_VRAM_MB (
-    set /a GPU_VRAM_GB=GPU_VRAM_MB/1024
-    set /a CACHE_MB=GPU_VRAM_MB*30/100
-    if !CACHE_MB! GTR 16384 set CACHE_MB=16384
-    set /a CUDA_CACHE_MAXSIZE=CACHE_MB*1024*1024
-    set CUDA_CACHE_DISABLE=0
-    set CUDA_FORCE_PTX_JIT=1
-    echo GPU: !GPU_VRAM_GB! GB, Cache: !CACHE_MB! MB
+    REM Verify it's a number by attempting arithmetic
+    set /a "TEST=!GPU_VRAM_MB!+0" 2>nul
+    if !errorlevel! neq 0 (
+        echo WARNING: GPU detection returned invalid data, using defaults
+        set CUDA_CACHE_MAXSIZE=1073741824
+        set CUDA_CACHE_DISABLE=0
+        set CUDA_FORCE_PTX_JIT=1
+    ) else (
+        set /a "GPU_VRAM_GB=!GPU_VRAM_MB!/1024"
+        set /a "CACHE_MB=!GPU_VRAM_MB!*30/100"
+        if !CACHE_MB! GTR 16384 set CACHE_MB=16384
+        set /a "CUDA_CACHE_MAXSIZE=!CACHE_MB!*1024*1024"
+        set CUDA_CACHE_DISABLE=0
+        set CUDA_FORCE_PTX_JIT=1
+        echo GPU: !GPU_VRAM_GB! GB ^(!GPU_VRAM_MB! MB^), Cache: !CACHE_MB! MB
+    )
 ) else (
     echo WARNING: GPU not detected, using defaults
     set CUDA_CACHE_MAXSIZE=1073741824
@@ -92,9 +119,8 @@ if defined GPU_VRAM_MB (
     set CUDA_FORCE_PTX_JIT=1
 )
 
-REM ============================================================================
-REM 5. FIND VIEWS TO RENDER
-REM ============================================================================
+REM --- 5. FIND VIEWS TO RENDER ---
+
 if "%SINGLE_VIEW%"=="" (
     echo Mode: Batch render ALL views
     set VIEW_COUNT=0
@@ -116,9 +142,7 @@ if !VIEW_COUNT! EQU 0 (
 echo Found !VIEW_COUNT! view(s), Quality: %QUALITY%, Resolution: %RES%px
 echo.
 
-REM ============================================================================
-REM 6. RENDER LOOP
-REM ============================================================================
+REM --- 6. RENDER LOOP ---
 set BATCH_START=%TIME%
 set CURRENT=0
 
@@ -145,11 +169,9 @@ echo.
 echo ============================================================================
 echo Batch complete: !VIEW_COUNT! views in !ELAPSED!
 echo ============================================================================
-exit /b 0
+goto :eof
 
-REM ============================================================================
-REM SUBROUTINE: Render Single View
-REM ============================================================================
+REM --- SUBROUTINE: Render Single View --- 
 :RenderOne
     REM TEMP_VIEW_FILE contains the full path from the wildcard
     set VIEW_FILE=!TEMP_VIEW_FILE!
@@ -171,46 +193,40 @@ REM ============================================================================
     set HDR=%IMAGE_DIR%/!BUILDING!_with_site_!VIEW_NAME!__!SKY!.hdr
 
     REM Skip if already exists
-    if exist "!HDR!" (
-        echo   Skip: Output exists
+    if exist "!HDR!" (echo   Skip: Output exists
         echo.
         exit /b 0
     )
 
     set START=%TIME%
 
-    REM Overture (generate ambient file if missing)
+    REM --- Overture (generate ambient file if missing) ---
     if not exist "!AMB!" (
         echo -------------------------------------------------------------------
         echo   Overture: Generating ambient file
         echo   ACCELERAD_EXE: %ACCELERAD_EXE%
         echo   OCTREE:        %OCTREE%
-        echo   VIEW_FILE:     !VIEW_FILE!
+        echo   VIEW_FILE:     !VIEW_FILE! ^(%RES_OV%px^)
         echo   AMB_FILE:      !AMB!
+        echo   COMMAND:       ""%ACCELERAD_EXE%" -w -t 1 -vf "!VIEW_FILE!" -x %RES_OV% -y %RES_OV% -aa %AA_OV% -ab %AB_OV% -ad %AD_OV% -as %AS_OV% -ar %AR_OV% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -dj %DJ% -ds %DS% -dt %DT% -dc %DC% -dr %DR% -dp %DP% -i -af "!AMB!" "%OCTREE%">nul"
         echo -------------------------------------------------------------------
-        set /a AD_HALF=AD
-        set /a AS_HALF=AS
-        "%ACCELERAD_EXE%" -w -t 5 -vf "!VIEW_FILE!" -x 64 -y 64 ^
-            -aa %AA% -ab %AB% -ad !AD_HALF! -as !AS_HALF! -ar %AR% ^
-            -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB!" "%OCTREE%"
+        "%ACCELERAD_EXE%" -w -t 1 -vf "!VIEW_FILE!" -x %RES_OV% -y %RES_OV% -aa %AA_OV% -ab %AB_OV% -ad %AD_OV% -as %AS_OV% -ar %AR_OV% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -dj %DJ% -ds %DS% -dt %DT% -dc %DC% -dr %DR% -dp %DP% -i -af "!AMB!" "%OCTREE%">nul
+
         if !errorlevel! neq 0 echo   Warning: Overture failed, continuing...
         if not exist "!AMB!" echo   ERROR: Ambient file was not created!
-    ) else (
-        echo   Overture: Using existing ambient
     )
 
-    REM Main render
+    REM --- Main render ---
     echo -------------------------------------------------------------------
-    echo   Render: !VIEW_NAME! ^> %RES%px
+    echo   Render:        !VIEW_NAME! in %RES%px
     echo   ACCELERAD_EXE: %ACCELERAD_EXE%
     echo   OCTREE:        %OCTREE%
     echo   VIEW_FILE:     !VIEW_FILE!
     echo   AMB_FILE:      !AMB!
     echo   HDR_FILE:      !HDR!
+    echo   COMMAND:       ""%ACCELERAD_EXE%" -w -t 1 -vf "!VIEW_FILE!" -x %RES% -y %RES% -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -dj %DJ% -ds %DS% -dt %DT% -dc %DC% -dr %DR% -dp %DP% -i -af "!AMB!" "%OCTREE%" > "!HDR!""
     echo -------------------------------------------------------------------
-    "%ACCELERAD_EXE%" -w -t 5 -vf "!VIEW_FILE!" -x %RES% -y %RES% ^
-        -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% ^
-        -ps %PS% -pt %PT% -lr %LR% -lw %LW% -i -af "!AMB!" "%OCTREE%" > "!HDR!"
+    "%ACCELERAD_EXE%" -w -t 1 -vf "!VIEW_FILE!" -x %RES% -y %RES% -aa %AA% -ab %AB% -ad %AD% -as %AS% -ar %AR% -ps %PS% -pt %PT% -lr %LR% -lw %LW% -dj %DJ% -ds %DS% -dt %DT% -dc %DC% -dr %DR% -dp %DP% -i -af "!AMB!" "%OCTREE%" > "!HDR!"
 
     if !errorlevel! neq 0 (
         echo   ERROR: Render failed
@@ -221,28 +237,42 @@ REM ============================================================================
     echo.
     exit /b 0
 
-REM ============================================================================
-REM SUBROUTINE: Calculate Elapsed Time
-REM ============================================================================
+REM --- SUBROUTINE: Calculate Elapsed Time ---
 :ElapsedTime
+    setlocal enabledelayedexpansion
     set T1=%~1
     set T2=%~2
 
-    REM Parse start time
-    for /f "tokens=1-4 delims=:." %%a in ("%T1%") do (
-        set /a S1=1%%a%%100*3600 + 1%%b%%100*60 + 1%%c%%100 2>nul
+    REM Parse start time - strip leading zeros to avoid octal interpretation
+    for /f "tokens=1-3 delims=:." %%a in ("!T1!") do (
+        set H1=%%a
+        set M1=%%b
+        set S1=%%c
     )
+    REM Remove leading zeros
+    set /a H1=1!H1!-100 2>nul || set H1=0
+    set /a M1=1!M1!-100 2>nul || set M1=0
+    set /a S1=1!S1!-100 2>nul || set S1=0
+    set /a S1_TOTAL=H1*3600+M1*60+S1
 
     REM Parse end time
-    for /f "tokens=1-4 delims=:." %%a in ("%T2%") do (
-        set /a S2=1%%a%%100*3600 + 1%%b%%100*60 + 1%%c%%100 2>nul
+    for /f "tokens=1-3 delims=:." %%a in ("!T2!") do (
+        set H2=%%a
+        set M2=%%b
+        set S2=%%c
     )
+    REM Remove leading zeros
+    set /a H2=1!H2!-100 2>nul || set H2=0
+    set /a M2=1!M2!-100 2>nul || set M2=0
+    set /a S2=1!S2!-100 2>nul || set S2=0
+    set /a S2_TOTAL=H2*3600+M2*60+S2
 
     REM Calculate difference
-    set /a DIFF=S2-S1
+    set /a DIFF=S2_TOTAL-S1_TOTAL
     if !DIFF! LSS 0 set /a DIFF+=86400
 
     set /a MIN=DIFF/60
-    set /a SEC=DIFF%%60
+    set /a SEC=DIFF-MIN*60
     set ELAPSED=!MIN!m !SEC!s
+    endlocal & set ELAPSED=%ELAPSED%
     exit /b 0
