@@ -189,6 +189,7 @@ if __name__ == "__main__":
     main()
 
 
+ 
 # TODO: Implement checks on site rotation, validate simulation to be conducted at low res render and then set the rotation if it is off.
 # TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
     # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
@@ -205,7 +206,7 @@ if __name__ == "__main__":
         # rpict -vf myview.vp -x 1000 scene.oct > output.hdr
 # TODO: for cross machines compatibility, implement .bat files for all radiance executables to run through the command prompt and use the radiacne .exe files in the .devcontainer. This will mean that a user will not need to download or install these external programme, they need only have the correct nvidia drivers (just in case their computer did not come with the correct drivers) installed to allow use of the computers GPUs and cuda capability.
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-#TODO: implement correctlt ambient file handling in accelerad_rpict, this ambient file should be updated when new paramters are credta. amb is created once, and never updated, even if higher paramter or resolution are used. This will not help when performing subsquent re-runs. it needs to be identify when higher values are used, and then re-run an overture using the higher parameters relative to the simulation the user wishes to run. 
+#TODO: implement correct ambient file handling in accelerad_rpict.bat, this ambient file should be updated when new paramters are credta. amb is created once, and never updated, even if higher paramter or resolution are used. This will not help when performing subsquent re-runs. it needs to be identify when higher values are used, and then re-run an overture using the higher parameters relative to the simulation the user wishes to run. 
 
 # TODO: invesitgate a simpler implemntation of file paths, currently this prints out the full path, but surely there is a way to allow relative paths to be used to simplify the terminal printouts for readability.
 # TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
@@ -234,6 +235,7 @@ if __name__ == "__main__":
 # TODO: view_generator.create_aoi_files -> 
     # move this generator upfront, it does not need a rendered hdr image to operate. This could be done upfonrt with the room boundaries data, in parallel with octree generation processes. 
 # TODO: RenderingPipelines ->  implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images for those without a compatible cuda enabled GPU.
+    #invetigate section 3.3.2 of https://www.jaloxa.eu/resources/radiance/documentation/docs/radiance_cookbook.pdf for rtrace at 10K luc daylight factor simulations. 
 # TODO: RenderingPipelines ->  Allow deletion of temp octrees immediately after oconv of the temp file occurs with the sky file. This will conserve storage for very large files. Thought this wont matter if the above rtrace is implement, as octree_skyless can be combined with each sky file in the rtrace call. These do not need to be precompiled into thier own octrees for rendering. 
 # TODO: view_generator.create_aoi_files -> 
     # vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 

@@ -285,7 +285,12 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
                 level = f"L{level_match.group(1)}"
 
             metadata_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Latitude: {latitude}, FFL Offset: {ffl_offset}m"
-            metadata_font = _load_font(metadata_font_size)
+
+            # Calculate responsive font size based on image dimensions
+            # Scale down from default: use 60% of the base font size parameter
+            # 1024px → 14pt (60% of 24pt), 512px → 7pt, 2048px → 28pt
+            responsive_metadata_font_size = max(8, int((image.width / 1024) * metadata_font_size * 0.6))
+            metadata_font = _load_font(responsive_metadata_font_size)
 
             # Calculate metadata text position (bottom-right)
             bbox = draw.textbbox((0, 0), metadata_text, font=metadata_font)
@@ -312,7 +317,11 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
                 matching_aois = parsed_aois.get(view_file, [])
 
                 if matching_aois:
-                    aoi_font = _load_font(aoi_font_size)
+                    # Calculate responsive AOI font size based on image dimensions
+                    # Scale down from default: use 50% of the base font size parameter
+                    # 1024px → 16pt (50% of 32pt), 512px → 8pt, 2048px → 32pt
+                    responsive_aoi_font_size = max(10, int((image.width / 1024) * aoi_font_size * 0.5))
+                    aoi_font = _load_font(responsive_aoi_font_size)
 
                     for aoi in matching_aois:
                         if len(aoi['perimeter_pixels']) < 3:
