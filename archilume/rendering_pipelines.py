@@ -106,7 +106,7 @@ class RenderingPipelines:
                 print(f"Error creating directory {self.image_dir}: {e}")
         
 
-    def sunlight_rendering_pipeline(self, render_mode: str = 'cpu', gpu_quality: str = 'fast') -> dict:
+    def sunlight_rendering_pipeline(self, render_mode: str = 'cpu', gpu_quality: str = 'stand') -> dict:
         """
         Render images for each combination of sky and view files.
 
@@ -116,14 +116,14 @@ class RenderingPipelines:
                 - 'cpu': Uses rpict for CPU-based rendering (separate overture and final passes)
                 - 'gpu': Uses Accelerad for GPU-accelerated rendering (combined overture + final)
 
-            gpu_quality (str, optional): Quality preset for GPU rendering. Defaults to 'med'.
+            gpu_quality (str, optional): Quality preset for GPU rendering. Defaults to 'stand'.
                 Only used when render_mode='gpu'. Valid options:
-                - 'fast': Quick preview (AA=0.07, AB=3, AD=1024, AS=256, AR=124)
-                - 'med': Medium quality (AA=0.05, AB=3, AD=1024, AS=256, AR=512)
-                - 'high': High quality (AA=0.01, AB=3, AD=1024, AS=512, AR=512)
-                - 'detailed': Maximum quality (AA=0, AB=1, AD=2048, AS=1024, AR=124)
-                - 'test': Testing configuration (AA=0.05, AB=8, AD=1024, AS=256, AR=512)
-                - 'ark': Architecture quality (AA=0.01, AB=8, AD=4096, AS=1024, AR=1024)
+                - 'draft': Fast preview (768px, AA=0.01, AB=3, AD=2048, AS=1024)
+                - 'stand': Standard quality (1024px, AA=0.01, AB=3, AD=1792, AS=1024)
+                - 'prod': Production quality (1536px, AA=0.01, AB=3, AD=1536, AS=1024)
+                - 'final': Final quality (2048px, AA=0.01, AB=3, AD=1280, AS=1024)
+                - '4K': 4K resolution (4096px, AA=0.01, AB=3, AD=1024, AS=1024)
+                - 'custom': Custom settings (1024px, AA=0.01, AB=8, AD=4096, AS=1024)
 
         Returns:
             dict: Dictionary containing timing information for each rendering phase.
@@ -135,17 +135,17 @@ class RenderingPipelines:
             >>> # CPU rendering (default)
             >>> timings = renderer.sunlight_rendering_pipeline()
 
-            >>> # GPU rendering with medium quality
-            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='med')
+            >>> # GPU rendering with standard quality
+            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='stand')
 
-            >>> # GPU rendering with high quality
-            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='high')
+            >>> # GPU rendering with production quality
+            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='prod')
         """
 
         # Validate inputs
         if render_mode not in (valid_modes := ['cpu', 'gpu']):
             raise ValueError(f"Invalid render_mode '{render_mode}'. Valid options: {', '.join(valid_modes)}")
-        if gpu_quality not in (valid_quals := ['fast', 'med', 'high', 'detailed', 'test', 'ark']):
+        if gpu_quality not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4K', 'custom']):
             raise ValueError(f"Invalid gpu_quality '{gpu_quality}'. Valid options: {', '.join(valid_quals)}")
 
         phase_timings = {}
@@ -177,8 +177,8 @@ class RenderingPipelines:
             octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
             octree_name = f"{octree_base_name}_{self.overcast_sky_file_path.stem}"
 
-            # Construct batch command - use backslashes for Windows
-            batch_command = rf".\archilume\accelerad_rpict.bat {octree_name} {gpu_quality} {self.x_res}"
+            # Construct PowerShell command with named parameters
+            batch_command = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}"'
 
             # Get current working directory to ensure batch runs from project root
             project_root = os.getcwd()
@@ -203,25 +203,15 @@ class RenderingPipelines:
             print(f"CWD: {project_root}")
             print(f"Note: Phase 2 & 3 will run in parallel with GPU rendering\n")
 
-            # Create log files to capture output for debugging
-            log_dir = config.OUTPUTS_DIR / "logs"
-            log_dir.mkdir(exist_ok=True)
-            stdout_log = log_dir / "accelerad_stdout.log"
-            stderr_log = log_dir / "accelerad_stderr.log"
-
-            print(f"Logging to: {stdout_log}")
-            print(f"Errors to: {stderr_log}\n")
-
-            # Launch batch file as non-blocking subprocess with logging
-            with open(stdout_log, 'w') as out_file, open(stderr_log, 'w') as err_file:
-                process = subprocess.Popen(
-                    batch_command,
-                    shell=True,
-                    env=env,
-                    cwd=project_root,
-                    stdout=out_file,  # Capture output for debugging
-                    stderr=err_file   # Capture errors for debugging
-                )
+            # Launch batch file as non-blocking subprocess
+            process = subprocess.Popen(
+                batch_command,
+                shell=True,
+                env=env,
+                cwd=project_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
 
             # Create future that will wait for process completion
             def wait_for_gpu_process():
@@ -349,7 +339,7 @@ class RenderingPipelines:
 
         return overcast_octree_command, rpict_overture_commands, rpict_med_qual_commands   
 
-    def _generate_sunny_sky_rendering_commands(self, ab: int=0, ad: int=128, ar: int=64, as_val: int=64, ps: int=6, lw: float=0.00500) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
+    def _generate_sunny_sky_rendering_commands(self, ab: int=0, ad: int=128, ar: int=64, as_val: int=64, ps: int=2, lw: float=0.00500) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
         """
         TODO: increase the generic use of this function to include all parameters as optional for rpict.
         Generates oconv, rpict, and ra_tiff commands for rendering combinations of octree, sky, and view files.

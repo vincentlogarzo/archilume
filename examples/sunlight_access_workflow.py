@@ -67,14 +67,14 @@ def main():
         [config.INPUTS_DIR / f for f in [
                 "87Cowles_BLD_withWindows.obj",     # Assessed building (must be first)
                 "87cowles_site.obj"                 # Site context
-                    ]],                             # OBJ exports must be coarse, in meters, hidden line visual style
+                    ]],                             # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
         # ------------------------------------------------------------------------------------------------
         # RENDERING SETTINGS (Modify per simulation run - balance quality vs speed)
         # ------------------------------------------------------------------------------------------------
         timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
         image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
         rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
-        rendering_quality           = "high",   # Options: 'fast', 'med', 'high', 'detailed', 'test', 'ark'
+        rendering_quality           = "stand",      # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom'
     )
 
     # TODO: logic to be introduce here upon subequent re runs, 
@@ -189,29 +189,27 @@ if __name__ == "__main__":
     main()
 
 
- 
-# TODO: Implement checks on site rotation, validate simulation to be conducted at low res render and then set the rotation if it is off.
+#TODO: integrate resolution accelerad_rpict rendering quality link, currently, this can cause mismatch between the size and the render quality. 
+# TODO: implement cleaner lines in the direct sunlight simulations. 
 # TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
     # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
         # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
     # chart overlay onto combined gifs. 
     # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value. 
-#TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured. 
-# TODO: there should be an overwrite input that checks that changes in inputs, and determine whether the .amb files can be retained or chucked, and then the scrub_ouptuts function is called to clean the correct outputs before re-run.
+# TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured. 
+# TODO: there should be an overwrite input that checks that changes in inputs, and determine whether the .amb files can be retained or chucked, and then the scrub_ouptuts function is called to clean the correct outputs before re-run. This has already been implemented in the accelerad_rpict workflow. 
+# TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
 # TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries from being simulated separately.
-# TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
-    # See example below for use of x as only input and radiance auto calculates other aspects. This means you only need one input the width of pixels. 
-        # You only specify X (-x 1000). 
-        # Radiance automatically calculates Y (-y 500) based on the .vp file.
-        # rpict -vf myview.vp -x 1000 scene.oct > output.hdr
-# TODO: for cross machines compatibility, implement .bat files for all radiance executables to run through the command prompt and use the radiacne .exe files in the .devcontainer. This will mean that a user will not need to download or install these external programme, they need only have the correct nvidia drivers (just in case their computer did not come with the correct drivers) installed to allow use of the computers GPUs and cuda capability.
+# TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch can be used as a result of ambient file caching. Caching is more effective in CPU mode than GPU mode. 
+
+# TODO: for cross machines compatibility, implement .ps1 files for all radiance commands. Specifically to address path issues and remove the need for the user to download external software. 
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-#TODO: implement correct ambient file handling in accelerad_rpict.bat, this ambient file should be updated when new paramters are credta. amb is created once, and never updated, even if higher paramter or resolution are used. This will not help when performing subsquent re-runs. it needs to be identify when higher values are used, and then re-run an overture using the higher parameters relative to the simulation the user wishes to run. 
+#TODO: implement for accelerad_rpict.ps1 correct handling of large obj files, single precision values in accelerad simulation result in lower accuracy of output results, thus this needs tobe considered if running a daylight simulation. The model must also be close to the origin. If it is very far away, >100m, this will also introduce calculation erorr and thus low quality images that need not exist. 
 
 # TODO: invesitgate a simpler implemntation of file paths, currently this prints out the full path, but surely there is a way to allow relative paths to be used to simplify the terminal printouts for readability.
 # TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
 
-# TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
+
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
 
 #TODO code is not equipped to handle vertical view positions in the file naming conventions. This feature would need to be added for future use and tested. Vertical view positions, would need to be named as such. Instead of plan, elevation_aoi_x_surfaceA.vp
