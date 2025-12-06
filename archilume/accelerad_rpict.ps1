@@ -1,22 +1,9 @@
 <#
-.SYNOPSIS
-Simplified Accelerad Batch Renderer
-
 .DESCRIPTION
 Renders views using Accelerad with quality presets and GPU optimization
 
-.PARAMETER OctreeName
-Name of the octree file (without extension)
-
-.PARAMETER Quality
-Quality preset: draft, stand, prod, final, 4K, custom
-Default: draft
-
-.PARAMETER ViewName
-Optional single view name to render. If omitted, renders all views.
-
 .EXAMPLE
-.\archilume\accelerad_rpict.ps1 -OctreeName "87Cowles_BLD_withWindows_with_site_TenK_cie_overcast" -Quality "draft" -ViewName "plan_ffl_093260"
+.\archilume\accelerad_rpict.ps1 -OctreeName "87Cowles_BLD_withWindows_with_site_TenK_cie_overcast" -Quality "draft" -Resolution 1024 -ViewName "plan_ffl_093260"
 #>
 
 [CmdletBinding()]
@@ -43,9 +30,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ============================================================================
 # SETUP PATHS
-# ============================================================================
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $acceleradExe = Join-Path $scriptDir '../.devcontainer/accelerad_07_beta_Windows/bin/accelerad_rpict.exe'
 $octreeFile = "outputs/octree/$OctreeName.oct"
@@ -69,7 +54,7 @@ if (-not (Test-Path $octreeFile)) { throw "ERROR: Octree not found at $octreeFil
 
 # QUALITY PRESETS (Transposed Format)
 #           draft   stand   prod    final   4k      custom  fast    med     high    detailed
-$AA   = @(  0.01,   0.01,   0.01,   0.01,   0.01,   0.01,   0.06,   0.03,   0.01,   0       )
+$AA   = @(  0.01,   0.01,   0.01,   0.01,   0.02,   0.01,   0.06,   0.03,   0.01,   0       )
 $AB   = @(  3,      3,      3,      3,      3,      8,      3,      3,      3,      2       )
 $AD   = @(  2048,   1792,   1536,   1280,   1024,   2048,   512,    1024,   1536,   2048    )
 $AS   = @(  1024,   896,    768,    640,    512,    1024,   256,    512,    512,    1024    )
@@ -162,9 +147,18 @@ foreach ($viewFile in $views) {
     $current++
     $viewName = $viewFile.BaseName
 
-    # Generate output paths
-    $ambFile = "$imageDir/${OctreeName}_${viewName}.amb"
-    $hdrFile = "$imageDir/${OctreeName}_${viewName}.hdr"
+    # Parse octree name to extract building and sky components
+    # Expected format: {building}_with_site_{sky} → output: {building}_{view}__{sky}.hdr
+    if ($OctreeName -match '(.+)_with_site_(.+)') {
+        $building = $Matches[1]
+        $sky = $Matches[2]
+        $ambFile = "$imageDir/${building}_with_site_${viewName}__${sky}.amb"
+        $hdrFile = "$imageDir/${building}_with_site_${viewName}__${sky}.hdr"
+    } else {
+        # Fallback: use octree name as-is
+        $ambFile = "$imageDir/${OctreeName}_${viewName}.amb"
+        $hdrFile = "$imageDir/${OctreeName}_${viewName}.hdr"
+    }
 
     Write-Host "[$current/$($views.Count)] $viewName"
     Write-Host "  Rendering ${RES}px: $hdrFile"
