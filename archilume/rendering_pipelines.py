@@ -145,7 +145,7 @@ class RenderingPipelines:
         # Validate inputs
         if render_mode not in (valid_modes := ['cpu', 'gpu']):
             raise ValueError(f"Invalid render_mode '{render_mode}'. Valid options: {', '.join(valid_modes)}")
-        if gpu_quality not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4K', 'custom']):
+        if gpu_quality.lower() not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
             raise ValueError(f"Invalid gpu_quality '{gpu_quality}'. Valid options: {', '.join(valid_quals)}")
 
         phase_timings = {}
@@ -154,15 +154,10 @@ class RenderingPipelines:
         # --- Phase 0: Prepare commands ---
         phase_start = time.time()
         # Generate overcast sky rendering commands
-        (self.overcast_octree_command,
-         self.rpict_daylight_overture_commands,
-         self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
+        (self.overcast_octree_command, self.rpict_daylight_overture_commands, self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
 
         # Generate sunny sky rendering commands
-        (self.temp_octree_with_sky_paths,
-         self.oconv_commands,
-         self.rpict_direct_sun_commands,
-         self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
+        (self.temp_octree_with_sky_paths, self.oconv_commands, self.rpict_direct_sun_commands, self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
         phase_timings["    Command preparation"] = time.time() - phase_start
 
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
@@ -172,13 +167,13 @@ class RenderingPipelines:
         phase_timings["    Overcast octree creation"] = time.time() - phase_start
 
         if render_mode == 'gpu':
-            # GPU mode: Combined overture + rendering using Accelerad batch
+            # GPU mode: Combined overture + rendering using Accelerad batch (ASYNC)
             phase_start = time.time()
             octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
             octree_name = f"{octree_base_name}_{self.overcast_sky_file_path.stem}"
 
             # Construct PowerShell command with named parameters
-            batch_command = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}"'
+            batch_command = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res}'
 
             # Get current working directory to ensure batch runs from project root
             project_root = os.getcwd()
@@ -197,34 +192,50 @@ class RenderingPipelines:
             env = os.environ.copy()
             env['RAYPATH'] = config.RAYPATH
 
-            print(f"Launching GPU rendering in background...")
+            print(f"Launching GPU rendering (ASYNCHRONOUS - will continue with other work)...")
             print(f"RAYPATH: {config.RAYPATH}")
             print(f"Batch Command: {batch_command}")
-            print(f"CWD: {project_root}")
-            print(f"Note: Phase 2 & 3 will run in parallel with GPU rendering\n")
+            print(f"CWD: {project_root}\n")
 
-            # Launch batch file as non-blocking subprocess
-            process = subprocess.Popen(
+            # Launch batch file asynchronously (don't wait yet)
+            gpu_process = subprocess.Popen(
                 batch_command,
                 shell=True,
                 env=env,
-                cwd=project_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                cwd=project_root
             )
 
-            # Create future that will wait for process completion
-            def wait_for_gpu_process():
-                """Wait for GPU batch to complete and check return code."""
-                returncode = process.wait()
+            # Create a future that will wait for GPU completion when needed
+            def wait_for_gpu_completion():
+                print("\nWaiting for GPU rendering to complete...")
+                returncode = gpu_process.wait()
+
+                # Small delay to ensure file writes are flushed to disk
+                time.sleep(0.5)
+
                 if returncode != 0:
                     print(f"\nWarning: GPU rendering exited with code {returncode}")
+                    raise RuntimeError(f"GPU rendering failed with exit code {returncode}")
                 else:
                     print("\nGPU rendering completed successfully")
+
+                    # Verify expected output files exist
+                    expected_files = [self.image_dir / f"{octree_base_name}_{Path(vf).stem}__{self.overcast_sky_file_path.stem}.hdr"
+                                      for vf in self.view_files]
+                    missing = [f for f in expected_files if not f.exists()]
+                    if missing:
+                        print(f"\nWarning: {len(missing)} expected HDR files not found:")
+                        for f in missing[:5]:  # Show first 5
+                            print(f"  - {f.name}")
+                    else:
+                        print(f"Verified: All {len(expected_files)} HDR files created")
+
                 return returncode
 
             executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(wait_for_gpu_process)
+            future = executor.submit(wait_for_gpu_completion)
+
+            phase_timings["    GPU rendering launch"] = time.time() - phase_start
         else:
             # CPU mode: Separate overture and rendering passes
             phase_start = time.time()
@@ -251,11 +262,13 @@ class RenderingPipelines:
         utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
         phase_timings["    Sunlight rendering"] = time.time() - phase_start
 
-        phase_start = time.time()
+        # Wait for GPU/CPU overcast rendering to complete before combining
+        gpu_wait_start = time.time()
         future.result()  # Ensure overcast rendering is complete before combining
         if render_mode == 'gpu':
-            phase_timings["    Ambient file warming & rendering (GPU)"] = time.time() - phase_start
+            phase_timings["    GPU rendering (total)"] = time.time() - gpu_wait_start
         else:
+            phase_start = time.time()
             phase_timings["    Indirect diffuse rendering"] = time.time() - phase_start
 
         phase_start = time.time()
@@ -339,7 +352,7 @@ class RenderingPipelines:
 
         return overcast_octree_command, rpict_overture_commands, rpict_med_qual_commands   
 
-    def _generate_sunny_sky_rendering_commands(self, ab: int=0, ad: int=128, ar: int=64, as_val: int=64, ps: int=2, lw: float=0.00500) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
+    def _generate_sunny_sky_rendering_commands(self, ab: int=0, ad: int=128, ar: int=64, as_val: int=64, ps: int=1, lw: float=0.005) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
         """
         TODO: increase the generic use of this function to include all parameters as optional for rpict.
         Generates oconv, rpict, and ra_tiff commands for rendering combinations of octree, sky, and view files.

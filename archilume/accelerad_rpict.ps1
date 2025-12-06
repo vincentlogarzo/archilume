@@ -9,8 +9,8 @@ Renders views using Accelerad with quality presets and GPU optimization
 Name of the octree file (without extension)
 
 .PARAMETER Qual
-Quality preset: prev, draft, stand, prod, final, 4K, custom
-Default: prev
+Quality preset: draft, stand, prod, final, 4K, custom
+Default: draft
 
 .PARAMETER View
 Optional single view name to render. If omitted, renders all views.
@@ -26,10 +26,14 @@ param(
     [string]$OctreeName,
 
     [Parameter(Position=1)]
-    [ValidateSet('draft','stand','prod','final','4K','custom', IgnoreCase=$true)]
-    [string]$Quality = 'prev',
+    [ValidateSet('draft','stand','prod','final','4K','custom','fast','med','high','detailed', IgnoreCase=$true)]
+    [string]$Quality = 'draft',
 
     [Parameter(Position=2)]
+    [ValidateRange(128, 8192)]
+    [int]$Resolution = 0,
+
+    [Parameter(Position=3)]
     [string]$ViewName
 )
 
@@ -50,23 +54,28 @@ if (-not (Test-Path $octreeFile)) { throw "ERROR: Octree not found at $octreeFil
 # ============================================================================
 # QUALITY PRESETS
 # ============================================================================
-$RES_OV, $AA_OV, $AB_OV, $AD_OV, $AR_OV = 512, 0.01, 3, 2048, 1024
-$AS_OV = [int]($AD_OV * 0.5)
-$LR_AMB = $AB_OV + 2
-
-# AD distribution: draft=100% AD_OV, 4K=50% AD_OV, evenly distributed in between
-# Format:         RES,   AA,  AB,     AD,                   AS,                 AR,    PS, PT,   LR,      LW,     DJ,  DS,   DT,   DC,  DR, DP
+# Quality presets: [AA, AB, AD, AS, AR, PS, PT, LR, LW, DJ, DS, DT, DC, DR, DP]
 $presets = @{
-    'draft'     = 768,  0.01, $AB_OV, [int]($AD_OV*1.000), [int]($AS_OV*1.000), $AR_OV, 4, 0.15, $LR_AMB, 0.0010, 0.0, 0.25, 0.50, 0.25, 0, 512
-    'stand'     = 1024, 0.01, $AB_OV, [int]($AD_OV*0.875), [int]($AS_OV*1.000), $AR_OV, 2, 0.12, $LR_AMB, 0.0010, 0.5, 0.35, 0.35, 0.40, 1, 256
-    'prod'      = 1536, 0.01, $AB_OV, [int]($AD_OV*0.750), [int]($AS_OV*1.000), $AR_OV, 2, 0.10, $LR_AMB, 0.0010, 0.7, 0.50, 0.25, 0.50, 1, 256
-    'final'     = 2048, 0.01, $AB_OV, [int]($AD_OV*0.625), [int]($AS_OV*1.000), $AR_OV, 1, 0.07, $LR_AMB, 0.0010, 0.9, 0.70, 0.15, 0.75, 2, 128 
-    '4K'        = 4096, 0.01, $AB_OV, [int]($AD_OV*0.500), [int]($AS_OV*1.000), $AR_OV, 1, 0.05, $LR_AMB, 0.0010, 1.0, 0.90, 0.05, 0.90, 3, 64   
-    'custom'    = 1024, 0.01, 8,      4096,                [int]($AS_OV*1.000), 1024,   2, 0.05, 12,      0.0001, 0.7, 0.50, 0.25, 0.50, 1, 256
+    'draft'    = @(0.01, 3, 2048, 1024, 1024, 4, 0.15, 5, 0.001, 0.0, 0.25, 0.50, 0.25, 0, 512)
+    'stand'    = @(0.01, 3, 1792,  896, 1024, 2, 0.12, 5, 0.001, 0.5, 0.35, 0.35, 0.40, 1, 256)
+    'prod'     = @(0.01, 3, 1536,  768, 1024, 2, 0.10, 5, 0.001, 0.7, 0.50, 0.25, 0.50, 1, 256)
+    'final'    = @(0.01, 3, 1280,  640, 1024, 1, 0.07, 5, 0.001, 0.9, 0.70, 0.15, 0.75, 2, 128)
+    '4k'       = @(0.01, 3, 1024,  512, 1024, 1, 0.05, 5, 0.001, 1.0, 0.90, 0.05, 0.90, 3,  64)
+    'custom'   = @(0.01, 8, 2048, 1024, 1024, 1, 0.05,12, 0.0001,0.7, 0.50, 0.25, 0.50, 1, 256)
+    'fast'     = @(0.06, 3,  512,  256,  128, 2, 0.10,12, 0.001, $null, $null, $null, $null, $null, $null)
+    'med'      = @(0.03, 3, 1024,  512,  256, 2, 0.08,12, 0.001, $null, $null, $null, $null, $null, $null)
+    'high'     = @(0.01, 3, 1536,  512,  512, 1, 0.05,12, 0.001, $null, $null, $null, $null, $null, $null)
+    'detailed' = @(0,    1, 2048, 1024, 1024, 1, 0.02,12, 0.0001,$null, $null, $null, $null, $null, $null)
 }
 
-$params = $presets[$Quality.ToLower()]
-$RES, $AA, $AB, $AD, $AS, $AR, $PS, $PT, $LR, $LW, $DJ, $DS, $DT, $DC, $DR, $DP = $params
+$p = $presets[$Quality.ToLower()]
+if (-not $p) { throw "Unknown quality: $Quality" }
+
+$AA, $AB, $AD, $AS, $AR, $PS, $PT, $LR, $LW, $DJ, $DS, $DT, $DC, $DR, $DP = $p
+$RES = if ($Resolution -gt 0) { $Resolution } else { 1024 }  # Default resolution
+$RES_OV = 64
+$AD_OV = [int]($AD * 1.75)
+$AS_OV = [int]($AS * 1.75)
 
 
 # ============================================================================
@@ -107,6 +116,29 @@ if ($views.Count -eq 0) { throw "ERROR: No view files found in $viewDir" }
 Write-Host "Found $($views.Count) view(s), Quality: $Quality, Resolution: ${RES}px`n"
 
 # ============================================================================
+# RENDER ARGUMENT BUILDER
+# ============================================================================
+function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
+    $ad = if ($UseOV) { $AD_OV } else { $AD }
+    $as = if ($UseOV) { $AS_OV } else { $AS }
+
+    $cmdArgs = @('-w', '-t', '1', '-vf', $ViewPath, '-x', $Res, '-y', $Res)
+    $cmdArgs += @('-aa', $AA, '-ab', $AB, '-ad', $ad, '-as', $as, '-ar', $AR)
+    if ($null -ne $PS) { $cmdArgs += @('-ps', $PS) }
+    if ($null -ne $PT) { $cmdArgs += @('-pt', $PT) }
+    if ($null -ne $LR) { $cmdArgs += @('-lr', $LR) }
+    if ($null -ne $LW) { $cmdArgs += @('-lw', $LW) }
+    if ($null -ne $DJ) { $cmdArgs += @('-dj', $DJ) }
+    if ($null -ne $DS) { $cmdArgs += @('-ds', $DS) }
+    if ($null -ne $DT) { $cmdArgs += @('-dt', $DT) }
+    if ($null -ne $DC) { $cmdArgs += @('-dc', $DC) }
+    if ($null -ne $DR) { $cmdArgs += @('-dr', $DR) }
+    if ($null -ne $DP) { $cmdArgs += @('-dp', $DP) }
+    $cmdArgs += @('-i', '-af', $AmbFile, $octreeFile)
+    return $cmdArgs
+}
+
+# ============================================================================
 # RENDER LOOP
 # ============================================================================
 $batchStart = Get-Date
@@ -133,11 +165,8 @@ foreach ($viewFile in $views) {
         Write-Host "  AMB_FILE: $ambFile"
         Write-Host "-------------------------------------------------------------------"
 
-        & $acceleradExe -w -t 1 -vf $viewFile.FullName -x $RES_OV -y $RES_OV `
-            -aa $AA_OV -ab $AB_OV -ad $AD_OV -as $AS_OV -ar $AR_OV `
-            -ps $PS -pt $PT -lr $LR_AMB -lw $LW `
-            -dj $DJ -ds $DS -dt $DT -dc $DC -dr $DR -dp $DP `
-            -i -af $ambFile $octreeFile | Out-Null
+        $overtureArgs = Get-RenderArgs $viewFile.FullName $RES_OV $ambFile $true
+        & $acceleradExe @overtureArgs | Out-Null
 
         if ($LASTEXITCODE -ne 0) { Write-Host "  Warning: Overture failed, continuing..." }
         if (-not (Test-Path $ambFile)) { Write-Host "  ERROR: Ambient file was not created!" }
@@ -149,8 +178,15 @@ foreach ($viewFile in $views) {
     Write-Host "  HDR_FILE: $hdrFile"
     Write-Host "-------------------------------------------------------------------"
 
-    # Use cmd.exe for proper binary stdout redirection (PowerShell > corrupts binary data)
-    cmd /c "`"$acceleradExe`" -w -t 1 -vf `"$($viewFile.FullName)`" -x $RES -y $RES -aa $AA -ab $AB -ad $AD -as $AS -ar $AR -ps $PS -pt $PT -lr $LR -lw $LW -dj $DJ -ds $DS -dt $DT -dc $DC -dr $DR -dp $DP -i -af `"$ambFile`" `"$octreeFile`" > `"$hdrFile`""
+    # Build render args (UseOV = false for main render)
+    $renderArgs = Get-RenderArgs $viewFile.FullName $RES $ambFile $false
+
+    # Quote paths for cmd.exe and use cmd.exe for proper binary stdout redirection (PowerShell > corrupts binary data)
+    $renderArgs = $renderArgs | ForEach-Object {
+        if ($_ -match '^[A-Za-z]:\\' -or $_ -match '\\') { "`"$_`"" } else { $_ }
+    }
+    $argsString = $renderArgs -join ' '
+    cmd /c "`"$acceleradExe`" $argsString > `"$hdrFile`""
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Render failed"
