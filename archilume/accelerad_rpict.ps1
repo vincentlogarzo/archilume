@@ -85,24 +85,12 @@ $DR   = @(  0,      1,      1,      2,      3,      1,      $null,  $null,  $nul
 $DP   = @(  512,    256,    256,    128,    64,     256,    $null,  $null,  $null,  $null   )
 
 $qualities = @('draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed')
-$index = $qualities.IndexOf($Quality.ToLower())
-if ($index -lt 0) { throw "Unknown quality: $Quality" }
+$q = $qualities.IndexOf($Quality.ToLower())
+if ($q -lt 0) { throw "Unknown quality: $Quality" }
 
-$AA = $AA[$index]
-$AB = $AB[$index]
-$AD = $AD[$index]
-$AS = $AS[$index]
-$AR = $AR[$index]
-$PS = $PS[$index]
-$PT = $PT[$index]
-$LR = $LR[$index]
-$LW = $LW[$index]
-$DJ = $DJ[$index]
-$DS = $DS[$index]
-$DT = $DT[$index]
-$DC = $DC[$index]
-$DR = $DR[$index]
-$DP = $DP[$index]
+# Extract values for selected quality
+$AA, $AB, $AD, $AS, $AR, $PS, $PT, $LR, $LW, $DJ, $DS, $DT, $DC, $DR, $DP =
+    $AA[$q], $AB[$q], $AD[$q], $AS[$q], $AR[$q], $PS[$q], $PT[$q], $LR[$q], $LW[$q], $DJ[$q], $DS[$q], $DT[$q], $DC[$q], $DR[$q], $DP[$q]
 $RES = if ($Resolution -gt 0) { $Resolution } else { 1024 }  # Default resolution
 $RES_OV = 64
 $AD_OV = [int]($AD * 1)
@@ -170,7 +158,7 @@ function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
 }
 
 # ============================================================================
-# TWO-PHASE RENDER LOOP (Optimized for GPU efficiency)
+# RENDER LOOP SETUP
 # ============================================================================
 $batchStart = Get-Date
 
@@ -215,99 +203,23 @@ if ($viewData.Count -gt 0) {
 }
 
 # ============================================================================
-# PHASE 1: Generate ALL ambient files (minimize GPU context switches)
-# ============================================================================
-Write-Host "`n============================================================================"
-Write-Host "PHASE 1/2: Generating ambient files for all views"
-Write-Host "============================================================================`n"
-
-$phase1Start = Get-Date
-$current = 0
-$ambGenerated = 0
-
-foreach ($view in $viewData) {
-    $current++
-
-    # Skip if ambient file already exists
-    if (Test-Path $view.AmbFile) {
-        Write-Host "[$current/$($views.Count)] $($view.Name) - Ambient file exists, skipping"
-        continue
-    }
-
-    Write-Host "[$current/$($views.Count)] $($view.Name)"
-    Write-Host "  Generating ambient file: $($view.AmbFile)"
-
-    # Verify view file exists
-    if (-not (Test-Path $view.File.FullName)) {
-        Write-Host "  ERROR: View file not found: $($view.File.FullName)"
-        continue
-    }
-
-    # Verify octree file exists
-    if (-not (Test-Path $octreeFile)) {
-        Write-Host "  ERROR: Octree file not found: $octreeFile"
-        continue
-    }
-
-    $overtureArgs = Get-RenderArgs $view.File.FullName $RES_OV $view.AmbFile $true
-
-    # Redirect stdout to temp file, stderr will show progress
-    $tempNull = [System.IO.Path]::Combine($env:TEMP, "rpict_null_$($view.Name).hdr")
-
-    # Execute rendering (allow stderr to show progress, but don't treat it as error)
-    $ErrorActionPreference = 'Continue'
-    & $acceleradExe @overtureArgs > $tempNull 2>&1 | Out-Null
-    $exitCode = $LASTEXITCODE
-    $ErrorActionPreference = 'Stop'
-
-    # Clean up temp file
-    if (Test-Path $tempNull) { Remove-Item $tempNull -Force -ErrorAction SilentlyContinue }
-
-    if ($exitCode -ne 0) {
-        Write-Host "  WARNING: Ambient generation failed (exit code $exitCode)"
-        Write-Host "  View file: $($view.File.FullName)"
-        Write-Host "  Octree: $octreeFile"
-    } elseif (-not (Test-Path $view.AmbFile)) {
-        Write-Host "  ERROR: Ambient file was not created!"
-        Write-Host "  Command: $acceleradExe $($overtureArgs -join ' ')"
-    } else {
-        $ambGenerated++
-        Write-Host "  Success"
-    }
-    Write-Host ""
-}
-
-$phase1Elapsed = (Get-Date) - $phase1Start
-Write-Host "============================================================================"
-Write-Host ("Phase 1 Complete: Generated $ambGenerated new ambient files in {0}m {1}s" -f [math]::Floor($phase1Elapsed.TotalMinutes), $phase1Elapsed.Seconds)
-Write-Host "============================================================================`n"
-
-# ============================================================================
-# PHASE 2: Render ALL main images (GPU stays warm throughout)
+# MAIN RENDERING LOOP
 # ============================================================================
 Write-Host "============================================================================"
-Write-Host "PHASE 2/2: Main rendering for all views"
+Write-Host "GPU RENDERING - All views"
 Write-Host "============================================================================`n"
 
-$phase2Start = Get-Date
+$renderStart = Get-Date
 $current = 0
 $rendered = 0
-$skipped = 0
 
 foreach ($view in $viewData) {
     $current++
-
-    # Verify ambient file exists before rendering
-    if (-not (Test-Path $view.AmbFile)) {
-        Write-Host "[$current/$($views.Count)] $($view.Name) - SKIPPED: Missing ambient file"
-        $skipped++
-        continue
-    }
 
     Write-Host "[$current/$($views.Count)] $($view.Name)"
     Write-Host "  Rendering ${RES}px: $($view.HdrFile)"
 
-    $renderStart = Get-Date
+    $viewRenderStart = Get-Date
 
     # Build render args (UseOV = false for main render)
     $renderArgs = Get-RenderArgs $view.File.FullName $RES $view.AmbFile $false
@@ -323,29 +235,13 @@ foreach ($view in $viewData) {
         Write-Host "  ERROR: Render failed (exit code $LASTEXITCODE)"
     } else {
         $rendered++
-        $elapsed = (Get-Date) - $renderStart
+        $elapsed = (Get-Date) - $viewRenderStart
         Write-Host ("  Complete: {0}m {1}s" -f [math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds)
     }
     Write-Host ""
 }
 
-$phase2Elapsed = (Get-Date) - $phase2Start
+$renderElapsed = (Get-Date) - $renderStart
 Write-Host "============================================================================"
-Write-Host ("Phase 2 Complete: Rendered $rendered views in {0}m {1}s" -f [math]::Floor($phase2Elapsed.TotalMinutes), $phase2Elapsed.Seconds)
-if ($skipped -gt 0) {
-    Write-Host "WARNING: Skipped $skipped views due to missing ambient files"
-}
-Write-Host "============================================================================`n"
-
-# Final summary
-$totalElapsed = (Get-Date) - $batchStart
-Write-Host "============================================================================"
-Write-Host "BATCH RENDERING COMPLETE"
-Write-Host "============================================================================"
-Write-Host "Total views processed: $($views.Count)"
-Write-Host "Ambient files generated: $ambGenerated"
-Write-Host "Main renders completed: $rendered"
-Write-Host ("Phase 1 time: {0}m {1}s" -f [math]::Floor($phase1Elapsed.TotalMinutes), $phase1Elapsed.Seconds)
-Write-Host ("Phase 2 time: {0}m {1}s" -f [math]::Floor($phase2Elapsed.TotalMinutes), $phase2Elapsed.Seconds)
-Write-Host ("Total time: {0}m {1}s" -f [math]::Floor($totalElapsed.TotalMinutes), $totalElapsed.Seconds)
+Write-Host ("Rendering Complete: $rendered views in {0}m {1}s" -f [math]::Floor($renderElapsed.TotalMinutes), $renderElapsed.Seconds)
 Write-Host "============================================================================"
