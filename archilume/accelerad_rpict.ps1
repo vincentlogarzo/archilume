@@ -131,19 +131,24 @@ function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
     $ad = if ($UseOV) { $AD_OV } else { $AD }
     $as = if ($UseOV) { $AS_OV } else { $AS }
 
-    $cmdArgs = @('-w', '-t', '1', '-vf', $ViewPath, '-x', $Res, '-y', $Res)
-    $cmdArgs += @('-aa', $AA, '-ab', $AB, '-ad', $ad, '-as', $as, '-ar', $AR)
-    if ($null -ne $PS) { $cmdArgs += @('-ps', $PS) }
-    if ($null -ne $PT) { $cmdArgs += @('-pt', $PT) }
-    if ($null -ne $LR) { $cmdArgs += @('-lr', $LR) }
-    if ($null -ne $LW) { $cmdArgs += @('-lw', $LW) }
-    if ($null -ne $DJ) { $cmdArgs += @('-dj', $DJ) }
-    if ($null -ne $DS) { $cmdArgs += @('-ds', $DS) }
-    if ($null -ne $DT) { $cmdArgs += @('-dt', $DT) }
-    if ($null -ne $DC) { $cmdArgs += @('-dc', $DC) }
-    if ($null -ne $DR) { $cmdArgs += @('-dr', $DR) }
-    if ($null -ne $DP) { $cmdArgs += @('-dp', $DP) }
-    $cmdArgs += @('-i', '-af', $AmbFile, $octreeFile)
+    # Build base arguments
+    $cmdArgs = @('-w', '-t', '1', '-vf', $ViewPath, '-x', $Res, '-y', $Res,
+                 '-aa', $AA, '-ab', $AB, '-ad', $ad, '-as', $as, '-ar', $AR)
+
+    # Add optional parameters (only if not null)
+    if ($null -ne $PS) { $cmdArgs += '-ps', $PS }
+    if ($null -ne $PT) { $cmdArgs += '-pt', $PT }
+    if ($null -ne $LR) { $cmdArgs += '-lr', $LR }
+    if ($null -ne $LW) { $cmdArgs += '-lw', $LW }
+    if ($null -ne $DJ) { $cmdArgs += '-dj', $DJ }
+    if ($null -ne $DS) { $cmdArgs += '-ds', $DS }
+    if ($null -ne $DT) { $cmdArgs += '-dt', $DT }
+    if ($null -ne $DC) { $cmdArgs += '-dc', $DC }
+    if ($null -ne $DR) { $cmdArgs += '-dr', $DR }
+    if ($null -ne $DP) { $cmdArgs += '-dp', $DP }
+
+    # Add final arguments
+    $cmdArgs += '-i', '-af', $AmbFile, $octreeFile
     return $cmdArgs
 }
 
