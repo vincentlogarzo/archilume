@@ -64,7 +64,7 @@ class ViewGroupProcessor:
             print(f"Error getting resolution from {self.hdr_files[0]}: {e}")
             return
 
-        print(f"[PID {os.getpid()}] Pre-computing masks for {len(self.aoi_files)} AOIs ({self.width}x{self.height})...")
+        # Silent - only print if there's an error
 
         # 2. Convert every AOI file into a Boolean Mask immediately
         for aoi_file in self.aoi_files:
@@ -105,9 +105,9 @@ class ViewGroupProcessor:
 
         aoi_results = {aoi: [] for aoi in self.aoi_files if aoi in self._aoi_masks}
         results = []
-        
+
         total_ops = len(self.hdr_files)
-        print(f"[PID {os.getpid()}] Processing {total_ops} HDRs against {len(self._aoi_masks)} AOI masks...")
+        # Silent - progress will be shown by parent process
 
         for idx, hdr_file in enumerate(self.hdr_files):
             # 1. READ BINARY DATA (Fastest Method)
@@ -165,9 +165,7 @@ class ViewGroupProcessor:
                     'passing_pixels': passing_count,
                 })
 
-            # Progress update
-            if idx > 0 and idx % 10 == 0:
-                print(f"  [PID {os.getpid()}] Processed {idx}/{total_ops} HDRs")
+            # Progress updates removed for cleaner output
 
         # Write physical files
         self._write_wpd_files(aoi_results)
@@ -422,18 +420,15 @@ class Hdr2Wpd:
         Args:
             view_groups: Dictionary of view groups from _group_files_by_view
         """
-        print("\n" + "=" * 80 + f"\nDYNAMIC AOI CHUNKING FOR MAXIMUM CPU UTILIZATION\n"
-              f"Target workers: {self.max_workers} | View groups: {len(view_groups)} | Main PID: {os.getpid()}\n" + "=" * 80)
+        print("\n" + "=" * 80 + f"\nWPD EXTRACTION - Using {self.max_workers} parallel workers\n" + "=" * 80)
 
         # Calculate optimal chunks per view to match max_workers
         # Example: 20 workers / 5 views = 4 chunks per view
         chunks_per_view = max(1, self.max_workers // len(view_groups)) if view_groups else 1
 
-        print(f"Strategy: Split each view into {chunks_per_view} chunks")
-        print(f"Expected total workers: {len(view_groups) * chunks_per_view}\n")
-
         # Create chunked processor instances
         processors = []
+        total_aois = 0
         for view_name, group in view_groups.items():
             aoi_files = group['aoi_files']
             hdr_files = group['hdr_files']
@@ -441,11 +436,11 @@ class Hdr2Wpd:
             if not aoi_files:
                 continue
 
+            total_aois += len(aoi_files)
+
             # Split AOI files into chunks
             chunk_size = max(1, len(aoi_files) // chunks_per_view)
             aoi_chunks = [aoi_files[i:i + chunk_size] for i in range(0, len(aoi_files), chunk_size)]
-
-            print(f"{view_name}: {len(aoi_files)} AOIs -> {len(aoi_chunks)} chunks of ~{chunk_size} AOIs each")
 
             # Create processor for each chunk
             for chunk_idx, aoi_chunk in enumerate(aoi_chunks):
@@ -458,8 +453,8 @@ class Hdr2Wpd:
                 )
                 processors.append(processor)
 
-        print(f"\nTotal processors created: {len(processors)}")
-        print(f"Submitting to ProcessPoolExecutor with {self.max_workers} workers...\n" + "=" * 80)
+        print(f"\nProcessing {total_aois} AOIs across {len(view_groups)} views using {len(processors)} parallel workers...")
+        print("=" * 80)
 
         # Execute all processors in parallel
         all_results = []
@@ -471,21 +466,24 @@ class Hdr2Wpd:
             }
 
             # Collect results as they complete
+            completed = 0
             for future in as_completed(futures):
                 view_name = futures[future]
                 try:
                     result_df = future.result()
                     all_results.append(result_df)
+                    completed += 1
 
-                    print(f"\n{'='*80}\nCompleted: {view_name}\n"
-                          f"Progress: {len(all_results)}/{len(futures)} chunks completed\n{'='*80}\n")
+                    # Show progress every 25% or on first/last completion
+                    if completed == 1 or completed == len(futures) or completed % max(1, len(futures) // 4) == 0:
+                        print(f"Progress: {completed}/{len(futures)} workers completed")
 
                 except Exception as e:
-                    print(f"\nError processing {view_name}: {e}")
+                    print(f"Error processing {view_name}: {e}")
                     import traceback
                     traceback.print_exc()
 
-        print(f"\nAll {len(processors)} chunks processed successfully!")
+        print(f"✓ All {len(processors)} workers completed successfully\n")
 
     def _generate_excel_report(self) -> None:
         """Generate Excel report from all .wpd files."""

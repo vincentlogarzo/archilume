@@ -24,13 +24,14 @@ Output: HDR images, view files, sky files, and coordinate mappings
 
 # Archilume imports
 from archilume import (
-    SkyGenerator, 
-    ViewGenerator, 
-    Objs2Octree, 
-    RenderingPipelines, 
-    Tiff2Animation, 
-    Hdr2Wpd, 
-    utils, 
+    SkyGenerator,
+    ViewGenerator,
+    Objs2Octree,
+    RenderingPipelines,
+    Tiff2Animation,
+    Hdr2Wpd,
+    smart_cleanup,
+    utils,
     config
 )
 
@@ -64,24 +65,26 @@ def main():
         ffl_offset                  = 1.0,          # Camera height above finished floor level (meters)        
         room_boundaries_csv         = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
         obj_paths = 
-        [config.INPUTS_DIR / f for f in [
-                "87Cowles_BLD_withWindows.obj",     # Assessed building (must be first)
-                "87cowles_site.obj"                 # Site context
-                    ]],                             # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
+            [config.INPUTS_DIR / f for f in [
+                    "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
+                    "87cowles_site.obj"             # Site context
+                        ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
         # ------------------------------------------------------------------------------------------------
         # RENDERING SETTINGS (Modify per simulation run - balance quality vs speed)
         # ------------------------------------------------------------------------------------------------
-        timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
-        image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
+        timestep                    = 15,            # Time interval in minutes (recommended >= 5 min) 
+        image_resolution            = 512,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
         rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
-        rendering_quality           = "stand",      # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom'
+        rendering_quality           = "fast",       # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
     )
 
-    # TODO: logic to be introduce here upon subequent re runs, 
-    #   1. if time step is different, keep overcast hdr + .amb files and delete everything else in /image, 
-    #   2. if image resolution has increased remove all .hdr and .tiff files from /image
-    #   3. if quality has increased, only re-run the overcast hdrs
-    #   4. if 
+    smart_cleanup(
+        timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+        resolution_changed          = True,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+        rendering_mode_changed      = False,  # Set TRUE if switched cpu ↔ gpu
+        rendering_quality_changed   = True   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+    )
+
 
 
     # ====================================================================================================
@@ -168,7 +171,8 @@ def main():
         x_res                       = renderer.x_res,
         y_res                       = renderer.y_res,
         latitude                    = inputs.project_latitude,
-        ffl_offset                  = inputs.ffl_offset
+        ffl_offset                  = inputs.ffl_offset,
+        animation_format            = "apng"  # Options: "gif" or "apng"
         )
     tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
     timekeeper("  5c: Stamp Images")
@@ -188,27 +192,26 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-#TODO: integrate resolution accelerad_rpict rendering quality link, currently, this can cause mismatch between the size and the render quality. 
-# TODO: implement cleaner lines in the direct sunlight simulations. 
+# TODO: integrate wpd2report in substitue of the current excel file generation in the hdr2wpd class. 
+# TODO: implement move smar_cleanup function into the input validator. As it validates each input, it will check the previously . cache simulation parameters, and the files in the outputs dir. for each input change an action must occur.
 # TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
     # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
         # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
     # chart overlay onto combined gifs. 
     # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value. 
-# TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured. 
-# TODO: there should be an overwrite input that checks that changes in inputs, and determine whether the .amb files can be retained or chucked, and then the scrub_ouptuts function is called to clean the correct outputs before re-run. This has already been implemented in the accelerad_rpict workflow. 
+# TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured.
+# DONE: Smart cleanup system implemented - use smart_cleanup() before re-runs with parameter changes. See SMART_CLEANUP_GUIDE.md 
 # TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
 # TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries from being simulated separately.
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch can be used as a result of ambient file caching. Caching is more effective in CPU mode than GPU mode. 
 
 # TODO: for cross machines compatibility, implement .ps1 files for all radiance commands. Specifically to address path issues and remove the need for the user to download external software. 
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-#TODO: implement for accelerad_rpict.ps1 correct handling of large obj files, single precision values in accelerad simulation result in lower accuracy of output results, thus this needs tobe considered if running a daylight simulation. The model must also be close to the origin. If it is very far away, >100m, this will also introduce calculation erorr and thus low quality images that need not exist. 
+# TODO: implement for accelerad_rpict.ps1 correct handling of large obj files, single precision values in accelerad simulation result in lower accuracy of output results, thus this needs tobe considered if running a daylight simulation. The model must also be close to the origin. If it is very far away, >100m, this will also introduce calculation erorr and thus low quality images that need not exist. 
 
 # TODO: invesitgate a simpler implemntation of file paths, currently this prints out the full path, but surely there is a way to allow relative paths to be used to simplify the terminal printouts for readability.
-# TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size. 
-
+# TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size.
+# DONE: GPU spikiness eliminated - Two-phase batch rendering implemented in accelerad_rpict.ps1. All ambient files generated first, then all main renders. GPU stays warm within each phase, reducing context switches from 2N to 2. 
 
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
 
@@ -216,13 +219,13 @@ if __name__ == "__main__":
 # TODO: setup .bat files to run radiance executables with radiance binaries that are not on path, with binaries that are in the radiance distribution.
 # TODO: RenderingPipelines -> find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not need visual validation.
 # TODO: Pre-processing of .obj is recommended for speed  after decimation in blender has occured depending on model use case
-# FIXME:  ObjToOctree -> move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here.
-#TODO: investgate https://www.schorsch.com/en/download/rradout/ as an export solution
-# TODO: view_generator.create_aoi_files -> 
+# TODO:  ObjToOctree -> move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here.
+# TODO: investgate https://www.schorsch.com/en/download/rradout/ as an export solution
+# TODO: view_generator.create_aoi_files ->
     # Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
     # set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
-#TODO: Hdr2Wpd -> 
-    # serious optimisation of the wpd extraction needs to occur. (look to nvmath-python to do the algenra matrix array operations in the GPU especially as larger images occur. 
+# TODO: Hdr2Wpd ->
+    # serious optimisation of the wpd extraction needs to occur. (look to nvmath-python to do the algenra matrix array operations in the GPU especially as larger images occur.
     # ensure modified file are used when they exist.
 # TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing.
 # TODO: add custom parameters input into the gpu_quality, which should be albelelled rendering parameters that work for both these workflows if user does not want to use a preconfigured set of parameters. 
@@ -234,6 +237,7 @@ if __name__ == "__main__":
     # move this generator upfront, it does not need a rendered hdr image to operate. This could be done upfonrt with the room boundaries data, in parallel with octree generation processes. 
 # TODO: RenderingPipelines ->  implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images for those without a compatible cuda enabled GPU.
     #invetigate section 3.3.2 of https://www.jaloxa.eu/resources/radiance/documentation/docs/radiance_cookbook.pdf for rtrace at 10K luc daylight factor simulations. 
+    # Investigate use of rtpict, newer versions of radiance arent meant to have resolved the issues of using this on windows. 
 # TODO: RenderingPipelines ->  Allow deletion of temp octrees immediately after oconv of the temp file occurs with the sky file. This will conserve storage for very large files. Thought this wont matter if the above rtrace is implement, as octree_skyless can be combined with each sky file in the rtrace call. These do not need to be precompiled into thier own octrees for rendering. 
 # TODO: view_generator.create_aoi_files -> 
     # vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 

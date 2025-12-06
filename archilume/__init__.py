@@ -5,4 +5,5 @@ from .rendering_pipelines import RenderingPipelines
 from .tiff2animation import Tiff2Animation
 from .sky_generator import SkyGenerator
 from .view_generator import ViewGenerator
+from .smart_cleanup import smart_cleanup, clear_outputs_folder
 from . import utils, config

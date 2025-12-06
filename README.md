@@ -449,19 +449,160 @@ Possible causes:
 
 **Recommendation**: Use GPU rendering for iterative design workflows where you render the same views repeatedly. Use CPU rendering for one-off analyses or when GPU hardware is unavailable.
 
+## Troubleshooting
+
+### First-Time Setup Verification
+
+After installation, verify your setup is working correctly:
+
+```bash
+# Quick verification
+python -c "import archilume; print('✓ Archilume installed')"
+python -c "import PIL; print(f'✓ Pillow {PIL.__version__}')"
+oconv -version
+```
+
+### Common Issues and Solutions
+
+#### Installation Issues
+
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| **Python version too old** | `SyntaxError` or import errors | Install Python 3.12+ from [python.org](https://www.python.org/downloads/) |
+| **Pillow not installed** | `ModuleNotFoundError: No module named 'PIL'` | Run: `pip install -e .` in project root |
+| **Missing dependencies** | Import errors for numpy, pandas, etc. | Run: `pip install -e .` to install all dependencies |
+| **Permission denied** | `PermissionError` during installation | Run terminal as administrator (Windows) or use `sudo` (Linux/Mac) |
+| **pip not found** | `'pip' is not recognized` | Install pip: `python -m ensurepip --upgrade` |
+
+#### Radiance/Accelerad Issues
+
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| **Radiance not found** | `FileNotFoundError: 'oconv' not found` | 1. Install from [radiance-online.org](https://www.radiance-online.org/)<br>2. Add to PATH or set `RADIANCE_ROOT` env var<br>3. Verify: `oconv -version` |
+| **RAYPATH not set** | `system - cannot find file` errors | **Windows:** `setx RAYPATH "C:\Radiance\lib"`<br>**Linux/Mac:** Add to `.bashrc`: `export RAYPATH=/usr/local/radiance/lib`<br>Restart terminal after setting |
+| **Accelerad PTX errors** | `File rpict.ptx not found in RAYPATH` | Add Accelerad lib to RAYPATH:<br>`setx RAYPATH "C:\Radiance\lib;C:\Program Files\Accelerad\lib"`<br>Restart terminal/IDE |
+| **No CUDA device** | `No CUDA-capable device detected` | 1. Verify NVIDIA GPU: `nvidia-smi`<br>2. Update drivers from [nvidia.com](https://www.nvidia.com/drivers)<br>3. Fallback to CPU mode: `render_mode='cpu'` |
+| **Accelerad not found** | GPU rendering fails | 1. Install from [nljones.github.io/Accelerad](https://nljones.github.io/Accelerad/)<br>2. Or use CPU rendering: `render_mode='cpu'` |
+
+#### Runtime Issues
+
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| **Paths with spaces fail** | Command execution errors | Ensure no spaces in: project path, input files, Radiance installation path |
+| **OBJ file in millimeters** | Validation error: "model in MILLIMETERS" | Re-export OBJ files from CAD with units set to **meters** |
+| **Missing .mtl file** | `Missing .mtl file` error | Ensure each `.obj` has matching `.mtl` file in same directory |
+| **CSV not found** | `room_boundaries_csv not found` | 1. Create CSV file with room boundaries<br>2. Place in `inputs/` directory<br>3. Update path in workflow script |
+| **Resolution too high** | Out of memory errors | Reduce `image_resolution` to 1024 or 512 in workflow script |
+| **Render appears dark** | Very dark output images | 1. Check sky file generation<br>2. Increase ambient bounces in quality preset<br>3. Verify geometry units (must be meters) |
+
+#### Environment Variable Setup
+
+**Windows (PowerShell):**
+```powershell
+# Set Radiance paths
+setx RADIANCE_ROOT "C:\Radiance"
+setx RAYPATH "C:\Radiance\lib"
+
+# With Accelerad:
+setx RAYPATH "C:\Radiance\lib;C:\Program Files\Accelerad\lib"
+```
+
+**Windows (Command Prompt):**
+```cmd
+setx RADIANCE_ROOT "C:\Radiance"
+setx RAYPATH "C:\Radiance\lib"
+```
+
+**Linux/macOS:**
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export RADIANCE_ROOT="/usr/local/radiance"
+export RAYPATH="/usr/local/radiance/lib"
+export PATH="$PATH:$RADIANCE_ROOT/bin"
+
+# Apply changes
+source ~/.bashrc
+```
+
+**After setting environment variables, restart your terminal/IDE for changes to take effect.**
+
+#### Platform-Specific Notes
+
+**Windows:**
+- Install Radiance to `C:\Radiance\` (default expected location)
+- Use PowerShell or Command Prompt (not Git Bash) for environment variables
+- Check Windows Defender isn't blocking executable files
+
+**Linux:**
+- May need to install system dependencies: `sudo apt-get install libgl1-mesa-glx`
+- Ensure executable permissions: `chmod +x /usr/local/radiance/bin/*`
+
+**macOS:**
+- May need to install Xcode Command Line Tools: `xcode-select --install`
+- Allow executables in System Preferences > Security & Privacy
+
+### Getting Help
+
+If you encounter issues not covered here:
+
+1. **Check existing issues**: [GitHub Issues](https://github.com/vincentlogarzo/archilume/issues)
+2. **Verify installation**:
+   ```python
+   # Run diagnostic script
+   python -c "from archilume import config; print(f'Radiance: {config.RADIANCE_ROOT}')"
+   ```
+3. **Create new issue** with:
+   - Operating system and version
+   - Python version (`python --version`)
+   - Full error message
+   - Steps to reproduce
+
 ## Testing
+
+Archilume uses pytest for comprehensive testing across unit, integration, and end-to-end levels.
+
+### Quick Start
 
 ```bash
 # Install development dependencies
 pip install -e ".[dev]"
 
-# Run tests
+# Run all tests
 pytest tests/
 
+# Run only fast unit tests
+pytest tests/ -m "not slow and not integration"
+
 # Run with coverage
-coverage run -m pytest tests/
+pytest tests/ --cov=archilume --cov-report=html
 coverage report
+
+# Run specific test file
+pytest tests/test_sky_generator.py -v
 ```
+
+### Test Organization
+
+```
+tests/
+├── test_sky_generator.py           # Sky file generation (✓ Complete)
+├── test_geometric_calculations.py  # Geometry utilities (✓ Complete)
+├── test_material_parsing.py        # MTL conversion
+├── test_config.py                  # Configuration & validation (TODO)
+├── test_view_generator.py          # View generation (TODO)
+├── test_rendering_pipelines.py     # Rendering workflows (TODO)
+└── integration/                    # End-to-end tests (TODO)
+```
+
+### Coverage Goals
+
+| Module | Current Coverage | Target |
+|--------|-----------------|--------|
+| `sky_generator.py` | ~90% | 90%+ |
+| `utils.py` (geometry) | ~85% | 85%+ |
+| Other modules | ~20% | 80%+ |
+
+**For comprehensive testing guidelines, test templates, and coverage strategies, see [TESTING_GUIDE.md](TESTING_GUIDE.md).**
 
 ## Dependencies
 

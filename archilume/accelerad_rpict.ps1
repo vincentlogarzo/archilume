@@ -5,18 +5,18 @@ Simplified Accelerad Batch Renderer
 .DESCRIPTION
 Renders views using Accelerad with quality presets and GPU optimization
 
-.PARAMETER Octree
+.PARAMETER OctreeName
 Name of the octree file (without extension)
 
-.PARAMETER Qual
+.PARAMETER Quality
 Quality preset: draft, stand, prod, final, 4K, custom
 Default: draft
 
-.PARAMETER View
+.PARAMETER ViewName
 Optional single view name to render. If omitted, renders all views.
 
 .EXAMPLE
-.\archilume\accelerad_rpict.ps1 -Octree "87Cowles_BLD_withWindows_with_site_TenK_cie_overcast" -Qual "draft" -View "plan_ffl_093260"
+.\archilume\accelerad_rpict.ps1 -OctreeName "87Cowles_BLD_withWindows_with_site_TenK_cie_overcast" -Quality "draft" -ViewName "plan_ffl_093260"
 #>
 
 [CmdletBinding()]
@@ -48,6 +48,19 @@ $octreeFile = "outputs/octree/$OctreeName.oct"
 $viewDir = 'outputs/view'
 $imageDir = 'outputs/image'
 
+Write-Host "`n============================================================================"
+Write-Host "ACCELERAD BATCH RENDERER - STARTUP DIAGNOSTICS"
+Write-Host "============================================================================"
+Write-Host "Script Directory: $scriptDir"
+Write-Host "Working Directory: $PWD"
+Write-Host "Octree Name: $OctreeName"
+Write-Host "Octree File: $octreeFile"
+Write-Host "Quality: $Quality"
+Write-Host "Resolution: $Resolution"
+Write-Host "View Name: $(if ($ViewName) { $ViewName } else { '(All views)' })"
+Write-Host "Accelerad Exe: $acceleradExe"
+Write-Host "============================================================================`n"
+
 if (-not (Test-Path $acceleradExe)) { throw "ERROR: Accelerad not found at $acceleradExe" }
 if (-not (Test-Path $octreeFile)) { throw "ERROR: Octree not found at $octreeFile" }
 
@@ -65,7 +78,7 @@ $presets = @{
     'fast'     = @(0.06, 3,  512,  256,  128, 2, 0.10,12, 0.001, $null, $null, $null, $null, $null, $null)
     'med'      = @(0.03, 3, 1024,  512,  256, 2, 0.08,12, 0.001, $null, $null, $null, $null, $null, $null)
     'high'     = @(0.01, 3, 1536,  512,  512, 1, 0.05,12, 0.001, $null, $null, $null, $null, $null, $null)
-    'detailed' = @(0,    1, 2048, 1024, 1024, 1, 0.02,12, 0.0001,$null, $null, $null, $null, $null, $null)
+    'detailed' = @(0,    2, 2048, 1024, 1024, 1, 0.02,12, 0.0001,$null, $null, $null, $null, $null, $null)
 }
 
 $p = $presets[$Quality.ToLower()]
@@ -74,8 +87,8 @@ if (-not $p) { throw "Unknown quality: $Quality" }
 $AA, $AB, $AD, $AS, $AR, $PS, $PT, $LR, $LW, $DJ, $DS, $DT, $DC, $DR, $DP = $p
 $RES = if ($Resolution -gt 0) { $Resolution } else { 1024 }  # Default resolution
 $RES_OV = 64
-$AD_OV = [int]($AD * 1.75)
-$AS_OV = [int]($AS * 1.75)
+$AD_OV = [int]($AD * 1)
+$AS_OV = [int]($AS * 1)
 
 
 # ============================================================================
@@ -139,66 +152,163 @@ function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
 }
 
 # ============================================================================
-# RENDER LOOP
+# TWO-PHASE RENDER LOOP (Optimized for GPU efficiency)
 # ============================================================================
 $batchStart = Get-Date
-$current = 0
 
+# Parse octree name: building_with_site_skyCondition
+# Expected format: {building}_with_site_{sky} or just {building}_{sky}
+if ($OctreeName -match '_with_site_') {
+    $parts = $OctreeName -split '_with_site_', 2
+    $building = $parts[0]
+    $sky = $parts[1]
+    Write-Host "Parsed octree name:"
+    Write-Host "  Building: $building"
+    Write-Host "  Sky: $sky"
+} else {
+    # Fallback: split on last underscore or use whole name
+    Write-Host "WARNING: Octree name doesn't contain '_with_site_', using full name for building"
+    $building = $OctreeName
+    $sky = "unknown"
+}
+
+# Pre-compute file paths for all views
+$viewData = @()
 foreach ($viewFile in $views) {
-    $current++
     $viewNameOnly = $viewFile.BaseName
-    Write-Host "[$current/$($views.Count)] $viewNameOnly"
+    $ambPath = "$imageDir/${building}_with_site_${viewNameOnly}__${sky}.amb"
+    $hdrPath = "$imageDir/${building}_with_site_${viewNameOnly}__${sky}.hdr"
 
-    # Parse octree name: building_with_site_skyCondition
-    $building, $sky = $OctreeName -split '_with_site_', 2
+    $viewData += @{
+        File = $viewFile
+        Name = $viewNameOnly
+        AmbFile = $ambPath
+        HdrFile = $hdrPath
+    }
+}
 
-    # Output paths
-    $ambFile = "$imageDir/${building}_with_site_${viewNameOnly}__${sky}.amb"
-    $hdrFile = "$imageDir/${building}_with_site_${viewNameOnly}__${sky}.hdr"
+# Show first view's file paths as example
+if ($viewData.Count -gt 0) {
+    Write-Host "`nExample file paths (first view):"
+    Write-Host "  View: $($viewData[0].Name)"
+    Write-Host "  AMB:  $($viewData[0].AmbFile)"
+    Write-Host "  HDR:  $($viewData[0].HdrFile)"
+    Write-Host ""
+}
+
+# ============================================================================
+# PHASE 1: Generate ALL ambient files (minimize GPU context switches)
+# ============================================================================
+Write-Host "`n============================================================================"
+Write-Host "PHASE 1/2: Generating ambient files for all views"
+Write-Host "============================================================================`n"
+
+$phase1Start = Get-Date
+$current = 0
+$ambGenerated = 0
+
+foreach ($view in $viewData) {
+    $current++
+
+    # Skip if ambient file already exists
+    if (Test-Path $view.AmbFile) {
+        Write-Host "[$current/$($views.Count)] $($view.Name) - Ambient file exists, skipping"
+        continue
+    }
+
+    Write-Host "[$current/$($views.Count)] $($view.Name)"
+    Write-Host "  Generating ambient file: $($view.AmbFile)"
+
+    $overtureArgs = Get-RenderArgs $view.File.FullName $RES_OV $view.AmbFile $true
+
+    # Redirect stdout to temp file, suppress stderr completely
+    $tempNull = [System.IO.Path]::Combine($env:TEMP, "rpict_null_$($view.Name).hdr")
+    & $acceleradExe @overtureArgs > $tempNull 2>$null
+
+    # Clean up temp file
+    if (Test-Path $tempNull) { Remove-Item $tempNull -Force -ErrorAction SilentlyContinue }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARNING: Ambient generation failed (exit code $LASTEXITCODE)"
+    } elseif (-not (Test-Path $view.AmbFile)) {
+        Write-Host "  ERROR: Ambient file was not created!"
+        Write-Host "  Command: $acceleradExe $($overtureArgs -join ' ')"
+    } else {
+        $ambGenerated++
+        Write-Host "  Success"
+    }
+    Write-Host ""
+}
+
+$phase1Elapsed = (Get-Date) - $phase1Start
+Write-Host "============================================================================"
+Write-Host ("Phase 1 Complete: Generated $ambGenerated new ambient files in {0}m {1}s" -f [math]::Floor($phase1Elapsed.TotalMinutes), $phase1Elapsed.Seconds)
+Write-Host "============================================================================`n"
+
+# ============================================================================
+# PHASE 2: Render ALL main images (GPU stays warm throughout)
+# ============================================================================
+Write-Host "============================================================================"
+Write-Host "PHASE 2/2: Main rendering for all views"
+Write-Host "============================================================================`n"
+
+$phase2Start = Get-Date
+$current = 0
+$rendered = 0
+$skipped = 0
+
+foreach ($view in $viewData) {
+    $current++
+
+    # Verify ambient file exists before rendering
+    if (-not (Test-Path $view.AmbFile)) {
+        Write-Host "[$current/$($views.Count)] $($view.Name) - SKIPPED: Missing ambient file"
+        $skipped++
+        continue
+    }
+
+    Write-Host "[$current/$($views.Count)] $($view.Name)"
+    Write-Host "  Rendering ${RES}px: $($view.HdrFile)"
 
     $renderStart = Get-Date
 
-    # Overture (generate ambient file if missing)
-    if (-not (Test-Path $ambFile)) {
-        Write-Host "-------------------------------------------------------------------"
-        Write-Host "  Overture: Generating ambient file"
-        Write-Host "  AMB_FILE: $ambFile"
-        Write-Host "-------------------------------------------------------------------"
-
-        $overtureArgs = Get-RenderArgs $viewFile.FullName $RES_OV $ambFile $true
-        & $acceleradExe @overtureArgs | Out-Null
-
-        if ($LASTEXITCODE -ne 0) { Write-Host "  Warning: Overture failed, continuing..." }
-        if (-not (Test-Path $ambFile)) { Write-Host "  ERROR: Ambient file was not created!" }
-    }
-
-    # Main render
-    Write-Host "-------------------------------------------------------------------"
-    Write-Host "  Render: $viewNameOnly in ${RES}px"
-    Write-Host "  HDR_FILE: $hdrFile"
-    Write-Host "-------------------------------------------------------------------"
-
     # Build render args (UseOV = false for main render)
-    $renderArgs = Get-RenderArgs $viewFile.FullName $RES $ambFile $false
+    $renderArgs = Get-RenderArgs $view.File.FullName $RES $view.AmbFile $false
 
     # Quote paths for cmd.exe and use cmd.exe for proper binary stdout redirection (PowerShell > corrupts binary data)
     $renderArgs = $renderArgs | ForEach-Object {
         if ($_ -match '^[A-Za-z]:\\' -or $_ -match '\\') { "`"$_`"" } else { $_ }
     }
     $argsString = $renderArgs -join ' '
-    cmd /c "`"$acceleradExe`" $argsString > `"$hdrFile`""
+    cmd /c "`"$acceleradExe`" $argsString > `"$($view.HdrFile)`""
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: Render failed"
+        Write-Host "  ERROR: Render failed (exit code $LASTEXITCODE)"
     } else {
+        $rendered++
         $elapsed = (Get-Date) - $renderStart
         Write-Host ("  Complete: {0}m {1}s" -f [math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds)
     }
     Write-Host ""
 }
 
+$phase2Elapsed = (Get-Date) - $phase2Start
+Write-Host "============================================================================"
+Write-Host ("Phase 2 Complete: Rendered $rendered views in {0}m {1}s" -f [math]::Floor($phase2Elapsed.TotalMinutes), $phase2Elapsed.Seconds)
+if ($skipped -gt 0) {
+    Write-Host "WARNING: Skipped $skipped views due to missing ambient files"
+}
+Write-Host "============================================================================`n"
+
 # Final summary
 $totalElapsed = (Get-Date) - $batchStart
 Write-Host "============================================================================"
-Write-Host ("Batch complete: $($views.Count) views in {0}m {1}s" -f [math]::Floor($totalElapsed.TotalMinutes), $totalElapsed.Seconds)
+Write-Host "BATCH RENDERING COMPLETE"
+Write-Host "============================================================================"
+Write-Host "Total views processed: $($views.Count)"
+Write-Host "Ambient files generated: $ambGenerated"
+Write-Host "Main renders completed: $rendered"
+Write-Host ("Phase 1 time: {0}m {1}s" -f [math]::Floor($phase1Elapsed.TotalMinutes), $phase1Elapsed.Seconds)
+Write-Host ("Phase 2 time: {0}m {1}s" -f [math]::Floor($phase2Elapsed.TotalMinutes), $phase2Elapsed.Seconds)
+Write-Host ("Total time: {0}m {1}s" -f [math]::Floor($totalElapsed.TotalMinutes), $totalElapsed.Seconds)
 Write-Host "============================================================================"

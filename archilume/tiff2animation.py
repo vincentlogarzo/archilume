@@ -9,8 +9,6 @@ from datetime import datetime
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
-import cv2
 import re
 
 # Third-party imports
@@ -34,6 +32,7 @@ class Tiff2Animation:
     sky_files_dir: Path = field(default_factory=lambda: config.SKY_DIR)
     view_files_dir: Path = field(default_factory=lambda: config.VIEW_DIR)
     image_dir: Path = field(default_factory=lambda: config.IMAGE_DIR)
+    animation_format: str = 'gif'  # Output format: 'gif' or 'apng'
 
     # Auto-populated fields
     sky_files: List[Path] = field(default_factory=list, init=False)
@@ -46,6 +45,11 @@ class Tiff2Animation:
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
 
+        # Validate animation format
+        valid_formats = ['gif', 'apng']
+        if self.animation_format.lower() not in valid_formats:
+            raise ValueError(f"Invalid animation format: {self.animation_format}. Must be one of {valid_formats}")
+
     def nsw_adg_sunlight_access_results_pipeline(self):
         """Process rendered images: stamp with metadata/AOI, create animations and grids for NSW Apartment Design Guidelines Sunlight access compliance."""
         tiff_files = list(self.image_dir.glob('*_combined.tiff'))
@@ -56,7 +60,7 @@ class Tiff2Animation:
                                    aoi_lineweight=2, aoi_font_size=32, aoi_color=(255, 0, 0), aoi_bg_alpha=180,
                                    number_of_workers=config.WORKERS["metadata_stamping"])
 
-        self._combine_tiffs_by_view(output_format='gif', fps=2, number_of_workers=config.WORKERS["gif_animation"])
+        self._combine_tiffs_by_view(output_format=self.animation_format, fps=2, number_of_workers=config.WORKERS["gif_animation"])
 
         print("\nRendering sequence completed successfully.\n")
 
@@ -67,27 +71,13 @@ class Tiff2Animation:
             """Combine multiple TIFF files into a single animated file. Default duration is 4000ms per frame (0.25 fps)."""
             duration = duration_ms  # Duration in milliseconds per frame
             if output_format.lower() == 'gif':
+                tiffs = [Image.open(f).convert('RGB') for f in tiff_paths]
+                tiffs[0].save(output_path, save_all=True, append_images=tiffs[1:], duration=duration, loop=0, optimize=True)
+            elif output_format.lower() == 'apng':
                 tiffs = [Image.open(f) for f in tiff_paths]
                 tiffs[0].save(output_path, save_all=True, append_images=tiffs[1:], duration=duration, loop=0)
-            elif output_format.lower() == 'mp4':
-                first_tiff = Image.open(tiff_paths[0])
-                width, height = first_tiff.size
-                fps_calc = fps
-                fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                video_writer = cv2.VideoWriter(str(output_path), fourcc, fps_calc, (width, height))
-
-                if not video_writer.isOpened():
-                    raise RuntimeError(f"Failed to create video writer for {output_path}. Check codec availability.")
-
-                for tiff_path in tiff_paths:
-                    tiff = Image.open(tiff_path)
-                    frame_rgb = tiff.convert('RGB')
-                    frame_bgr = cv2.cvtColor(np.array(frame_rgb), cv2.COLOR_RGB2BGR)
-                    video_writer.write(frame_bgr)
-
-                video_writer.release()
             else:
-                raise ValueError(f"Unsupported output format: {output_format}. Use 'gif' or 'mp4'.")
+                raise ValueError(f"Unsupported output format: {output_format}. Use 'gif' or 'apng'.")
 
         tiff_files = [path for path in self.image_dir.glob('*.tiff')]
         tiff_files = [tiff for tiff in tiff_files if not tiff.name.startswith('animated_results_')
@@ -122,25 +112,42 @@ class Tiff2Animation:
                     output_file_path.unlink()
 
                 _combine_tiffs(view_tiff_files, output_file_path, per_frame_duration, output_format)
-                return f"OK Created {output_format.upper()} animation for {view_name}: {num_frames} frames, {duration/1000:.1f}s at {calculated_fps} FPS"
+                return f"✓ {view_name}: {num_frames} frames, {duration/1000:.1f}s"
             except Exception as e:
-                return f"X Error processing {view_name}: {e}"
+                return f"✗ Error processing {view_name}: {e}"
 
-        print(f"Processing {len(self.view_files)} views using {number_of_workers} workers")
+        print(f"Creating {output_format.upper()} animations for {len(self.view_files)} views...")
+
+        results = []
+        errors = []
 
         if number_of_workers == 1:
             for view_file in self.view_files:
-                print(_process_single_view(view_file))
+                result = _process_single_view(view_file)
+                if result.startswith("✗"):
+                    errors.append(result)
+                else:
+                    results.append(result)
         else:
             with ThreadPoolExecutor(max_workers=number_of_workers) as executor:
                 futures = [executor.submit(_process_single_view, view_file) for view_file in self.view_files]
                 for future in concurrent.futures.as_completed(futures):
                     try:
-                        print(future.result())
+                        result = future.result()
+                        if result.startswith("✗"):
+                            errors.append(result)
+                        else:
+                            results.append(result)
                     except Exception as e:
-                        print(f"X Error in parallel view processing: {e}")
+                        errors.append(f"✗ Error in parallel view processing: {e}")
 
-        print(f"Completed processing {len(self.view_files)} view animations")
+        # Print summary
+        if results:
+            print(f"✓ Created {len(results)} {output_format.upper()} animations")
+        if errors:
+            print(f"Errors encountered:")
+            for error in errors:
+                print(f"  {error}")
 
     def _create_grid_gif(self, gif_paths: list[Path], grid_size: tuple = (3, 3),
                         target_size: tuple = (200, 200), fps: float = 1.0) -> None:
@@ -199,13 +206,31 @@ class Tiff2Animation:
 
 def _process_parallel(items: list, worker_func, num_workers: int):
     """Execute worker function on items in parallel or sequentially."""
+    total = len(items)
+    completed = 0
+
     if num_workers == 1:
         for item in items:
-            print(worker_func(item))
+            result = worker_func(item)
+            completed += 1
+            # Show progress every 25% or on first/last
+            if completed == 1 or completed == total or completed % max(1, total // 4) == 0:
+                print(f"Progress: {completed}/{total} files processed")
+            # Always print errors
+            if result and result.startswith("Error"):
+                print(f"  {result}")
     else:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            for future in concurrent.futures.as_completed([executor.submit(worker_func, item) for item in items]):
-                print(future.result())
+            futures = [executor.submit(worker_func, item) for item in items]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                completed += 1
+                # Show progress every 25% or on first/last
+                if completed == 1 or completed == total or completed % max(1, total // 4) == 0:
+                    print(f"Progress: {completed}/{total} files processed")
+                # Always print errors
+                if result and result.startswith("Error"):
+                    print(f"  {result}")
 
 def _load_font(font_size: int) -> ImageFont.FreeTypeFont:
     """Load Arial font or fallback to default."""
@@ -281,10 +306,13 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
                 ts_str = ts.group(1)
                 timestep = f"{MONTH_NAMES[int(ts_str[:2])-1]} {int(ts_str[2:4])} {ts_str[5:7]}:{ts_str[7:9]}"
 
-            if level_match := re.search(r'[_]?L(\d+)', filename):
-                level = f"L{level_match.group(1)}"
+            # Extract FFL height (in millimeters) from filename pattern: plan_ffl_090000
+            if level_match := re.search(r'plan_ffl_(-?\d+)', filename):
+                ffl_mm = int(level_match.group(1))
+                ffl_m = ffl_mm / 1000  # Convert millimeters to meters
+                level = f"{ffl_m:.2f}m"
 
-            metadata_text = f"Created: {current_datetime}, Level: {level}, Timestep: {timestep}, Latitude: {latitude}, FFL Offset: {ffl_offset}m"
+            metadata_text = f"Created: {current_datetime}, Latitude: {latitude}, FFL: {level}, FFL Offset: {ffl_offset}m, Timestep: {timestep}"
 
             # Calculate responsive font size based on image dimensions
             # Scale down from default: use 60% of the base font size parameter
@@ -349,8 +377,8 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
         except Exception as e:
             return f"Error {tiff_path.name}: {e}"
 
-    print(f"Combined stamping: {len(tiff_paths)} files with metadata + AOI using {number_of_workers} workers")
+    print(f"Stamping {len(tiff_paths)} files with metadata + AOI overlays using {number_of_workers} workers")
     _process_parallel(tiff_paths, _stamp_combined, number_of_workers)
-    print(f"Completed combined stamping")
+    print(f"✓ Stamping completed")
 
 

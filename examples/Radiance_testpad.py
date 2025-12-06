@@ -42,11 +42,12 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 
 
 --- 3. ---
-#testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
-    #TODO: rtpict does not appear to work due to an internal quotation erorr, this progam is not viable on Windows
+# testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
+# TODO: rtpict does not appear to work support multiple processors. 
     rtpict -n 2 -vf view.vp -af ambfile.amb octree_with_sky.oct > output_rtpict.hdr
-    rtpict -n 2 -t 5 -vtv -vf outputs/views_grids/plan_L02.vp -af outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.amb outputs/octree/87cowles_BLD_noWindows_with_site_skyless.oct > outputs/images/87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_rtpict.hdr
-     
+    rtpict -n 1 -vf outputs/view/plan_ffl_096590.vp outputs/octree/87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.oct > outputs/image/test_rtpict.hdr
+    
+
 --- 4. ---
 # Turn view into rays file that can be rendered in parallel. This route is not to be investigate it did not work intially but could be a point of speeding up the process in the future. A points.txt files would be more appropraite. I beleive the vwrays programme is generating an invalid ray.dat file. 
 
@@ -80,20 +81,13 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 FUTURE implementaiton A of RenderingPipelines
    
     rpict -w -t 2 -vf outputs\views_grids\plan_L01.vp -x 1024 -y 1024 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 -af outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.amb -i outputs\octree\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.oct > outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.hdr && echo "First command succeeded" && falsecolor -i outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.hdr -s 1000 -l lux -n 10 -lw 0 | ra_tiff -e -2 - outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.tiff
-
-
+    
 --- 6. ---
 # Testing using of accelerad binaries. 
-    #Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency.
-    #  
-    .\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast high 512
+# Paste below command into terminal to maintain GPU cuda build for subsequent process efficiency.
+    .\archilume\accelerad_rpict.ps1 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast high 512
 
     
-
----7. ---
-# Approaches for splotchiness. 
-
-    pfilt -x /2 -y /2 outputs/images/87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_medium.hdr > outputs/images/87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_medium_cleaned.hdr
 
 
 

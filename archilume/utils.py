@@ -532,24 +532,20 @@ def delete_files(file_paths: list[Path], number_of_workers: int = 1) -> None:
             for filename, success, error in results:
                 if success:
                     deleted_count += 1
-                    print(f"Deleted: {filename}")
                 else:
                     skipped_count += 1
-                    msg = f"Skipped ({error}): {filename}" if error else f"Skipped: {filename}"
-                    print(msg)
     else:
         # Sequential deletion
         for file_path in file_paths:
             filename, success, error = _delete_single_file(file_path)
             if success:
                 deleted_count += 1
-                print(f"Deleted: {filename}")
             else:
                 skipped_count += 1
-                msg = f"Skipped ({error}): {filename}" if error else f"Skipped: {filename}"
-                print(msg)
 
-    print(f"Deletion complete: {deleted_count} deleted, {skipped_count} skipped")
+    # Only print summary if files were actually deleted
+    if deleted_count > 0:
+        print(f"Cleaned up {deleted_count} temporary file(s)")
          
 def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_workers: int = 1) -> None:
     """
@@ -576,14 +572,31 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
     def _execute_commands_with_progress(commands: List[str], number_of_workers: int = 1) -> None:
         """
         Executes commands with real-time progress output by streaming stdout/stderr.
-        
+
         Args:
             commands (List[str]): List of commands to execute
             number_of_workers (int): Number of parallel workers
         """
+        # Track which command index we're on for selective verbose output
+        command_counter = {'count': 0, 'total': len(commands), 'completed': 0}
+
         def _run_command_with_progress(command: str) -> None:
             """Execute a single command with real-time output streaming."""
-            print(f"Starting: {command}")
+            # Increment counter and determine if this is the first command
+            command_counter['count'] += 1
+            is_first = command_counter['count'] == 1
+            is_verbose = is_first  # Only show detailed output for first command
+
+            if is_first:
+                # Extract a short description from the command
+                if ' > ' in command:
+                    output_file = command.split(' > ')[-1].strip()
+                    print(f"Starting rendering pipeline...")
+                if command_counter['total'] > 1:
+                    print(f"Processing {command_counter['total']} commands...")
+            else:
+                # Abbreviated output for subsequent commands - use carriage return to overwrite
+                print(f"\r[{command_counter['completed']}/{command_counter['total']}] Processing...", end='', flush=True)
 
             try:
                 # Set up environment with RAYPATH for Radiance commands
@@ -617,9 +630,16 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                         if output:
                             # Filter for meaningful progress messages
                             stripped = output.strip()
-                            if any(kw in stripped for kw in ['rpict:', 'rays,', '%', 'hours', 'error', 'warning']):
+                            # Skip repetitive progress messages entirely
+                            if 'frozen octree' in stripped.lower():
+                                continue
+                            if 'rays,' in stripped.lower() and '%' in stripped:
+                                continue  # Skip "rpict: X rays, Y% after Z hours" messages
+                            # Only show errors (always) or other messages for first command
+                            if any(kw in stripped for kw in ['error', 'warning']):
                                 if sum(c.isprintable() or c.isspace() for c in stripped) / max(len(stripped), 1) > 0.8:
-                                    print(stripped, flush=True)
+                                    if is_verbose or 'error' in stripped.lower():
+                                        print(stripped, flush=True)
                 else:
                     # No redirect: stdout contains binary data, discard it and only read stderr
                     process = subprocess.Popen(
@@ -640,20 +660,36 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                             break
                         if output:
                             stripped = output.strip()
-                            if any(kw in stripped for kw in ['rpict:', 'rays,', '%', 'hours', 'error', 'warning']):
+                            # Skip repetitive progress messages entirely
+                            if 'frozen octree' in stripped.lower():
+                                continue
+                            if 'rays,' in stripped.lower() and '%' in stripped:
+                                continue  # Skip "rpict: X rays, Y% after Z hours" messages
+                            # Only show errors (always) or other messages for first command
+                            if any(kw in stripped for kw in ['error', 'warning']):
                                 if sum(c.isprintable() or c.isspace() for c in stripped) / max(len(stripped), 1) > 0.8:
-                                    print(stripped, flush=True)
+                                    if is_verbose or 'error' in stripped.lower():
+                                        print(stripped, flush=True)
 
                 # Wait for process to complete and get return code
                 return_code = process.wait()
-                
+
                 if return_code == 0:
-                    print(f"Completed successfully: {command}")
+                    command_counter['completed'] += 1
+                    # Don't print individual success messages - just update the counter
                 else:
-                    print(f"Failed with return code {return_code}: {command}")
-                    
+                    # Extract output filename for cleaner error message
+                    if ' > ' in command:
+                        output_file = command.split(' > ')[-1].strip()
+                        print(f"\n⚠ Failed (code {return_code}): {Path(output_file).name}")
+                    else:
+                        # Fallback to showing just the command name
+                        cmd_name = command.split()[0] if command else 'command'
+                        print(f"\n⚠ Failed (code {return_code}): {cmd_name}")
+
             except Exception as e:
-                print(f"Error executing command '{command}': {e}")
+                # Always show errors - print on new line
+                print(f"\nError executing command '{command}': {e}")
         
         if number_of_workers == 1:
             # Sequential execution for single worker
@@ -668,6 +704,14 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                         future.result()
                     except Exception as e:
                         print(f"Error in parallel execution: {e}")
+
+        # Print summary if multiple commands were executed
+        if command_counter['total'] > 1:
+            failed = command_counter['total'] - command_counter['completed']
+            if failed > 0:
+                print(f"\n\n[OK] Completed {command_counter['completed']}/{command_counter['total']} commands ({failed} failed)")
+            else:
+                print(f"\n\n[OK] Completed all {command_counter['total']} commands")
 
     # Handle single command string input
     if isinstance(commands, str):
@@ -703,10 +747,8 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
         number_of_workers=number_of_workers
     )
 
-    if commands:
-        print(f"All new commands have successfully completed e.g. {commands[0]}")
-    else:
-        print("No commands were provided to execute.")
+    # Completion message already printed by _execute_commands_with_progress
+    pass
 
 def combine_tiffs_by_view(image_dir: Path, view_files: list[Path], fps: float=None, output_format: str='gif', number_of_workers: int = 4) -> None:
     """Create separate animated files grouped by view file names using parallel processing.
@@ -998,7 +1040,6 @@ def get_hdr_resolution(hdr_file_path: Union[Path, str]) -> tuple[int, int]:
                             width = int(parts[i + 1])
                     # If we found both dimensions, we're done
                     if width and height:
-                        print(f"HDR dimensions - width: {width}, height: {height}")
                         break
 
                 # Safety check: Stop reading if we've gone too far or hit binary data

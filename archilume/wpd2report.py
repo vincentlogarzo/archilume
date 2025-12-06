@@ -17,7 +17,7 @@ from openpyxl.formatting.rule import ColorScaleRule, FormulaRule
 from openpyxl.utils import get_column_letter
 
 
-class Wpd2SunlightComplianceReport:
+class Wpd2Report:
     """Generate Excel report from sunlight analysis .wpd files."""
 
     def __init__(

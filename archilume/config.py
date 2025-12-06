@@ -66,8 +66,8 @@ WORKERS = {
     "rpict_overture"            : min(8, DEFAULT_MAX_WORKERS),
     "rpict_medium_quality"      : min(8, DEFAULT_MAX_WORKERS),
     "oconv_compile"             : min(12, DEFAULT_MAX_WORKERS),
-    "rpict_direct_sun"          : min(14, DEFAULT_MAX_WORKERS),
-    "pcomb_tiff_conversion"     : min(14, DEFAULT_MAX_WORKERS),
+    "rpict_direct_sun"          : min(18, DEFAULT_MAX_WORKERS),
+    "pcomb_tiff_conversion"     : min(18, DEFAULT_MAX_WORKERS),
     "metadata_stamping"         : min(14, DEFAULT_MAX_WORKERS),
     "gif_animation"             : min(14, DEFAULT_MAX_WORKERS),
     "wpd_processing"            : min(14, DEFAULT_MAX_WORKERS),
@@ -135,6 +135,10 @@ class InputValidator:
         valid_modes = ['cpu', 'gpu']
         if self.rendering_mode.lower() not in valid_modes:
             self._errors.append(f"[X] rendering_mode: Must be one of {valid_modes}")
+
+        valid_qualities = ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']
+        if self.rendering_quality.lower() not in valid_qualities:
+            self._errors.append(f"[X] rendering_quality: Must be one of {valid_qualities}")
 
         # --- Files ---
         if not self.room_boundaries_csv.exists():
