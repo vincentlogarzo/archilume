@@ -157,54 +157,6 @@ function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
     return $cmdArgs
 }
 
-# ============================================================================
-# RENDER LOOP SETUP
-# ============================================================================
-$batchStart = Get-Date
-
-# Parse octree name: building_with_site_skyCondition
-# Expected format: {building}_with_site_{sky} or just {building}_{sky}
-if ($OctreeName -match '_with_site_') {
-    $parts = $OctreeName -split '_with_site_', 2
-    $building = $parts[0]
-    $sky = $parts[1]
-    Write-Host "Parsed octree name:"
-    Write-Host "  Building: $building"
-    Write-Host "  Sky: $sky"
-} else {
-    # Fallback: split on last underscore or use whole name
-    Write-Host "WARNING: Octree name doesn't contain '_with_site_', using full name for building"
-    $building = $OctreeName
-    $sky = "unknown"
-}
-
-# Pre-compute file paths for all views
-$viewData = @()
-foreach ($viewFile in $views) {
-    $viewNameOnly = $viewFile.BaseName
-    $ambPath = "$imageDir/${building}_with_site_${viewNameOnly}__${sky}.amb"
-    $hdrPath = "$imageDir/${building}_with_site_${viewNameOnly}__${sky}.hdr"
-
-    $viewData += @{
-        File = $viewFile
-        Name = $viewNameOnly
-        AmbFile = $ambPath
-        HdrFile = $hdrPath
-    }
-}
-
-# Show first view's file paths as example
-if ($viewData.Count -gt 0) {
-    Write-Host "`nExample file paths (first view):"
-    Write-Host "  View: $($viewData[0].Name)"
-    Write-Host "  AMB:  $($viewData[0].AmbFile)"
-    Write-Host "  HDR:  $($viewData[0].HdrFile)"
-    Write-Host ""
-}
-
-# ============================================================================
-# MAIN RENDERING LOOP
-# ============================================================================
 Write-Host "============================================================================"
 Write-Host "GPU RENDERING - All views"
 Write-Host "============================================================================`n"
@@ -213,23 +165,28 @@ $renderStart = Get-Date
 $current = 0
 $rendered = 0
 
-foreach ($view in $viewData) {
+foreach ($viewFile in $views) {
     $current++
+    $viewName = $viewFile.BaseName
 
-    Write-Host "[$current/$($views.Count)] $($view.Name)"
-    Write-Host "  Rendering ${RES}px: $($view.HdrFile)"
+    # Generate output paths
+    $ambFile = "$imageDir/${OctreeName}_${viewName}.amb"
+    $hdrFile = "$imageDir/${OctreeName}_${viewName}.hdr"
+
+    Write-Host "[$current/$($views.Count)] $viewName"
+    Write-Host "  Rendering ${RES}px: $hdrFile"
 
     $viewRenderStart = Get-Date
 
-    # Build render args (UseOV = false for main render)
-    $renderArgs = Get-RenderArgs $view.File.FullName $RES $view.AmbFile $false
+    # Build render args
+    $renderArgs = Get-RenderArgs $viewFile.FullName $RES $ambFile $false
 
     # Quote paths for cmd.exe and use cmd.exe for proper binary stdout redirection (PowerShell > corrupts binary data)
     $renderArgs = $renderArgs | ForEach-Object {
         if ($_ -match '^[A-Za-z]:\\' -or $_ -match '\\') { "`"$_`"" } else { $_ }
     }
     $argsString = $renderArgs -join ' '
-    cmd /c "`"$acceleradExe`" $argsString > `"$($view.HdrFile)`""
+    cmd /c "`"$acceleradExe`" $argsString > `"$hdrFile`""
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Render failed (exit code $LASTEXITCODE)"
