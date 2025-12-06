@@ -53,20 +53,17 @@ Write-Host "ACCELERAD BATCH RENDERER - STARTUP DIAGNOSTICS"
 Write-Host "============================================================================"
 Write-Host "Script Directory: $scriptDir"
 Write-Host "Working Directory: $PWD"
-Write-Host "Octree Name: $OctreeName"
-Write-Host "Octree File: $octreeFile"
+Write-Host "Octree Path: $octreeFile"
+Write-Host "View Path: $viewDir"
 Write-Host "Quality: $Quality"
 Write-Host "Resolution: $Resolution"
-Write-Host "View Name: $(if ($ViewName) { $ViewName } else { '(All views)' })"
 Write-Host "Accelerad Exe: $acceleradExe"
 Write-Host "============================================================================`n"
 
 if (-not (Test-Path $acceleradExe)) { throw "ERROR: Accelerad not found at $acceleradExe" }
 if (-not (Test-Path $octreeFile)) { throw "ERROR: Octree not found at $octreeFile" }
 
-# ============================================================================
 # QUALITY PRESETS (Transposed Format)
-# ============================================================================
 #           draft   stand   prod    final   4k      custom  fast    med     high    detailed
 $AA   = @(  0.01,   0.01,   0.01,   0.01,   0.01,   0.01,   0.06,   0.03,   0.01,   0       )
 $AB   = @(  3,      3,      3,      3,      3,      8,      3,      3,      3,      2       )
@@ -96,10 +93,7 @@ $RES_OV = 64
 $AD_OV = [int]($AD * 1)
 $AS_OV = [int]($AS * 1)
 
-
-# ============================================================================
 # GPU CONFIGURATION
-# ============================================================================
 Write-Host "Checking for GPU..."
 try {
     $gpuVramMB = nvidia-smi --query-gpu=memory.total --format=csv,nounits,noheader 2>$null | Select-Object -First 1
@@ -118,9 +112,7 @@ try {
     $env:CUDA_FORCE_PTX_JIT = 1
 }
 
-# ============================================================================
 # FIND VIEWS TO RENDER
-# ============================================================================
 $views = if ($ViewName) {
     $viewPath = Join-Path $viewDir "$ViewName.vp"
     if (-not (Test-Path $viewPath)) { throw "ERROR: View file not found: $viewPath" }
@@ -134,9 +126,7 @@ $views = if ($ViewName) {
 if ($views.Count -eq 0) { throw "ERROR: No view files found in $viewDir" }
 Write-Host "Found $($views.Count) view(s), Quality: $Quality, Resolution: ${RES}px`n"
 
-# ============================================================================
 # RENDER ARGUMENT BUILDER
-# ============================================================================
 function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
     $ad = if ($UseOV) { $AD_OV } else { $AD }
     $as = if ($UseOV) { $AS_OV } else { $AS }
