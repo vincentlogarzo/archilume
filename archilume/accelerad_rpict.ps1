@@ -21,20 +21,24 @@ Optional single view name to render. If omitted, renders all views.
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true, Position=0, HelpMessage="Octree name (without .oct extension)")]
+    [Parameter(Mandatory = $true, Position = 0, HelpMessage = "Octree name (without .oct extension)")]
     [ValidateNotNullOrEmpty()]
-    [string]$OctreeName,
+    [string]
+    $OctreeName,
 
-    [Parameter(Position=1)]
-    [ValidateSet('draft','stand','prod','final','4K','custom','fast','med','high','detailed', IgnoreCase=$true)]
-    [string]$Quality = 'draft',
+    [Parameter(Position = 1)]
+    [ValidateSet('draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed', IgnoreCase = $true)]
+    [string]
+    $Quality = 'draft',
 
-    [Parameter(Position=2)]
+    [Parameter(Position = 2)]
     [ValidateRange(128, 8192)]
-    [int]$Resolution = 0,
+    [int]
+    $Resolution = 0,
 
-    [Parameter(Position=3)]
-    [string]$ViewName
+    [Parameter(Position = 3)]
+    [string]
+    $ViewName
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,9 +93,6 @@ if ($q -lt 0) { throw "Unknown quality: $Quality" }
 $AA, $AB, $AD, $AS, $AR, $PS, $PT, $LR, $LW, $DJ, $DS, $DT, $DC, $DR, $DP =
     $AA[$q], $AB[$q], $AD[$q], $AS[$q], $AR[$q], $PS[$q], $PT[$q], $LR[$q], $LW[$q], $DJ[$q], $DS[$q], $DT[$q], $DC[$q], $DR[$q], $DP[$q]
 $RES = if ($Resolution -gt 0) { $Resolution } else { 1024 }  # Default resolution
-$RES_OV = 64
-$AD_OV = [int]($AD * 1)
-$AS_OV = [int]($AS * 1)
 
 # GPU CONFIGURATION
 Write-Host "Checking for GPU..."
@@ -127,13 +128,10 @@ if ($views.Count -eq 0) { throw "ERROR: No view files found in $viewDir" }
 Write-Host "Found $($views.Count) view(s), Quality: $Quality, Resolution: ${RES}px`n"
 
 # RENDER ARGUMENT BUILDER
-function Get-RenderArgs($ViewPath, $Res, $AmbFile, $UseOV = $false) {
-    $ad = if ($UseOV) { $AD_OV } else { $AD }
-    $as = if ($UseOV) { $AS_OV } else { $AS }
-
+function Get-RenderArgs($ViewPath, $Res, $AmbFile) {
     # Build base arguments
     $cmdArgs = @('-w', '-t', '1', '-vf', $ViewPath, '-x', $Res, '-y', $Res,
-                 '-aa', $AA, '-ab', $AB, '-ad', $ad, '-as', $as, '-ar', $AR)
+                 '-aa', $AA, '-ab', $AB, '-ad', $AD, '-as', $AS, '-ar', $AR)
 
     # Add optional parameters (only if not null)
     if ($null -ne $PS) { $cmdArgs += '-ps', $PS }
@@ -174,7 +172,7 @@ foreach ($viewFile in $views) {
     $viewRenderStart = Get-Date
 
     # Build render args
-    $renderArgs = Get-RenderArgs $viewFile.FullName $RES $ambFile $false
+    $renderArgs = Get-RenderArgs $viewFile.FullName $RES $ambFile
 
     # Quote paths for cmd.exe and use cmd.exe for proper binary stdout redirection (PowerShell > corrupts binary data)
     $renderArgs = $renderArgs | ForEach-Object {
