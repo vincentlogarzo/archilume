@@ -65,26 +65,44 @@ if (-not (Test-Path $acceleradExe)) { throw "ERROR: Accelerad not found at $acce
 if (-not (Test-Path $octreeFile)) { throw "ERROR: Octree not found at $octreeFile" }
 
 # ============================================================================
-# QUALITY PRESETS
+# QUALITY PRESETS (Transposed Format)
 # ============================================================================
-# Quality presets: [AA, AB, AD, AS, AR, PS, PT, LR, LW, DJ, DS, DT, DC, DR, DP]
-$presets = @{
-    'draft'    = @(0.01, 3, 2048, 1024, 1024, 4, 0.15, 5, 0.001, 0.0, 0.25, 0.50, 0.25, 0, 512)
-    'stand'    = @(0.01, 3, 1792,  896, 1024, 2, 0.12, 5, 0.001, 0.5, 0.35, 0.35, 0.40, 1, 256)
-    'prod'     = @(0.01, 3, 1536,  768, 1024, 2, 0.10, 5, 0.001, 0.7, 0.50, 0.25, 0.50, 1, 256)
-    'final'    = @(0.01, 3, 1280,  640, 1024, 1, 0.07, 5, 0.001, 0.9, 0.70, 0.15, 0.75, 2, 128)
-    '4k'       = @(0.01, 3, 1024,  512, 1024, 1, 0.05, 5, 0.001, 1.0, 0.90, 0.05, 0.90, 3,  64)
-    'custom'   = @(0.01, 8, 2048, 1024, 1024, 1, 0.05,12, 0.0001,0.7, 0.50, 0.25, 0.50, 1, 256)
-    'fast'     = @(0.06, 3,  512,  256,  128, 2, 0.10,12, 0.001, $null, $null, $null, $null, $null, $null)
-    'med'      = @(0.03, 3, 1024,  512,  256, 2, 0.08,12, 0.001, $null, $null, $null, $null, $null, $null)
-    'high'     = @(0.01, 3, 1536,  512,  512, 1, 0.05,12, 0.001, $null, $null, $null, $null, $null, $null)
-    'detailed' = @(0,    2, 2048, 1024, 1024, 1, 0.02,12, 0.0001,$null, $null, $null, $null, $null, $null)
-}
+#           draft   stand   prod    final   4k      custom  fast    med     high    detailed
+$AA   = @(  0.01,   0.01,   0.01,   0.01,   0.01,   0.01,   0.06,   0.03,   0.01,   0       )
+$AB   = @(  3,      3,      3,      3,      3,      8,      3,      3,      3,      2       )
+$AD   = @(  2048,   1792,   1536,   1280,   1024,   2048,   512,    1024,   1536,   2048    )
+$AS   = @(  1024,   896,    768,    640,    512,    1024,   256,    512,    512,    1024    )
+$AR   = @(  1024,   1024,   1024,   1024,   1024,   1024,   128,    256,    512,    1024    )
+$PS   = @(  4,      2,      2,      1,      1,      1,      2,      2,      1,      1       )
+$PT   = @(  0.15,   0.12,   0.10,   0.07,   0.05,   0.05,   0.10,   0.08,   0.05,   0.02    )
+$LR   = @(  5,      5,      5,      5,      5,      12,     12,     12,     12,     12      )
+$LW   = @(  0.001,  0.001,  0.001,  0.001,  0.001,  0.0001, 0.001,  0.001,  0.001,  0.0001  )
+$DJ   = @(  0.0,    0.5,    0.7,    0.9,    1.0,    0.7,    $null,  $null,  $null,  $null   )
+$DS   = @(  0.25,   0.35,   0.50,   0.70,   0.90,   0.50,   $null,  $null,  $null,  $null   )
+$DT   = @(  0.50,   0.35,   0.25,   0.15,   0.05,   0.25,   $null,  $null,  $null,  $null   )
+$DC   = @(  0.25,   0.40,   0.50,   0.75,   0.90,   0.50,   $null,  $null,  $null,  $null   )
+$DR   = @(  0,      1,      1,      2,      3,      1,      $null,  $null,  $null,  $null   )
+$DP   = @(  512,    256,    256,    128,    64,     256,    $null,  $null,  $null,  $null   )
 
-$p = $presets[$Quality.ToLower()]
-if (-not $p) { throw "Unknown quality: $Quality" }
+$qualities = @('draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed')
+$index = $qualities.IndexOf($Quality.ToLower())
+if ($index -lt 0) { throw "Unknown quality: $Quality" }
 
-$AA, $AB, $AD, $AS, $AR, $PS, $PT, $LR, $LW, $DJ, $DS, $DT, $DC, $DR, $DP = $p
+$AA = $AA[$index]
+$AB = $AB[$index]
+$AD = $AD[$index]
+$AS = $AS[$index]
+$AR = $AR[$index]
+$PS = $PS[$index]
+$PT = $PT[$index]
+$LR = $LR[$index]
+$LW = $LW[$index]
+$DJ = $DJ[$index]
+$DS = $DS[$index]
+$DT = $DT[$index]
+$DC = $DC[$index]
+$DR = $DR[$index]
+$DP = $DP[$index]
 $RES = if ($Resolution -gt 0) { $Resolution } else { 1024 }  # Default resolution
 $RES_OV = 64
 $AD_OV = [int]($AD * 1)
@@ -219,17 +237,36 @@ foreach ($view in $viewData) {
     Write-Host "[$current/$($views.Count)] $($view.Name)"
     Write-Host "  Generating ambient file: $($view.AmbFile)"
 
+    # Verify view file exists
+    if (-not (Test-Path $view.File.FullName)) {
+        Write-Host "  ERROR: View file not found: $($view.File.FullName)"
+        continue
+    }
+
+    # Verify octree file exists
+    if (-not (Test-Path $octreeFile)) {
+        Write-Host "  ERROR: Octree file not found: $octreeFile"
+        continue
+    }
+
     $overtureArgs = Get-RenderArgs $view.File.FullName $RES_OV $view.AmbFile $true
 
-    # Redirect stdout to temp file, suppress stderr completely
+    # Redirect stdout to temp file, stderr will show progress
     $tempNull = [System.IO.Path]::Combine($env:TEMP, "rpict_null_$($view.Name).hdr")
-    & $acceleradExe @overtureArgs > $tempNull 2>$null
+
+    # Execute rendering (allow stderr to show progress, but don't treat it as error)
+    $ErrorActionPreference = 'Continue'
+    & $acceleradExe @overtureArgs > $tempNull 2>&1 | Out-Null
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
 
     # Clean up temp file
     if (Test-Path $tempNull) { Remove-Item $tempNull -Force -ErrorAction SilentlyContinue }
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  WARNING: Ambient generation failed (exit code $LASTEXITCODE)"
+    if ($exitCode -ne 0) {
+        Write-Host "  WARNING: Ambient generation failed (exit code $exitCode)"
+        Write-Host "  View file: $($view.File.FullName)"
+        Write-Host "  Octree: $octreeFile"
     } elseif (-not (Test-Path $view.AmbFile)) {
         Write-Host "  ERROR: Ambient file was not created!"
         Write-Host "  Command: $acceleradExe $($overtureArgs -join ' ')"
