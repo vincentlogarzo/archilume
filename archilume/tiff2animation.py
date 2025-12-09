@@ -14,7 +14,7 @@ import re
 # Third-party imports
 
 
-# Date formatting constants
+# Constants
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 @dataclass

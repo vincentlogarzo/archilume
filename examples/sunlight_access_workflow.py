@@ -73,16 +73,16 @@ def main():
         # RENDERING SETTINGS (Modify per simulation run - balance quality vs speed)
         # ------------------------------------------------------------------------------------------------
         timestep                    = 15,            # Time interval in minutes (recommended >= 5 min) 
-        image_resolution            = 512,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
+        image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
         rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
-        rendering_quality           = "fast",       # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
+        rendering_quality           = "med",       # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
     )
 
     smart_cleanup(
         timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-        resolution_changed          = True,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+        resolution_changed          = False,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
         rendering_mode_changed      = False,  # Set TRUE if switched cpu ↔ gpu
-        rendering_quality_changed   = True   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+        rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
     )
 
 
@@ -200,7 +200,6 @@ if __name__ == "__main__":
     # chart overlay onto combined gifs. 
     # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value. 
 # TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured.
-# DONE: Smart cleanup system implemented - use smart_cleanup() before re-runs with parameter changes. See SMART_CLEANUP_GUIDE.md 
 # TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
 # TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries from being simulated separately.
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch can be used as a result of ambient file caching. Caching is more effective in CPU mode than GPU mode. 
@@ -208,10 +207,6 @@ if __name__ == "__main__":
 # TODO: for cross machines compatibility, implement .ps1 files for all radiance commands. Specifically to address path issues and remove the need for the user to download external software. 
 # FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
 # TODO: implement for accelerad_rpict.ps1 correct handling of large obj files, single precision values in accelerad simulation result in lower accuracy of output results, thus this needs tobe considered if running a daylight simulation. The model must also be close to the origin. If it is very far away, >100m, this will also introduce calculation erorr and thus low quality images that need not exist. 
-
-# TODO: invesitgate a simpler implemntation of file paths, currently this prints out the full path, but surely there is a way to allow relative paths to be used to simplify the terminal printouts for readability.
-# TODO: tests to be conducted on fine detail obj exports as to their impact on speed and size.
-# DONE: GPU spikiness eliminated - Two-phase batch rendering implemented in accelerad_rpict.ps1. All ambient files generated first, then all main renders. GPU stays warm within each phase, reducing context switches from 2N to 2. 
 
 # TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
 
