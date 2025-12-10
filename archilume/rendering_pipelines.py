@@ -7,6 +7,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 
 # Archilume imports
 from archilume import utils, config
+from archilume.utils import PhaseTimer
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import time
 import subprocess
+from PIL import Image
 
 # Third-party imports
 from itertools import product
@@ -46,6 +48,8 @@ class RenderingPipelines:
     Optional Attributes (default from config):
         skies_dir (Path): Directory containing solar condition sky files (default: config.SKY_DIR)
         views_dir (Path): Directory containing architectural viewpoint files (default: config.VIEW_DIR)
+        render_mode (str): Rendering backend - 'cpu' or 'gpu' (default: 'cpu')
+        gpu_quality (str): GPU quality preset - 'draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed' (default: 'stand')
 
     Auto-Generated Attributes (populated during initialization):
         image_dir (Path): Output directory for rendered images (default: config.IMAGE_DIR)
@@ -68,276 +72,126 @@ class RenderingPipelines:
     y_res: int
 
     # Optional fields with config defaults
-    skies_dir: Path = field(default_factory=lambda: config.SKY_DIR)
-    views_dir: Path = field(default_factory=lambda: config.VIEW_DIR)
+    skies_dir:                          Path = field(default_factory=lambda: config.SKY_DIR)
+    views_dir:                          Path = field(default_factory=lambda: config.VIEW_DIR)
+    render_mode:                        str = 'cpu'
+    gpu_quality:                        str = 'stand'
 
     # Fields that will be populated after initialization
-    image_dir: Path = field(init = False, default_factory=lambda: config.IMAGE_DIR)
-    sky_files: List[Path] = field(default_factory=list, init=False)
-    view_files: List[Path] = field(default_factory=list, init=False)
-    overcast_octree_command: str = field(default=None, init=False)
-    rpict_daylight_overture_commands: List[str] = field(default_factory=list, init=False)
-    rpict_daylight_med_qual_commands: List[str] = field(default_factory=list, init=False)
-    temp_octree_with_sky_paths: List[Path] = field(default_factory=list, init=False)
-    oconv_commands: List[str] = field(default_factory=list, init=False)
-    rpict_direct_sun_commands: List[str] = field(default_factory=list, init=False)
-    pcomb_commands: List[str] = field(default_factory=list, init=False)
-    ra_tiff_commands: List[str] = field(default_factory=list, init=False)
+    image_dir:                          Path = field(init = False, default_factory=lambda: config.IMAGE_DIR)
+    sky_files:                          List[Path] = field(default_factory=list, init=False)
+    view_files:                         List[Path] = field(default_factory=list, init=False)
+    overcast_octree_command:            str = field(default=None, init=False)
+    rpict_daylight_overture_commands:   List[str] = field(default_factory=list, init=False)
+    rpict_daylight_med_qual_commands:   List[str] = field(default_factory=list, init=False)
+    temp_octree_with_sky_paths:         List[Path] = field(default_factory=list, init=False)
+    oconv_commands:                     List[str] = field(default_factory=list, init=False)
+    rpict_direct_sun_commands:          List[str] = field(default_factory=list, init=False)
+    pcomb_commands:                     List[str] = field(default_factory=list, init=False)
+    ra_tiff_commands:                   List[str] = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """
-        Post-initialization to populate file lists from directories.
+        Post-initialization to populate file lists from directories and validate parameters.
         """
         # Populate sky files from directory
         self.sky_files = sorted([path for path in self.skies_dir.glob('*.sky')])
-        
+
         # Populate view files from directory
         self.view_files = sorted([path for path in self.views_dir.glob('*.vp')])
-        
+
         # Validate resolution values
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
-        
+
+        # Validate render_mode
+        if self.render_mode not in (valid_modes := ['cpu', 'gpu']):
+            raise ValueError(f"Invalid render_mode '{self.render_mode}'. Valid options: {', '.join(valid_modes)}")
+
+        # Validate gpu_quality
+        if self.gpu_quality.lower() not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
+            raise ValueError(f"Invalid gpu_quality '{self.gpu_quality}'. Valid options: {', '.join(valid_quals)}")
+
         if not os.path.exists(self.image_dir):
             try:
                 os.makedirs(self.image_dir)
                 print(f"Created output directory: {self.image_dir}")
             except OSError as e:
                 print(f"Error creating directory {self.image_dir}: {e}")
-        
-
-    def sunlight_rendering_pipeline(self, render_mode: str = 'cpu', gpu_quality: str = 'stand') -> dict:
+    
+    def sunlight_rendering_pipeline(self) -> dict:
         """
         Render images for each combination of sky and view files.
-
-        Args:
-            render_mode (str, optional): Rendering backend selection. Defaults to 'cpu'.
-                Valid options:
-                - 'cpu': Uses rpict for CPU-based rendering (separate overture and final passes)
-                - 'gpu': Uses Accelerad for GPU-accelerated rendering (combined overture + final)
-
-            gpu_quality (str, optional): Quality preset for GPU rendering. Defaults to 'stand'.
-                Only used when render_mode='gpu'. Valid options:
-                - 'draft': Fast preview (768px, AA=0.01, AB=3, AD=2048, AS=1024)
-                - 'stand': Standard quality (1024px, AA=0.01, AB=3, AD=1792, AS=1024)
-                - 'prod': Production quality (1536px, AA=0.01, AB=3, AD=1536, AS=1024)
-                - 'final': Final quality (2048px, AA=0.01, AB=3, AD=1280, AS=1024)
-                - '4K': 4K resolution (4096px, AA=0.01, AB=3, AD=1024, AS=1024)
-                - 'custom': Custom settings (1024px, AA=0.01, AB=8, AD=4096, AS=1024)
 
         Returns:
             dict: Dictionary containing timing information for each rendering phase.
 
-        Raises:
-            ValueError: If render_mode or gpu_quality contains invalid values.
-
         Example:
             >>> # CPU rendering (default)
+            >>> renderer = RenderingPipelines(skyless_octree_path, overcast_sky_file_path, x_res=1024, y_res=1024)
             >>> timings = renderer.sunlight_rendering_pipeline()
 
             >>> # GPU rendering with standard quality
-            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='stand')
+            >>> renderer = RenderingPipelines(..., render_mode='gpu', gpu_quality='stand')
+            >>> timings = renderer.sunlight_rendering_pipeline()
 
             >>> # GPU rendering with production quality
-            >>> timings = renderer.sunlight_rendering_pipeline(render_mode='gpu', gpu_quality='prod')
+            >>> renderer = RenderingPipelines(..., render_mode='gpu', gpu_quality='prod')
+            >>> timings = renderer.sunlight_rendering_pipeline()
         """
-
-        # Validate inputs
-        if render_mode not in (valid_modes := ['cpu', 'gpu']):
-            raise ValueError(f"Invalid render_mode '{render_mode}'. Valid options: {', '.join(valid_modes)}")
-        if gpu_quality.lower() not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
-            raise ValueError(f"Invalid gpu_quality '{gpu_quality}'. Valid options: {', '.join(valid_quals)}")
 
         phase_timings = {}
         print("\nRenderingPipelines getting started...\n")
 
         # --- Phase 0: Prepare commands ---
-        phase_start = time.time()
-        # Generate overcast sky rendering commands
-        (self.overcast_octree_command, self.rpict_daylight_overture_commands, self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
+        with PhaseTimer(phase_timings, "    Command preparation"):
+            # Generate overcast sky rendering commands
+            (self.overcast_octree_command, self.rpict_daylight_overture_commands, self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
 
-        # Generate sunny sky rendering commands
-        (self.temp_octree_with_sky_paths, self.oconv_commands, self.rpict_direct_sun_commands, self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
-        phase_timings["    Command preparation"] = time.time() - phase_start
+            # Generate sunny sky rendering commands
+            (self.temp_octree_with_sky_paths, self.oconv_commands, self.rpict_direct_sun_commands, self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
 
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
-        phase_start = time.time()
-        utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=config.WORKERS["overcast_octree"])
-        phase_timings["    Overcast octree creation"] = time.time() - phase_start
+        with PhaseTimer(phase_timings, "    Overcast octree creation"):
+            utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=config.WORKERS["overcast_octree"])
 
-        if render_mode == 'gpu':
-            # GPU mode: Combined overture + rendering using Accelerad batch (ASYNC)
-            phase_start = time.time()
+        # --- Phase 2: Render overcast sky conditions (GPU or CPU) ---
+        with PhaseTimer(phase_timings, f"    Overcast rendering ({self.render_mode.upper()})"):
             octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
-            octree_name = f"{octree_base_name}_{self.overcast_sky_file_path.stem}"
+            overcast_sky_name = self.overcast_sky_file_path.stem
 
-            # Check if all expected overcast HDR files already exist
-            expected_files = [self.image_dir / f"{octree_base_name}_{Path(vf).stem}__{self.overcast_sky_file_path.stem}.hdr"
-                              for vf in self.view_files]
-            all_exist = all(f.exists() for f in expected_files)
-
-            if all_exist:
-                print(f"\n{'='*80}")
-                print(f"SKIPPING OVERCAST RENDERING - Files Already Exist")
-                print(f"{'='*80}")
-                print(f"Found all {len(expected_files)} existing overcast HDR files:")
-                for f in expected_files[:3]:
-                    print(f"  ✓ {f.name}")
-                if len(expected_files) > 3:
-                    print(f"  ... and {len(expected_files) - 3} more")
-                print(f"{'='*80}\n")
-                phase_timings["    Overcast rendering (GPU)"] = 0.0
-
-                # Create a dummy future that returns immediately
-                executor = ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(lambda: None)
+            if self.render_mode == 'gpu':
+                _, future = self._render_overcast_gpu(octree_base_name, overcast_sky_name, self.gpu_quality)
             else:
-                # Some files missing - proceed with rendering
-                missing = [f for f in expected_files if not f.exists()]
-                print(f"\n{'='*80}")
-                print(f"OVERCAST RENDERING REQUIRED")
-                print(f"{'='*80}")
-                print(f"Missing {len(missing)} of {len(expected_files)} overcast HDR files")
-                print(f"{'='*80}\n")
+                _, future = self._render_overcast_cpu(octree_base_name, overcast_sky_name)
 
-                # Construct PowerShell command with named parameters
-                batch_command = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res}'
-
-                # Get current working directory to ensure batch runs from project root
-                project_root = os.getcwd()
-
-                print(f"\n{'='*80}")
-                print(f"GPU RENDERING DIAGNOSTICS:")
-                print(f"Working Directory: {project_root}")
-                print(f"Batch Command: {batch_command}")
-                print(f"Octree Name: {octree_name}")
-                print(f"Quality: {gpu_quality}")
-                print(f"Resolution: {self.x_res}")
-                print(f"{'='*80}\n")
-
-                # Execute batch file with modified environment (RAYPATH)
-                # Copy current environment and set RAYPATH
-                env = os.environ.copy()
-                env['RAYPATH'] = config.RAYPATH
-
-                print(f"Launching GPU rendering (ASYNCHRONOUS - will continue with other work)...")
-                print(f"RAYPATH: {config.RAYPATH}")
-                print(f"Batch Command: {batch_command}")
-                print(f"CWD: {project_root}\n")
-
-                # Launch batch file asynchronously (don't wait yet)
-                gpu_process = subprocess.Popen(
-                    batch_command,
-                    shell=True,
-                    env=env,
-                    cwd=project_root
-                )
-
-                # Create a future that will wait for GPU completion when needed
-                def wait_for_gpu_completion():
-                    print("\nWaiting for GPU rendering to complete...")
-                    returncode = gpu_process.wait()
-
-                    # Small delay to ensure file writes are flushed to disk
-                    time.sleep(0.5)
-
-                    if returncode != 0:
-                        print(f"\nWarning: GPU rendering exited with code {returncode}")
-                        raise RuntimeError(f"GPU rendering failed with exit code {returncode}")
-                    else:
-                        print("\nGPU rendering completed successfully")
-
-                        # Verify expected output files exist
-                        expected_files = [self.image_dir / f"{octree_base_name}_{Path(vf).stem}__{self.overcast_sky_file_path.stem}.hdr"
-                                          for vf in self.view_files]
-                        missing = [f for f in expected_files if not f.exists()]
-                        if missing:
-                            print(f"\nWarning: {len(missing)} expected HDR files not found:")
-                            for f in missing[:5]:  # Show first 5
-                                print(f"  - {f.name}")
-                        else:
-                            print(f"Verified: All {len(expected_files)} HDR files created")
-
-                    return returncode
-
-                executor = ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(wait_for_gpu_completion)
-
-                phase_timings["    Overcast rendering (GPU)"] = time.time() - phase_start
-        else:
-            # CPU mode: Separate overture and rendering passes
-            phase_start = time.time()
-            octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
-
-            # Check if all expected overcast HDR files already exist
-            expected_files = [self.image_dir / f"{octree_base_name}_{Path(vf).stem}__{self.overcast_sky_file_path.stem}.hdr"
-                              for vf in self.view_files]
-            all_exist = all(f.exists() for f in expected_files)
-
-            if all_exist:
-                print(f"\n{'='*80}")
-                print(f"SKIPPING OVERCAST RENDERING - Files Already Exist")
-                print(f"{'='*80}")
-                print(f"Found all {len(expected_files)} existing overcast HDR files:")
-                for f in expected_files[:3]:
-                    print(f"  ✓ {f.name}")
-                if len(expected_files) > 3:
-                    print(f"  ... and {len(expected_files) - 3} more")
-                print(f"{'='*80}\n")
-                phase_timings["    Overcast rendering (CPU)"] = 0.0
-
-                # Create a dummy future that returns immediately
-                executor = ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(lambda: None)
-            else:
-                # Some files missing - proceed with rendering
-                missing = [f for f in expected_files if not f.exists()]
-                print(f"\n{'='*80}")
-                print(f"OVERCAST RENDERING REQUIRED")
-                print(f"{'='*80}")
-                print(f"Missing {len(missing)} of {len(expected_files)} overcast HDR files")
-                print(f"{'='*80}\n")
-
-                utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=config.WORKERS["rpict_overture"])
-                phase_timings["    Ambient file warming (overture)"] = time.time() - phase_start
-
-                phase_start = time.time()
-                executor = ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(
-                    utils.execute_new_radiance_commands,
-                    self.rpict_daylight_med_qual_commands,
-                    number_of_workers=config.WORKERS["rpict_medium_quality"])
-
-        # --- Phase 2: Synthesize octree files for all sky-view combinations ---
+        # --- Phase 3: Synthesize octree files for all sky-view combinations ---
         # Prepare temporary octree structures for comprehensive solar condition analysis
-        phase_start = time.time()
-        utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
-        utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=config.WORKERS["oconv_compile"])
-        utils.delete_files(self.temp_octree_with_sky_paths)
-        phase_timings["    Sunny sky octrees"] = time.time() - phase_start
+        with PhaseTimer(phase_timings, "    Sunny sky octrees"):
+            utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
+            utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=config.WORKERS["oconv_compile"])
+            utils.delete_files(self.temp_octree_with_sky_paths)
 
-        # --- Phase 3: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
-        phase_start = time.time()
-        utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
-        phase_timings["    Sunlight rendering"] = time.time() - phase_start
+        # --- Phase 4: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
+        with PhaseTimer(phase_timings, "    Sunlight rendering"):
+            utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
 
         # Wait for GPU/CPU overcast rendering to complete before combining
-        gpu_wait_start = time.time()
-        future.result()  # Ensure overcast rendering is complete before combining
-        if render_mode == 'gpu':
-            phase_timings["    GPU rendering (total)"] = time.time() - gpu_wait_start
-        else:
-            phase_start = time.time()
-            phase_timings["    Indirect diffuse rendering"] = time.time() - phase_start
+        phase_name = "    GPU rendering (total)" if self.render_mode == 'gpu' else "    Indirect diffuse rendering"
+        with PhaseTimer(phase_timings, phase_name):
+            future.result()  # Ensure overcast rendering is complete before combining
 
-        phase_start = time.time()
-        utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
-        phase_timings["    HDR combination & TIFF conversion"] = time.time() - phase_start
+        with PhaseTimer(phase_timings, "    HDR combination & TIFF conversion"):
+            utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
 
-        print("Rendering sequence completed successfully.")
+        # --- Phase 5: Convert TIFF files to PNG format ---
+        with PhaseTimer(phase_timings, "    TIFF to PNG conversion"):
+            self._convert_tiff_to_png()
+
+        print("RenderingPipelines completed successfully.")
         return phase_timings
-    
+
     def _generate_overcast_sky_rendering_commands(self, aa: float=0.1, ab: int=1, ad: int=4096, ar: int=1024, as_val: int=1024, dj: float=0.7, lr: int=12, lw: float=0.002, pj: int=1, ps: int=4, pt: float=0.05) -> tuple[str, list[str], list[str]]:
         """
         Generates oconv, rpict warming run and rpict medium quality run for overcast sky view_file combinations.
@@ -481,3 +335,99 @@ class RenderingPipelines:
         )
 
         return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_ra_tiff_commands
+ 
+    def _render_overcast_gpu(self, octree_base_name: str, overcast_sky_name: str, gpu_quality: str) -> tuple:
+        """Handle GPU-based overcast rendering with file checking. Returns (executor, future)."""
+        octree_name = f"{octree_base_name}_{overcast_sky_name}"
+        expected_files = self._get_expected_overcast_files(octree_base_name, overcast_sky_name)
+
+        if self._check_and_report_existing_files(expected_files):
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(lambda: None)
+        else:
+            executor, future = self._launch_gpu_rendering(octree_name, gpu_quality, octree_base_name, overcast_sky_name)
+
+        return executor, future
+
+    def _get_expected_overcast_files(self, octree_base_name: str, overcast_sky_name: str) -> List[Path]:
+            """Generate list of expected overcast HDR output files."""
+            return [self.image_dir / f"{octree_base_name}_{Path(vf).stem}__{overcast_sky_name}.hdr" for vf in self.view_files]
+
+    def _check_and_report_existing_files(self, expected_files: List[Path]) -> bool:
+        """Check if files exist and print status. Returns True if all exist."""
+        all_exist = all(f.exists() for f in expected_files)
+
+        if all_exist:
+            file_list = '\n'.join(f"  {f.name}" for f in expected_files[:3])
+            extra = f"\n  ... and {len(expected_files) - 3} more" if len(expected_files) > 3 else ""
+            print(f"\n{'='*80}\nSKIPPING OVERCAST RENDERING - Files Already Exist\n"
+                  f"Found all {len(expected_files)} existing overcast HDR files:\n{file_list}{extra}\n{'='*80}\n")
+        else:
+            missing = [f for f in expected_files if not f.exists()]
+            print(f"\n{'='*80}\nOVERCAST RENDERING REQUIRED\n"
+                  f"Missing {len(missing)} of {len(expected_files)} overcast HDR files\n{'='*80}\n")
+
+        return all_exist
+
+    def _launch_gpu_rendering(self, octree_name: str, gpu_quality: str, octree_base_name: str, overcast_sky_name: str):
+        """Launch asynchronous GPU rendering via PowerShell/Accelerad."""
+        batch_command = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res}'
+        
+        project_root = os.getcwd()
+        env = os.environ.copy()
+        env['RAYPATH'] = config.RAYPATH
+
+        print(f"Launching GPU rendering in background): Quality={gpu_quality}, Resolution={self.x_res}")
+        gpu_process = subprocess.Popen(batch_command, shell=True, env=env, cwd=project_root)
+
+        def wait_for_gpu_completion():
+            """Wait for GPU process and verify outputs."""
+            print("\nWaiting for GPU rendering to complete...")
+            returncode = gpu_process.wait()
+            time.sleep(0.5)  # Ensure file writes are flushed
+
+            if returncode != 0:
+                print(f"\nWarning: GPU rendering exited with code {returncode}")
+                raise RuntimeError(f"GPU rendering failed with exit code {returncode}")
+
+            print("\nGPU rendering completed successfully")
+
+            # Verify expected output files exist
+            expected_files = self._get_expected_overcast_files(octree_base_name, overcast_sky_name)
+            missing = [f for f in expected_files if not f.exists()]
+            if missing:
+                print(f"\nWarning: {len(missing)} expected HDR files not found:")
+                for f in missing[:5]:
+                    print(f"  - {f.name}")
+            else:
+                print(f"Verified: All {len(expected_files)} HDR files created")
+
+            return returncode
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        return executor, executor.submit(wait_for_gpu_completion)
+
+    def _render_overcast_cpu(self, octree_base_name: str, overcast_sky_name: str) -> tuple:
+        """Handle CPU-based overcast rendering with file checking. Returns (executor, future)."""
+        expected_files = self._get_expected_overcast_files(octree_base_name, overcast_sky_name)
+
+        if self._check_and_report_existing_files(expected_files):
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(lambda: None)
+        else:
+            utils.execute_new_radiance_commands(self.rpict_daylight_overture_commands, number_of_workers=config.WORKERS["rpict_overture"])
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(
+                utils.execute_new_radiance_commands,
+                self.rpict_daylight_med_qual_commands,
+                number_of_workers=config.WORKERS["rpict_medium_quality"])
+
+        return executor, future
+
+    def _convert_tiff_to_png(self) -> None:
+        """Convert all TIFF files in image directory to PNG format."""
+        tiff_files = list(self.image_dir.glob('*.tiff')) + list(self.image_dir.glob('*.tif'))
+        for tiff_path in tiff_files:
+            Image.open(tiff_path).save(tiff_path.with_suffix('.png'), format='PNG', optimize=True)
+        if tiff_files:
+            print(f"Converted {len(tiff_files)} TIFF files to PNG")

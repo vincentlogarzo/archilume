@@ -1,6 +1,6 @@
 """
-Archilume Example: Winter Solstice Sunlight Exposure Analysis
-==========================================================================================================
+Archilume Example: Sunlight Exposure Analysis
+======================================================================================================
 
 This example demonstrates a complete sunlight analysis workflow using Archilume
 to evaluate daylight conditions during the winter solstice (June 21st in the
@@ -13,10 +13,10 @@ The analysis workflow includes:
 4. Executing the sunlight rendering pipeline for all time steps and views
 5. Post-processing rendered HDR images to final compliance results.
 
-Location: Melbourne, Australia (latitude: -37.8136°)
-Date: June 21, 2024 (Winter Solstice)
-Analysis Period: 9:00 AM - 3:00 PM at 10-minute intervals
-Output: HDR images, view files, sky files, and coordinate mappings
+Location:           Melbourne, Australia (latitude: -37.8136°)
+Date:               June 21, 2024 (Winter Solstice)
+Analysis Period:    9:00 AM - 3:00 PM at 10-minute intervals
+Output:             HDR images, view files, sky files, and coordinate mappings
 """
 
 # fmt: off
@@ -32,6 +32,7 @@ from archilume import (
     Hdr2Wpd,
     smart_cleanup,
     utils,
+    PhaseTimer,
     config
 )
 
@@ -39,203 +40,257 @@ from archilume import (
 
 # Third-party imports
 
-def main():
-    # Start runtime tracking
-    timekeeper = utils.Timekeeper()
+def sunlight_access_workflow():
 
+    timer = PhaseTimer()
 
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nARCHILUME - Winter Solstice Sunlight Exposure Analysis\n{'=' * 100}")
-    # ====================================================================================================
-
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 0: Input 3D Scene Files and Rendering Parameters...\n{'=' * 100}")
-    # ====================================================================================================
-
-    inputs = config.InputValidator(
-        # ------------------------------------------------------------------------------------------------
-        # FIXED INPUTS (Rarely changed)
-        # ------------------------------------------------------------------------------------------------
-        project_latitude            = -37.8134564,  # Building latitude to 4 decimal places
-        month                       = 6,            # June
-        day                         = 21,           # Winter solstice
-        start_hour                  = 9,            # Analysis start: 9:00 AM
-        end_hour                    = 15,           # Analysis end: 3:00 PM
-        ffl_offset                  = 1.0,          # Camera height above finished floor level (meters)        
-        room_boundaries_csv         = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
-        obj_paths = 
-            [config.INPUTS_DIR / f for f in [
-                    "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
-                    "87cowles_site.obj"             # Site context
-                        ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
-        # ------------------------------------------------------------------------------------------------
-        # RENDERING SETTINGS (Modify per simulation run - balance quality vs speed)
-        # ------------------------------------------------------------------------------------------------
-        timestep                    = 15,            # Time interval in minutes (recommended >= 5 min) 
-        image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
-        rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
-        rendering_quality           = "med",       # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
-    )
-
-    smart_cleanup(
-        timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-        resolution_changed          = False,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-        rendering_mode_changed      = False,  # Set TRUE if switched cpu ↔ gpu
-        rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
-    )
-
-
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 1: Establishing 3D Scene...\n{'=' * 100}")
-    # ====================================================================================================
-    octree_generator = Objs2Octree(inputs.obj_paths)
-    octree_generator.create_skyless_octree_for_analysis()
-    timekeeper("Phase 1: 3D Scene")
-
-
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 2: Generate Sky Conditions for Analysis...\n{'=' * 100}")
-    # ====================================================================================================
-    sky_generator = SkyGenerator(lat=inputs.project_latitude)
-    sky_generator.generate_TenK_cie_overcast_skyfile()
-    sky_generator.generate_sunny_sky_series(
-        month                       = inputs.month,
-        day                         = inputs.day,
-        start_hour_24hr_format      = inputs.start_hour,
-        end_hour_24hr_format        = inputs.end_hour,
-        minute_increment            = inputs.timestep
+    with timer("Phase 0: Input 3D Scene Files and Rendering Parameters...", print_header=True):
+        inputs = config.InputValidator(
+            project_latitude            = -37.8134564,  # Building latitude to 4 decimal places
+            month                       = 6,            # June
+            day                         = 21,           # Winter solstice
+            start_hour                  = 9,            # Analysis start: 9:00 AM
+            end_hour                    = 15,           # Analysis end: 3:00 PM
+            ffl_offset                  = 1.0,          # Camera height above finished floor level (meters)        
+            room_boundaries_csv         = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
+            obj_paths = 
+                [config.INPUTS_DIR / f for f in [
+                        "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
+                        "87cowles_site.obj"             # Site context
+                            ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
+            timestep                    = 15,            # Time interval in minutes (recommended >= 5 min) 
+            image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
+            rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
+            rendering_quality           = "med",       # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
         )
-    timekeeper("Phase 2: Sky Conditions")
 
-
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 3: Prepare Camera Views...\n{'=' * 100}")
-    # ====================================================================================================
-    view_generator = ViewGenerator(
-        room_boundaries_csv_path    = inputs.room_boundaries_csv,
-        ffl_offset                  = inputs.ffl_offset
+        smart_cleanup(
+            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+            resolution_changed          = False,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+            rendering_mode_changed      = False,  # Set TRUE if switched cpu ↔ gpu
+            rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
-    view_generator.create_plan_view_files()
-    timekeeper("Phase 3: Camera Views")
+
+    with timer("Phase 1: Establishing 3D Scene...", print_header=True):
+        octree_generator = Objs2Octree(inputs.obj_paths)
+        octree_generator.create_skyless_octree_for_analysis()
+
+    with timer("Phase 2: Generate Sky Conditions for Analysis...", print_header=True):
+        sky_generator = SkyGenerator(lat=inputs.project_latitude)
+        sky_generator.generate_TenK_cie_overcast_skyfile()
+        sky_generator.generate_sunny_sky_series(
+            month                       = inputs.month,
+            day                         = inputs.day,
+            start_hour_24hr_format      = inputs.start_hour,
+            end_hour_24hr_format        = inputs.end_hour,
+            minute_increment            = inputs.timestep
+            )
+
+    with timer("Phase 3: Prepare Camera Views...", print_header=True):
+        view_generator = ViewGenerator(
+            room_boundaries_csv_path    = inputs.room_boundaries_csv,
+            ffl_offset                  = inputs.ffl_offset
+            )
+        view_generator.create_plan_view_files()
+
+    with timer("Phase 4: Executing Rendering Pipeline...", print_header=True):
+        renderer = RenderingPipelines(
+            skyless_octree_path         = octree_generator.skyless_octree_path,
+            overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
+            x_res                       = inputs.image_resolution,
+            y_res                       = inputs.image_resolution,
+            render_mode                 = inputs.rendering_mode,
+            gpu_quality                 = inputs.rendering_quality
+            )
+        rendering_phase_timings = renderer.sunlight_rendering_pipeline()
+        timer.update(rendering_phase_timings)
+
+    with timer("Phase 5: Post-Process Stamping of Results...", print_header=True):
+        with timer("  5a: Generate AOI files...", print_header=True):
+            coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
+            view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
+
+        with timer("  5b: Generate Sunlit WPD and send to .xlsx...", print_header=True):
+            converter = Hdr2Wpd(
+                pixel_to_world_map          = coordinate_map_path
+                )
+            converter.sunlight_sequence_wpd_extraction()
+
+        with timer("  5c: Stamp images with results and combine into .apng...", print_header=True):
+            tiff_annotator = Tiff2Animation(
+                skyless_octree_path         = octree_generator.skyless_octree_path,
+                overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
+                x_res                       = renderer.x_res,
+                y_res                       = renderer.y_res,
+                latitude                    = inputs.project_latitude,
+                ffl_offset                  = inputs.ffl_offset,
+                animation_format            = "apng"  # Options: "gif" or "apng"
+                )
+            tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
 
 
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 4: Executing Rendering Pipeline...\n{'=' * 100}")
-    # ====================================================================================================
-    renderer = RenderingPipelines(
-        skyless_octree_path         = octree_generator.skyless_octree_path,
-        overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
-        x_res                       = inputs.image_resolution,
-        y_res                       = inputs.image_resolution
-        )
-    rendering_phase_timings = renderer.sunlight_rendering_pipeline(
-        render_mode                 = inputs.rendering_mode,
-        gpu_quality                 = inputs.rendering_quality
-        )
-    timekeeper.phase_timings.update(rendering_phase_timings)
-    timekeeper("Phase 4: Rendering")
+    with timer("Phase 6: Package Final Results and Simulation Summary...", print_header=True):
+        """TODO: create .zip for issue"""
 
 
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 5: Post-Process Stamping of Results...\n{'=' * 100}")
-    # ====================================================================================================
-
-        # ------------------------------------------------------------------------------------------------
-        # Phase 5a: Generate Area of Interest (AOI) files
-        # ------------------------------------------------------------------------------------------------
-    coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
-    view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
-    timekeeper("  5a: Generate AOI")
-
-        # ------------------------------------------------------------------------------------------------
-        # Phase 5b: Generate Working plane data (WPD) for sunlit areas and send results to .xlsx
-        # ------------------------------------------------------------------------------------------------
-    converter = Hdr2Wpd(
-        pixel_to_world_map          = coordinate_map_path
-        )
-    converter.sunlight_sequence_wpd_extraction()
-    timekeeper("  5b: Generate WPD")
-
-        # ------------------------------------------------------------------------------------------------
-        # Phase 5c: Stamp images with results and combine into .gifs
-        # ------------------------------------------------------------------------------------------------
-    tiff_annotator = Tiff2Animation(
-        skyless_octree_path         = octree_generator.skyless_octree_path,
-        overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
-        x_res                       = renderer.x_res,
-        y_res                       = renderer.y_res,
-        latitude                    = inputs.project_latitude,
-        ffl_offset                  = inputs.ffl_offset,
-        animation_format            = "apng"  # Options: "gif" or "apng"
-        )
-    tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
-    timekeeper("  5c: Stamp Images")
-    timekeeper("Phase 5: Post-Processing")
-
-
-
-    # ====================================================================================================
-    print(f"\n{'=' * 100}\nPhase 6: Package Final Results and Simulation Summary...\n{'=' * 100}")
-    # ====================================================================================================
-
-    timekeeper.print_report(output_dir=config.OUTPUTS_DIR)
+    timer.print_report(output_dir=config.OUTPUTS_DIR)
 
     return True
 
 
 if __name__ == "__main__":
-    main()
+    sunlight_access_workflow()
 
-# TODO: integrate wpd2report in substitue of the current excel file generation in the hdr2wpd class. 
-# TODO: implement move smar_cleanup function into the input validator. As it validates each input, it will check the previously . cache simulation parameters, and the files in the outputs dir. for each input change an action must occur.
-# TODO: Image_processor.nsw_adg_sunlight_access_results_pipeline() -> 
-    # add implementation to stamp these tiffs with the .wpd results using a very simple matplotlib
-        # Calculate illumination metrics per spatial zone with regulatory threshold evaluation for nsw adg compliance
-    # chart overlay onto combined gifs. 
-    # automate the image exposure adjustment based on hdr sampling of points illuminance max values to min value. 
-# TODO: there is no compatibility for input files that have spaces in them. This would mean throughout the code that strings would need to be implemented to prevent a crash if this occured.
-# TODO option to autogenerate room boundaries if user specified Y or N to Do You have room_boundaries_csv?
-# TODO: include an option when seting up the grid point size with validation that a grid sparseness will not allow an rpict simulation to be value below 512 pixels. This it recommends moving to rtrace simulations. It should also allow options for a user to do floor plate rendering mode or room by room rendering mode based on the room boundaries. room-by-room will need to be constructed together into one image again on the output, with extneding boundaries of the image to be a bound box of the entire room. Where room boundaties are contained within another room bound exlucde this inner room boundaries from being simulated separately.
-# TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch can be used as a result of ambient file caching. Caching is more effective in CPU mode than GPU mode. 
+# ====================================================================================================
+# PRIORITY TODOs (Ordered by Implementation Priority)
+# ====================================================================================================
 
-# TODO: for cross machines compatibility, implement .ps1 files for all radiance commands. Specifically to address path issues and remove the need for the user to download external software. 
-# FIXME: room_boundaties csv from Rothe -> the room boundaries data may have duplicate room names, terraces for example my have UG02T and a second room boundary called UG02T, there needs to be some care or automation of separating these for post processing.
-# TODO: implement for accelerad_rpict.ps1 correct handling of large obj files, single precision values in accelerad simulation result in lower accuracy of output results, thus this needs tobe considered if running a daylight simulation. The model must also be close to the origin. If it is very far away, >100m, this will also introduce calculation erorr and thus low quality images that need not exist. 
+# --- HIGH PRIORITY: Core Workflow & Output Improvements ---
 
-# TODO: RenderingPipelines ->  allow user inputs of grid size in millimeters and then have this function back calculate a pixel y and pixel x value based on the room boundary extents and auto determine the x and y resolution to best fit the floor plate. give warning if resolution is greater than 2048 a stepped appraoch to results is needed 
+# TODO: Implement PNG conversion after TIFF generation for AI-compatible processing
+#       - Convert TIFF to PNG post-render
+#       - Integrate Google Nano Banana API for image enhancement
+#       - Retain original files with suffix: _raw.png, _clean.png, _stamped.png
+#       - Update .gitignore for API key storage best practices
 
-#TODO code is not equipped to handle vertical view positions in the file naming conventions. This feature would need to be added for future use and tested. Vertical view positions, would need to be named as such. Instead of plan, elevation_aoi_x_surfaceA.vp
-# TODO: setup .bat files to run radiance executables with radiance binaries that are not on path, with binaries that are in the radiance distribution.
-# TODO: RenderingPipelines -> find a way to turn on/off the indirect lighting calculation to speed up rendering times if model does not need visual validation.
-# TODO: Pre-processing of .obj is recommended for speed  after decimation in blender has occured depending on model use case
-# TODO:  ObjToOctree -> move the obj_paths input to be inside the create_skyless_octree_for_analysis function it should not be here.
-# TODO: investgate https://www.schorsch.com/en/download/rradout/ as an export solution
-# TODO: view_generator.create_aoi_files ->
-    # Develop interactive interface for dynamic AOI adjustment with persistence of aoi files into the aoi_modified dir.
-    # set maximum number of workers checks within classes to ensure this value cannot exceed available cores on the users machine.
-# TODO: Hdr2Wpd ->
-    # serious optimisation of the wpd extraction needs to occur. (look to nvmath-python to do the algenra matrix array operations in the GPU especially as larger images occur.
-    # ensure modified file are used when they exist.
-# TODO: package all key results into a single output directory for user convenience and zip this dir for easy sharing.
-# TODO: add custom parameters input into the gpu_quality, which should be albelelled rendering parameters that work for both these workflows if user does not want to use a preconfigured set of parameters. 
-# TODO: potentiall simpler implemntation of gpu rendering using os.system(".\archilume\accelerad_rpict.bat 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast fast 512 plan_ffl_90000") instead of the current in rendering_pipelines.py.
-# TODO: execute sky view and aoi generator while the initial octree is being compiled with oconv as it is a heavy process currently only utilising 1 core of the CPU.
-# TODO: see future implementation A in radiance_testpad.py to introduce optional falsecolour of the output images before stamping. See the command needed under this ection. 
-# FIXME: obj_paths variable -> currently only takes in OBJ files exported in meters. Future iteration should handle .obj file exported in millimeters to reduce user error
-# TODO: view_generator.create_aoi_files -> 
-    # move this generator upfront, it does not need a rendered hdr image to operate. This could be done upfonrt with the room boundaries data, in parallel with octree generation processes. 
-# TODO: RenderingPipelines ->  implement rtrace mulitprocess rendering pipeline to speed up costly indirect rendering images for those without a compatible cuda enabled GPU.
-    #invetigate section 3.3.2 of https://www.jaloxa.eu/resources/radiance/documentation/docs/radiance_cookbook.pdf for rtrace at 10K luc daylight factor simulations. 
-    # Investigate use of rtpict, newer versions of radiance arent meant to have resolved the issues of using this on windows. 
-# TODO: RenderingPipelines ->  Allow deletion of temp octrees immediately after oconv of the temp file occurs with the sky file. This will conserve storage for very large files. Thought this wont matter if the above rtrace is implement, as octree_skyless can be combined with each sky file in the rtrace call. These do not need to be precompiled into thier own octrees for rendering. 
-# TODO: view_generator.create_aoi_files -> 
-    # vertical plane generation based on failing apartment results is also allowable, generation of views basedon the aoi room boundaries would then be necessary and subsequent rendering pipeline for these vertical surfaces without offset. 
-# TODO: ViewGenerator -> for buildings with large podiums and smaller towers the view generator should dynamically determine that levels bounding box and use this as the input view parameters instead of generically applything the same view width and height for each level regardless. This will result in higher effieicny on the number of pixels to be rendered, especially when moving to rtrace implementation. it will also introduce a grwat amount of work to resize all aoi and room boundaries to be stamped. 
-# TODO: invesitgate cloud computing, specifically costs of G4 compute on https://docs.cloud.google.com/compute/docs/gpus/create-vm-with-gpus. $1.73 per hour of us 34 core CPU and 1 x cuda GPU NVIDIA 
-# TODO: create a scheduling system for overnight runs, multiple different models groups and perhpas even subsequent convergence runs on the same model groups. 
+# TODO: Replace Excel output with wpd2report module in Hdr2Wpd class
+#       - Generate comprehensive PDF/HTML reports instead of .xlsx files
+#       - Include regulatory compliance metrics for NSW ADG
+
+# TODO: Move smart_cleanup into InputValidator class
+#       - Automatically detect parameter changes by comparing cached values
+#       - Trigger appropriate cleanup actions based on what changed
+#       - Remove manual boolean flags from workflow
+
+# TODO: Implement Phase 6 - Package final results into deliverable
+#       - Create single output directory with all key results
+#       - Generate .zip archive for easy sharing
+#       - Include summary report and metadata
+
+# TODO: Stamp TIFF/PNG images with WPD results using matplotlib overlays
+#       - Display illumination metrics per spatial zone
+#       - Show NSW ADG compliance thresholds
+#       - Auto-adjust image exposure based on HDR luminance values (min/max sampling)
+
+# --- MEDIUM PRIORITY: Input Handling & Validation ---
+
+# FIXME: Add support for file paths with spaces
+#        - Quote all file paths in subprocess calls
+#        - Test with spaces in OBJ filenames and CSV paths
+
+# FIXME: Handle duplicate room names in CSV (e.g., multiple "UG02T" terraces)
+#        - Auto-append suffix (_1, _2) for duplicates
+#        - Or require unique identifiers in CSV export
+
+# FIXME: Support OBJ files exported in millimeters (currently meters-only)
+#        - Auto-detect unit scale from OBJ metadata or file size
+#        - Convert to meters if needed
+#        - Warn user if model origin is >100m from (0,0,0) - causes GPU precision errors
+
+# TODO: Add option to auto-generate room boundaries if CSV missing
+#        - Prompt user: "Room boundaries CSV not found. Auto-generate? (Y/N)"
+#        - Use floor plan image or 3D model to extract boundaries
+
+# --- MEDIUM PRIORITY: Rendering Pipeline Optimizations ---
+
+# TODO: RenderingPipelines - Support grid size input in millimeters
+#       - Auto-calculate pixel resolution (x_res, y_res) from:
+#         * Room boundary extents
+#         * Desired grid spacing (mm)
+#       - Warn if resolution > 2048 pixels (suggest stepped approach with ambient caching)
+#       - Note: Ambient caching more effective in CPU mode than GPU mode
+#       - Offer floor-plate vs. room-by-room rendering modes
+
+# TODO: RenderingPipelines - Implement rtrace multiprocess rendering for CPU-only systems
+#       - Replace rpict with rtrace for indirect lighting calculations
+#       - Reference: Radiance Cookbook §3.3.2 for 10K lux daylight factor simulations
+#       - Investigate rtpict (newer Radiance versions may have fixed Windows issues)
+#       - Allow deletion of temp octrees after sky combination (save storage)
+
+# TODO: RenderingPipelines - Add toggle for indirect lighting calculation
+#       - Skip indirect bounce if visual validation not needed
+#       - Speeds up rendering for compliance-only runs
+
+# TODO: RenderingPipelines - Explore simplified GPU rendering using direct batch calls
+#       - Example: os.system("accelerad_rpict.bat <args>") instead of Python subprocess
+#       - May reduce overhead for large batch renders
+
+# TODO: Add custom rendering parameter input (alternative to presets)
+#       - Allow user-defined parameters instead of "fast", "med", "high" presets
+#       - Unified parameter system for both CPU and GPU modes
+
+# --- MEDIUM PRIORITY: View Generation & AOI ---
+
+# TODO: ViewGenerator - Move AOI file generation earlier in pipeline
+#       - AOI files don't require rendered images - only room boundaries
+#       - Run in parallel with octree generation to save time
+
+# TODO: ViewGenerator - Dynamic view bounds for podium/tower buildings
+#       - Auto-detect bounding box per level instead of uniform view size
+#       - Improves pixel efficiency for rtrace implementation
+#       - Requires resizing AOI/room boundaries for stamping
+
+# TODO: ViewGenerator - Support vertical view positions for elevation analysis
+#       - Add naming convention: elevation_aoi_x_surfaceA.vp (not just plan views)
+#       - Test and validate vertical plane rendering
+
+# TODO: ViewGenerator - Add vertical plane generation for failing units
+#       - Generate elevation views based on room boundaries
+#       - Render vertical surfaces without FFL offset for facade analysis
+
+# TODO: ViewGenerator - Interactive AOI adjustment interface
+#       - Allow manual AOI boundary tweaks with persistence
+#       - Save modified AOI files to aoi_modified/ directory
+
+# TODO: ViewGenerator - Add worker limit validation
+#       - Check CPU core count before spawning parallel workers
+#       - Cap max workers to prevent system overload
+
+# --- LOW PRIORITY: Performance & Scalability ---
+
+# TODO: Hdr2Wpd - Optimize WPD extraction for large images
+#       - Use nvmath-python for GPU-accelerated matrix operations
+#       - Ensure modified AOI files are used when they exist
+
+# TODO: Execute sky/view generation in parallel with octree compilation
+#       - oconv is single-threaded and CPU-heavy
+#       - Run sky_generator and view_generator concurrently
+
+# TODO: Pre-process OBJ files with Blender decimation for faster rendering
+#       - Reduce polygon count for context buildings
+#       - Keep assessed building at higher detail
+
+# TODO: Add optional false-color visualization before stamping
+#       - Reference: radiance_testpad.py implementation A
+#       - Useful for visual QA of illuminance distribution
+
+# TODO: Implement logging system to replace print statements
+#       - Use Python logging module for better control
+#       - Simplify terminal output for cleaner user experience
+#       - Log detailed debug info to file
+
+# --- LOW PRIORITY: Cross-Platform & Deployment ---
+
+# TODO: Create .ps1/.bat wrapper scripts for Radiance executables
+#       - Bundle Radiance binaries with package (no external install needed)
+#       - Handle PATH issues across different machines
+#       - Specific fix for accelerad_rpict.ps1 large file handling
+
+# TODO: Investigate alternative export solutions
+#       - Evaluate: https://www.schorsch.com/en/download/rradout/
+#       - May simplify OBJ/material export from modeling tools
+
+# TODO: Cloud computing cost analysis for batch rendering
+#       - Google Cloud G4: ~$1.73/hr (34-core CPU + NVIDIA GPU)
+#       - Evaluate for overnight batch runs on multiple projects
+
+# TODO: Implement job scheduling system for overnight rendering
+#       - Queue multiple model groups
+#       - Support convergence runs on same model
+#       - Email notification on completion
+
+# --- REFACTORING & CODE CLEANUP ---
+
+# TODO: Objs2Octree - Move obj_paths parameter into create_skyless_octree_for_analysis()
+#       - obj_paths shouldn't be instance variable
+#       - Pass directly to method for clearer interface 

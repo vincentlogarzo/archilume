@@ -30,18 +30,163 @@ BACKGROUND_COLOR = [0.1, 0.1, 0.1]  # Dark background
 
 
 class Timekeeper:
-    """Track phase timing for analysis pipelines."""
+    """Track phase timing for analysis pipelines with context manager support."""
 
     def __init__(self):
         self.phase_timings = {}
         self.phase_start = None
         self.script_start_time = time.time()
+        self._current_phase_name = None
+        self._current_print_header = False
 
-    def __call__(self, phase_name):
-        """Track phase timing and reset timer for next phase."""
+    def __call__(self, phase_name: str, print_header: bool = False):
+        """
+        Use as context manager or legacy timing tracker.
+
+        Usage:
+            # As context manager:
+            with timekeeper("Phase 1: Description", print_header=True):
+                # work here
+
+            # Legacy mode (for backward compatibility):
+            timekeeper("Phase 1: Description")
+        """
+        # Check if being used as context manager
+        self._current_phase_name = phase_name
+        self._current_print_header = print_header
+
+        # Legacy behavior: track phase timing and reset timer
         if self.phase_start is not None:
+            # This handles the old-style usage
             self.phase_timings[phase_name] = time.time() - self.phase_start
         self.phase_start = time.time()
+
+        # Return self to enable context manager usage
+        return self
+
+    def __enter__(self):
+        """Enter context manager."""
+        if self._current_print_header:
+            print(f"\n{'=' * 100}\n{self._current_phase_name}\n{'=' * 100}")
+        self.phase_start = time.time()
+        return self
+
+    def __exit__(self, *args):
+        """Exit context manager and record timing."""
+        self.phase_timings[self._current_phase_name] = time.time() - self.phase_start
+        self._current_phase_name = None
+        self._current_print_header = False
+
+    def print_report(
+        self,
+        output_dir: Optional[Path] = None,
+        main_phases: Optional[list] = None,
+        rendering_subphases: Optional[list] = None,
+        postprocessing_subphases: Optional[list] = None
+    ) -> None:
+        """
+        Print a formatted timing report for analysis pipeline execution.
+
+        Args:
+            output_dir: Optional path to output directory to display at end of report
+            main_phases: Optional list of main phase names in display order
+            rendering_subphases: Optional list of rendering sub-phase names
+            postprocessing_subphases: Optional list of post-processing sub-phase names
+        """
+        total_runtime = time.time() - self.script_start_time
+
+        # Default phase ordering if not provided
+        if main_phases is None:
+            main_phases = ["Phase 1: 3D Scene", "Phase 2: Sky Conditions",
+                          "Phase 3: Camera Views", "Phase 4: Rendering",
+                          "Phase 5: Post-Processing"]
+
+        if rendering_subphases is None:
+            rendering_subphases = ["    Command preparation", "    Overcast octree creation",
+                                  "    Ambient file warming (overture)", "    Indirect diffuse rendering",
+                                  "    Sunny sky octrees", "    Sunlight rendering",
+                                  "    HDR combination & TIFF conversion"]
+
+        if postprocessing_subphases is None:
+            postprocessing_subphases = ["  5a: Generate AOI", "  5b: Generate WPD", "  5c: Stamp Images"]
+
+        print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 +
+              "\n\nExecution Time Summary:\n" + "-" * 80)
+
+        # Print in organized order
+        for phase_name in main_phases:
+            if phase_name in self.phase_timings:
+                duration = self.phase_timings[phase_name]
+                percentage = (duration / total_runtime) * 100
+                print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+                # Print sub-phases after Phase 4
+                if phase_name == "Phase 4: Rendering":
+                    for subphase in rendering_subphases:
+                        if subphase in self.phase_timings:
+                            duration = self.phase_timings[subphase]
+                            percentage = (duration / total_runtime) * 100
+                            print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+                # Print sub-phases after Phase 5
+                elif phase_name == "Phase 5: Post-Processing":
+                    for subphase in postprocessing_subphases:
+                        if subphase in self.phase_timings:
+                            duration = self.phase_timings[subphase]
+                            percentage = (duration / total_runtime) * 100
+                            print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+
+        print("-" * 80 + f"\n{'Total Runtime':<45} {total_runtime:>8.2f}s  ({total_runtime/60:>5.1f} min)")
+
+        if output_dir:
+            print("=" * 80 + f"\n\nOutput directory: {output_dir}\n" + "=" * 80)
+        else:
+            print("=" * 80)
+
+
+class PhaseTimer:
+    """
+    Self-contained phase timing manager with context manager support and reporting.
+
+    Usage:
+        # Initialize once at start of script
+        timer = PhaseTimer()
+
+        # Use as context manager for each phase
+        with timer("Phase 1: Description...", print_header=True):
+            # work here
+
+        # Print final report
+        timer.print_report(output_dir=some_path)
+    """
+    def __init__(self):
+        self.phase_timings = {}
+        self.script_start_time = time.time()
+        self._current_phase_name = None
+        self._current_print_header = False
+
+    def __call__(self, phase_name: str, print_header: bool = False):
+        """Prepare for use as context manager."""
+        self._current_phase_name = phase_name
+        self._current_print_header = print_header
+        return self
+
+    def __enter__(self):
+        """Enter context manager and optionally print header."""
+        if self._current_print_header:
+            print(f"\n{'=' * 100}\n{self._current_phase_name}\n{'=' * 100}")
+        self.start = time.time()
+        return self
+
+    def __exit__(self, *args):
+        """Exit context manager and record timing."""
+        self.phase_timings[self._current_phase_name] = time.time() - self.start
+        self._current_phase_name = None
+        self._current_print_header = False
+
+    def update(self, additional_timings: dict):
+        """Merge additional timings into phase_timings (e.g., from sub-pipelines)."""
+        self.phase_timings.update(additional_timings)
 
     def print_report(
         self,
