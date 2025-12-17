@@ -58,10 +58,10 @@ def sunlight_access_workflow():
                         "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
                         "87cowles_site.obj"             # Site context
                             ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
-            timestep                    = 15,            # Time interval in minutes (recommended >= 5 min) 
+            timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
             image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
             rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
-            rendering_quality           = "med",       # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
+            rendering_quality           = "med",        # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
         )
 
         smart_cleanup(
@@ -150,7 +150,7 @@ if __name__ == "__main__":
 # TODO: Implement PNG conversion after TIFF generation for AI-compatible processing
 #       - Convert TIFF to PNG post-render
 #       - Integrate Google Nano Banana API for image enhancement
-#       - Retain original files with suffix: _raw.png, _clean.png, _stamped.png
+#       - Retain original files with suffix: _clean.png, _stamped.png
 #       - Update .gitignore for API key storage best practices
 
 # TODO: Replace Excel output with wpd2report module in Hdr2Wpd class
@@ -170,7 +170,6 @@ if __name__ == "__main__":
 # TODO: Stamp TIFF/PNG images with WPD results using matplotlib overlays
 #       - Display illumination metrics per spatial zone
 #       - Show NSW ADG compliance thresholds
-#       - Auto-adjust image exposure based on HDR luminance values (min/max sampling)
 
 # --- MEDIUM PRIORITY: Input Handling & Validation ---
 
