@@ -140,11 +140,11 @@ class RenderingPipelines:
             >>> timings = renderer.sunlight_rendering_pipeline()
         """
 
-        phase_timings = {}
+        timer = PhaseTimer()
         print("\nRenderingPipelines getting started...\n")
 
         # --- Phase 0: Prepare commands ---
-        with PhaseTimer(phase_timings, "    Command preparation"):
+        with timer("    Command preparation"):
             # Generate overcast sky rendering commands
             (self.overcast_octree_command, self.rpict_daylight_overture_commands, self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
 
@@ -153,11 +153,11 @@ class RenderingPipelines:
 
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
-        with PhaseTimer(phase_timings, "    Overcast octree creation"):
+        with timer("    Overcast octree creation"):
             utils.execute_new_radiance_commands(self.overcast_octree_command, number_of_workers=config.WORKERS["overcast_octree"])
 
         # --- Phase 2: Render overcast sky conditions (GPU or CPU) ---
-        with PhaseTimer(phase_timings, f"    Overcast rendering ({self.render_mode.upper()})"):
+        with timer(f"    Overcast rendering ({self.render_mode.upper()})"):
             octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
             overcast_sky_name = self.overcast_sky_file_path.stem
 
@@ -168,29 +168,29 @@ class RenderingPipelines:
 
         # --- Phase 3: Synthesize octree files for all sky-view combinations ---
         # Prepare temporary octree structures for comprehensive solar condition analysis
-        with PhaseTimer(phase_timings, "    Sunny sky octrees"):
+        with timer("    Sunny sky octrees"):
             utils.copy_files(self.skyless_octree_path, self.temp_octree_with_sky_paths)
             utils.execute_new_radiance_commands(self.oconv_commands, number_of_workers=config.WORKERS["oconv_compile"])
             utils.delete_files(self.temp_octree_with_sky_paths)
 
         # --- Phase 4: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
-        with PhaseTimer(phase_timings, "    Sunlight rendering"):
+        with timer("    Sunlight rendering"):
             utils.execute_new_radiance_commands(self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
 
         # Wait for GPU/CPU overcast rendering to complete before combining
         phase_name = "    GPU rendering (total)" if self.render_mode == 'gpu' else "    Indirect diffuse rendering"
-        with PhaseTimer(phase_timings, phase_name):
+        with timer(phase_name):
             future.result()  # Ensure overcast rendering is complete before combining
 
-        with PhaseTimer(phase_timings, "    HDR combination & TIFF conversion"):
+        with timer("    HDR combination & TIFF conversion"):
             utils.execute_new_radiance_commands(self.pcomb_ra_tiff_commands, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
 
         # --- Phase 5: Convert TIFF files to PNG format ---
-        with PhaseTimer(phase_timings, "    TIFF to PNG conversion"):
+        with timer("    TIFF to PNG conversion"):
             self._convert_tiff_to_png()
 
         print("RenderingPipelines completed successfully.")
-        return phase_timings
+        return timer.phase_timings
 
     def _generate_overcast_sky_rendering_commands(self, aa: float=0.1, ab: int=1, ad: int=4096, ar: int=1024, as_val: int=1024, dj: float=0.7, lr: int=12, lw: float=0.002, pj: int=1, ps: int=4, pt: float=0.05) -> tuple[str, list[str], list[str]]:
         """
@@ -427,7 +427,24 @@ class RenderingPipelines:
     def _convert_tiff_to_png(self) -> None:
         """Convert all TIFF files in image directory to PNG format."""
         tiff_files = list(self.image_dir.glob('*.tiff')) + list(self.image_dir.glob('*.tif'))
+        converted_count = 0
+        skipped_count = 0
+
         for tiff_path in tiff_files:
-            Image.open(tiff_path).save(tiff_path.with_suffix('.png'), format='PNG', optimize=True)
-        if tiff_files:
-            print(f"Converted {len(tiff_files)} TIFF files to PNG")
+            try:
+                # Skip files that are too small (likely corrupted/empty TIFF headers)
+                if tiff_path.stat().st_size < 1000:  # Less than 1KB
+                    print(f"WARNING: Skipping corrupted/empty file: {tiff_path.name} ({tiff_path.stat().st_size} bytes)")
+                    skipped_count += 1
+                    continue
+
+                Image.open(tiff_path).save(tiff_path.with_suffix('.png'), format='PNG', optimize=True)
+                converted_count += 1
+            except Exception as e:
+                print(f"WARNING: Failed to convert {tiff_path.name}: {e}")
+                skipped_count += 1
+
+        if converted_count > 0:
+            print(f"Converted {converted_count} TIFF files to PNG")
+        if skipped_count > 0:
+            print(f"Skipped {skipped_count} corrupted or invalid files")

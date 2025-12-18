@@ -43,16 +43,20 @@ ACCELERAD_ROOT      = Path(os.getenv("ACCELERAD_ROOT", str(BUNDLED_ACCELERAD_ROO
 ACCELERAD_BIN_PATH  = ACCELERAD_ROOT / "bin"
 ACCELERAD_LIB_PATH  = ACCELERAD_ROOT / "lib"
 
-# Detect Radiance installation from environment variable or use default
+# Detect Radiance installation from environment variable or use platform-appropriate default
 # Users can set RADIANCE_ROOT env var to override default location
-RADIANCE_ROOT       = Path(os.getenv("RADIANCE_ROOT", r"C:/Radiance"))
+# Default to /usr/local/radiance on Linux/Mac, C:/Radiance on Windows
+_default_radiance = r"C:/Radiance" if sys.platform == "win32" else "/usr/local/radiance"
+RADIANCE_ROOT       = Path(os.getenv("RADIANCE_ROOT", _default_radiance))
 RADIANCE_BIN_PATH   = RADIANCE_ROOT / "bin"
 RADIANCE_LIB_PATH   = RADIANCE_ROOT / "lib"
 
 # RAYPATH environment variable for Radiance tools
 # Users can also set RAYPATH directly via environment to override
 # Use bundled Accelerad lib first, then fall back to system Radiance if available
-RAYPATH = os.getenv("RAYPATH", f"{ACCELERAD_LIB_PATH};{RADIANCE_LIB_PATH}")
+# Use semicolon separator on Windows, colon on Unix
+_path_sep = ";" if sys.platform == "win32" else ":"
+RAYPATH = os.getenv("RAYPATH", f"{ACCELERAD_LIB_PATH}{_path_sep}{RADIANCE_LIB_PATH}")
 
 # ============================================================================
 # PARALLEL EXECUTION SETTINGS
