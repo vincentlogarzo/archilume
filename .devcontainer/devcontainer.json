@@ -19,7 +19,7 @@
         "Anthropic.claude-code"
       ],
       "settings": {
-        "python.defaultInterpreterPath": "/usr/local/python/current/bin/python",
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
         "python.formatting.provider": "black",
         "editor.formatOnSave": true
       }
