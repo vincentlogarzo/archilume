@@ -27,7 +27,7 @@
   },
 
   "remoteEnv": {
-    "PATH": "${containerEnv:PATH}:/usr/local/radiance/bin:${containerEnv:HOME}/.cargo/bin",
+    "PATH": "${containerEnv:PATH}:/usr/local/radiance/bin:${containerEnv:HOME}/.local/bin",
     "RAYPATH": "/usr/local/radiance/lib",
     "UV_LINK_MODE": "copy"
   },

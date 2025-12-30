@@ -1,9 +1,0 @@
-Position:	${  px  }	${  py  }	${  pz  }
-Normal:		${  nx  }	${  ny  }	${  nz  }
-Uvector:	${  uvx }	${  uvy }	${  uvz }
-Lvl,Wt,UVrad:	${  lvl }	${  wt  }	${ urad }	${ vrad }
-Value:		${  red }	${  grn }	${  blu }
-Pos.Grad:	${  pgu }	${  pgv }
-Dir.Grad:	${  dgu }	${  dgv }
-Corral:         $(corral)
-

@@ -62,16 +62,18 @@ echo "🐍 Installing Python dependencies..."
 if ! command -v uv &> /dev/null; then
     echo "📥 Installing uv package manager..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
+
+    # uv installs to ~/.local/bin by default (not ~/.cargo/bin)
+    export PATH="$HOME/.local/bin:$PATH"
 
     # Add uv to PATH permanently
-    if ! grep -q ".cargo/bin" ~/.bashrc; then
-        echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+    if ! grep -q ".local/bin" ~/.bashrc; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
     fi
 fi
 
 # Ensure uv is in PATH for this session
-export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 
 # Verify uv installation
 echo "✅ Verifying uv installation..."
@@ -84,6 +86,7 @@ fi
 
 # Sync Python dependencies
 echo "📦 Syncing Python dependencies with uv..."
+cd "$WORKSPACE_PATH"
 uv sync --link-mode=copy
 
 # Verify Radiance installation
