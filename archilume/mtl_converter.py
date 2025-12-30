@@ -110,24 +110,27 @@ class MtlConverter:
 
         # Step 2: check each modifier against the mtl files, if not found, then append a default definition to the combined_mtl file. IF found, then determine the RGB and other modifier properties to create a new radiance material definition. 
 
+        materials_from_mtl = 0
+        default_materials = 0
+
         for modifier in self.rad_modifiers:
             material_found = False
-            
+
             # Search for modifier in all MTL files
             for mtl_path in self.mtl_paths:
                 if not os.path.exists(mtl_path):
                     continue
-                    
+
                 with open(mtl_path, 'r', encoding='utf-8') as f:
                     mtl_content = f.read()
                     # Use regex to find the material definition
                     pattern = rf'newmtl\s+{re.escape(modifier)}(.*?)(?=^newmtl|\Z)'
                     match = re.search(pattern, mtl_content, re.MULTILINE | re.DOTALL)
-                    
+
                     if match:
                         material_found = True
                         material_block = match.group(1)
-                        
+
                         # Extract Kd values (RGB diffuse color)
                         kd_values = DEFAULT_MATERIAL_KD
                         kd_match = re.search(r'Kd\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', material_block)
@@ -139,24 +142,27 @@ class MtlConverter:
                         d_match = re.search(r'^d\s+([\d.]+)', material_block, re.MULTILINE)
                         if d_match:
                             d_value = float(d_match.group(1))
-                    
+
                         if d_value < 1.0:
                             # It's a glass-like material
                             self.materials.append(rm.create_glass_material(f"{modifier}", kd_values))
                         else:
                             # It's a plastic-like material
                             self.materials.append(rm.create_plastic_material(f"{modifier}", kd_values))
-                        
-                        print(f"Created material for modifier '{modifier}' from MTL file")
+
+                        materials_from_mtl += 1
                         break  # Found the material, no need to check other MTL files
-                        
+
                         #TODO: further logic could be added here in the future to provide greater accuracy to material definitions, such as checking for specular highlights, roughness, metalness, etc.
-            
+
             # If no match found in any MTL file, create a default material
             if not material_found:
                 # Create a default gray plastic material for unmatched modifiers
                 self.materials.append(rm.create_plastic_material(f"{modifier}", DEFAULT_MATERIAL_KD))
-                print(f"Created default material for unmatched modifier '{modifier}'")
+                default_materials += 1
+
+        # Print summary
+        print(f"Created {materials_from_mtl} materials from MTL file" + (f" and {default_materials} default materials" if default_materials > 0 else ""))
 
         # Export to file (after processing all modifiers)
         rm.export_materials_to_file(self.materials, self.output_mtl_path)

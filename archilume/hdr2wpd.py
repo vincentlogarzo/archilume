@@ -366,27 +366,30 @@ class Hdr2Wpd:
         # Group AOI files by view, skipping existing .wpd files
         print("Grouping AOI files by associated view...")
         skipped_count = 0
+        warnings = []
 
         for aoi_file in aoi_files:
             # Check if .wpd file already exists
             wpd_file_path = self.wpd_dir / f"{aoi_file.stem}.wpd"
             if wpd_file_path.exists():
-                print(f"  Skipping {aoi_file.name} (already has .wpd file)")
                 skipped_count += 1
                 continue
 
             view_name = self._get_associated_view_file(aoi_file)
             if view_name:
                 groups[view_name]['aoi_files'].append(aoi_file)
-                print(f"  {aoi_file.name} -> {view_name}")
             else:
-                print(f"  Warning: Could not extract view file from {aoi_file.name}")
+                warnings.append(f"Could not extract view file from {aoi_file.name}")
 
-        if skipped_count > 0:
-            print(f"\nSkipped {skipped_count} AOI files that already have .wpd files")
+        # Print AOI grouping summary
+        total_grouped = sum(len(group['aoi_files']) for group in groups.values())
+        print(f"Grouped {total_grouped} AOI files across {len(groups)} views" +
+              (f" (skipped {skipped_count} with existing .wpd files)" if skipped_count > 0 else ""))
 
         # Match HDR files to groups
-        print("\nMatching HDR files to view groups...")
+        print("Matching HDR files to view groups...")
+        unmatched_hdrs = []
+
         for hdr_file in hdr_files:
             matched = False
             for view_name in groups.keys():
@@ -395,10 +398,27 @@ class Hdr2Wpd:
                     matched = True
                     break
 
-            if matched:
-                print(f"  {hdr_file.name} -> {view_name}")
-            else:
-                print(f"  Warning: {hdr_file.name} does not match any view group")
+            if not matched:
+                unmatched_hdrs.append(hdr_file.name)
+
+        # Print HDR matching summary
+        total_matched = sum(len(group['hdr_files']) for group in groups.values())
+        print(f"Matched {total_matched} HDR files to {len(groups)} view groups")
+
+        # Print warnings if any
+        if warnings:
+            print(f"\nWarnings ({len(warnings)}):")
+            for warning in warnings[:3]:  # Show first 3 warnings
+                print(f"  - {warning}")
+            if len(warnings) > 3:
+                print(f"  ... and {len(warnings) - 3} more")
+
+        if unmatched_hdrs:
+            print(f"\nUnmatched HDR files ({len(unmatched_hdrs)}):")
+            for hdr in unmatched_hdrs[:3]:  # Show first 3 unmatched
+                print(f"  - {hdr}")
+            if len(unmatched_hdrs) > 3:
+                print(f"  ... and {len(unmatched_hdrs) - 3} more")
 
         # Print summary
         print("\n" + "=" * 80 + "\nGROUPING SUMMARY\n" + "=" * 80)

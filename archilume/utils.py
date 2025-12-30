@@ -97,18 +97,37 @@ class Timekeeper:
 
         # Default phase ordering if not provided
         if main_phases is None:
-            main_phases = ["Phase 1: 3D Scene", "Phase 2: Sky Conditions",
-                          "Phase 3: Camera Views", "Phase 4: Rendering",
-                          "Phase 5: Post-Processing"]
+            main_phases = [
+                "Phase 0: Input 3D Scene Files and Rendering Parameters...",
+                "Phase 1: Establishing 3D Scene...",
+                "Phase 2: Generate Sky Conditions for Analysis...",
+                "Phase 3: Prepare Camera Views...",
+                "Phase 4: Executing Rendering Pipeline...",
+                "Phase 5: Post-Process Stamping of Results...",
+                "Phase 6: Package Final Results and Simulation Summary..."
+            ]
 
         if rendering_subphases is None:
-            rendering_subphases = ["    Command preparation", "    Overcast octree creation",
-                                  "    Ambient file warming (overture)", "    Indirect diffuse rendering",
-                                  "    Sunny sky octrees", "    Sunlight rendering",
-                                  "    HDR combination & TIFF conversion"]
+            rendering_subphases = [
+                "    Command preparation",
+                "    Overcast octree creation",
+                "    Overcast rendering (CPU)",
+                "    Overcast rendering (GPU)",
+                "    Ambient file warming (overture)",
+                "    Indirect diffuse rendering",
+                "    GPU rendering (total)",
+                "    Sunny sky octrees",
+                "    Sunlight rendering",
+                "    HDR combination & TIFF conversion",
+                "    TIFF to PNG conversion"
+            ]
 
         if postprocessing_subphases is None:
-            postprocessing_subphases = ["  5a: Generate AOI", "  5b: Generate WPD", "  5c: Stamp Images"]
+            postprocessing_subphases = [
+                "  5a: Generate AOI files...",
+                "  5b: Generate Sunlit WPD and send to .xlsx...",
+                "  5c: Stamp images with results and combine into .apng..."
+            ]
 
         print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 +
               "\n\nExecution Time Summary:\n" + "-" * 80)
@@ -121,7 +140,7 @@ class Timekeeper:
                 print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
 
                 # Print sub-phases after Phase 4
-                if phase_name == "Phase 4: Rendering":
+                if phase_name == "Phase 4: Executing Rendering Pipeline...":
                     for subphase in rendering_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]
@@ -129,7 +148,7 @@ class Timekeeper:
                             print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
 
                 # Print sub-phases after Phase 5
-                elif phase_name == "Phase 5: Post-Processing":
+                elif phase_name == "Phase 5: Post-Process Stamping of Results...":
                     for subphase in postprocessing_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]
@@ -208,18 +227,37 @@ class PhaseTimer:
 
         # Default phase ordering if not provided
         if main_phases is None:
-            main_phases = ["Phase 1: 3D Scene", "Phase 2: Sky Conditions",
-                          "Phase 3: Camera Views", "Phase 4: Rendering",
-                          "Phase 5: Post-Processing"]
+            main_phases = [
+                "Phase 0: Input 3D Scene Files and Rendering Parameters...",
+                "Phase 1: Establishing 3D Scene...",
+                "Phase 2: Generate Sky Conditions for Analysis...",
+                "Phase 3: Prepare Camera Views...",
+                "Phase 4: Executing Rendering Pipeline...",
+                "Phase 5: Post-Process Stamping of Results...",
+                "Phase 6: Package Final Results and Simulation Summary..."
+            ]
 
         if rendering_subphases is None:
-            rendering_subphases = ["    Command preparation", "    Overcast octree creation",
-                                  "    Ambient file warming (overture)", "    Indirect diffuse rendering",
-                                  "    Sunny sky octrees", "    Sunlight rendering",
-                                  "    HDR combination & TIFF conversion"]
+            rendering_subphases = [
+                "    Command preparation",
+                "    Overcast octree creation",
+                "    Overcast rendering (CPU)",
+                "    Overcast rendering (GPU)",
+                "    Ambient file warming (overture)",
+                "    Indirect diffuse rendering",
+                "    GPU rendering (total)",
+                "    Sunny sky octrees",
+                "    Sunlight rendering",
+                "    HDR combination & TIFF conversion",
+                "    TIFF to PNG conversion"
+            ]
 
         if postprocessing_subphases is None:
-            postprocessing_subphases = ["  5a: Generate AOI", "  5b: Generate WPD", "  5c: Stamp Images"]
+            postprocessing_subphases = [
+                "  5a: Generate AOI files...",
+                "  5b: Generate Sunlit WPD and send to .xlsx...",
+                "  5c: Stamp images with results and combine into .apng..."
+            ]
 
         print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 +
               "\n\nExecution Time Summary:\n" + "-" * 80)
@@ -232,7 +270,7 @@ class PhaseTimer:
                 print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
 
                 # Print sub-phases after Phase 4
-                if phase_name == "Phase 4: Rendering":
+                if phase_name == "Phase 4: Executing Rendering Pipeline...":
                     for subphase in rendering_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]
@@ -240,7 +278,7 @@ class PhaseTimer:
                             print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
 
                 # Print sub-phases after Phase 5
-                elif phase_name == "Phase 5: Post-Processing":
+                elif phase_name == "Phase 5: Post-Process Stamping of Results...":
                     for subphase in postprocessing_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]

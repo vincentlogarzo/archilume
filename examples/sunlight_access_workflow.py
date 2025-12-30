@@ -65,10 +65,10 @@ def sunlight_access_workflow():
         )
 
         smart_cleanup(
-            timestep_changed            = True,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-            resolution_changed          = True,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-            rendering_mode_changed      = True,  # Set TRUE if switched cpu ↔ gpu
-            rendering_quality_changed   = True   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+            resolution_changed          = False,   # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+            rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
+            rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
 
     with timer("Phase 1: Establishing 3D Scene...", print_header=True):
@@ -108,6 +108,8 @@ def sunlight_access_workflow():
     with timer("Phase 5: Post-Process Stamping of Results...", print_header=True):
         with timer("  5a: Generate AOI files...", print_header=True):
             coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
+            if coordinate_map_path is None:
+                raise RuntimeError("Failed to create pixel-to-world coordinate map")
             view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
         with timer("  5b: Generate Sunlit WPD and send to .xlsx...", print_header=True):

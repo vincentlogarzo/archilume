@@ -1,6 +1,12 @@
 __pycache__/
 *.egg-info/
 
+# Claude Code settings and credentials
+.claude/
+.env
+.env.local
+*.key
+
 # Ignore all content in these directories
 inputs/*
 outputs/*
