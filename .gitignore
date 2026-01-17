@@ -18,4 +18,3 @@ outputs/**/*
 !outputs/**/.gitkeep
 
 # Ignore test/scratch files
-examples/radiance_testpad.py
