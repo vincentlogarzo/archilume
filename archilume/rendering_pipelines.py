@@ -76,35 +76,23 @@ class RenderingPipelines:
     y_res: int
 
     # Optional fields with config defaults
-    skies_dir:                          Path = field(
-        default_factory=lambda: config.SKY_DIR)
-    views_dir:                          Path = field(
-        default_factory=lambda: config.VIEW_DIR)
-    render_mode:                        str = 'cpu'
-    gpu_quality:                        str = 'stand'
+    skies_dir:                          Path        = field(default_factory=lambda: config.SKY_DIR)
+    views_dir:                          Path        = field(default_factory=lambda: config.VIEW_DIR)
+    render_mode:                        str         = 'cpu'
+    gpu_quality:                        str         = 'stand'
 
     # Fields that will be populated after initialization
-    image_dir:                          Path = field(
-        init=False, default_factory=lambda: config.IMAGE_DIR)
-    sky_files:                          List[Path] = field(
-        default_factory=list, init=False)
-    view_files:                         List[Path] = field(
-        default_factory=list, init=False)
-    overcast_octree_command:            str = field(default=None, init=False)
-    rpict_daylight_overture_commands:   List[str] = field(
-        default_factory=list, init=False)
-    rpict_daylight_med_qual_commands:   List[str] = field(
-        default_factory=list, init=False)
-    temp_octree_with_sky_paths:         List[Path] = field(
-        default_factory=list, init=False)
-    oconv_commands:                     List[str] = field(
-        default_factory=list, init=False)
-    rpict_direct_sun_commands:          List[str] = field(
-        default_factory=list, init=False)
-    pcomb_commands:                     List[str] = field(
-        default_factory=list, init=False)
-    ra_tiff_commands:                   List[str] = field(
-        default_factory=list, init=False)
+    image_dir:                          Path        = field(init=False, default_factory=lambda: config.IMAGE_DIR)
+    sky_files:                          List[Path]  = field(default_factory=list, init=False)
+    view_files:                         List[Path]  = field(default_factory=list, init=False)
+    overcast_octree_command:            str | None  = field(default=None, init=False)
+    rpict_daylight_overture_commands:   List[str]   = field(default_factory=list, init=False)
+    rpict_daylight_med_qual_commands:   List[str]   = field(default_factory=list, init=False)
+    temp_octree_with_sky_paths:         List[Path]  = field(default_factory=list, init=False)
+    oconv_commands:                     List[str]   = field(default_factory=list, init=False)
+    rpict_direct_sun_commands:          List[str]   = field(default_factory=list, init=False)
+    pcomb_commands:                     List[str]   = field(default_factory=list, init=False)
+    ra_tiff_commands:                   List[str]   = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """
@@ -120,18 +108,15 @@ class RenderingPipelines:
 
         # Validate resolution values
         if self.x_res <= 0 or self.y_res <= 0:
-            raise ValueError(
-                f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
+            raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
 
         # Validate render_mode
         if self.render_mode not in (valid_modes := ['cpu', 'gpu']):
-            raise ValueError(
-                f"Invalid render_mode '{self.render_mode}'. Valid options: {', '.join(valid_modes)}")
+            raise ValueError(f"Invalid render_mode '{self.render_mode}'. Valid options: {', '.join(valid_modes)}")
 
         # Validate gpu_quality
         if self.gpu_quality.lower() not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
-            raise ValueError(
-                f"Invalid gpu_quality '{self.gpu_quality}'. Valid options: {', '.join(valid_quals)}")
+            raise ValueError(f"Invalid gpu_quality '{self.gpu_quality}'. Valid options: {', '.join(valid_quals)}")
 
         if not os.path.exists(self.image_dir):
             try:
@@ -254,10 +239,10 @@ class RenderingPipelines:
             pt (float, optional): Pixel threshold for rpict [low_qual=0.06, med_qual=0.05]. Defaults to 0.05.
 
         Returns:
-            Tuple[str, List[str], List[str]]: A 3-tuple containing:
+            tuple[str, list[str], list[str]]: A 3-tuple containing:
                 - overcast_octree_command (str): Command to combine octree with overcast sky file.
-                - rpict_low_qual_commands (List[str]): Commands for low quality rendering (512x512, ambient file warming).
-                - rpict_med_qual_commands (List[str]): Commands for medium quality rendering (using instance x_res/y_res).
+                - rpict_low_qual_commands (list[str]): Commands for low quality rendering (512x512, ambient file warming).
+                - rpict_med_qual_commands (list[str]): Commands for medium quality rendering (using instance x_res/y_res).
 
         Note:
             # example radiance command warming up the ambient file:
@@ -277,10 +262,8 @@ class RenderingPipelines:
 
         for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
 
-            ambient_file_path = self.image_dir / \
-                f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.amb"
-            output_hdr_path = self.image_dir / \
-                f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
+            ambient_file_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.amb"
+            output_hdr_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
             rpict_overture_command, rpict_med_qual_command = [
@@ -300,7 +283,7 @@ class RenderingPipelines:
 
         return overcast_octree_command, rpict_overture_commands, rpict_med_qual_commands
 
-    def _generate_sunny_sky_rendering_commands(self, ab: int = 0, ad: int = 128, ar: int = 64, as_val: int = 64, ps: int = 1, lw: float = 0.005) -> tuple[list[Path], list[str], list[str], list[str], list[str]]:
+    def _generate_sunny_sky_rendering_commands(self, ab: int = 0, ad: int = 128, ar: int = 64, as_val: int = 64, ps: int = 1, lw: float = 0.005) -> tuple[list[Path], list[str], list[str], list[str]]:
         """
         TODO: increase the generic use of this function to include all parameters as optional for rpict.
         Generates oconv, rpict, and ra_tiff commands for rendering combinations of octree, sky, and view files.
@@ -339,18 +322,13 @@ class RenderingPipelines:
 
             sky_file_name = Path(sky_file_path).stem
             view_file_name = Path(view_file_path).stem
-            octree_with_sky_path = self.skyless_octree_path.parent / \
-                f"{octree_base_name}_{sky_file_name}.oct"
-            output_hdr_path = self.image_dir / \
-                f"{octree_base_name}_{view_file_name}_{sky_file_name}.hdr"
-            output_hdr_path_combined = self.image_dir / \
-                f"{octree_base_name}_{view_file_name}_{sky_file_name}_combined.hdr"
-            overcast_hdr_path = self.image_dir / \
-                f"{octree_base_name}_{view_file_name}__TenK_cie_overcast.hdr"
+            octree_with_sky_path = self.skyless_octree_path.parent / f"{octree_base_name}_{sky_file_name}.oct"
+            output_hdr_path = self.image_dir / f"{octree_base_name}_{view_file_name}_{sky_file_name}.hdr"
+            output_hdr_path_combined = self.image_dir / f"{octree_base_name}_{view_file_name}_{sky_file_name}_combined.hdr"
+            overcast_hdr_path = self.image_dir / f"{octree_base_name}_{view_file_name}__TenK_cie_overcast.hdr"
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
-            temp_octree_with_sky_path = self.skyless_octree_path.parent / \
-                f'{octree_base_name}_{sky_file_name}_temp.oct'
+            temp_octree_with_sky_path = self.skyless_octree_path.parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
             oconv_command, rpict_command, pcomb_ra_tiff_command = [
                 rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}",
                 rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",

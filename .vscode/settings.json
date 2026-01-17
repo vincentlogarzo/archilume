@@ -1,5 +1,14 @@
 {
     "python.analysis.extraPaths": [
         "./archilume"
-    ]
+    ],
+    "editor.formatOnSave": false,
+    "editor.formatOnType": false,
+    "editor.formatOnPaste": false,
+    "[python]": {
+        "editor.formatOnSave": false,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "never"
+        }
+    }
 }
