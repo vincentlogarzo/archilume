@@ -13,3 +13,6 @@ outputs/**/*
 
 # Ignore test/scratch files
 examples/radiance_testpad.py
+
+# SSH configuration (contains private IP addresses and keys)
+.ssh/
