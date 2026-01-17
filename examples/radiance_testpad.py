@@ -39,13 +39,28 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     pcond -h outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast.hdr > outputs\images\87cowles_BLD_noWindows_with_site_plan_L02__TenK_cie_overcast_visual_human.hdr
 
 
-
-
 --- 3. ---
-# testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. 
-# TODO: rtpict does not appear to work support multiple processors. 
+# testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. rtpictwill only work on linux machine or connected to wsl in vs code in a dev container
     rtpict -n 2 -vf view.vp -af ambfile.amb octree_with_sky.oct > output_rtpict.hdr
-    rtpict -n 1 -vf outputs/view/plan_ffl_096590.vp outputs/octree/87Cowles_BLD_withWindows_with_site_TenK_cie_overcast.oct > outputs/image/test_rtpict.hdr
+    example with rpict:
+        rpict -t 5 -vf inputs/image10.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 inputs/image10.oct > outputs/image/image10.hdr
+    
+    rtpict -n 2 -vf inputs/image10.rdv inputs/image10.oct > outputs/image/image10.hdr
+    
+    fast quality test:
+        rtpict -n 14 -t 1 -vf inputs/image10.vp -x 1024 -y 1024 -ab 1 -ad 1024 -as 256 -aa 0.15 inputs/image10.oct > outputs/image/image10_preview.hdr
+
+    medium quality test:
+        rtpict -n 20 -t 1 -vf inputs/image10.vp -x 1024 -y 1024 -ab 2 -ad 512 -as 128 -ar 128 -aa 0.2  inputs/image10.oct > outputs/image/image10_medium.hdr
+    
+    high quality test:
+        rtpict -n 14 -t 1 -vf inputs/image10.vp -x 2048 -y 2048 -ab 3 -ad 4096 -as 1024 -ar 512 -aa 0.1 -lw 0.002 -lr 12 inputs/image10.oct > outputs/image/image10_high.hdr
+
+
+
+
+
+
     
 
 --- 4. ---

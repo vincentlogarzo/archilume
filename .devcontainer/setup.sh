@@ -12,9 +12,11 @@ sudo apt-get install -y libgl1 libgomp1 libglib2.0-0
 echo "🌟 Installing Radiance..."
 
 cd /tmp
-# Use local file instead of downloading
-unzip -q /workspaces/archilume/.devcontainer/radiance.zip
-tar -xzf radiance-*.tar.gz
+# Detect devcontainer workspace path (works for both Codespaces and local devcontainer)
+WORKSPACE_PATH="${CODESPACE_VSCODE_FOLDER:-/workspaces/archilume}"
+
+# Use bundled Radiance tarball from .devcontainer directory
+tar -xzf "$WORKSPACE_PATH/.devcontainer/Radiance_5085332d_Linux/radiance-6.1.5085332d6e-Linux.tar.gz"
 sudo cp -r radiance-*/usr/local/radiance /usr/local/
 sudo chmod -R 755 /usr/local/radiance
 rm -rf radiance-*
@@ -60,16 +62,18 @@ echo "🐍 Installing Python dependencies..."
 if ! command -v uv &> /dev/null; then
     echo "📥 Installing uv package manager..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
+
+    # uv installs to ~/.local/bin by default (not ~/.cargo/bin)
+    export PATH="$HOME/.local/bin:$PATH"
 
     # Add uv to PATH permanently
-    if ! grep -q ".cargo/bin" ~/.bashrc; then
-        echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+    if ! grep -q ".local/bin" ~/.bashrc; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
     fi
 fi
 
 # Ensure uv is in PATH for this session
-export PATH="$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 
 # Verify uv installation
 echo "✅ Verifying uv installation..."
@@ -82,6 +86,7 @@ fi
 
 # Sync Python dependencies
 echo "📦 Syncing Python dependencies with uv..."
+cd "$WORKSPACE_PATH"
 uv sync --link-mode=copy
 
 # Verify Radiance installation

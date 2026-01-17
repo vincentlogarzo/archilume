@@ -6,6 +6,7 @@ from archilume import (
 
 # Standard library imports
 import os
+import sys
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,27 +104,38 @@ class Objs2Octree:
         # --- Step 3: Combine all rad files and combined radiance material file from step 1 and 2 into an octree ---
         self.__rad2octree()
 
-    def __obj2rad_with_os_system(self, exe_path: Path = config.RADIANCE_BIN_PATH / "obj2rad.exe") -> int:
+    def __obj2rad_with_os_system(self, exe_path: Path = None) -> int:
         """
         Convert OBJ files to RAD format using obj2rad from pyradiance or system Radiance.
         """
+        # Auto-detect obj2rad executable (platform-aware)
+        if exe_path is None:
+            if sys.platform == "win32":
+                exe_path = config.RADIANCE_BIN_PATH / "obj2rad.exe"
+            else:
+                exe_path = config.RADIANCE_BIN_PATH / "obj2rad"
+
         for input_obj_path in self.input_obj_paths:
-            
+
             output_rad_path = config.RAD_DIR / input_obj_path.with_suffix('.rad').name
             self.output_rad_paths.append(output_rad_path)
-            
-            # Build the command string
-            command = f"{exe_path} {input_obj_path} > {output_rad_path}"
+
+            # Build the command string with proper quoting for paths with spaces
+            command = f'"{exe_path}" "{input_obj_path}" > "{output_rad_path}"'
             print(f"Running: {command}")
 
-            exit_code = os.system(command) 
-            
+            exit_code = os.system(command)
+
+            # On Unix, os.system returns exit status << 8, so divide by 256
+            if sys.platform != "win32":
+                exit_code = exit_code >> 8
+
             if exit_code == 0:
                 print("Command executed successfully")
             else:
                 print(f"Command failed with exit code: {exit_code}")
                 return exit_code  # Return immediately on failure
-        
+
         return 0  # Return 0 if all commands succeeded
    
     def __rad2octree(self) -> None:

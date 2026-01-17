@@ -1,6 +1,12 @@
 __pycache__/
 *.egg-info/
 
+# Claude Code settings and credentials
+.claude/
+.env
+.env.local
+*.key
+
 # Ignore all content in these directories
 inputs/*
 outputs/*
@@ -12,7 +18,6 @@ outputs/**/*
 !outputs/**/.gitkeep
 
 # Ignore test/scratch files
-examples/radiance_testpad.py
 
 # SSH configuration (contains private IP addresses and keys)
 .ssh/

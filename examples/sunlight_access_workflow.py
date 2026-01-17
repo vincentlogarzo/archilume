@@ -60,14 +60,14 @@ def sunlight_access_workflow():
                             ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
             timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
             image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
-            rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
+            rendering_mode              = "cpu",        # Options: 'cpu', 'gpu'
             rendering_quality           = "med",        # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
         )
 
         smart_cleanup(
             timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-            resolution_changed          = False,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-            rendering_mode_changed      = False,  # Set TRUE if switched cpu ↔ gpu
+            resolution_changed          = False,   # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+            rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
             rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
 
@@ -108,6 +108,8 @@ def sunlight_access_workflow():
     with timer("Phase 5: Post-Process Stamping of Results...", print_header=True):
         with timer("  5a: Generate AOI files...", print_header=True):
             coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
+            if coordinate_map_path is None:
+                raise RuntimeError("Failed to create pixel-to-world coordinate map")
             view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
         with timer("  5b: Generate Sunlit WPD and send to .xlsx...", print_header=True):

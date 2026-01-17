@@ -22,36 +22,43 @@ The following environment variables are automatically configured:
 
 ## How to Use
 
-### Opening in DevContainer (VS Code Desktop)
+### Opening in DevContainer (VS Code with Remote SSH)
 
-1. Open this project in VS Code
-2. Press `F1` or `Ctrl+Shift+P`
-3. Type "Dev Containers: Reopen in Container"
-4. Wait for container to build (first time: ~5-10 minutes)
-5. Verify setup:
+This project is designed to work seamlessly with VS Code connecting to a cloud Linux VM via SSH:
+
+1. **Connect to your Linux VM via SSH in VS Code:**
+   - Install the "Remote - SSH" extension in VS Code
+   - Press `F1` → "Remote-SSH: Connect to Host"
+   - Enter your VM's SSH connection string (e.g., `user@your-vm-ip`)
+
+2. **Open this project in a DevContainer:**
+   - Once connected, open this project folder
+   - VS Code will detect `.devcontainer/devcontainer.json`
+   - Click "Reopen in Container" when prompted (or press `F1` → "Dev Containers: Reopen in Container")
+
+3. **Wait for automatic setup (first time: ~5-10 minutes):**
+   The devcontainer will automatically:
+   - Install all system dependencies (OpenGL, OpenMP, etc.)
+   - Extract and install Radiance 6.1 from bundled tarball
+   - Install uv package manager
+   - Sync all Python dependencies from pyproject.toml
+   - Configure environment variables (PATH, RAYPATH)
+
+4. **Verify installation:**
    ```bash
    uv --version
    python --version
    oconv 2>&1 | head -1
+   uv run examples/sunlight_access_workflow.py
    ```
 
-### For GitHub Codespaces
+### Benefits of DevContainer on Cloud VM
 
-1. When you open this repository in GitHub Codespaces, the devcontainer will automatically:
-   - Install all system dependencies
-   - Install Radiance lighting simulation software
-   - Install uv package manager
-   - Set up Python environment with all dependencies
-   - Configure environment variables
-
-2. Wait for the setup to complete (usually 2-3 minutes)
-
-3. Verify installation:
-   ```bash
-   uv --version
-   which oconv rpict gensky
-   python examples/sunlight_exposure_analysis.py
-   ```
+- ✅ **Consistent Environment**: Same setup across all developers
+- ✅ **Isolated Dependencies**: No conflicts with system packages
+- ✅ **Pre-configured Tools**: Radiance, uv, Python 3.12 ready to go
+- ✅ **Easy Scaling**: Use powerful cloud VMs for rendering
+- ✅ **VS Code Integration**: Full IDE features with remote development
 
 ### Rebuilding the Container
 

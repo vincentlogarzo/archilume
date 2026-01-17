@@ -451,9 +451,8 @@ class ViewGenerator:
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             results = list(executor.map(_process_single_room, grouped))
 
-        # Print all results
-        for result in results:
-            print(result)
+        # Print summary
+        print(f"Generated {len(results)} AOI files")
 
         return True  # Indicate success
 

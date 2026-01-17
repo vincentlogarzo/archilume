@@ -95,6 +95,18 @@ class Tiff2Animation:
             if not view_tiff_files:
                 return f"X No TIFF files found for view: {view_name}"
 
+            # Sort frames by timestamp extracted from filename (format: MMDD_HHMM)
+            def _extract_timestamp(filepath: Path) -> tuple:
+                """Extract timestamp from filename for sorting. Returns (month, day, hour, minute)."""
+                match = re.search(r'(\d{4})_(\d{4})', filepath.name)
+                if match:
+                    mmdd = match.group(1)
+                    hhmm = match.group(2)
+                    return (int(mmdd[:2]), int(mmdd[2:4]), int(hhmm[:2]), int(hhmm[2:4]))
+                return (0, 0, 0, 0)  # Fallback for files without timestamp
+
+            view_tiff_files.sort(key=_extract_timestamp)
+
             try:
                 num_frames = len(view_tiff_files)
 
