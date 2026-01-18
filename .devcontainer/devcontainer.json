@@ -41,7 +41,8 @@
   },
 
   "mounts": [
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
+    // GitHub CLI config mount - only if directory exists
+    // "source=${localEnv:HOME}${localEnv:USERPROFILE}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
   ],
 
   "forwardPorts": [],

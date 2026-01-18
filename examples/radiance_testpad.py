@@ -48,10 +48,10 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     rtpict -n 2 -vf inputs/image10.rdv inputs/image10.oct > outputs/image/image10.hdr
     
     fast quality test:
-        rtpict -n 14 -t 1 -vf inputs/image10.vp -x 1024 -y 1024 -ab 1 -ad 1024 -as 256 -aa 0.15 inputs/image10.oct > outputs/image/image10_preview.hdr
+        rtpict -n  -t 1 -vf inputs/image10.vp -x 1024 -y 1024 -ab 1 -ad 1024 -as 256 -aa 0.15 inputs/image10.oct > outputs/image/image10_preview.hdr
 
     medium quality test:
-        rtpict -n 20 -t 1 -vf inputs/image10.vp -x 1024 -y 1024 -ab 2 -ad 512 -as 128 -ar 128 -aa 0.2  inputs/image10.oct > outputs/image/image10_medium.hdr
+        rtpict -n 56 -t 1 -vf inputs/image10.vp -x 1024 -y 1024 -ab 2 -ad 512 -as 128 -ar 128 -aa 0.2  inputs/image10.oct > outputs/image/image10_medium.hdr
     
     high quality test:
         rtpict -n 14 -t 1 -vf inputs/image10.vp -x 2048 -y 2048 -ab 3 -ad 4096 -as 1024 -ar 512 -aa 0.1 -lw 0.002 -lr 12 inputs/image10.oct > outputs/image/image10_high.hdr
