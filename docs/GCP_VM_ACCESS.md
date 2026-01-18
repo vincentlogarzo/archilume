@@ -64,6 +64,8 @@ Host gcp-vm
 
 Replace `<your-username>` with your GCP username (usually your email prefix or company username).
 
+**Note for Windows users**: Windows OpenSSH doesn't support the `Include` directive properly. You must add the configuration directly to your `~/.ssh/config` file, not in a project-specific config file.
+
 ### Step 4: Test Connection
 
 ```bash
