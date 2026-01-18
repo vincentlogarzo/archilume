@@ -19,5 +19,6 @@ outputs/**/*
 
 # Ignore test/scratch files
 
-# SSH configuration (contains private IP addresses and keys)
+# SSH configuration (contains private keys - keep these secret!)
 .ssh/
+!.ssh/config.template
