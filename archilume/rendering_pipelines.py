@@ -454,7 +454,7 @@ class RenderingPipelines:
             max_parallel_renders = max(1, total_cpus // cpus_per_render)
 
             print(f"Overcast rendering parallelism: {max_parallel_renders} concurrent renders "
-                  f"({total_cpus} total CPUs div {cpus_per_render} CPUs/render)")
+                  f"({total_cpus} total CPUs, {cpus_per_render} CPUs/render)")
 
             # Run overture commands with calculated parallelism
             utils.execute_new_radiance_commands(

@@ -58,7 +58,7 @@ def sunlight_access_workflow():
                         "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
                         "87cowles_site.obj"             # Site context
                             ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
-            timestep                    = 5,           # Time interval in minutes (recommended >= 5 min) 
+            timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
             image_resolution            = 2048,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
             rendering_mode              = "cpu",        # Options: 'cpu', 'gpu'
             rendering_quality           = "med",        # Options if gpu is selected: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
@@ -93,7 +93,7 @@ def sunlight_access_workflow():
             )
         view_generator.create_plan_view_files()
 
-    with timer("Phase 4: Executing Rendering Pipeline...", print_header=True):
+    with timer("Phase 4: Execute Rendering Pipeline...", print_header=True):
         renderer = RenderingPipelines(
             skyless_octree_path         = octree_generator.skyless_octree_path,
             overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
