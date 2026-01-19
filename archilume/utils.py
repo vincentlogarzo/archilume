@@ -181,27 +181,37 @@ class PhaseTimer:
     def __init__(self):
         self.phase_timings = {}
         self.script_start_time = time.time()
-        self._current_phase_name = None
-        self._current_print_header = False
+        self._context_stack = []  # Stack to handle nested timer contexts
 
     def __call__(self, phase_name: str, print_header: bool = False):
         """Prepare for use as context manager."""
-        self._current_phase_name = phase_name
-        self._current_print_header = print_header
+        # Push new context onto stack
+        self._context_stack.append({
+            'name': phase_name,
+            'print_header': print_header,
+            'start_time': None
+        })
         return self
 
     def __enter__(self):
         """Enter context manager and optionally print header."""
-        if self._current_print_header:
-            print(f"\n{'=' * 100}\n{self._current_phase_name}\n{'=' * 100}")
-        self.start = time.time()
+        if not self._context_stack:
+            raise RuntimeError("__enter__ called without __call__")
+
+        context = self._context_stack[-1]
+        if context['print_header']:
+            print(f"\n{'=' * 100}\n{context['name']}\n{'=' * 100}")
+        context['start_time'] = time.time()
         return self
 
     def __exit__(self, *args):
         """Exit context manager and record timing."""
-        self.phase_timings[self._current_phase_name] = time.time() - self.start
-        self._current_phase_name = None
-        self._current_print_header = False
+        if not self._context_stack:
+            raise RuntimeError("__exit__ called without matching __enter__")
+
+        context = self._context_stack.pop()
+        duration = time.time() - context['start_time']
+        self.phase_timings[context['name']] = duration
 
     def update(self, additional_timings: dict):
         """Merge additional timings into phase_timings (e.g., from sub-pipelines)."""
@@ -232,7 +242,7 @@ class PhaseTimer:
                 "Phase 1: Establishing 3D Scene...",
                 "Phase 2: Generate Sky Conditions for Analysis...",
                 "Phase 3: Prepare Camera Views...",
-                "Phase 4: Executing Rendering Pipeline...",
+                "Phase 4: Execute Rendering Pipeline...",
                 "Phase 5: Post-Process Stamping of Results...",
                 "Phase 6: Package Final Results and Simulation Summary..."
             ]
@@ -270,7 +280,7 @@ class PhaseTimer:
                 print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
 
                 # Print sub-phases after Phase 4
-                if phase_name == "Phase 4: Executing Rendering Pipeline...":
+                if phase_name == "Phase 4: Execute Rendering Pipeline...":
                     for subphase in rendering_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]
