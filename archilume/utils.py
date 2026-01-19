@@ -1975,14 +1975,14 @@ def smart_cleanup(
     if files_removed:
         print(f"\nFirst 5 removed files:")
         for f in files_removed[:5]:
-            print(f"  ✗ {f}")
+            print(f"  [-] {f}")
         if len(files_removed) > 5:
             print(f"  ... and {len(files_removed) - 5} more")
 
     if files_retained:
         print(f"\nFirst 5 retained files:")
         for f in files_retained[:5]:
-            print(f"  ✓ {f}")
+            print(f"  [+] {f}")
         if len(files_retained) > 5:
             print(f"  ... and {len(files_retained) - 5} more")
 

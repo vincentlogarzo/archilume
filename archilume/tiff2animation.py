@@ -124,9 +124,9 @@ class Tiff2Animation:
                     output_file_path.unlink()
 
                 _combine_tiffs(view_tiff_files, output_file_path, per_frame_duration, output_format)
-                return f"✓ {view_name}: {num_frames} frames, {duration/1000:.1f}s"
+                return f"[OK] {view_name}: {num_frames} frames, {duration/1000:.1f}s"
             except Exception as e:
-                return f"✗ Error processing {view_name}: {e}"
+                return f"[ERROR] Error processing {view_name}: {e}"
 
         print(f"Creating {output_format.upper()} animations for {len(self.view_files)} views...")
 
@@ -136,7 +136,7 @@ class Tiff2Animation:
         if number_of_workers == 1:
             for view_file in self.view_files:
                 result = _process_single_view(view_file)
-                if result.startswith("✗"):
+                if result.startswith("[ERROR]"):
                     errors.append(result)
                 else:
                     results.append(result)
@@ -146,16 +146,16 @@ class Tiff2Animation:
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         result = future.result()
-                        if result.startswith("✗"):
+                        if result.startswith("[ERROR]"):
                             errors.append(result)
                         else:
                             results.append(result)
                     except Exception as e:
-                        errors.append(f"✗ Error in parallel view processing: {e}")
+                        errors.append(f"[ERROR] Error in parallel view processing: {e}")
 
         # Print summary
         if results:
-            print(f"✓ Created {len(results)} {output_format.upper()} animations")
+            print(f"[OK] Created {len(results)} {output_format.upper()} animations")
         if errors:
             print(f"Errors encountered:")
             for error in errors:
@@ -391,6 +391,6 @@ def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offs
 
     print(f"Stamping {len(tiff_paths)} files with metadata + AOI overlays using {number_of_workers} workers")
     _process_parallel(tiff_paths, _stamp_combined, number_of_workers)
-    print(f"✓ Stamping completed")
+    print(f"[OK] Stamping completed")
 
 

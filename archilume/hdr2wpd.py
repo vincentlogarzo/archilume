@@ -503,7 +503,7 @@ class Hdr2Wpd:
                     import traceback
                     traceback.print_exc()
 
-        print(f"✓ All {len(processors)} workers completed successfully\n")
+        print(f"[OK] All {len(processors)} workers completed successfully\n")
 
     def _generate_excel_report(self) -> None:
         """Generate Excel report from all .wpd files."""
