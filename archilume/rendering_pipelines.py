@@ -208,7 +208,7 @@ class RenderingPipelines:
         print("RenderingPipelines completed successfully.")
         return timer.phase_timings
 
-    def _generate_overcast_sky_rendering_commands(self, aa: float = 0.1, ab: int = 1, ad: int = 4096, ar: int = 1024, as_val: int = 1024, dj: float = 0.7, lr: int = 12, lw: float = 0.002, pj: int = 1, ps: int = 4, pt: float = 0.05) -> tuple[str, list[str], list[str]]:
+    def _generate_overcast_sky_rendering_commands(self, aa: float = 0.1, ab: int = 3, ad: int = 4096, ar: int = 1024, as_val: int = 1024, dj: float = 0.7, lr: int = 12, lw: float = 0.002, pj: int = 1, ps: int = 4, pt: float = 0.05) -> tuple[str, list[str], list[str]]:
         """
         Generates oconv, rpict warming run and rpict medium quality run for overcast sky view_file combinations.
 
@@ -446,13 +446,27 @@ class RenderingPipelines:
             executor = ThreadPoolExecutor(max_workers=1)
             future = executor.submit(lambda: None)
         else:
+            # Calculate optimal parallelism for overcast rendering
+            # Each rtpict process uses max N_PROCESSORS CPUs (hardcoded limit in Radiance)
+            # With available CPUs, run floor(total_cpus / cpus_per_render) processes in parallel
+            total_cpus = config.DEFAULT_MAX_WORKERS
+            cpus_per_render = N_PROCESSORS
+            max_parallel_renders = max(1, total_cpus // cpus_per_render)
+
+            print(f"Overcast rendering parallelism: {max_parallel_renders} concurrent renders "
+                  f"({total_cpus} total CPUs div {cpus_per_render} CPUs/render)")
+
+            # Run overture commands with calculated parallelism
             utils.execute_new_radiance_commands(
-                self.rpict_daylight_overture_commands, number_of_workers=config.WORKERS["rpict_overture"])
+                self.rpict_daylight_overture_commands,
+                number_of_workers=max_parallel_renders)
+
+            # Run medium quality commands with calculated parallelism in background
             executor = ThreadPoolExecutor(max_workers=1)
             future = executor.submit(
                 utils.execute_new_radiance_commands,
                 self.rpict_daylight_med_qual_commands,
-                number_of_workers=config.WORKERS["rpict_medium_quality"])
+                number_of_workers=max_parallel_renders)
 
         return executor, future
 
