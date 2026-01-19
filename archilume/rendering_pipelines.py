@@ -22,15 +22,18 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 import subprocess
 from PIL import Image
+import platform
 
 # Third-party imports
 from itertools import product
 
 logger = logging.getLogger(__name__)
 
-# Rendering constants
-X_RES_OVERTURE = 64
-Y_RES_OVERTURE = 64
+# Constants
+X_RES_OVERTURE          = 64
+Y_RES_OVERTURE          = 64
+IS_LINUX                = platform.system() == 'Linux'
+N_PROCESSORS            = 64  # Number of processors for rtpict on Linux
 
 
 @dataclass
@@ -52,7 +55,7 @@ class RenderingPipelines:
     Optional Attributes (default from config):
         skies_dir (Path): Directory containing solar condition sky files (default: config.SKY_DIR)
         views_dir (Path): Directory containing architectural viewpoint files (default: config.VIEW_DIR)
-        render_mode (str): Rendering backend - 'cpu' or 'gpu' (default: 'cpu')
+        rendering_mode (str): Rendering backend - 'cpu' or 'gpu' (default: 'cpu')
         gpu_quality (str): GPU quality preset - 'draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed' (default: 'stand')
 
     Auto-Generated Attributes (populated during initialization):
@@ -78,7 +81,7 @@ class RenderingPipelines:
     # Optional fields with config defaults
     skies_dir:                          Path        = field(default_factory=lambda: config.SKY_DIR)
     views_dir:                          Path        = field(default_factory=lambda: config.VIEW_DIR)
-    render_mode:                        str         = 'cpu'
+    rendering_mode:                     str         = 'cpu'
     gpu_quality:                        str         = 'stand'
 
     # Fields that will be populated after initialization
@@ -99,20 +102,18 @@ class RenderingPipelines:
         Post-initialization to populate file lists from directories and validate parameters.
         """
         # Populate sky files from directory
-        self.sky_files = sorted(
-            [path for path in self.skies_dir.glob('*.sky')])
+        self.sky_files = sorted([path for path in self.skies_dir.glob('*.sky')])
 
         # Populate view files from directory
-        self.view_files = sorted(
-            [path for path in self.views_dir.glob('*.vp')])
+        self.view_files = sorted([path for path in self.views_dir.glob('*.vp')])
 
         # Validate resolution values
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
 
-        # Validate render_mode
-        if self.render_mode not in (valid_modes := ['cpu', 'gpu']):
-            raise ValueError(f"Invalid render_mode '{self.render_mode}'. Valid options: {', '.join(valid_modes)}")
+        # Validate rendering_mode
+        if self.rendering_mode not in (valid_modes := ['cpu', 'gpu']):
+            raise ValueError(f"Invalid rendering_mode '{self.rendering_mode}'. Valid options: {', '.join(valid_modes)}")
 
         # Validate gpu_quality
         if self.gpu_quality.lower() not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
@@ -138,11 +139,11 @@ class RenderingPipelines:
             >>> timings = renderer.sunlight_rendering_pipeline()
 
             >>> # GPU rendering with standard quality
-            >>> renderer = RenderingPipelines(..., render_mode='gpu', gpu_quality='stand')
+            >>> renderer = RenderingPipelines(..., rendering_mode='gpu', gpu_quality='stand')
             >>> timings = renderer.sunlight_rendering_pipeline()
 
             >>> # GPU rendering with production quality
-            >>> renderer = RenderingPipelines(..., render_mode='gpu', gpu_quality='prod')
+            >>> renderer = RenderingPipelines(..., rendering_mode='gpu', gpu_quality='prod')
             >>> timings = renderer.sunlight_rendering_pipeline()
         """
 
@@ -166,12 +167,11 @@ class RenderingPipelines:
                 self.overcast_octree_command, number_of_workers=config.WORKERS["overcast_octree"])
 
         # --- Phase 2: Render overcast sky conditions (GPU or CPU) ---
-        with timer(f"    Overcast rendering ({self.render_mode.upper()})"):
-            octree_base_name = self.skyless_octree_path.stem.replace(
-                '_skyless', '')
+        with timer(f"    Overcast rendering ({self.rendering_mode.upper()})"):
+            octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
             overcast_sky_name = self.overcast_sky_file_path.stem
 
-            if self.render_mode == 'gpu':
+            if self.rendering_mode == 'gpu':
                 _, future = self._render_overcast_gpu(
                     octree_base_name, overcast_sky_name, self.gpu_quality)
             else:
@@ -193,7 +193,7 @@ class RenderingPipelines:
                 self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
 
         # Wait for GPU/CPU overcast rendering to complete before combining
-        phase_name = "    GPU rendering (total)" if self.render_mode == 'gpu' else "    Indirect diffuse rendering"
+        phase_name = "    GPU rendering (total)" if self.rendering_mode == 'gpu' else "    Indirect diffuse rendering"
         with timer(phase_name):
             future.result()  # Ensure overcast rendering is complete before combining
 
@@ -253,23 +253,28 @@ class RenderingPipelines:
 
         octree_base_name = self.skyless_octree_path.stem.replace(
             '_skyless', '')
-        octree_with_overcast_sky_path = self.skyless_octree_path.parent / \
-            f"{octree_base_name}_{self.overcast_sky_file_path.stem}.oct"
-        overcast_octree_command = str(
-            rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}")
+        octree_with_overcast_sky_path = self.skyless_octree_path.parent / f"{octree_base_name}_{self.overcast_sky_file_path.stem}.oct"
+        overcast_octree_command = rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}"
 
         rpict_overture_commands, rpict_med_qual_commands = [], []
 
         for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
+            
+            ambient_file_path   = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.amb"
+            output_hdr_path     = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
 
-            ambient_file_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.amb"
-            output_hdr_path = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
+            params_overture     = rf"-aa {aa} -ab {ab} -ad {ad//2} -ar {ar} -as {as_val//2} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}"
+            params_med_qual     = rf" -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
 
-            # constructed commands that will be executed in parallel from each other untill all are complete.
-            rpict_overture_command, rpict_med_qual_command = [
-                rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} -aa {aa} -ab {ab} -ad {ad//2} -ar {ar} -as {as_val//2} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}",
-                rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
-            ]
+            # constructed commands that will be executed in parallel from each other until all are complete.
+            if IS_LINUX:
+                # Use rtpict on Linux for multi-processor rendering
+                rpict_overture_command = rf"rtpict -n {N_PROCESSORS} -t 1 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
+                rpict_med_qual_command = rf"rtpict -n {N_PROCESSORS} -t 1 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
+            else:
+                # Use standard rpict on Windows/other platforms
+                rpict_overture_command = rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
+                rpict_med_qual_command = rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
 
             rpict_overture_commands.append(rpict_overture_command)
             rpict_med_qual_commands.append(rpict_med_qual_command)

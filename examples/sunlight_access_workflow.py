@@ -61,14 +61,14 @@ def sunlight_access_workflow():
             timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
             image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
             rendering_mode              = "cpu",        # Options: 'cpu', 'gpu'
-            rendering_quality           = "med",        # Options: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
+            rendering_quality           = "med",        # Options if gpu is selected: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
         )
 
         smart_cleanup(
-            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-            resolution_changed          = False,   # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-            rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
-            rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+            timestep_changed            = True,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+            resolution_changed          = True,   # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+            rendering_mode_changed      = True,  # Set TRUE if switched cpu/gpu
+            rendering_quality_changed   = True   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
 
     with timer("Phase 1: Establishing 3D Scene...", print_header=True):
@@ -99,7 +99,7 @@ def sunlight_access_workflow():
             overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
             x_res                       = inputs.image_resolution,
             y_res                       = inputs.image_resolution,
-            render_mode                 = inputs.rendering_mode,
+            rendering_mode              = inputs.rendering_mode,
             gpu_quality                 = inputs.rendering_quality
             )
         rendering_phase_timings = renderer.sunlight_rendering_pipeline()
@@ -148,6 +148,10 @@ if __name__ == "__main__":
 # ====================================================================================================
 
 # --- HIGH PRIORITY: Core Workflow & Output Improvements ---
+
+# TODO: Implement inline @v{rdp_file_path} implementation seen in radiance testpad.py. See example below. This could greatly simplify the parameters sets and the command line outputs simplicity. It would mean that only a cople rdp files would need to be created and then reference in all subsequent rpict/rtpict calls.
+#       - rtpict -n 56 -t 1 -vf inputs/image10.vp -x 2048 -y 2048 @inputs/image10.rdp -af outputs/image/image10_high.amb inputs/image10.oct > outputs/image/image10_high.hdr
+
 
 # TODO: Implement PNG conversion after TIFF generation for AI-compatible processing
 #       - Convert TIFF to PNG post-render
