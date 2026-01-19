@@ -58,17 +58,17 @@ def sunlight_access_workflow():
                         "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
                         "87cowles_site.obj"             # Site context
                             ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
-            timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
-            image_resolution            = 1024,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
+            timestep                    = 5,           # Time interval in minutes (recommended >= 5 min) 
+            image_resolution            = 2048,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
             rendering_mode              = "cpu",        # Options: 'cpu', 'gpu'
             rendering_quality           = "med",        # Options if gpu is selected: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
         )
 
         smart_cleanup(
-            timestep_changed            = True,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
             resolution_changed          = True,   # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-            rendering_mode_changed      = True,  # Set TRUE if switched cpu/gpu
-            rendering_quality_changed   = True   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+            rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
+            rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
 
     with timer("Phase 1: Establishing 3D Scene...", print_header=True):

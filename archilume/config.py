@@ -67,14 +67,14 @@ DEFAULT_MAX_WORKERS = multiprocessing.cpu_count()
 # Worker counts for different operations (adjust based on hardware)
 WORKERS = {
     "overcast_octree"           : 1,
-    "rpict_overture"            : min(8, DEFAULT_MAX_WORKERS),
-    "rpict_medium_quality"      : min(8, DEFAULT_MAX_WORKERS),
-    "oconv_compile"             : min(12, DEFAULT_MAX_WORKERS),
-    "rpict_direct_sun"          : min(18, DEFAULT_MAX_WORKERS),
-    "pcomb_tiff_conversion"     : min(18, DEFAULT_MAX_WORKERS),
-    "metadata_stamping"         : min(14, DEFAULT_MAX_WORKERS),
-    "gif_animation"             : min(14, DEFAULT_MAX_WORKERS),
-    "wpd_processing"            : min(14, DEFAULT_MAX_WORKERS),
+    "rpict_overture"            : min(384, DEFAULT_MAX_WORKERS),
+    "rpict_medium_quality"      : min(384, DEFAULT_MAX_WORKERS),
+    "oconv_compile"             : min(384, DEFAULT_MAX_WORKERS),
+    "rpict_direct_sun"          : min(384, DEFAULT_MAX_WORKERS),
+    "pcomb_tiff_conversion"     : min(384, DEFAULT_MAX_WORKERS),
+    "metadata_stamping"         : min(384, DEFAULT_MAX_WORKERS),
+    "gif_animation"             : min(384, DEFAULT_MAX_WORKERS),
+    "wpd_processing"            : min(384, DEFAULT_MAX_WORKERS),
 }
 
 class InputValidator:

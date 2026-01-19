@@ -761,7 +761,7 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
             number_of_workers (int): Number of parallel workers
         """
         # Track which command index we're on for selective verbose output
-        command_counter = {'count': 0, 'total': len(commands), 'completed': 0}
+        command_counter = {'count': 0, 'total': len(commands), 'completed': 0, 'last_printed_pct': -1}
 
         def _run_command_with_progress(command: str) -> None:
             """Execute a single command with real-time output streaming."""
@@ -859,7 +859,17 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
 
                 if return_code == 0:
                     command_counter['completed'] += 1
-                    # Don't print individual success messages - just update the counter
+
+                    # Calculate percentage and print every 1% milestone
+                    total = command_counter['total']
+                    completed = command_counter['completed']
+                    current_pct = int((completed / total) * 100)
+                    last_pct = command_counter['last_printed_pct']
+
+                    # Print on every 1% increment (or first/last command)
+                    if current_pct > last_pct or completed == total:
+                        print(f"\r[{completed}/{total}] {current_pct}% complete", flush=True)
+                        command_counter['last_printed_pct'] = current_pct
                 else:
                     # Extract output filename for cleaner error message
                     if ' > ' in command:
