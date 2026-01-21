@@ -27,7 +27,7 @@ from archilume import (
     SkyGenerator,
     ViewGenerator,
     Objs2Octree,
-    RenderingPipelines,
+    SunlightRenderer,
     Tiff2Animation,
     Hdr2Wpd,
     smart_cleanup,
@@ -94,7 +94,7 @@ def sunlight_access_workflow():
         view_generator.create_plan_view_files()
 
     with timer("Phase 4: Execute Rendering Pipeline...", print_header=True):
-        renderer = RenderingPipelines(
+        renderer = SunlightRenderer(
             skyless_octree_path         = octree_generator.skyless_octree_path,
             overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
             x_res                       = inputs.image_resolution,
@@ -102,8 +102,7 @@ def sunlight_access_workflow():
             rendering_mode              = inputs.rendering_mode,
             gpu_quality                 = inputs.rendering_quality
             )
-        rendering_phase_timings = renderer.sunlight_rendering_pipeline()
-        timer.update(rendering_phase_timings)
+        renderer.sunlight_rendering_pipeline()
 
     with timer("Phase 5: Post-Process Stamping of Results...", print_header=True):
         with timer("  5a: Generate AOI files...", print_header=True):

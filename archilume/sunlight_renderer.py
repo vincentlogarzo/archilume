@@ -37,7 +37,7 @@ N_PROCESSORS            = 64  # Number of processors for rtpict on Linux
 
 
 @dataclass
-class RenderingPipelines:
+class SunlightRenderer:
     """
     Comprehensive solar illumination analysis engine for architectural daylight evaluation.
 
