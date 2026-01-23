@@ -1,6 +1,7 @@
 """
 Matplotlib Polygon Annotation Tool for Floor Plans
 Allows interactive polygon drawing with vertex editing and persistence
+Supports standard image formats (PNG, JPG, TIFF) and HDR files
 """
 
 import matplotlib.pyplot as plt
@@ -13,11 +14,55 @@ from tkinter import Tk, filedialog
 import cv2
 
 
+def load_image(image_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Load an image file, supporting both standard formats and HDR.
+
+    Returns:
+        tuple: (original_image, display_rgb_image)
+            - original_image: Raw image data (for pixel statistics)
+            - display_rgb_image: Tone-mapped RGB image for display (0-255 uint8)
+    """
+    path_str = str(image_path)
+    suffix = image_path.suffix.lower()
+
+    if suffix in ('.hdr', '.exr'):
+        # Load HDR image with full floating point precision
+        hdr_image = cv2.imread(path_str, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+
+        if hdr_image is None:
+            raise ValueError(f"Failed to load HDR image: {path_str}")
+
+        # Store original for statistics
+        original = hdr_image.copy()
+
+        # Tone-map for display using Reinhard operator
+        tonemap = cv2.createTonemapReinhard(gamma=1.0, intensity=0.0,
+                                            light_adapt=0.8, color_adapt=0.0)
+        ldr_image = tonemap.process(hdr_image)
+
+        # Convert to 8-bit for display
+        ldr_image = np.clip(ldr_image * 255, 0, 255).astype(np.uint8)
+        display_rgb = cv2.cvtColor(ldr_image, cv2.COLOR_BGR2RGB)
+
+        print(f"Loaded HDR image: {hdr_image.shape}, range: [{hdr_image.min():.2f}, {hdr_image.max():.2f}]")
+
+        return original, display_rgb
+    else:
+        # Standard image formats
+        image = cv2.imread(path_str)
+        if image is None:
+            raise ValueError(f"Failed to load image: {path_str}")
+
+        display_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return image, display_rgb
+
+
 class PolygonAnnotator:
     def __init__(self, image_path):
         self.image_path = Path(image_path)
-        self.image = cv2.imread(str(image_path))
-        self.image_rgb = cv2.cvtColor(self.image, cv2.COLOR_BGR2RGB)
+        self.image, self.image_rgb = load_image(self.image_path)
+        self.is_hdr = self.image_path.suffix.lower() in ('.hdr', '.exr')
 
         # Storage for polygons
         self.polygons = []
@@ -532,9 +577,20 @@ class PolygonAnnotator:
         pts = np.array(self.current_polygon_vertices, dtype=np.int32)
         cv2.fillPoly(mask, [pts], (255,))
 
-        # Extract pixel values (using grayscale for daylight analysis)
-        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
-        pixels = gray[mask > 0]
+        # Extract pixel values
+        if self.is_hdr:
+            # For HDR: compute luminance from RGB (using Rec. 709 coefficients)
+            # HDR values are in physical units (cd/m² or similar)
+            luminance = (0.2126 * self.image[:, :, 2] +
+                        0.7152 * self.image[:, :, 1] +
+                        0.0722 * self.image[:, :, 0])
+            pixels = luminance[mask > 0]
+            unit = "cd/m²"
+        else:
+            # For standard images: use grayscale (0-255)
+            gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+            pixels = gray[mask > 0]
+            unit = "px"
 
         # Calculate statistics
         stats = {
@@ -548,12 +604,12 @@ class PolygonAnnotator:
             'percentile_95': float(np.percentile(pixels, 95))
         }
 
-        print("\n=== Pixel Statistics ===")
+        print(f"\n=== Pixel Statistics ({unit}) ===")
         for key, value in stats.items():
             print(f"{key:15s}: {value:.2f}")
-        print("========================\n")
+        print("=" * 32 + "\n")
 
-        self._update_status(f"Stats: mean={stats['mean']:.1f}, area={stats['area_pixels']}px", 'blue')
+        self._update_status(f"Stats: mean={stats['mean']:.1f} {unit}, area={stats['area_pixels']}px", 'blue')
 
     def show(self):
         """Display the annotation interface"""
@@ -578,8 +634,9 @@ def select_image_file(start_dir=None):
         initialdir=start_dir,
         title="Select Floor Plan Image",
         filetypes=[
+            ("All supported", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.hdr *.exr"),
+            ("HDR files", "*.hdr *.exr"),
             ("Image files", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp"),
-            ("PNG files", "*.png"),
             ("All files", "*.*")
         ]
     )
