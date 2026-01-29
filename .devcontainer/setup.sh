@@ -5,8 +5,15 @@ echo "🚀 Setting up Archilume development environment..."
 
 # Install system dependencies
 echo "📦 Installing system dependencies..."
+
+# Remove Yarn repository if present (not needed for this project)
+sudo rm -f /etc/apt/sources.list.d/yarn.list
+
 sudo apt-get update
-sudo apt-get install -y libgl1 libgomp1 libglib2.0-0
+sudo apt-get install -y libgl1 libgomp1 libglib2.0-0 libtiff6 libtiff-tools
+
+# Create symlink for ra_tiff compatibility (expects libtiff5, we have libtiff6)
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/libtiff.so.5
 
 # Install Radiance
 echo "🌟 Installing Radiance..."

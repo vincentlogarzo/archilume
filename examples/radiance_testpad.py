@@ -84,8 +84,7 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
     
 --- 5. ---
 # testing of post processing of HDR images extracted at other view points into colourfill images. 
-    falsecolor -i "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L04_0900_internal_viewpoint1.tiff"
-    falsecolor -i "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -1 - "C:\Projects\archilume\outputs\images\L03_0900_external_viewpoint1.tiff"
+    pcomb -m 100/10000 input.hdr | falsecolour -s 1 -n 10 -l % > output.hdr
 
     falsecolor -i "C:\Projects\archilume\outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_detailed_filtered.hdr" -s 1000 -l lux -n 10 | ra_tiff -e -2 - "C:\Projects\archilume\outputs\images\87Cowles_BLD_withWindows_with_site_TenK_cie_overcast__plan_L02_detailed_filtered.tiff"
 

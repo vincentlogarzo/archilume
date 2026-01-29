@@ -72,34 +72,30 @@ def iesve_daylight_parallel_images():
         renderer.daylight_rendering_pipeline()
 
 """
-1. TODO: convert to .vp from .rdv by adding rvu to begging of text  file
+1. TODO: convert to .vp from .rdv by adding rvu to begging of text file
 
 
 2.  # 2048/32 = 64, /16 = 128, 2048/8 = 256, 2048/4 = 512, 2048/2 = 1024, 2048/1 = 2048
-    RES=$((2048 / 4))
+    RES=$((2048 / 1)) 
     rtpict -n 19 -vf inputs/image1.vp -x $RES -y $RES @inputs/image1.rdp -af outputs/image/image1.amb inputs/image1.oct > outputs/image/image1.hdr
 
-    # allowance for play with ambient accuracy (-aa) will result in a smoother image possibly more effective than post-processing
+    # allowance for play with ambient accuracy (-aa) will result in a smoother image possibly more effective than (recommend lowest -aa 0.1, lower means that subsequent re-runs at higher resolution take more time) post-processing
 
     # smooth image use could be effective for final visualisation, but not for compliance results generation. 
-    getinfo outputs/image/image1.hdr
     pfilt -x /2 -y /2 outputs/image/image1.hdr | pfilt -x *2 -y *2 > outputs/image/image1_smooth.hdr
-
+    
 
 3. Generate falsecolour images for DF analysis and overlays
     # Raw image
-        pcomb -s 0.01 outputs/image/image1.hdr | falsecolor -s 3 -n 6 -l "DF %" > outputs/image/image1_df_false.hdr
-        pcomb -s 0.01 outputs/image/image1.hdr | falsecolor -cl -s 2 -n 4 -l "DF%" > outputs/image/image1_df_cntr.hdr
+        pcomb -s 0.01 outputs/image/image1.hdr | falsecolor -s 4 -n 10 -l "DF %" -lw 0 > outputs/image/image1_df_false.hdr
+        pcomb -s 0.01 outputs/image/image1.hdr | falsecolor -cl -s 2 -n 4 -l "DF%" -lw 0 > outputs/image/image1_df_cntr.hdr
 
-    # Smoothed image (not for compliance results generation only viewing and combination with the above contour)
-        pcomb -s 0.01 outputs/image/image1_smooth.hdr | falsecolor -s 3 -n 6 -l "DF %" > outputs/image/image1_smooth_df_false.hdr
+    # Create separate legend, to maintain main hdr image resolution. 
+        pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l "DF%" -lw 400 -lh 1600 | ra_tiff - outputs/image/df_legend.tiff
 
 
-    TODO: update to create legend separately for a user to copy into a report. this way hdr image remain at their actual size and can be pcomb together as needed.
 
-    notepad $env:vincentlogarzo_ubuntu\.wslconfig
 
-    
 5. Perform post-processing to extact compliance results from falsecolour images with contours. use 5b and 5c in sunlight_access_workflow as reference. Stamp images and add contours as needed. 
     TODO: modify classes to perform this analysis. 
 

@@ -182,9 +182,15 @@ class PhaseTimer:
         self.phase_timings = {}
         self.script_start_time = time.time()
         self._context_stack = []  # Stack to handle nested timer contexts
+        self._phase_hierarchy = {}  # Maps child phases to their parent phase
 
     def __call__(self, phase_name: str, print_header: bool = False):
         """Prepare for use as context manager."""
+        # Track parent-child relationships for nested timers
+        if len(self._context_stack) > 0:
+            parent_name = self._context_stack[-1]['name']
+            self._phase_hierarchy[phase_name] = parent_name
+
         # Push new context onto stack
         self._context_stack.append({
             'name': phase_name,
@@ -213,9 +219,25 @@ class PhaseTimer:
         duration = time.time() - context['start_time']
         self.phase_timings[context['name']] = duration
 
-    def update(self, additional_timings: dict):
-        """Merge additional timings into phase_timings (e.g., from sub-pipelines)."""
+    def update(self, additional_timings: dict, parent_phase: Optional[str] = None):
+        """
+        Merge additional timings into phase_timings (e.g., from sub-pipelines).
+
+        Args:
+            additional_timings: Dictionary of phase names to durations
+            parent_phase: Optional parent phase name. If provided, all phases in
+                         additional_timings will be marked as children of this parent.
+                         If None, will use the current active phase (top of context stack).
+        """
         self.phase_timings.update(additional_timings)
+
+        # Associate these phases with a parent if specified or if we're inside a timer context
+        if parent_phase is None and len(self._context_stack) > 0:
+            parent_phase = self._context_stack[-1]['name']
+
+        if parent_phase:
+            for phase_name in additional_timings.keys():
+                self._phase_hierarchy[phase_name] = parent_phase
 
     def print_report(
         self,
@@ -227,47 +249,59 @@ class PhaseTimer:
         """
         Print a formatted timing report for analysis pipeline execution.
 
+        Auto-detects phase hierarchy from recorded timings based on naming patterns:
+        - Lines starting with "Phase N:" are treated as main phases
+        - Lines with 4 leading spaces are rendering subphases (under Phase 4)
+        - Lines with 2 leading spaces are postprocessing subphases (under Phase 5)
+        - All other phases are printed in execution order
+
         Args:
             output_dir: Optional path to output directory to display at end of report
-            main_phases: Optional list of main phase names in display order
-            rendering_subphases: Optional list of rendering sub-phase names
-            postprocessing_subphases: Optional list of post-processing sub-phase names
+            main_phases: Optional list to override auto-detected main phases
+            rendering_subphases: Optional list to override auto-detected rendering subphases
+            postprocessing_subphases: Optional list to override auto-detected postprocessing subphases
         """
+        import re
+
         total_runtime = time.time() - self.script_start_time
 
-        # Default phase ordering if not provided
-        if main_phases is None:
-            main_phases = [
-                "Phase 0: Input 3D Scene Files and Rendering Parameters...",
-                "Phase 1: Establishing 3D Scene...",
-                "Phase 2: Generate Sky Conditions for Analysis...",
-                "Phase 3: Prepare Camera Views...",
-                "Phase 4: Execute Rendering Pipeline...",
-                "Phase 5: Post-Process Stamping of Results...",
-                "Phase 6: Package Final Results and Simulation Summary..."
-            ]
+        # Build subphases_by_parent from the hierarchy tracked during execution
+        subphases_by_parent = {}
+        for child, parent in self._phase_hierarchy.items():
+            if parent not in subphases_by_parent:
+                subphases_by_parent[parent] = []
+            subphases_by_parent[parent].append(child)
 
-        if rendering_subphases is None:
-            rendering_subphases = [
-                "    Command preparation",
-                "    Overcast octree creation",
-                "    Overcast rendering (CPU)",
-                "    Overcast rendering (GPU)",
-                "    Ambient file warming (overture)",
-                "    Indirect diffuse rendering",
-                "    GPU rendering (total)",
-                "    Sunny sky octrees",
-                "    Sunlight rendering",
-                "    HDR combination & TIFF conversion",
-                "    TIFF to PNG conversion"
-            ]
+        # Auto-detect phase structure if not provided
+        if main_phases is None or rendering_subphases is None or postprocessing_subphases is None:
+            detected_main = []
+            detected_rendering = []
+            detected_postprocessing = []
+            other_phases = []
 
-        if postprocessing_subphases is None:
-            postprocessing_subphases = [
-                "  5a: Generate AOI files...",
-                "  5b: Generate Sunlit WPD and send to .xlsx...",
-                "  5c: Stamp images with results and combine into .apng..."
-            ]
+            # Preserve insertion order (Python 3.7+ dict feature)
+            for phase_name in self.phase_timings.keys():
+                # Skip phases that are children of another phase
+                if phase_name in self._phase_hierarchy:
+                    # This is a subphase - categorize by indentation
+                    if phase_name.startswith('    '):  # 4 spaces = rendering subphase
+                        detected_rendering.append(phase_name)
+                    elif phase_name.startswith('  '):  # 2 spaces = postprocessing subphase
+                        detected_postprocessing.append(phase_name)
+                elif re.match(r'^Phase \d+:', phase_name):
+                    # This is a main phase
+                    detected_main.append(phase_name)
+                else:
+                    # Other top-level phases (for custom workflows)
+                    other_phases.append(phase_name)
+
+            # Use detected phases if not explicitly provided
+            if main_phases is None:
+                main_phases = detected_main if detected_main else other_phases
+            if rendering_subphases is None:
+                rendering_subphases = detected_rendering
+            if postprocessing_subphases is None:
+                postprocessing_subphases = detected_postprocessing
 
         print("\n" + "=" * 80 + "\nANALYSIS COMPLETE\n" + "=" * 80 +
               "\n\nExecution Time Summary:\n" + "-" * 80)
@@ -279,16 +313,21 @@ class PhaseTimer:
                 percentage = (duration / total_runtime) * 100
                 print(f"{phase_name:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
 
-                # Print sub-phases after Phase 4
-                if phase_name == "Phase 4: Execute Rendering Pipeline...":
+                # Print subphases if they exist for this parent phase
+                if phase_name in subphases_by_parent and subphases_by_parent[phase_name]:
+                    for subphase in subphases_by_parent[phase_name]:
+                        if subphase in self.phase_timings:
+                            duration = self.phase_timings[subphase]
+                            percentage = (duration / total_runtime) * 100
+                            print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
+                # Legacy fallback: for manually specified phases, use old behavior
+                elif re.search(r'Phase 4.*Rendering', phase_name, re.IGNORECASE) and rendering_subphases:
                     for subphase in rendering_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]
                             percentage = (duration / total_runtime) * 100
                             print(f"{subphase:<45} {duration:>8.2f}s  ({percentage:>5.1f}%)")
-
-                # Print sub-phases after Phase 5
-                elif phase_name == "Phase 5: Post-Process Stamping of Results...":
+                elif re.search(r'Phase 5.*Post', phase_name, re.IGNORECASE) and postprocessing_subphases:
                     for subphase in postprocessing_subphases:
                         if subphase in self.phase_timings:
                             duration = self.phase_timings[subphase]
