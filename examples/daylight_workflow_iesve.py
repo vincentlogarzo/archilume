@@ -27,7 +27,7 @@ from archilume import (
     SkyGenerator,
     ViewGenerator,
     Objs2Octree,
-    RenderingPipelines,
+    SunlightRenderer,
     Tiff2Animation,
     Hdr2Wpd,
     smart_cleanup,
@@ -42,7 +42,7 @@ from archilume import (
 
 
 """
-T2D or N4D arhcitecture to run on gcloud services and more cost optimised rendering pipelines for large scale daylighting analysis.
+T2D or N4D or E2 arhcitecture to run on gcloud services and more cost optimised rendering pipelines for large scale daylighting analysis.
 
 for use with WSL distro on Windows machines, alter the .wslconfig file to allow for more RAM and processors. 
 
@@ -75,8 +75,8 @@ def iesve_daylight_parallel_images():
 1. TODO: convert to .vp from .rdv by adding rvu to begging of text file
 
 
-2.  # 2048/32 = 64, /16 = 128, 2048/8 = 256, 2048/4 = 512, 2048/2 = 1024, 2048/1 = 2048
-    RES=$((2048 / 1)) 
+2.  # 4096/32 = 64, /16 = 128, /8 = 256, /4 = 512, /2 = 2048, /1 = 4096
+    RES=$((4096 / 2)) 
     rtpict -n 19 -vf inputs/image1.vp -x $RES -y $RES @inputs/image1.rdp -af outputs/image/image1.amb inputs/image1.oct > outputs/image/image1.hdr
 
     # allowance for play with ambient accuracy (-aa) will result in a smoother image possibly more effective than (recommend lowest -aa 0.1, lower means that subsequent re-runs at higher resolution take more time) post-processing
@@ -97,7 +97,7 @@ def iesve_daylight_parallel_images():
 
 
 5. Perform post-processing to extact compliance results from falsecolour images with contours. use 5b and 5c in sunlight_access_workflow as reference. Stamp images and add contours as needed. 
-    TODO: modify classes to perform this analysis. 
+    TODO: modify classes to perform this analysis.
 
 6. post process images to clean them. 
 
