@@ -107,9 +107,19 @@ def iesve_daylight_parallel_images():
         IMAGE_NAME="image1_shg_12ab"
         pfilt -x /2 -y /2 outputs/image/${IMAGE_NAME}.hdr > outputs/image/${IMAGE_NAME}_smooth.hdr
         pcomb -s 0.01 outputs/image/${IMAGE_NAME}.hdr | falsecolor -s 4 -n 10 -l "DF %" -lw 0 > outputs/image/${IMAGE_NAME}_df_false.hdr
-        pcomb -s 0.01 outputs/image/${IMAGE_NAME}.hdr | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 0 > outputs/image/${IMAGE_NAME}_df_cntr.hdr
-        pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' <(pfilt -e 0.5 outputs/image/${IMAGE_NAME}.hdr) outputs/image/${IMAGE_NAME}_df_cntr.hdr | ra_tiff - outputs/image/${IMAGE_NAME}_df_cntr_overlay.tiff
-        
+        pcomb -s 0.01 outputs/image/${IMAGE_NAME}.hdr \
+            | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 0 \
+            | tee outputs/image/${IMAGE_NAME}_df_cntr.hdr \
+            | pcomb \
+                -e 'cond=ri(2)+gi(2)+bi(2)' \
+                -e 'ro=if(cond-.01,ri(2),ri(1))' \
+                -e 'go=if(cond-.01,gi(2),gi(1))' \
+                -e 'bo=if(cond-.01,bi(2),bi(1))' \
+                <(pfilt -e 0.5 outputs/image/${IMAGE_NAME}.hdr) \
+                - \
+            | ra_tiff - outputs/image/${IMAGE_NAME}_df_cntr_overlay.tiff
+
+
 
 
 
