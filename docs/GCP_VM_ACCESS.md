@@ -4,8 +4,8 @@ This document explains how to access the shared company GCP VM for the Archilume
 
 ## VM Details
 
-- **Hostname**: `34.30.36.123`
-- **VM Name**: `instance-20260118-000618`
+- **Hostname**: `<YOUR-VM-IP>`
+- **VM Name**: `<YOUR-VM-INSTANCE-NAME>`
 - **OS**: Debian GNU/Linux (kernel 6.12.63)
 - **Purpose**: Shared development and rendering environment for Archilume project
 
@@ -45,7 +45,7 @@ cat ~/.ssh/google_cloud_vm_key.pub
 
 **Option B: Admin adds via gcloud CLI**
 ```bash
-gcloud compute instances add-metadata instance-20260118-000618 \
+gcloud compute instances add-metadata <YOUR-VM-INSTANCE-NAME> \
   --metadata-from-file ssh-keys=path/to/your/public-key.pub \
   --zone <vm-zone>
 ```
@@ -56,7 +56,7 @@ Add this to your `~/.ssh/config` file:
 
 ```ssh
 Host gcp-vm
-    HostName 34.30.36.123
+    HostName <YOUR-VM-IP>
     User <your-username>
     IdentityFile ~/.ssh/google_cloud_vm_key
     StrictHostKeyChecking accept-new
@@ -90,7 +90,7 @@ Welcome to Debian GNU/Linux...
 
 ### Host key verification failed
 - This happens when the VM was recreated with a new host key
-- Remove old key: `ssh-keygen -R 34.30.36.123`
+- Remove old key: `ssh-keygen -R <YOUR-VM-IP>`
 - Or set `StrictHostKeyChecking accept-new` in your config
 
 ## Alternative: Using gcloud SSH
@@ -99,7 +99,7 @@ If you have `gcloud` CLI installed and configured:
 
 ```bash
 # Connect without manual SSH configuration
-gcloud compute ssh instance-20260118-000618 --zone <vm-zone>
+gcloud compute ssh <YOUR-VM-INSTANCE-NAME> --zone <vm-zone>
 ```
 
 This method:
