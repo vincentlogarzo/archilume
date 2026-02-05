@@ -7,15 +7,17 @@ __pycache__/
 .env.local
 *.key
 
-# Ignore all content in these directories
+# Ignore all content in these directories except .gitkeep files
 inputs/*
-outputs/*
-outputs/**/*
-
-# Keep directory structure but ignore content
 !inputs/.gitkeep
+
+# For outputs: ignore contents but preserve directory structure with .gitkeep
+# The order matters: negations must come AFTER the ignore patterns
+outputs/*
 !outputs/.gitkeep
-!outputs/**/.gitkeep
+!outputs/*/
+outputs/*/*
+!outputs/*/.gitkeep
 
 # Ignore test/scratch files
 
