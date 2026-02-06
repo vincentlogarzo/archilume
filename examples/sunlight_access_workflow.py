@@ -44,7 +44,7 @@ def sunlight_access_workflow():
 
     timer = PhaseTimer()
 
-    with timer("Phase 0: Input 3D Scene Files and Rendering Parameters...", print_header=True):
+    with timer("Phase 0: Input 3D Scene Files and Rendering Parameters..."):
         inputs = config.InputValidator(
             project_latitude            = -37.8134564,  # Building latitude to 4 decimal places
             month                       = 6,            # June
@@ -71,11 +71,11 @@ def sunlight_access_workflow():
             rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
 
-    with timer("Phase 1: Establishing 3D Scene...", print_header=True):
+    with timer("Phase 1: Establishing 3D Scene..."):
         octree_generator = Objs2Octree(inputs.obj_paths)
         octree_generator.create_skyless_octree_for_analysis()
 
-    with timer("Phase 2: Generate Sky Conditions for Analysis...", print_header=True):
+    with timer("Phase 2: Generate Sky Conditions for Analysis..."):
         sky_generator = SkyGenerator(lat=inputs.project_latitude)
         sky_generator.generate_TenK_cie_overcast_skyfile()
         sky_generator.generate_sunny_sky_series(
@@ -86,14 +86,14 @@ def sunlight_access_workflow():
             minute_increment            = inputs.timestep
             )
 
-    with timer("Phase 3: Prepare Camera Views...", print_header=True):
+    with timer("Phase 3: Prepare Camera Views..."):
         view_generator = ViewGenerator(
             room_boundaries_csv_path    = inputs.room_boundaries_csv,
             ffl_offset                  = inputs.ffl_offset
             )
         view_generator.create_plan_view_files()
 
-    with timer("Phase 4: Execute Rendering Pipeline...", print_header=True):
+    with timer("Phase 4: Execute Rendering Pipeline..."):
         renderer = SunlightRenderer(
             skyless_octree_path         = octree_generator.skyless_octree_path,
             overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
@@ -104,20 +104,20 @@ def sunlight_access_workflow():
             )
         renderer.sunlight_rendering_pipeline()
 
-    with timer("Phase 5: Post-Process Stamping of Results...", print_header=True):
-        with timer("  5a: Generate AOI files...", print_header=True):
+    with timer("Phase 5: Post-Process Stamping of Results..."):
+        with timer("  5a: Generate AOI files..."):
             coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
             if coordinate_map_path is None:
                 raise RuntimeError("Failed to create pixel-to-world coordinate map")
             view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
-        with timer("  5b: Generate Sunlit WPD and send to .xlsx...", print_header=True):
+        with timer("  5b: Generate Sunlit WPD and send to .xlsx..."):
             converter = Hdr2Wpd(
                 pixel_to_world_map          = coordinate_map_path
                 )
             converter.sunlight_sequence_wpd_extraction()
 
-        with timer("  5c: Stamp images with results and combine into .apng...", print_header=True):
+        with timer("  5c: Stamp images with results and combine into .apng..."):
             tiff_annotator = Tiff2Animation(
                 skyless_octree_path         = octree_generator.skyless_octree_path,
                 overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
@@ -130,7 +130,7 @@ def sunlight_access_workflow():
             tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
 
 
-    with timer("Phase 6: Package Final Results and Simulation Summary...", print_header=True):
+    with timer("Phase 6: Package Final Results and Simulation Summary..."):
         """TODO: create .zip for issue"""
 
 

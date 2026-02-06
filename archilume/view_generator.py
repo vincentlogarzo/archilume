@@ -124,6 +124,10 @@ class ViewGenerator:
             import sys
             sys.exit(1)
 
+        # Default ffl_offset to 0.01m if zero or negative
+        if self.ffl_offset <= 0:
+            self.ffl_offset = 0.01
+
         # Create the output directory if it doesn't exist
         os.makedirs(self.aoi_dir, exist_ok=True)
         os.makedirs(self.view_file_dir, exist_ok=True)
@@ -259,9 +263,9 @@ class ViewGenerator:
                         "rvu",
                         "-vtl",
                         "-vp",
-                        str(self.x_coord_center),
-                        str(self.y_coord_center),
-                        str(z_coordinate),
+                        f"{self.x_coord_center:.2f}",
+                        f"{self.y_coord_center:.2f}",
+                        f"{z_coordinate:.2f}",
                         "-vd",
                         "0",
                         "0",
@@ -271,9 +275,9 @@ class ViewGenerator:
                         "1",
                         "0",
                         "-vh",
-                        str(self.view_horizontal),
+                        f"{self.view_horizontal:.2f}",
                         "-vv",
-                        str(self.view_vertical),
+                        f"{self.view_vertical:.2f}",
                         "-vo",
                         "0",
                         "-va",

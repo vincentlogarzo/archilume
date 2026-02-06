@@ -39,13 +39,13 @@ class Timekeeper:
         self._current_phase_name = None
         self._current_print_header = False
 
-    def __call__(self, phase_name: str, print_header: bool = False):
+    def __call__(self, phase_name: str, print_header: bool = True):
         """
         Use as context manager or legacy timing tracker.
 
         Usage:
             # As context manager:
-            with timekeeper("Phase 1: Description", print_header=True):
+            with timekeeper("Phase 1: Description"):
                 # work here
 
             # Legacy mode (for backward compatibility):
@@ -172,7 +172,7 @@ class PhaseTimer:
         timer = PhaseTimer()
 
         # Use as context manager for each phase
-        with timer("Phase 1: Description...", print_header=True):
+        with timer("Phase 1: Description..."):
             # work here
 
         # Print final report
@@ -184,7 +184,7 @@ class PhaseTimer:
         self._context_stack = []  # Stack to handle nested timer contexts
         self._phase_hierarchy = {}  # Maps child phases to their parent phase
 
-    def __call__(self, phase_name: str, print_header: bool = False):
+    def __call__(self, phase_name: str, print_header: bool = True):
         """Prepare for use as context manager."""
         # Track parent-child relationships for nested timers
         if len(self._context_stack) > 0:
@@ -1536,6 +1536,90 @@ def print_timing_report(
         print("=" * 80 + f"\n\nOutput directory: {output_dir}\n" + "=" * 80)
     else:
         print("=" * 80)
+
+
+# ============================================================================
+# IESVE AOI CONVERSION UTILITIES
+# ============================================================================
+
+def iesve_aoi_to_room_boundaries_csv(
+    iesve_room_data_path: Path,
+    output_path: Path
+) -> Path:
+    """
+    Convert IESVE .aoi files into a room_boundaries CSV compatible with ViewGenerator.
+
+    Reads each .aoi file from the same directory as iesve_room_data_path, matches its
+    Space ID against the IESVE room data spreadsheet to obtain the room name and Z height,
+    then writes the combined boundary data as a headerless CSV with coordinates in
+    millimeters (as expected by ViewGenerator).
+
+    Args:
+        iesve_room_data_path: Path to the IESVE room data spreadsheet (.xlsx disguised as .csv).
+                              The .aoi files are expected in the same directory.
+        output_path: Path for the output room_boundaries CSV file
+
+    Returns:
+        Path to the written CSV file
+    """
+    aoi_dir = iesve_room_data_path.parent
+
+    # Load IESVE room data - build lookup: Space ID -> (Space Name, Z height in meters)
+    room_df = pd.read_excel(iesve_room_data_path)
+    room_lookup = {
+        row["Space ID"]: (row["Space Name (Real)"], row["Min. Height (m) (Real)"])
+        for _, row in room_df.iterrows()
+    }
+
+    rows = []
+    skipped = []
+
+    for aoi_file in sorted(aoi_dir.glob("*.aoi")):
+        with open(aoi_file, "r") as f:
+            lines = [line.strip() for line in f.readlines() if line.strip()]
+
+        # Parse ZONE line: "ZONE BL00000A B L3"
+        zone_parts = lines[1].split(maxsplit=2)  # ["ZONE", "BL00000A", "B L3"]
+        space_id = zone_parts[1]
+
+        if space_id not in room_lookup:
+            skipped.append(space_id)
+            continue
+
+        space_name, z_height_m = room_lookup[space_id]
+        z_mm = z_height_m * 1000
+
+        # Parse coordinate lines (after "POINTS N" header) - convert m to mm for ViewGenerator
+        coord_strings = []
+        for line in lines[3:]:
+            parts = line.split()
+            if len(parts) >= 2:
+                x_mm = float(parts[0]) * 1000
+                y_mm = float(parts[1]) * 1000
+                coord_strings.append(f"X_{x_mm:.3f} Y_{y_mm:.3f} Z_{z_mm:.3f}")
+
+        row = [space_id, space_name] + coord_strings
+        rows.append(",".join(str(v) for v in row))
+
+    # Pad all rows to the same column count (required by pd.read_csv)
+    max_cols = max(row.count(",") + 1 for row in rows) if rows else 0
+    padded_rows = []
+    for row in rows:
+        num_cols = row.count(",") + 1
+        row += "," * (max_cols - num_cols)
+        padded_rows.append(row)
+
+    # Write output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write("\n".join(padded_rows) + "\n")
+
+    print(f"Room boundaries CSV written: {output_path}")
+    print(f"  Rooms written: {len(rows)}, Skipped (no match): {len(skipped)}")
+    if skipped:
+        print(f"  Skipped Space IDs: {skipped}")
+
+    return output_path
 
 
 # ============================================================================
