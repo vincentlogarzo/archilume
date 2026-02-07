@@ -135,6 +135,11 @@ class ViewGenerator:
         # Run csv parser to restructure the room boundaries data for use
         self.__parse_room_boundaries_csv()
         
+    @property
+    def view_files(self) -> list[Path]:
+        """Return sorted list of generated .vp view files."""
+        return sorted(self.view_file_dir.glob("*.vp"))
+
     def create_plan_view_files(self) -> bool:
         """
         Generate Radiance view parameter files for each floor level.

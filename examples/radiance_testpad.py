@@ -41,45 +41,34 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
 
 --- 3. ---
 # testing rtpict versus rpict, where rtpict uses rtrace and multiprocessors to produce the image. rtpictwill only work on linux machine or connected to wsl in vs code in a dev container
-    rtpict -n 2 -vf view.vp -af ambfile.amb octree_with_sky.oct > output_rtpict.hdr
-    example with rpict:
-        rpict -t 5 -vf inputs/image10.vp -x 2048 -y 2048 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.002 inputs/image10.oct > outputs/image/image10.hdr
+    3.1. Rendering process
+        # Recommend resolutions: 64, 128, 256, 512, 1024, 2048, 4096
+            IMAGE_NAME="image1_shg_12ab"
+            RES=$((2048))
+            rtpict -n 19 -vf inputs/view.vp -x $RES -y $RES @inputs/${IMAGE_NAME}.rdp -af outputs/image/${IMAGE_NAME}.amb inputs/model.oct > outputs/image/${IMAGE_NAME}.hdr
 
-    rtpict -n 2 -vf inputs/image10.rdv inputs/image10.oct > outputs/image/image10.hdr
+        
+    3.2. Post-processing
+        3.2.1 # Create separate legend for reporting
+            pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l "DF%" -lw 400 -lh 1600 | ra_tiff - outputs/image/df_false_legend.tiff
+            pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l "DF%" -lw 400 -lh 1600 | ra_tiff - outputs/image/df_cntr_legend.tiff
 
-    high quality test:
-        rtpict -n 56 -t 1 -vf inputs/image10.vp -x 256 -y 256 @inputs/image10.rdp -af outputs/image/image10_high.amb inputs/image10.oct > outputs/image/image10_high.hdr
-        rtpict -n 56 -t 1 -vf inputs/image10.vp -x 512 -y 512 @inputs/image10.rdp -af outputs/image/image10_high.amb inputs/image10.oct > outputs/image/image10_high.hdr
-        rtpict -n 56 -t 1 -vf inputs/image10.vp -x 1024 -y 1024 @inputs/image10.rdp -af outputs/image/image10_high.amb inputs/image10.oct > outputs/image/image10_high.hdr
-        rtpict -n 56 -t 1 -vf inputs/image10.vp -x 2048 -y 2048 @inputs/image10.rdp -af outputs/image/image10_high.amb inputs/image10.oct > outputs/image/image10_high.hdr
-
-
-
-
-
-
-  
-
---- 4. ---
-# Turn view into rays file that can be rendered in parallel. This route is not to be investigate it did not work intially but could be a point of speeding up the process in the future. A points.txt files would be more appropraite. I beleive the vwrays programme is generating an invalid ray.dat file. 
-
-    # Generate rays in terminal in either binary option (-ff) or human readable format
-    vwrays -vf outputs/views_grids/plan_L02.vp -x 2048 -y 2048 > outputs/views_grids/plan_L02_rays.txt
-    #FIXME: update this export to place the header into the file itself. 
-
-    # add in ambient file run on whole scene to speed up subseuent rtrace runs at higher quality.
-    TODO: " AmbientFileUseandthe“Overture”Calculation" Read the above section of rendering with radiance and adjust the ambient file generation into an overture calculation with a small image with the final rendering parameters before getting into the actual rendering, then test out using Pfilt to reduce the size of the image for smoothing. 
-    
-    # RGBE values at each point with more parameters for quality
-    rtrace -h -ab 1 -ad 2048 -as 512 -ar 128 -aa 0.15 outputs/octree/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900.oct < outputs/views_grids/plan_L02_rays.txt > outputs/wpd/87cowles_BLD_noWindows_with_site_skyless_SS_0621_0900_plan_L02.txt
-
-    # Convert rtrace points.txt to RGBE format 
-    rtrace -h -ab 4 -aa 0.1 scene.rad < camera_rays.txt | ra_rgbe > output.hdr
-    #TODO test the above. 
-
-    FIXME there is an eror in the dimensions of the input vwrays and the output txt files in this situation only has dimenstions of 1908.
-    pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr > outputs/wpd/points.txt
-    pvalue -b +di outputs/images/87cowles_BLD_noWindows_with_site_plan_L02_SS_0621_1500.hdr | rcalc -e '$1=$1;$2=$2;$3=$3' -c '$3-1e-9' > outputs/wpd/points.txt
+        
+        3.2.2 # Smooth image use could be effective for final visualisation. Source image must be used for results. 
+            IMAGE_NAME="image1_shg_12ab"
+            pfilt -x /2 -y /2 outputs/image/${IMAGE_NAME}.hdr > outputs/image/${IMAGE_NAME}_smooth.hdr
+            pcomb -s 0.01 outputs/image/${IMAGE_NAME}.hdr | falsecolor -s 4 -n 10 -l "DF %" -lw 0 > outputs/image/${IMAGE_NAME}_df_false.hdr
+            pcomb -s 0.01 outputs/image/${IMAGE_NAME}.hdr \
+                | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 0 \
+                | tee outputs/image/${IMAGE_NAME}_df_cntr.hdr \
+                | pcomb \
+                    -e 'cond=ri(2)+gi(2)+bi(2)' \
+                    -e 'ro=if(cond-.01,ri(2),ri(1))' \
+                    -e 'go=if(cond-.01,gi(2),gi(1))' \
+                    -e 'bo=if(cond-.01,bi(2),bi(1))' \
+                    <(pfilt -e 0.5 outputs/image/${IMAGE_NAME}.hdr) \
+                    - \
+                | ra_tiff - outputs/image/${IMAGE_NAME}_df_cntr_overlay.tiff
 
     
 --- 5. ---

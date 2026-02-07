@@ -1544,7 +1544,6 @@ def print_timing_report(
 
 def iesve_aoi_to_room_boundaries_csv(
     iesve_room_data_path: Path,
-    output_path: Path
 ) -> Path:
     """
     Convert IESVE .aoi files into a room_boundaries CSV compatible with ViewGenerator.
@@ -1554,14 +1553,16 @@ def iesve_aoi_to_room_boundaries_csv(
     then writes the combined boundary data as a headerless CSV with coordinates in
     millimeters (as expected by ViewGenerator).
 
+    Output path is auto-generated as {WPD_DIR}/{input_stem}_boundaries.csv
+
     Args:
         iesve_room_data_path: Path to the IESVE room data spreadsheet (.xlsx disguised as .csv).
                               The .aoi files are expected in the same directory.
-        output_path: Path for the output room_boundaries CSV file
 
     Returns:
         Path to the written CSV file
     """
+    output_path = config.WPD_DIR / f"{Path(iesve_room_data_path).stem}_boundaries.csv"
     aoi_dir = iesve_room_data_path.parent
 
     # Load IESVE room data - build lookup: Space ID -> (Space Name, Z height in meters)

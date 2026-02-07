@@ -15,7 +15,7 @@ from archilume.utils import PhaseTimer
 # Standard library imports
 from dataclasses import dataclass, field
 import os
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +33,190 @@ logger = logging.getLogger(__name__)
 X_RES_OVERTURE          = 64
 Y_RES_OVERTURE          = 64
 IS_LINUX                = platform.system() == 'Linux'
-N_PROCESSORS            = 64  # Number of processors for rtpict on Linux
+N_PROCESSORS_MAX        = 64  # Number of processors for rtpict on Linux
+N_CPUS                  = config.DEFAULT_MAX_WORKERS  # All available cores
+
+
+@dataclass
+class DaylightRenderer:
+    """
+    Renders daylight factor (DF) analysis from pre-built IESVE octrees.
+
+    Executes rtpict rendering for each view file sequentially (one at a time,
+    using all available CPU cores), then post-processes HDR outputs into
+    falsecolor and contour overlay TIFFs.
+
+    Attributes:
+        octree_path: Pre-built octree file (from IESVE, includes sky)
+        rdp_path: Radiance parameters file (.rdp)
+        x_res: Horizontal image resolution in pixels
+        view_files: Single .vp Path or list of .vp Paths to render
+        y_res: Vertical image resolution (defaults to x_res)
+        image_dir: Output directory for rendered images
+    """
+
+    # Required
+    octree_path: Path
+    rdp_path: Path
+    x_res: int
+    view_files: Path | List[Path]
+
+    # Optional with defaults
+    y_res: Optional[int]        = field(default=None)
+    image_dir: Path             = field(default_factory=lambda: config.IMAGE_DIR)
+
+    def __post_init__(self):
+        # Normalise view_files to a sorted list of Paths
+        if isinstance(self.view_files, (str, Path)):
+            self.view_files = [Path(self.view_files)]
+        else:
+            self.view_files = sorted(Path(v) for v in self.view_files)
+        if not self.view_files:
+            raise ValueError("view_files must contain at least one .vp file")
+        for vf in self.view_files:
+            if not vf.exists():
+                raise FileNotFoundError(f"View file not found: {vf}")
+        if self.y_res is None:
+            self.y_res = self.x_res
+        os.makedirs(self.image_dir, exist_ok=True)
+        if not self.octree_path.exists():
+            raise FileNotFoundError(f"Octree not found: {self.octree_path}")
+        if not self.rdp_path.exists():
+            raise FileNotFoundError(f"RDP file not found: {self.rdp_path}")
+
+    def daylight_rendering_pipeline(self) -> None:
+        """
+        Execute the full daylight rendering and post-processing pipeline.
+
+        Renders each view sequentially using all CPU cores, then generates
+        falsecolor visualisations, contour overlays, and legend images.
+        """
+        print(f"\nDaylight rendering: {len(self.view_files)} view(s), {self.x_res}x{self.y_res}px, {N_CPUS} CPUs")
+        print(f"Octree: {self.octree_path.name}")
+        print(f"Params: {self.rdp_path.name}\n")
+
+        rendered_hdrs = []
+
+        # Start CPU usage logger
+        cpu_logger = self._start_cpu_logger()
+
+        # Step 1: Render each view sequentially, all cores per view
+        for view_file in self.view_files:
+            stem = view_file.stem
+            hdr_path = self.image_dir / f"{stem}.hdr"
+            amb_path = self.image_dir / f"{stem}.amb"
+
+            if IS_LINUX:
+                cmd = (
+                    rf"rtpict -n {N_CPUS} -t 1"
+                    rf" -vf {view_file}"
+                    rf" -x {self.x_res} -y {self.y_res}"
+                    rf" @{self.rdp_path}"
+                    rf" -af {amb_path}"
+                    rf" {self.octree_path}"
+                    rf" > {hdr_path}"
+                )
+            else:
+                cmd = (
+                    rf"rpict -w -t 2"
+                    rf" -vf {view_file}"
+                    rf" -x {self.x_res} -y {self.y_res}"
+                    rf" @{self.rdp_path}"
+                    rf" -af {amb_path}"
+                    rf" {self.octree_path}"
+                    rf" > {hdr_path}"
+                )
+
+            utils.execute_new_radiance_commands(cmd, number_of_workers=1)
+            rendered_hdrs.append(hdr_path)
+
+        # Stop CPU usage logger
+        self._stop_cpu_logger(cpu_logger)
+
+        # Step 2: Post-process each rendered HDR
+        for hdr_path in rendered_hdrs:
+            self._postprocess_hdr(hdr_path)
+
+        # Step 3: Generate legends (once)
+        self._generate_legends()
+
+        print(f"\nDaylight pipeline complete. {len(rendered_hdrs)} view(s) rendered to {self.image_dir}")
+
+    def _postprocess_hdr(self, hdr_path: Path) -> None:
+        """Generate smooth, falsecolor, and contour overlay outputs for a single HDR."""
+        stem = hdr_path.stem
+        d = self.image_dir
+
+        commands = [
+            # Smoothed image (half resolution)
+            rf"pfilt -x /2 -y /2 {hdr_path} > {d / f'{stem}_smooth.hdr'}",
+
+            # Falsecolor visualisation
+            rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 10 -l 'DF %%' -lw 0 > {d / f'{stem}_df_false.hdr'}",
+
+            # Contour overlay on dimmed source image
+            (
+                rf"pcomb -s 0.01 {hdr_path}"
+                rf" | falsecolor -cl -s 2 -n 4 -l 'DF %%' -lw 0"
+                rf" | tee {d / f'{stem}_df_cntr.hdr'}"
+                rf" | pcomb"
+                rf" -e 'cond=ri(2)+gi(2)+bi(2)'"
+                rf" -e 'ro=if(cond-.01,ri(2),ri(1))'"
+                rf" -e 'go=if(cond-.01,gi(2),gi(1))'"
+                rf" -e 'bo=if(cond-.01,bi(2),bi(1))'"
+                rf" <(pfilt -e 0.5 {hdr_path})"
+                rf" -"
+                rf" | ra_tiff - {d / f'{stem}_df_cntr_overlay.tiff'}"
+            ),
+        ]
+
+        utils.execute_new_radiance_commands(commands, number_of_workers=1)
+
+    def _generate_legends(self) -> None:
+        """Generate standalone falsecolor and contour legend TIFF images."""
+        d = self.image_dir
+
+        commands = [
+            # Falsecolor legend
+            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l 'DF%%' -lw 400 -lh 1600 | ra_tiff - {d / 'df_false_legend.tiff'}",
+
+            # Contour legend
+            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l 'DF%%' -lw 400 -lh 1600 | ra_tiff - {d / 'df_cntr_legend.tiff'}",
+        ]
+
+        utils.execute_new_radiance_commands(commands, number_of_workers=1)
+
+    def _start_cpu_logger(self) -> subprocess.Popen | None:
+        """Start a background CPU usage logger. Returns the process handle."""
+        log_path = self.image_dir / "cpu_log.txt"
+
+        if IS_LINUX:
+            # pidstat: sample every 60s, up to 100 samples, log all per-process CPU usage
+            cmd = ["pidstat", "-u", "-l", "60", "100"]
+        else:
+            # Windows: PowerShell typeperf sampling total CPU % every 60s
+            cmd = ["powershell", "-Command",
+                   f"typeperf '\\Processor(_Total)\\% Processor Time' -si 60 -o '{log_path}'"]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=open(log_path, "w") if IS_LINUX else subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"CPU logger started (PID {proc.pid}) -> {log_path}")
+            return proc
+        except FileNotFoundError:
+            print(f"CPU logger not available ({'pidstat' if IS_LINUX else 'typeperf'} not found), skipping.")
+            return None
+
+    def _stop_cpu_logger(self, proc: subprocess.Popen | None) -> None:
+        """Terminate the background CPU usage logger."""
+        if proc is None:
+            return
+        proc.terminate()
+        proc.wait(timeout=5)
+        print(f"CPU logger stopped (PID {proc.pid})")
 
 
 @dataclass
@@ -269,8 +452,8 @@ class SunlightRenderer:
             # constructed commands that will be executed in parallel from each other until all are complete.
             if IS_LINUX:
                 # Use rtpict on Linux for multi-processor rendering
-                rpict_overture_command = rf"rtpict -n {N_PROCESSORS} -t 1 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
-                rpict_med_qual_command = rf"rtpict -n {N_PROCESSORS} -t 1 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
+                rpict_overture_command = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
+                rpict_med_qual_command = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
             else:
                 # Use standard rpict on Windows/other platforms
                 rpict_overture_command = rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
@@ -450,7 +633,7 @@ class SunlightRenderer:
             # Each rtpict process uses max N_PROCESSORS CPUs (hardcoded limit in Radiance)
             # With available CPUs, run floor(total_cpus / cpus_per_render) processes in parallel
             total_cpus = config.DEFAULT_MAX_WORKERS
-            cpus_per_render = N_PROCESSORS
+            cpus_per_render = N_PROCESSORS_MAX
             max_parallel_renders = max(1, total_cpus // cpus_per_render)
 
             print(f"Overcast rendering parallelism: {max_parallel_renders} concurrent renders "
