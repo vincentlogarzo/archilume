@@ -8,6 +8,7 @@ rectangular room boundaries for each level at specified intervals.
 import csv
 import os
 from pathlib import Path
+from typing import Optional
 from archilume import config
 
 
@@ -127,7 +128,7 @@ def parse_obj_bounding_box(filepath: Path) -> dict:
 def generate_room_boundaries(
     bbox: dict,
     level_height: float = 3.0,
-    output_path: str = "room_boundaries.csv",
+    output_path: Path | str = "room_boundaries.csv",
     room_type: str = "FLOOR",
     level_prefix: str = "L",
     coordinate_scale: float = 1000.0,
@@ -202,7 +203,7 @@ def generate_room_boundaries(
 
 def main(
     obj_filepath: Path,
-    output_path: str = None,
+    output_path: Optional[Path | str] = None,
     level_height: float = 3.0,
     room_type: str = "FLOOR",
     level_prefix: str = "L",
@@ -227,6 +228,8 @@ def main(
     # Default output path in same directory as OBJ file
     if output_path is None:
         output_path = obj_path.parent / f"{obj_path.stem}_room_boundaries.csv"
+    else:
+        output_path = Path(output_path) if isinstance(output_path, str) else output_path
 
     # Parse OBJ file for bounding box
     bbox = parse_obj_bounding_box(obj_path)

@@ -101,10 +101,11 @@ class DaylightRenderer:
         cpu_logger = self._start_cpu_logger()
 
         # Step 1: Render each view sequentially, all cores per view
+        octree_base_name = self.octree_path.stem
         for view_file in self.view_files:
-            stem = view_file.stem
-            hdr_path = self.image_dir / f"{stem}.hdr"
-            amb_path = self.image_dir / f"{stem}.amb"
+            view_name = view_file.stem
+            hdr_path = self.image_dir / f"{octree_base_name}_{view_name}.hdr"
+            amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
 
             if IS_LINUX:
                 cmd = (
@@ -154,7 +155,10 @@ class DaylightRenderer:
             # Falsecolor visualisation
             rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 10 -l 'DF %%' -lw 0 > {d / f'{stem}_df_false.hdr'}",
 
-            # Contour overlay on dimmed source image
+            # Create dimmed background (temporary file for contour overlay)
+            rf"pfilt -e 0.5 {hdr_path} > {d / f'{stem}_dimmed_temp.hdr'}",
+
+            # Contour overlay on dimmed source image (using temporary file instead of process substitution)
             (
                 rf"pcomb -s 0.01 {hdr_path}"
                 rf" | falsecolor -cl -s 2 -n 4 -l 'DF %%' -lw 0"
@@ -164,13 +168,18 @@ class DaylightRenderer:
                 rf" -e 'ro=if(cond-.01,ri(2),ri(1))'"
                 rf" -e 'go=if(cond-.01,gi(2),gi(1))'"
                 rf" -e 'bo=if(cond-.01,bi(2),bi(1))'"
-                rf" <(pfilt -e 0.5 {hdr_path})"
+                rf" {d / f'{stem}_dimmed_temp.hdr'}"
                 rf" -"
                 rf" | ra_tiff - {d / f'{stem}_df_cntr_overlay.tiff'}"
             ),
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)
+
+        # Clean up temporary dimmed file after processing
+        dimmed_temp = d / f'{stem}_dimmed_temp.hdr'
+        if dimmed_temp.exists():
+            dimmed_temp.unlink()
 
     def _generate_legends(self) -> None:
         """Generate standalone falsecolor and contour legend TIFF images."""

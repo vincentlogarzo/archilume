@@ -28,7 +28,6 @@ Output:             HDR images, falsecolor/contour TIFFs, legend images, view fi
 
 # Archilume imports
 from archilume import (
-    SkyGenerator,
     ViewGenerator,
     Objs2Octree,
     DaylightRenderer,
@@ -45,38 +44,11 @@ from archilume import (
 # Third-party imports
 
 
-"""
-arhcitecture to run on gcloud services and more cost optimised rendering pipelines for large scale daylighting analysis.
-    T2D  
-    N4D 
-    E2 (google cloud high compute 32 vCPU + 100Gb storage VM cost=$2.5 to simulate 1 floor plate, Scotch hill gardens model at -ab 2 res=2048)
-
-for use with WSL distro on Windows machines, alter the .wslconfig file to allow for more RAM and processors. 
-
-    @"
-    [wsl2]
-    memory=28GB
-    processors=20
-    "@ | Out-File -FilePath "$env:USERPROFILE\.wslconfig" -Encoding ASCII
-
-Utility terminal commands 
-    # with real time logging
-        pidstat -u -l 60 100 > outputs/image/pidstat_log.txt &
-
-Only works with 10Klux sky.
-
-"""
-
-# TODO: eventually it this should utilised model.rad inputs and the source .mtl file to allow for parametetric simulation utilising different glass VLTs. e.g. 1 x model.rad + list of .mtl + list of cpu .rdp + list .rdv. This would allow for more flexible workflows and parametric analysis.
-# TODO add inputs validator, extend its functionality for this use case. e.g. validate input IES room data csv has the correct columns identifiers. 
-# TODO: add functionality to allow multiple parameters input files to run parametric analysis, or low param for initial checks and setup of aoi with high run results coming in later. 
-
-
 def iesve_daylight_parallel_images():
     
     timer = PhaseTimer()
     
-    with timer("Phase 0: Input scene Octree, Rendering param file (.rdp) and view files (.rdv)..."):
+    with timer("Phase 0: User input 3D Scene file + Rendering parameter (.rdp) and aoi (.aoi)..."):
         image_resolution    = 2048                                      # Image resolution (pixels)
         ffl_offset          = 0.00                                      # Camera height above FFL (meters)
         octree_path         = config.INPUTS_DIR / "model.oct"           # Source 3D model from IESVE
@@ -94,7 +66,7 @@ def iesve_daylight_parallel_images():
             )
         view_generator.create_plan_view_files()
 
-    with timer("Phase 2: Execute Rendering Pipeline..."):
+    with timer("Phase 2: Execute Image Rendering..."):
         renderer = DaylightRenderer(
             octree_path                 = octree_path,
             rdp_path                    = rendering_params,
@@ -102,11 +74,6 @@ def iesve_daylight_parallel_images():
             view_files                  = view_generator.view_files,
             )
         renderer.daylight_rendering_pipeline()
-
-
-
-
-
 
     # with timer("Phase 3: Post-processing and Stamping of Results..."):
     #     with timer("  3a: Generate AOI files..."):
@@ -119,7 +86,9 @@ def iesve_daylight_parallel_images():
     #         converter = Hdr2Wpd(
     #             pixel_to_world_map          = coordinate_map_path
     #             )
-    #         converter.sunlight_sequence_wpd_extraction()
+    #         converter.daylight_wpd_extraction()
+
+
 
 """
 
@@ -152,23 +121,8 @@ def iesve_daylight_parallel_images():
                 - \
             | ra_tiff - outputs/image/${IMAGE_NAME}_df_cntr_overlay.tiff
 
-
-
-
-
-
-
-
-
-
-
-
-
 4. Stamping and compliance results generation use 5b and 5c in sunlight_access_workflow as reference. Stamp images and add contours as needed. 
     TODO: modify classes to perform this analysis.
-
-
-
 
 
 """
@@ -180,3 +134,31 @@ if __name__ == "__main__":
 
 
 
+"""
+arhcitecture to run on gcloud services and more cost optimised rendering pipelines for large scale daylighting analysis.
+    T2D  
+    N4D 
+    E2 (google cloud high compute 32 vCPU + 100Gb storage VM cost=$2.5 to simulate 1 floor plate, Scotch hill gardens model at -ab 2 res=2048)
+
+for use with WSL distro on Windows machines, alter the .wslconfig file to allow for more RAM and processors. 
+
+    @"
+    [wsl2]
+    memory=28GB
+    processors=20
+    "@ | Out-File -FilePath "$env:USERPROFILE\.wslconfig" -Encoding ASCII
+
+Utility terminal commands 
+    # with real time logging
+        pidstat -u -l 60 100 > outputs/image/pidstat_log.txt &
+
+Only works with 10Klux sky.
+
+"""
+
+# TODO: eventually it this should utilised model.rad inputs and the source .mtl file to allow for parametetric simulation utilising different glass VLTs. e.g. 1 x model.rad + list of .mtl + list of cpu .rdp + list .rdv. This would allow for more flexible workflows and parametric analysis.
+#TODO: setup the inputs strcutrue to take in grid_res instead of image res, this wouuld be a dynamically calculated parameters. It would mean that we set the grid_red for images to be e.g. 20mm then no matter the size of the view the images will be consistent in their resolution when viewed by a human. This would mean that we could then setup half grid_res to run first then subsequent runs second, so that a user can use the first images to begging aoi checks and redrawing or intial setup of boundaries boundaries for post processing final results. 
+# TODO add inputs validator, extend its functionality for this use case. e.g. validate input IES room data csv has the correct columns identifiers. 
+#TODO: augment the view offset from FFL input to use the actual parameters for offset in the .views files as intended by radiance. This way, the offset will reveal itself in the image file header. 
+# TODO: add functionality to allow multiple parameters input files to run parametric analysis, or low param for initial checks and setup of aoi with high run results coming in later. 
+#TODO : setup outputs checkings on commands just before they are run, then remove command from list if output file exists, (i.e. has same parameters or other conditions with which to not re-run this simulation e.g. the ambient file use can only be re-used for the same view with the all same parameters (except resolution, this can change between runs))
