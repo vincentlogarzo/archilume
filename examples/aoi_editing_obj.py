@@ -13,17 +13,19 @@ Usage:
 
 Controls:
     Plan/Elev btns  Switch between Plan and Elevation views
+    Edit Mode btn   Enable editing of existing room boundaries
     Z slider        Adjust the horizontal section height (Plan view)
     ↑/↓ arrows      Navigate to next/previous detected floor level
-    Left-click      Place polygon vertices (Plan view only, snaps to mesh)
+    Left-click      Place polygon vertices (Draw) OR drag vertex (Edit mode)
     Right-click     Select an existing room polygon (Plan view only)
     Scroll          Zoom in/out centred on cursor
-    Snap button     Toggle vertex snapping on/off
+    Snap button     Toggle vertex snapping on/off (works in Edit mode too)
     All Floors btn  Show rooms from all floors (grayed out) or current floor only
     Snap slider     Adjust snap distance threshold (0.1-2.0m)
+    e               Toggle Edit Mode (modify existing boundaries)
     v               Cycle through views (Plan → Elev X → Elev Y → Plan)
     a               Toggle All Floors view
-    s               Save current polygon as room
+    s               Save current polygon/edited boundary
     S               Save session to JSON
     d               Delete selected room
     r               Reset zoom
@@ -38,7 +40,9 @@ Features:
     - Session persistence: Auto-loads previous boundaries from JSON
     - Multi-floor visualization: View and edit rooms across all floors
     - Smart room selection: Right-click jumps to room's floor automatically
+    - Vertex editing: Edit existing room boundaries by dragging vertices
     - View-aware editing: Boundary creation restricted to Plan view only
+    - Hover detection: Visual feedback when hovering over rooms and vertices
     - Mesh simplification for large OBJ files
     - Slice caching for instant navigation
 
@@ -63,9 +67,6 @@ obj_paths = [
     # config.INPUTS_DIR / "22041_AR_T01_v2.obj",
 ]
 
-# Optional: MTL file for future material-aware display
-mtl_path = None
-
 # --- Performance Options for Large Meshes ---
 # Uncomment and adjust these parameters if your OBJ file is very large (>100K faces)
 
@@ -73,7 +74,7 @@ mtl_path = None
 #   - 0.5 = reduce to 50% of original cells
 #   - 0.3 = reduce to 30% of original cells
 #   - None = no simplification (default)
-simplify_ratio = None  # Try 0.5 for meshes >100K cells
+simplify_ratio = 0.3 
 
 # detect_floors: Auto-detect floor levels on load
 #   - True = automatically detect floors (default, recommended)
@@ -91,7 +92,6 @@ if __name__ == "__main__":
     # Standard usage (optimized with caching and KD-tree snapping)
     editor = BoundaryEditor(
         obj_paths=obj_paths,
-        mtl_path=mtl_path,
         simplify_ratio=simplify_ratio,
         detect_floors=detect_floors,
         max_vertex_display=max_vertex_display,

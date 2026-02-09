@@ -413,6 +413,13 @@ class BoundaryEditor:
         self.view_mode: str = 'plan'  # 'plan', 'elevation_x', or 'elevation_y'
         self.elevation_position: float = 0.0  # Position of elevation slice
 
+        # Vertex editing mode
+        self.edit_mode: bool = False  # Toggle for editing existing boundaries
+        self.edit_room_idx: Optional[int] = None  # Index of room being edited
+        self.edit_vertex_idx: Optional[int] = None  # Index of vertex being dragged
+        self.hover_room_idx: Optional[int] = None  # Room under cursor
+        self.hover_vertex_idx: Optional[int] = None  # Vertex under cursor
+
         # Slider debouncing
         self._z_slider_timer: Optional[int] = None
         self._pending_z_value: Optional[float] = None
@@ -462,6 +469,8 @@ class BoundaryEditor:
 
         # Event handlers (snap handler must come first to intercept before selector)
         self.fig.canvas.mpl_connect('button_press_event', self._on_click_with_snap)
+        self.fig.canvas.mpl_connect('button_release_event', self._on_button_release)
+        self.fig.canvas.mpl_connect('motion_notify_event', self._on_mouse_motion)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
 
@@ -602,23 +611,28 @@ class BoundaryEditor:
         self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom')
         self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
 
+        # Edit mode toggle button
+        ax_edit_mode = self.fig.add_axes([pl, 0.24, pw, 0.04])
+        self.btn_edit_mode = Button(ax_edit_mode, 'Edit Mode: OFF (Press E)')
+        self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
+
         # Snap to vertex toggle button
-        ax_snap = self.fig.add_axes([pl, 0.20, pw * 0.48, 0.04])
+        ax_snap = self.fig.add_axes([pl, 0.19, pw * 0.48, 0.04])
         self.btn_snap = Button(ax_snap, 'Snap: ON' if self.snap_enabled else 'Snap: OFF')
         self.btn_snap.on_clicked(self._on_snap_toggle)
 
         # Show all floors toggle button
-        ax_show_all = self.fig.add_axes([pl + pw * 0.52, 0.20, pw * 0.48, 0.04])
+        ax_show_all = self.fig.add_axes([pl + pw * 0.52, 0.19, pw * 0.48, 0.04])
         self.btn_show_all = Button(ax_show_all, 'All Floors: OFF')
         self.btn_show_all.on_clicked(self._on_show_all_toggle)
 
         # Snap distance slider
-        ax_snap_dist_lbl = self.fig.add_axes([pl, 0.16, pw, 0.03])
+        ax_snap_dist_lbl = self.fig.add_axes([pl, 0.15, pw, 0.03])
         ax_snap_dist_lbl.axis('off')
         ax_snap_dist_lbl.text(0, 0.5, f"Snap Distance: {self.snap_distance:.1f}m", fontsize=9)
         self.snap_dist_label = ax_snap_dist_lbl
 
-        ax_snap_slider = self.fig.add_axes([pl, 0.13, pw, 0.02])
+        ax_snap_slider = self.fig.add_axes([pl, 0.12, pw, 0.02])
         self.snap_slider = Slider(
             ax_snap_slider,
             '',
@@ -630,12 +644,12 @@ class BoundaryEditor:
         self.snap_slider.on_changed(self._on_snap_distance_changed)
 
         # Room list header
-        ax_list_hdr = self.fig.add_axes([pl, 0.09, pw, 0.03])
+        ax_list_hdr = self.fig.add_axes([pl, 0.08, pw, 0.03])
         ax_list_hdr.axis('off')
-        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (right-click to select):", fontsize=9, fontweight='bold')
+        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (hover/click to edit):", fontsize=9, fontweight='bold')
 
         # Room list area
-        self.ax_list = self.fig.add_axes([pl, 0.02, pw, 0.07])
+        self.ax_list = self.fig.add_axes([pl, 0.02, pw, 0.06])
         self.ax_list.axis('off')
 
     # -------------------------------------------------------------------------
@@ -738,14 +752,28 @@ class BoundaryEditor:
             return
 
         is_selected = (idx == self.selected_room_idx)
+        is_hover = (idx == self.hover_room_idx)
+        is_editing = (idx == self.edit_room_idx and self.edit_mode)
 
-        # Color scheme based on floor level and selection state
-        if is_selected:
+        # Color scheme based on state
+        if is_editing:
+            edge_color = 'cyan'
+            face_color = 'cyan'
+            alpha = 0.3
+            lw = 3
+            label_bg = 'cyan'
+        elif is_selected:
             edge_color = 'yellow'
             face_color = 'yellow'
             alpha = 0.35
             lw = 4
             label_bg = 'orange'
+        elif is_hover and self.edit_mode:
+            edge_color = 'magenta'
+            face_color = 'magenta'
+            alpha = 0.2
+            lw = 2
+            label_bg = 'magenta'
         elif is_current_floor:
             edge_color = 'green'
             face_color = 'green'
@@ -766,6 +794,26 @@ class BoundaryEditor:
         )
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
+
+        # Draw vertices as editable points in edit mode
+        if is_editing and self.edit_mode:
+            verts_array = np.array(verts)
+            for v_idx, (vx, vy) in enumerate(verts_array):
+                # Highlight vertex under cursor
+                if v_idx == self.hover_vertex_idx:
+                    marker_color = 'red'
+                    marker_size = 12
+                else:
+                    marker_color = 'cyan'
+                    marker_size = 8
+
+                self.ax.plot([vx], [vy], 'o',
+                           markersize=marker_size,
+                           color=marker_color,
+                           markeredgecolor='black',
+                           markeredgewidth=1.5,
+                           zorder=100,
+                           picker=5)  # Enable picking with 5pt tolerance
 
         # Add label with floor level info if showing all floors
         centroid = np.array(verts).mean(axis=0)
@@ -1042,12 +1090,102 @@ class BoundaryEditor:
                 self._update_status('Room selection only in Plan view', 'orange')
             return
 
-        # Left-click: apply snapping before selector sees the event (plan view only)
-        if event.button == 1 and event.xdata is not None and event.ydata is not None:
+        # Left-click in edit mode: start vertex drag or enter edit for hovered room
+        if event.button == 1 and self.edit_mode and event.xdata is not None and event.ydata is not None:
+            # Check if clicking on a vertex of the editing room
+            if self.edit_room_idx is not None and self.hover_vertex_idx is not None:
+                # Start dragging this vertex
+                self.edit_vertex_idx = self.hover_vertex_idx
+                self._update_status(f"Dragging vertex {self.hover_vertex_idx + 1}", 'blue')
+                return
+
+            # Check if clicking on hovered room to enter edit mode
+            if self.hover_room_idx is not None:
+                self._enter_edit_mode_for_room(self.hover_room_idx)
+                return
+
+        # Left-click: apply snapping before selector sees the event (plan view only, not in edit mode)
+        if event.button == 1 and not self.edit_mode and event.xdata is not None and event.ydata is not None:
             snapped_x, snapped_y = self._snap_to_vertex(event.xdata, event.ydata)
             # Modify event in-place so selector sees snapped coordinates
             event.xdata = snapped_x
             event.ydata = snapped_y
+
+    def _on_button_release(self, event):
+        """Handle mouse button release (end of drag)."""
+        if event.inaxes != self.ax:
+            return
+
+        # End vertex dragging
+        if self.edit_vertex_idx is not None:
+            self.edit_vertex_idx = None
+            self._update_status("Vertex moved - click 'Save Apartment' to save changes", 'green')
+            self.fig.canvas.draw_idle()
+
+    def _on_mouse_motion(self, event):
+        """Handle mouse movement for hover detection and vertex dragging."""
+        if event.inaxes != self.ax or self.view_mode != 'plan':
+            return
+
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return
+
+        # Handle vertex dragging
+        if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
+            room = self.rooms[self.edit_room_idx]
+            # Snap to vertex if enabled
+            if self.snap_enabled:
+                x, y = self._snap_to_vertex(x, y)
+            # Update vertex position
+            room['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
+            self._render_section()
+            self._create_polygon_selector()
+            return
+
+        # Hover detection in edit mode
+        if not self.edit_mode:
+            return
+
+        # Check for vertex hover (only for room being edited)
+        if self.edit_room_idx is not None:
+            room = self.rooms[self.edit_room_idx]
+            verts = np.array(room['vertices'])
+            distances = np.sqrt((verts[:, 0] - x)**2 + (verts[:, 1] - y)**2)
+            min_dist_idx = np.argmin(distances)
+            min_dist = distances[min_dist_idx]
+
+            # Hover threshold: 0.5m or snap distance
+            hover_threshold = max(0.5, self.snap_distance)
+            if min_dist < hover_threshold:
+                if self.hover_vertex_idx != min_dist_idx:
+                    self.hover_vertex_idx = min_dist_idx
+                    self._render_section()
+                    self._create_polygon_selector()
+                return
+            else:
+                if self.hover_vertex_idx is not None:
+                    self.hover_vertex_idx = None
+                    self._render_section()
+                    self._create_polygon_selector()
+
+        # Check for room hover
+        from matplotlib.path import Path as MplPath
+        new_hover_idx = None
+        for i, room in enumerate(self.rooms):
+            if abs(room['z_height'] - self.current_z) > 0.5:
+                continue
+            verts = np.array(room['vertices'])
+            if MplPath(verts).contains_point((x, y)):
+                new_hover_idx = i
+                break
+
+        if new_hover_idx != self.hover_room_idx:
+            self.hover_room_idx = new_hover_idx
+            if new_hover_idx is not None:
+                self._update_status(f"Hover: {self.rooms[new_hover_idx].get('name', 'unnamed')} - click to edit", 'blue')
+            self._render_section()
+            self._create_polygon_selector()
 
     def _on_key_press(self, event):
         """Handle keyboard shortcuts."""
@@ -1079,6 +1217,8 @@ class BoundaryEditor:
                 self._set_view_mode('elevation_y')
             else:
                 self._set_view_mode('plan')
+        elif event.key == 'e':
+            self._on_edit_mode_toggle(None)  # 'e' = toggle Edit mode
 
     # -------------------------------------------------------------------------
     # Room selection
@@ -1142,11 +1282,37 @@ class BoundaryEditor:
     # -------------------------------------------------------------------------
 
     def _on_save_click(self, event):
-        """Save the current polygon as a room, or update the selected room."""
-        if self.selected_room_idx is not None:
+        """Save the current polygon as a room, update selected room, or save edited boundary."""
+        if self.edit_mode and self.edit_room_idx is not None:
+            # Save edited room boundary
+            self._save_edited_room()
+        elif self.selected_room_idx is not None:
+            # Update room name/type
             self._update_selected_room()
         else:
+            # Save new polygon
             self._save_current_room()
+
+    def _save_edited_room(self):
+        """Save changes to an edited room boundary."""
+        if self.edit_room_idx is None:
+            return
+
+        room = self.rooms[self.edit_room_idx]
+        name = room.get('name', 'unnamed')
+
+        # Auto-save session to JSON
+        self._save_session()
+
+        # Exit edit mode for this room
+        self.edit_room_idx = None
+        self.hover_vertex_idx = None
+        self._update_status(f"Saved boundary changes for '{name}'", 'green')
+        self._render_section()
+        self._create_polygon_selector()
+        self._update_room_list()
+        self._update_floor_level_list()
+        print(f"Saved edited boundary for '{name}'")
 
     def _save_current_room(self):
         """Save the currently drawn polygon as a new room."""
@@ -1263,6 +1429,41 @@ class BoundaryEditor:
         self._update_status(f"Showing rooms from {status}", 'blue')
         self._render_section()
         # Re-create selector after render
+        self._create_polygon_selector()
+
+    def _on_edit_mode_toggle(self, event):
+        """Toggle edit mode for modifying existing room boundaries."""
+        self.edit_mode = not self.edit_mode
+        self.btn_edit_mode.label.set_text('Edit Mode: ON (Press E)' if self.edit_mode else 'Edit Mode: OFF (Press E)')
+
+        if self.edit_mode:
+            # Disable polygon selector when in edit mode
+            if hasattr(self, 'selector'):
+                self.selector.set_active(False)
+            self._update_status("Edit Mode: Hover over room and click to edit vertices", 'cyan')
+        else:
+            # Exit edit mode - clear edit state
+            self.edit_room_idx = None
+            self.edit_vertex_idx = None
+            self.hover_room_idx = None
+            self.hover_vertex_idx = None
+            # Re-enable polygon selector
+            self._create_polygon_selector()
+            self._update_status("Edit Mode OFF - Draw mode enabled", 'blue')
+
+        self._render_section()
+
+    def _enter_edit_mode_for_room(self, room_idx: int):
+        """Enter edit mode for a specific room's boundary.
+
+        Args:
+            room_idx: Index of room in self.rooms list
+        """
+        self.edit_room_idx = room_idx
+        self.hover_vertex_idx = None
+        room = self.rooms[room_idx]
+        self._update_status(f"Editing: {room.get('name', 'unnamed')} - drag vertices to modify", 'cyan')
+        self._render_section()
         self._create_polygon_selector()
 
     def _set_view_mode(self, mode: str):
