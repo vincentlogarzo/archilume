@@ -807,17 +807,26 @@ class BoundaryEditor:
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
 
-        # Draw vertices as editable points in edit mode
-        if is_editing and self.edit_mode:
+        # Draw vertices as editable points in edit mode (ALL rooms, not just one being edited)
+        if self.edit_mode and is_current_floor:
             verts_array = np.array(verts)
             for v_idx, (vx, vy) in enumerate(verts_array):
                 # Highlight vertex under cursor
-                if v_idx == self.hover_vertex_idx:
+                is_hovered = (idx == self.hover_room_idx and v_idx == self.hover_vertex_idx)
+                is_dragging = (idx == self.edit_room_idx and v_idx == self.edit_vertex_idx)
+
+                if is_dragging:
+                    # Currently dragging this vertex
+                    marker_color = 'yellow'
+                    marker_size = 14
+                elif is_hovered:
+                    # Hovering over this vertex
                     marker_color = 'red'
                     marker_size = 12
                 else:
+                    # Regular editable vertex
                     marker_color = 'cyan'
-                    marker_size = 8
+                    marker_size = 7
 
                 self.ax.plot([vx], [vy], 'o',
                            markersize=marker_size,
@@ -1102,19 +1111,18 @@ class BoundaryEditor:
                 self._update_status('Room selection only in Plan view', 'orange')
             return
 
-        # Left-click in edit mode: start vertex drag or enter edit for hovered room
+        # Left-click in edit mode: start vertex drag on any hovered vertex
         if event.button == 1 and self.edit_mode and event.xdata is not None and event.ydata is not None:
-            # Check if clicking on a vertex of the editing room
-            if self.edit_room_idx is not None and self.hover_vertex_idx is not None:
+            # Check if clicking on a hovered vertex (from any room)
+            if self.hover_vertex_idx is not None and self.hover_room_idx is not None:
                 # Start dragging this vertex
+                self.edit_room_idx = self.hover_room_idx
                 self.edit_vertex_idx = self.hover_vertex_idx
-                self._update_status(f"Dragging vertex {self.hover_vertex_idx + 1}", 'blue')
+                room_name = self.rooms[self.hover_room_idx].get('name', 'unnamed')
+                self._update_status(f"Dragging vertex in '{room_name}'", 'cyan')
                 return
-
-            # Check if clicking on hovered room to enter edit mode
-            if self.hover_room_idx is not None:
-                self._enter_edit_mode_for_room(self.hover_room_idx)
-                return
+            # If not on vertex, clicking does nothing in edit mode
+            return
 
         # Left-click: apply snapping before selector sees the event (plan view only, not in edit mode)
         if event.button == 1 and not self.edit_mode and event.xdata is not None and event.ydata is not None:
@@ -1128,11 +1136,22 @@ class BoundaryEditor:
         if event.inaxes != self.ax:
             return
 
-        # End vertex dragging
-        if self.edit_vertex_idx is not None:
+        # End vertex dragging - apply snap and full render
+        if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
+            room = self.rooms[self.edit_room_idx]
+            current_pos = room['vertices'][self.edit_vertex_idx]
+
+            # Apply snap to mesh vertex if enabled
+            if self.snap_enabled and event.xdata is not None and event.ydata is not None:
+                snapped_x, snapped_y = self._snap_to_vertex(current_pos[0], current_pos[1])
+                room['vertices'][self.edit_vertex_idx] = [float(snapped_x), float(snapped_y)]
+
+            # Full render with selector recreation
             self.edit_vertex_idx = None
-            self._update_status("Vertex moved - click 'Save Apartment' to save changes", 'green')
-            self.fig.canvas.draw_idle()
+            room_name = room.get('name', 'unnamed')
+            self._update_status(f"Moved vertex in '{room_name}' - press 's' to save", 'green')
+            self._render_section()
+            self._create_polygon_selector()
 
     def _on_mouse_motion(self, event):
         """Handle mouse movement for hover detection and vertex dragging."""
@@ -1143,61 +1162,59 @@ class BoundaryEditor:
         if x is None or y is None:
             return
 
-        # Handle vertex dragging
+        # Handle vertex dragging - fast update without full render
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             room = self.rooms[self.edit_room_idx]
-            # Snap to vertex if enabled
-            if self.snap_enabled:
-                x, y = self._snap_to_vertex(x, y)
-            # Update vertex position
+            # Update vertex position (don't snap during drag for responsiveness)
             room['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
+            # Quick redraw without recreating selector
             self._render_section()
-            self._create_polygon_selector()
             return
 
-        # Hover detection in edit mode
+        # Hover detection in edit mode only
         if not self.edit_mode:
             return
 
-        # Check for vertex hover (only for room being edited)
-        if self.edit_room_idx is not None:
-            room = self.rooms[self.edit_room_idx]
+        # Check for vertex hover across ALL visible rooms
+        hover_threshold = 1.0  # More generous: 1 meter
+        closest_vertex = None
+        closest_dist = float('inf')
+        closest_room_idx = None
+        closest_vertex_idx = None
+
+        for i, room in enumerate(self.rooms):
+            # Only check rooms on current floor (or all if show_all_floors)
+            is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
+            if not self.show_all_floors and not is_current_floor:
+                continue
+
             verts = np.array(room['vertices'])
             distances = np.sqrt((verts[:, 0] - x)**2 + (verts[:, 1] - y)**2)
             min_dist_idx = np.argmin(distances)
             min_dist = distances[min_dist_idx]
 
-            # Hover threshold: 0.5m or snap distance
-            hover_threshold = max(0.5, self.snap_distance)
-            if min_dist < hover_threshold:
-                if self.hover_vertex_idx != min_dist_idx:
-                    self.hover_vertex_idx = min_dist_idx
-                    self._render_section()
-                    self._create_polygon_selector()
-                return
-            else:
-                if self.hover_vertex_idx is not None:
-                    self.hover_vertex_idx = None
-                    self._render_section()
-                    self._create_polygon_selector()
+            if min_dist < closest_dist:
+                closest_dist = min_dist
+                closest_vertex_idx = min_dist_idx
+                closest_room_idx = i
 
-        # Check for room hover
-        from matplotlib.path import Path as MplPath
-        new_hover_idx = None
-        for i, room in enumerate(self.rooms):
-            if abs(room['z_height'] - self.current_z) > 0.5:
-                continue
-            verts = np.array(room['vertices'])
-            if MplPath(verts).contains_point((x, y)):
-                new_hover_idx = i
-                break
-
-        if new_hover_idx != self.hover_room_idx:
-            self.hover_room_idx = new_hover_idx
-            if new_hover_idx is not None:
-                self._update_status(f"Hover: {self.rooms[new_hover_idx].get('name', 'unnamed')} - click to edit", 'blue')
-            self._render_section()
-            self._create_polygon_selector()
+        # Update hover state if found vertex within threshold
+        if closest_dist < hover_threshold:
+            changed = (self.hover_room_idx != closest_room_idx or
+                      self.hover_vertex_idx != closest_vertex_idx)
+            if changed:
+                self.hover_room_idx = closest_room_idx
+                self.hover_vertex_idx = closest_vertex_idx
+                room_name = self.rooms[closest_room_idx].get('name', 'unnamed')
+                self._update_status(f"Vertex in '{room_name}' - click to drag", 'cyan')
+                self._render_section()
+        else:
+            # No vertex nearby - clear hover state
+            if self.hover_vertex_idx is not None or self.hover_room_idx is not None:
+                self.hover_vertex_idx = None
+                self.hover_room_idx = None
+                self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
+                self._render_section()
 
     def _on_key_press(self, event):
         """Handle keyboard shortcuts."""
@@ -1452,7 +1469,7 @@ class BoundaryEditor:
             # Disable polygon selector when in edit mode
             if hasattr(self, 'selector'):
                 self.selector.set_active(False)
-            self._update_status("Edit Mode: Hover over room and click to edit vertices", 'cyan')
+            self._update_status("Edit Mode: Hover over any vertex to drag (all rooms editable)", 'cyan')
         else:
             # Exit edit mode - clear edit state
             self.edit_room_idx = None
