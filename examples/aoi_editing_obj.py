@@ -15,10 +15,12 @@ Controls:
     Z slider        Adjust the horizontal section height
     ↑/↓ arrows      Navigate to next/previous detected floor level
     Left-click      Place polygon vertices (snaps to mesh vertices)
-    Right-click     Select an existing room polygon
+    Right-click     Select an existing room polygon (jumps to floor if needed)
     Scroll          Zoom in/out centred on cursor
     Snap button     Toggle vertex snapping on/off
+    All Floors btn  Show rooms from all floors (grayed out) or current floor only
     Snap slider     Adjust snap distance threshold (0.1-2.0m)
+    a               Toggle All Floors view
     s               Save current polygon as room
     S               Save session to JSON
     d               Delete selected room
@@ -30,6 +32,9 @@ Features:
     - Blue dots show available snap points when enabled
     - Adjustable snap distance for fine control
     - Automatic floor level detection with pre-caching
+    - Session persistence: Auto-loads previous boundaries from JSON
+    - Multi-floor visualization: View and edit rooms across all floors
+    - Smart room selection: Right-click jumps to room's floor automatically
     - Mesh simplification for large OBJ files
     - Slice caching for instant navigation
 

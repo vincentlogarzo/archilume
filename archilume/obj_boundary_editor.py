@@ -334,6 +334,9 @@ class BoundaryEditor:
         self.current_vertices: np.ndarray = np.array([])  # (N, 2) array of slice vertices
         self._vertex_kdtree: Optional[cKDTree] = None  # Spatial index for fast snapping
 
+        # Visualization options
+        self.show_all_floors: bool = False  # Toggle to show rooms from all floors
+
         # Slider debouncing
         self._z_slider_timer: Optional[int] = None
         self._pending_z_value: Optional[float] = None
@@ -515,6 +518,11 @@ class BoundaryEditor:
         self.btn_snap = Button(ax_snap, 'Snap: ON' if self.snap_enabled else 'Snap: OFF')
         self.btn_snap.on_clicked(self._on_snap_toggle)
 
+        # Show all floors toggle button
+        ax_show_all = self.fig.add_axes([pl + pw * 0.52, 0.20, pw * 0.48, 0.04])
+        self.btn_show_all = Button(ax_show_all, 'All Floors: OFF')
+        self.btn_show_all.on_clicked(self._on_show_all_toggle)
+
         # Snap distance slider
         ax_snap_dist_lbl = self.fig.add_axes([pl, 0.16, pw, 0.03])
         ax_snap_dist_lbl.axis('off')
@@ -576,12 +584,18 @@ class BoundaryEditor:
                            transform=self.ax.transAxes, fontsize=7, color='gray',
                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
 
-        # Redraw saved room polygons at this Z level
+        # Redraw saved room polygons
         self.room_patches.clear()
         self.room_labels.clear()
         for i, room in enumerate(self.rooms):
-            if abs(room['z_height'] - self.current_z) < 0.5:
-                self._draw_room_polygon(room, i)
+            is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
+
+            if self.show_all_floors:
+                # Show all rooms, but distinguish current floor vs others
+                self._draw_room_polygon(room, i, is_current_floor=is_current_floor)
+            elif is_current_floor:
+                # Only show rooms at current Z level
+                self._draw_room_polygon(room, i, is_current_floor=True)
 
         self.ax.set_aspect('equal')
         self.ax.autoscale()
@@ -597,28 +611,60 @@ class BoundaryEditor:
         self.ax.grid(True, alpha=0.3)
         self.fig.canvas.draw_idle()
 
-    def _draw_room_polygon(self, room: dict, idx: int):
-        """Draw a single saved room polygon on the axes."""
+    def _draw_room_polygon(self, room: dict, idx: int, is_current_floor: bool = True):
+        """Draw a single saved room polygon on the axes.
+
+        Args:
+            room: Room dictionary with vertices, name, etc.
+            idx: Room index in self.rooms list
+            is_current_floor: Whether room is at the current Z height
+        """
         verts = room['vertices']
         if len(verts) < 3:
             return
 
         is_selected = (idx == self.selected_room_idx)
-        edge_color = 'yellow' if is_selected else 'green'
-        lw = 4 if is_selected else 2
+
+        # Color scheme based on floor level and selection state
+        if is_selected:
+            edge_color = 'yellow'
+            face_color = 'yellow'
+            alpha = 0.35
+            lw = 4
+            label_bg = 'orange'
+        elif is_current_floor:
+            edge_color = 'green'
+            face_color = 'green'
+            alpha = 0.25
+            lw = 2
+            label_bg = 'green'
+        else:
+            # Other floors: use gray with lower opacity
+            edge_color = 'gray'
+            face_color = 'gray'
+            alpha = 0.15
+            lw = 1
+            label_bg = 'gray'
 
         poly = Polygon(
             verts, closed=True,
-            edgecolor=edge_color, facecolor='green', alpha=0.25, linewidth=lw,
+            edgecolor=edge_color, facecolor=face_color, alpha=alpha, linewidth=lw,
         )
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
 
+        # Add label with floor level info if showing all floors
         centroid = np.array(verts).mean(axis=0)
+        label = room.get('name', '')
+        if not is_current_floor:
+            # Add floor level indicator for rooms on other floors
+            label += f"\n(Z={room['z_height']:.1f}m)"
+
         label_text = self.ax.text(
-            centroid[0], centroid[1], room.get('name', ''),
-            color='white', fontsize=9, ha='center', va='center',
-            bbox=dict(boxstyle='round', facecolor='green', alpha=0.7),
+            centroid[0], centroid[1], label,
+            color='white', fontsize=8 if is_current_floor else 7,
+            ha='center', va='center',
+            bbox=dict(boxstyle='round', facecolor=label_bg, alpha=0.7 if is_current_floor else 0.5),
         )
         self.room_labels.append(label_text)
 
@@ -838,19 +884,42 @@ class BoundaryEditor:
             self._on_next_floor_click(None)  # Up arrow = next (higher) floor
         elif event.key == 'down':
             self._on_prev_floor_click(None)  # Down arrow = previous (lower) floor
+        elif event.key == 'a':
+            self._on_show_all_toggle(None)  # 'a' = toggle All floors view
 
     # -------------------------------------------------------------------------
     # Room selection
     # -------------------------------------------------------------------------
 
     def _select_room_at(self, x, y):
-        """Select the room polygon that contains the given point."""
+        """Select the room polygon that contains the given point.
+
+        If show_all_floors is enabled, can select rooms from any visible floor
+        and will automatically jump to that floor's Z-height.
+        """
         from matplotlib.path import Path as MplPath
         for i, room in enumerate(self.rooms):
-            if abs(room['z_height'] - self.current_z) > 0.5:
+            # Skip rooms not on current floor unless showing all floors
+            if not self.show_all_floors and abs(room['z_height'] - self.current_z) > 0.5:
                 continue
+
             verts = np.array(room['vertices'])
             if MplPath(verts).contains_point((x, y)):
+                # If room is on a different floor, jump to that floor
+                room_z = room['z_height']
+                if abs(room_z - self.current_z) > 0.5:
+                    self.current_z = room_z
+                    self.z_slider.set_val(room_z)
+                    # Update floor index if near a detected floor
+                    if self.slicer and self.slicer.floor_levels:
+                        for floor_idx, floor_z in enumerate(self.slicer.floor_levels):
+                            if abs(floor_z - room_z) < 0.3:
+                                self.current_floor_idx = floor_idx
+                                break
+                    self._update_status(f"Jumped to floor at Z={room_z:.1f}m", 'blue')
+                    self._update_floor_level_list()
+                    # Note: _render_section will be called by _select_room
+
                 self._select_room(i)
                 return
         self._deselect_room()
@@ -983,6 +1052,16 @@ class BoundaryEditor:
         self.snap_distance = round(val, 1)
         self.snap_dist_label.texts[0].set_text(f"Snap Distance: {self.snap_distance:.1f}m")
         self.fig.canvas.draw_idle()
+
+    def _on_show_all_toggle(self, event):
+        """Toggle showing rooms from all floors vs current floor only."""
+        self.show_all_floors = not self.show_all_floors
+        self.btn_show_all.label.set_text('All Floors: ON' if self.show_all_floors else 'All Floors: OFF')
+        status = "all floors" if self.show_all_floors else "current floor only"
+        self._update_status(f"Showing rooms from {status}", 'blue')
+        self._render_section()
+        # Re-create selector after render
+        self._create_polygon_selector()
 
     def _on_prev_floor_click(self, event):
         """Navigate to the previous floor level."""
