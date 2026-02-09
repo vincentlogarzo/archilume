@@ -658,6 +658,10 @@ class BoundaryEditor:
 
     def _render_section(self):
         """Render the mesh cross-section (plan or elevation view)."""
+        # Preserve current zoom state before clearing
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+
         self.ax.clear()
 
         # Get slice based on view mode
@@ -715,7 +719,15 @@ class BoundaryEditor:
             self._draw_rooms_elevation()
 
         self.ax.set_aspect('equal')
-        self.ax.autoscale()
+
+        # Restore zoom state (or autoscale on first render)
+        if hasattr(self, 'original_xlim') and xlim != (0, 1):  # (0,1) is default for cleared axes
+            # Restore previous zoom
+            self.ax.set_xlim(xlim)
+            self.ax.set_ylim(ylim)
+        else:
+            # First render - autoscale to fit content
+            self.ax.autoscale()
 
         # Set axis labels based on view mode
         if self.view_mode == 'plan':
