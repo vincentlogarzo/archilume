@@ -12,14 +12,16 @@ Usage:
     python examples/aoi_editing_obj.py
 
 Controls:
-    Z slider        Adjust the horizontal section height
+    Plan/Elev btns  Switch between Plan and Elevation views
+    Z slider        Adjust the horizontal section height (Plan view)
     ↑/↓ arrows      Navigate to next/previous detected floor level
-    Left-click      Place polygon vertices (snaps to mesh vertices)
-    Right-click     Select an existing room polygon (jumps to floor if needed)
+    Left-click      Place polygon vertices (Plan view only, snaps to mesh)
+    Right-click     Select an existing room polygon (Plan view only)
     Scroll          Zoom in/out centred on cursor
     Snap button     Toggle vertex snapping on/off
     All Floors btn  Show rooms from all floors (grayed out) or current floor only
     Snap slider     Adjust snap distance threshold (0.1-2.0m)
+    v               Cycle through views (Plan → Elev X → Elev Y → Plan)
     a               Toggle All Floors view
     s               Save current polygon as room
     S               Save session to JSON
@@ -28,6 +30,7 @@ Controls:
     q               Quit
 
 Features:
+    - Elevation Views: View model and rooms from side (X and Y elevations)
     - Vertex snapping: Clicks automatically snap to nearest mesh vertex (KD-tree optimized)
     - Blue dots show available snap points when enabled
     - Adjustable snap distance for fine control
@@ -35,6 +38,7 @@ Features:
     - Session persistence: Auto-loads previous boundaries from JSON
     - Multi-floor visualization: View and edit rooms across all floors
     - Smart room selection: Right-click jumps to room's floor automatically
+    - View-aware editing: Boundary creation restricted to Plan view only
     - Mesh simplification for large OBJ files
     - Slice caching for instant navigation
 

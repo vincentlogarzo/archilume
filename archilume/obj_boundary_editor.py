@@ -256,6 +256,80 @@ class MeshSlicer:
 
         return segments, vertices_array
 
+    def slice_elevation_x(self, x_position: float) -> tuple:
+        """Compute elevation slice perpendicular to X-axis (YZ plane).
+
+        Args:
+            x_position: The X coordinate of the slicing plane (meters).
+
+        Returns:
+            Tuple of (segments, vertices):
+            - segments: List of line segments as [(y1, z1, y2, z2), ...]
+            - vertices: numpy array of unique vertices (N, 2) as (y, z) coordinates
+        """
+        section = self.mesh.slice(normal='x', origin=(x_position, 0, 0))
+
+        if section.n_points == 0:
+            return [], np.array([])
+
+        points = section.points  # (N, 3) array
+        segments = []
+        unique_vertices = set()
+
+        if section.lines is not None and len(section.lines) > 0:
+            lines = section.lines
+            i = 0
+            while i < len(lines):
+                n_pts = lines[i]
+                for j in range(n_pts - 1):
+                    p1 = points[lines[i + 1 + j]]
+                    p2 = points[lines[i + 2 + j]]
+                    # Return (y, z) coordinates for elevation
+                    segments.append((p1[1], p1[2], p2[1], p2[2]))
+                    unique_vertices.add((p1[1], p1[2]))
+                    unique_vertices.add((p2[1], p2[2]))
+                i += n_pts + 1
+
+        vertices_array = np.array(list(unique_vertices)) if unique_vertices else np.array([])
+        return segments, vertices_array
+
+    def slice_elevation_y(self, y_position: float) -> tuple:
+        """Compute elevation slice perpendicular to Y-axis (XZ plane).
+
+        Args:
+            y_position: The Y coordinate of the slicing plane (meters).
+
+        Returns:
+            Tuple of (segments, vertices):
+            - segments: List of line segments as [(x1, z1, x2, z2), ...]
+            - vertices: numpy array of unique vertices (N, 2) as (x, z) coordinates
+        """
+        section = self.mesh.slice(normal='y', origin=(0, y_position, 0))
+
+        if section.n_points == 0:
+            return [], np.array([])
+
+        points = section.points  # (N, 3) array
+        segments = []
+        unique_vertices = set()
+
+        if section.lines is not None and len(section.lines) > 0:
+            lines = section.lines
+            i = 0
+            while i < len(lines):
+                n_pts = lines[i]
+                for j in range(n_pts - 1):
+                    p1 = points[lines[i + 1 + j]]
+                    p2 = points[lines[i + 2 + j]]
+                    # Return (x, z) coordinates for elevation
+                    segments.append((p1[0], p1[2], p2[0], p2[2]))
+                    unique_vertices.add((p1[0], p1[2]))
+                    unique_vertices.add((p2[0], p2[2]))
+                i += n_pts + 1
+
+        vertices_array = np.array(list(unique_vertices)) if unique_vertices else np.array([])
+        return segments, vertices_array
+
     def precache_floor_slices(self):
         """Pre-compute and cache slices at all detected floor levels for instant access."""
         if not self.floor_levels:
@@ -336,6 +410,8 @@ class BoundaryEditor:
 
         # Visualization options
         self.show_all_floors: bool = False  # Toggle to show rooms from all floors
+        self.view_mode: str = 'plan'  # 'plan', 'elevation_x', or 'elevation_y'
+        self.elevation_position: float = 0.0  # Position of elevation slice
 
         # Slider debouncing
         self._z_slider_timer: Optional[int] = None
@@ -446,37 +522,50 @@ class BoundaryEditor:
         ax_instr.text(0, 0.9, "BOUNDARY EDITOR", fontsize=11, fontweight='bold')
         ax_instr.text(0, 0.55, "1. Use ↑↓ arrow keys or buttons to navigate floors", fontsize=9)
         ax_instr.text(0, 0.25, "2. Click to draw (snaps to vertices)", fontsize=9)
-        ax_instr.text(0, -0.05, "3. Enter name, click Save Room", fontsize=9)
+        ax_instr.text(0, -0.05, "3. Press 'v' to toggle Plan/Elevation view", fontsize=9)
+
+        # View mode buttons
+        ax_view_plan = self.fig.add_axes([pl, 0.855, pw * 0.32, 0.04])
+        self.btn_view_plan = Button(ax_view_plan, 'Plan')
+        self.btn_view_plan.on_clicked(lambda e: self._set_view_mode('plan'))
+
+        ax_view_elev_x = self.fig.add_axes([pl + pw * 0.34, 0.855, pw * 0.32, 0.04])
+        self.btn_view_elev_x = Button(ax_view_elev_x, 'Elev X')
+        self.btn_view_elev_x.on_clicked(lambda e: self._set_view_mode('elevation_x'))
+
+        ax_view_elev_y = self.fig.add_axes([pl + pw * 0.68, 0.855, pw * 0.32, 0.04])
+        self.btn_view_elev_y = Button(ax_view_elev_y, 'Elev Y')
+        self.btn_view_elev_y.on_clicked(lambda e: self._set_view_mode('elevation_y'))
 
         # Floor level navigation section
-        ax_floor_hdr = self.fig.add_axes([pl, 0.835, pw, 0.03])
+        ax_floor_hdr = self.fig.add_axes([pl, 0.81, pw, 0.03])
         ax_floor_hdr.axis('off')
         ax_floor_hdr.text(0, 0.5, "FLOOR LEVELS:", fontsize=10, fontweight='bold')
 
         # Floor level list area
-        self.ax_floor_list = self.fig.add_axes([pl, 0.70, pw, 0.13])
+        self.ax_floor_list = self.fig.add_axes([pl, 0.68, pw, 0.12])
         self.ax_floor_list.axis('off')
 
         # Floor navigation buttons
-        ax_prev_floor = self.fig.add_axes([pl, 0.64, pw * 0.48, 0.05])
+        ax_prev_floor = self.fig.add_axes([pl, 0.62, pw * 0.48, 0.05])
         self.btn_prev_floor = Button(ax_prev_floor, '↓ Lower Floor')
         self.btn_prev_floor.on_clicked(self._on_prev_floor_click)
 
-        ax_next_floor = self.fig.add_axes([pl + pw * 0.52, 0.64, pw * 0.48, 0.05])
+        ax_next_floor = self.fig.add_axes([pl + pw * 0.52, 0.62, pw * 0.48, 0.05])
         self.btn_next_floor = Button(ax_next_floor, '↑ Upper Floor')
         self.btn_next_floor.on_clicked(self._on_next_floor_click)
 
-        # Room name input
+        # Apartment name input
         ax_name_lbl = self.fig.add_axes([pl, 0.57, pw, 0.03])
         ax_name_lbl.axis('off')
-        ax_name_lbl.text(0, 0.5, "Room Name (Space ID):", fontsize=10, fontweight='bold')
+        ax_name_lbl.text(0, 0.5, "Apartment Name (Space ID):", fontsize=10, fontweight='bold')
         ax_name = self.fig.add_axes([pl, 0.53, pw, 0.04])
         self.name_textbox = TextBox(ax_name, '', initial='')
 
-        # Room type input
+        # Apartment type input
         ax_type_lbl = self.fig.add_axes([pl, 0.49, pw, 0.03])
         ax_type_lbl.axis('off')
-        ax_type_lbl.text(0, 0.5, "Room Type:", fontsize=10, fontweight='bold')
+        ax_type_lbl.text(0, 0.5, "Apartment Type:", fontsize=10, fontweight='bold')
         ax_type = self.fig.add_axes([pl, 0.45, pw, 0.04])
         self.type_textbox = TextBox(ax_type, '', initial='')
 
@@ -488,7 +577,7 @@ class BoundaryEditor:
 
         # Buttons row 1
         ax_save = self.fig.add_axes([pl, 0.35, pw * 0.48, 0.04])
-        self.btn_save = Button(ax_save, 'Save Room')
+        self.btn_save = Button(ax_save, 'Save Apartment')
         self.btn_save.on_clicked(self._on_save_click)
 
         ax_clear = self.fig.add_axes([pl + pw * 0.52, 0.35, pw * 0.48, 0.04])
@@ -554,10 +643,19 @@ class BoundaryEditor:
     # -------------------------------------------------------------------------
 
     def _render_section(self):
-        """Render the mesh cross-section at the current Z height."""
+        """Render the mesh cross-section (plan or elevation view)."""
         self.ax.clear()
 
-        segments, vertices = self.slicer.slice_at_z(self.current_z)
+        # Get slice based on view mode
+        if self.view_mode == 'plan':
+            segments, vertices = self.slicer.slice_at_z(self.current_z)
+        elif self.view_mode == 'elevation_x':
+            segments, vertices = self.slicer.slice_elevation_x(self.elevation_position)
+        elif self.view_mode == 'elevation_y':
+            segments, vertices = self.slicer.slice_elevation_y(self.elevation_position)
+        else:
+            segments, vertices = [], np.array([])
+
         self.current_vertices = vertices
 
         # Rebuild KD-tree for snapping whenever vertices change
@@ -584,28 +682,44 @@ class BoundaryEditor:
                            transform=self.ax.transAxes, fontsize=7, color='gray',
                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
 
-        # Redraw saved room polygons
+        # Redraw saved room polygons (only in plan view)
         self.room_patches.clear()
         self.room_labels.clear()
-        for i, room in enumerate(self.rooms):
-            is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
 
-            if self.show_all_floors:
-                # Show all rooms, but distinguish current floor vs others
-                self._draw_room_polygon(room, i, is_current_floor=is_current_floor)
-            elif is_current_floor:
-                # Only show rooms at current Z level
-                self._draw_room_polygon(room, i, is_current_floor=True)
+        if self.view_mode == 'plan':
+            for i, room in enumerate(self.rooms):
+                is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
+
+                if self.show_all_floors:
+                    # Show all rooms, but distinguish current floor vs others
+                    self._draw_room_polygon(room, i, is_current_floor=is_current_floor)
+                elif is_current_floor:
+                    # Only show rooms at current Z level
+                    self._draw_room_polygon(room, i, is_current_floor=True)
+        else:
+            # In elevation view, show room boundaries as vertical lines
+            self._draw_rooms_elevation()
 
         self.ax.set_aspect('equal')
         self.ax.autoscale()
-        self.ax.set_xlabel('X (m)')
-        self.ax.set_ylabel('Y (m)')
 
-        # Build title with floor level info if applicable
-        title = f'Floor Plan Section at Z = {self.current_z:.1f}m'
-        if self.current_floor_idx is not None and self.slicer.floor_levels:
-            title = f'Floor Level {self.current_floor_idx} (Z = {self.current_z:.1f}m)'
+        # Set axis labels based on view mode
+        if self.view_mode == 'plan':
+            self.ax.set_xlabel('X (m)')
+            self.ax.set_ylabel('Y (m)')
+            title = f'Floor Plan Section at Z = {self.current_z:.1f}m'
+            if self.current_floor_idx is not None and self.slicer.floor_levels:
+                title = f'Floor Level {self.current_floor_idx} (Z = {self.current_z:.1f}m)'
+        elif self.view_mode == 'elevation_x':
+            self.ax.set_xlabel('Y (m)')
+            self.ax.set_ylabel('Z (m)')
+            title = f'Elevation View (X = {self.elevation_position:.1f}m) - VIEW ONLY'
+        elif self.view_mode == 'elevation_y':
+            self.ax.set_xlabel('X (m)')
+            self.ax.set_ylabel('Z (m)')
+            title = f'Elevation View (Y = {self.elevation_position:.1f}m) - VIEW ONLY'
+        else:
+            title = 'Unknown View'
 
         self.ax.set_title(title, fontsize=12, fontweight='bold')
         self.ax.grid(True, alpha=0.3)
@@ -667,6 +781,68 @@ class BoundaryEditor:
             bbox=dict(boxstyle='round', facecolor=label_bg, alpha=0.7 if is_current_floor else 0.5),
         )
         self.room_labels.append(label_text)
+
+    def _draw_rooms_elevation(self):
+        """Draw room boundaries in elevation view as colored rectangles at their Z-height."""
+        for i, room in enumerate(self.rooms):
+            z_height = room['z_height']
+            verts = room['vertices']
+
+            if len(verts) < 3:
+                continue
+
+            # Get room extents in plan view
+            verts_array = np.array(verts)
+            x_min, y_min = verts_array.min(axis=0)
+            x_max, y_max = verts_array.max(axis=0)
+
+            # Assume typical room height (3m) for visualization
+            room_height = 3.0
+            z_top = z_height + room_height
+
+            # Draw rectangle based on view orientation
+            if self.view_mode == 'elevation_x':
+                # YZ plane: show Y extent at room Z height
+                rect_verts = [
+                    (y_min, z_height),
+                    (y_max, z_height),
+                    (y_max, z_top),
+                    (y_min, z_top)
+                ]
+            elif self.view_mode == 'elevation_y':
+                # XZ plane: show X extent at room Z height
+                rect_verts = [
+                    (x_min, z_height),
+                    (x_max, z_height),
+                    (x_max, z_top),
+                    (x_min, z_top)
+                ]
+            else:
+                continue
+
+            # Color based on selection
+            is_selected = (i == self.selected_room_idx)
+            edge_color = 'yellow' if is_selected else 'green'
+            face_color = 'yellow' if is_selected else 'green'
+            alpha = 0.3 if is_selected else 0.2
+            lw = 3 if is_selected else 1.5
+
+            poly = Polygon(
+                rect_verts, closed=True,
+                edgecolor=edge_color, facecolor=face_color, alpha=alpha, linewidth=lw,
+            )
+            self.ax.add_patch(poly)
+            self.room_patches.append(poly)
+
+            # Add label at center
+            center_h = (rect_verts[0][0] + rect_verts[1][0]) / 2
+            center_z = z_height + room_height / 2
+            label_text = self.ax.text(
+                center_h, center_z, room.get('name', ''),
+                color='white', fontsize=7, ha='center', va='center',
+                bbox=dict(boxstyle='round', facecolor='green', alpha=0.6),
+            )
+            self.room_labels.append(label_text)
 
     # -------------------------------------------------------------------------
     # Polygon selector with snapping
@@ -852,12 +1028,21 @@ class BoundaryEditor:
         if event.inaxes != self.ax:
             return
 
-        # Right-click: select room
-        if event.button == 3:
-            self._select_room_at(event.xdata, event.ydata)
+        # Disable left-click drawing in elevation view
+        if event.button == 1 and self.view_mode != 'plan':
+            self._update_status('Cannot draw in elevation view - press "v" for Plan view', 'red')
             return
 
-        # Left-click: apply snapping before selector sees the event
+        # Right-click: select room (works in all views)
+        if event.button == 3:
+            # Room selection only works in plan view
+            if self.view_mode == 'plan':
+                self._select_room_at(event.xdata, event.ydata)
+            else:
+                self._update_status('Room selection only in Plan view', 'orange')
+            return
+
+        # Left-click: apply snapping before selector sees the event (plan view only)
         if event.button == 1 and event.xdata is not None and event.ydata is not None:
             snapped_x, snapped_y = self._snap_to_vertex(event.xdata, event.ydata)
             # Modify event in-place so selector sees snapped coordinates
@@ -886,6 +1071,14 @@ class BoundaryEditor:
             self._on_prev_floor_click(None)  # Down arrow = previous (lower) floor
         elif event.key == 'a':
             self._on_show_all_toggle(None)  # 'a' = toggle All floors view
+        elif event.key == 'v':
+            # Cycle through views: plan -> elevation_x -> elevation_y -> plan
+            if self.view_mode == 'plan':
+                self._set_view_mode('elevation_x')
+            elif self.view_mode == 'elevation_x':
+                self._set_view_mode('elevation_y')
+            else:
+                self._set_view_mode('plan')
 
     # -------------------------------------------------------------------------
     # Room selection
@@ -989,6 +1182,9 @@ class BoundaryEditor:
         self._create_polygon_selector()
         print(f"Saved room '{name}' at Z={self.current_z:.1f}m ({len(self.rooms)} total)")
 
+        # Auto-save session to JSON after saving room
+        self._save_session()
+
     def _update_selected_room(self):
         """Update the name/type of the selected room."""
         if self.selected_room_idx is None:
@@ -1001,6 +1197,9 @@ class BoundaryEditor:
         self._update_status(f"Updated '{new_name}'", 'green')
         self._update_room_list()
         self._render_section()
+
+        # Auto-save session to JSON after updating room
+        self._save_session()
 
     def _on_clear_click(self, event):
         """Clear the current polygon drawing."""
@@ -1023,6 +1222,9 @@ class BoundaryEditor:
         self._update_floor_level_list()
         self._render_section()
         print(f"Deleted room '{name}'")
+
+        # Auto-save session to JSON after deleting room
+        self._save_session()
 
     def _on_reset_zoom_click(self, event):
         """Reset zoom to the full section extent."""
@@ -1062,6 +1264,46 @@ class BoundaryEditor:
         self._render_section()
         # Re-create selector after render
         self._create_polygon_selector()
+
+    def _set_view_mode(self, mode: str):
+        """Switch between plan and elevation views.
+
+        Args:
+            mode: 'plan', 'elevation_x', or 'elevation_y'
+        """
+        if mode == self.view_mode:
+            return
+
+        self.view_mode = mode
+
+        # Set elevation slice position to middle of building
+        if mode == 'elevation_x':
+            self.elevation_position = (self.slicer.x_min + self.slicer.x_max) / 2
+        elif mode == 'elevation_y':
+            self.elevation_position = (self.slicer.y_min + self.slicer.y_max) / 2
+
+        # Update button colors to show active view
+        self.btn_view_plan.color = 'lightgreen' if mode == 'plan' else '0.85'
+        self.btn_view_elev_x.color = 'lightgreen' if mode == 'elevation_x' else '0.85'
+        self.btn_view_elev_y.color = 'lightgreen' if mode == 'elevation_y' else '0.85'
+
+        # Update status
+        view_names = {
+            'plan': 'Plan View (editing enabled)',
+            'elevation_x': 'Elevation X View (view only)',
+            'elevation_y': 'Elevation Y View (view only)'
+        }
+        self._update_status(view_names.get(mode, 'Unknown view'), 'blue')
+
+        # Disable polygon selector in elevation view
+        if mode != 'plan':
+            if hasattr(self, 'selector'):
+                self.selector.set_active(False)
+                self._update_status('Elevation view - editing disabled. Press "v" for Plan view', 'orange')
+        else:
+            self._create_polygon_selector()
+
+        self._render_section()
 
     def _on_prev_floor_click(self, event):
         """Navigate to the previous floor level."""
