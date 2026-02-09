@@ -44,7 +44,7 @@ def sunlight_access_workflow():
 
     timer = PhaseTimer()
 
-    with timer("Phase 0: Input 3D Scene Files and Rendering Parameters..."):
+    with timer("Phase 0: User input 3D Scene Files and Rendering Parameters..."):
         inputs = config.InputValidator(
             project_latitude            = -37.8134564,  # Building latitude to 4 decimal places
             month                       = 6,            # June
@@ -75,7 +75,7 @@ def sunlight_access_workflow():
         octree_generator = Objs2Octree(inputs.obj_paths)
         octree_generator.create_skyless_octree_for_analysis()
 
-    with timer("Phase 2: Generate Sky Conditions for Analysis..."):
+    with timer("Phase 2: Generate Sky Conditions..."):
         sky_generator = SkyGenerator(lat=inputs.project_latitude)
         sky_generator.generate_TenK_cie_overcast_skyfile()
         sky_generator.generate_sunny_sky_series(
@@ -93,7 +93,7 @@ def sunlight_access_workflow():
             )
         view_generator.create_plan_view_files()
 
-    with timer("Phase 4: Execute Rendering Pipeline..."):
+    with timer("Phase 4: Execute Image Rendering..."):
         renderer = SunlightRenderer(
             skyless_octree_path         = octree_generator.skyless_octree_path,
             overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
@@ -104,7 +104,7 @@ def sunlight_access_workflow():
             )
         renderer.sunlight_rendering_pipeline()
 
-    with timer("Phase 5: Post-Process Stamping of Results..."):
+    with timer("Phase 5: Post-Process & Results Stamping..."):
         with timer("  5a: Generate AOI files..."):
             coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
             if coordinate_map_path is None:

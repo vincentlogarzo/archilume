@@ -547,92 +547,93 @@ class BoundaryEditor:
         self.btn_view_elev_y.on_clicked(lambda e: self._set_view_mode('elevation_y'))
 
         # Floor level navigation section
-        ax_floor_hdr = self.fig.add_axes([pl, 0.81, pw, 0.03])
+        ax_floor_hdr = self.fig.add_axes([pl + pw * 0.18, 0.81, pw * 0.82, 0.03])
         ax_floor_hdr.axis('off')
         ax_floor_hdr.text(0, 0.5, "FLOOR LEVELS:", fontsize=10, fontweight='bold')
 
-        # Floor level list area
-        self.ax_floor_list = self.fig.add_axes([pl, 0.68, pw, 0.12])
-        self.ax_floor_list.axis('off')
+        # Small arrow navigation buttons to the left of floor list
+        arrow_width = pw * 0.15
+        arrow_height = 0.025
 
-        # Floor navigation buttons
-        ax_prev_floor = self.fig.add_axes([pl, 0.62, pw * 0.48, 0.05])
-        self.btn_prev_floor = Button(ax_prev_floor, '↓ Lower Floor')
-        self.btn_prev_floor.on_clicked(self._on_prev_floor_click)
-
-        ax_next_floor = self.fig.add_axes([pl + pw * 0.52, 0.62, pw * 0.48, 0.05])
-        self.btn_next_floor = Button(ax_next_floor, '↑ Upper Floor')
+        # Up arrow (next/upper floor) - top
+        ax_next_floor = self.fig.add_axes([pl, 0.815, arrow_width, arrow_height])
+        self.btn_next_floor = Button(ax_next_floor, '▲')
         self.btn_next_floor.on_clicked(self._on_next_floor_click)
 
-        # Apartment name input
-        ax_name_lbl = self.fig.add_axes([pl, 0.57, pw, 0.03])
+        # Down arrow (prev/lower floor) - bottom
+        ax_prev_floor = self.fig.add_axes([pl, 0.785, arrow_width, arrow_height])
+        self.btn_prev_floor = Button(ax_prev_floor, '▼')
+        self.btn_prev_floor.on_clicked(self._on_prev_floor_click)
+
+        # Floor level list area (shifted right to make room for arrows)
+        self.ax_floor_list = self.fig.add_axes([pl + pw * 0.18, 0.68, pw * 0.82, 0.12])
+        self.ax_floor_list.axis('off')
+
+        # Apartment name input (moved up since floor nav buttons removed)
+        ax_name_lbl = self.fig.add_axes([pl, 0.63, pw, 0.03])
         ax_name_lbl.axis('off')
         ax_name_lbl.text(0, 0.5, "Apartment Name (Space ID):", fontsize=10, fontweight='bold')
-        ax_name = self.fig.add_axes([pl, 0.53, pw, 0.04])
+        ax_name = self.fig.add_axes([pl, 0.59, pw, 0.04])
         self.name_textbox = TextBox(ax_name, '', initial='')
 
         # Apartment type input
-        ax_type_lbl = self.fig.add_axes([pl, 0.49, pw, 0.03])
+        ax_type_lbl = self.fig.add_axes([pl, 0.55, pw, 0.03])
         ax_type_lbl.axis('off')
         ax_type_lbl.text(0, 0.5, "Apartment Type:", fontsize=10, fontweight='bold')
-        ax_type = self.fig.add_axes([pl, 0.45, pw, 0.04])
+        ax_type = self.fig.add_axes([pl, 0.51, pw, 0.04])
         self.type_textbox = TextBox(ax_type, '', initial='')
 
         # Status display
-        ax_status = self.fig.add_axes([pl, 0.40, pw, 0.04])
+        ax_status = self.fig.add_axes([pl, 0.46, pw, 0.03])
         ax_status.axis('off')
         self.status_text = ax_status.text(
-            0, 0.5, "Status: Ready to draw", fontsize=9, color='blue', style='italic')
+            0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
 
-        # Buttons row 1
-        ax_save = self.fig.add_axes([pl, 0.35, pw * 0.48, 0.04])
+        # Buttons row 1 - smaller height (0.035 instead of 0.04)
+        ax_save = self.fig.add_axes([pl, 0.42, pw * 0.48, 0.035])
         self.btn_save = Button(ax_save, 'Save Apartment')
         self.btn_save.on_clicked(self._on_save_click)
 
-        ax_clear = self.fig.add_axes([pl + pw * 0.52, 0.35, pw * 0.48, 0.04])
+        ax_clear = self.fig.add_axes([pl + pw * 0.52, 0.42, pw * 0.48, 0.035])
         self.btn_clear = Button(ax_clear, 'Clear Current')
         self.btn_clear.on_clicked(self._on_clear_click)
 
         # Buttons row 2
-        ax_export_aoi = self.fig.add_axes([pl, 0.30, pw * 0.48, 0.04])
+        ax_export_aoi = self.fig.add_axes([pl, 0.38, pw * 0.48, 0.035])
         self.btn_export_aoi = Button(ax_export_aoi, 'Export AOI')
         self.btn_export_aoi.on_clicked(self._on_export_aoi_click)
 
-        ax_delete = self.fig.add_axes([pl + pw * 0.52, 0.30, pw * 0.48, 0.04])
+        ax_delete = self.fig.add_axes([pl + pw * 0.52, 0.38, pw * 0.48, 0.035])
         self.btn_delete = Button(ax_delete, 'Delete Selected')
         self.btn_delete.on_clicked(self._on_delete_click)
 
-        # Buttons row 3
-        ax_export_csv = self.fig.add_axes([pl, 0.25, pw * 0.48, 0.04])
-        self.btn_export_csv = Button(ax_export_csv, 'Export CSV')
-        self.btn_export_csv.on_clicked(self._on_export_csv_click)
-
-        ax_reset = self.fig.add_axes([pl + pw * 0.52, 0.25, pw * 0.48, 0.04])
+        # Buttons row 3 - Reset Zoom only (CSV export removed)
+        ax_reset = self.fig.add_axes([pl, 0.34, pw, 0.035])
         self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom')
         self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
 
         # Edit mode toggle button
-        ax_edit_mode = self.fig.add_axes([pl, 0.24, pw, 0.04])
+        ax_edit_mode = self.fig.add_axes([pl, 0.295, pw, 0.035])
         self.btn_edit_mode = Button(ax_edit_mode, 'Edit Mode: OFF (Press E)')
         self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
 
         # Snap to vertex toggle button
-        ax_snap = self.fig.add_axes([pl, 0.19, pw * 0.48, 0.04])
+        ax_snap = self.fig.add_axes([pl, 0.25, pw * 0.48, 0.035])
         self.btn_snap = Button(ax_snap, 'Snap: ON' if self.snap_enabled else 'Snap: OFF')
         self.btn_snap.on_clicked(self._on_snap_toggle)
 
         # Show all floors toggle button
-        ax_show_all = self.fig.add_axes([pl + pw * 0.52, 0.19, pw * 0.48, 0.04])
+        ax_show_all = self.fig.add_axes([pl + pw * 0.52, 0.25, pw * 0.48, 0.035])
         self.btn_show_all = Button(ax_show_all, 'All Floors: OFF')
         self.btn_show_all.on_clicked(self._on_show_all_toggle)
 
         # Snap distance slider
-        ax_snap_dist_lbl = self.fig.add_axes([pl, 0.15, pw, 0.03])
+        ax_snap_dist_lbl = self.fig.add_axes([pl, 0.205, pw, 0.025])
         ax_snap_dist_lbl.axis('off')
-        ax_snap_dist_lbl.text(0, 0.5, f"Snap Distance: {self.snap_distance:.1f}m", fontsize=9)
+        ax_snap_dist_lbl.text(0, 0.5, f"Snap Distance: {self.snap_distance:.1f}m", fontsize=8)
         self.snap_dist_label = ax_snap_dist_lbl
 
-        ax_snap_slider = self.fig.add_axes([pl, 0.12, pw, 0.02])
+        ax_snap_slider = self.fig.add_axes([pl, 0.175, pw, 0.02])
         self.snap_slider = Slider(
             ax_snap_slider,
             '',
@@ -644,12 +645,12 @@ class BoundaryEditor:
         self.snap_slider.on_changed(self._on_snap_distance_changed)
 
         # Room list header
-        ax_list_hdr = self.fig.add_axes([pl, 0.08, pw, 0.03])
+        ax_list_hdr = self.fig.add_axes([pl, 0.145, pw, 0.025])
         ax_list_hdr.axis('off')
-        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (hover/click to edit):", fontsize=9, fontweight='bold')
+        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (hover to edit):", fontsize=8, fontweight='bold')
 
         # Room list area
-        self.ax_list = self.fig.add_axes([pl, 0.02, pw, 0.06])
+        self.ax_list = self.fig.add_axes([pl, 0.02, pw, 0.12])
         self.ax_list.axis('off')
 
     # -------------------------------------------------------------------------
@@ -1132,24 +1133,27 @@ class BoundaryEditor:
             event.ydata = snapped_y
 
     def _on_button_release(self, event):
-        """Handle mouse button release (end of drag)."""
-        if event.inaxes != self.ax:
-            return
+        """Handle mouse button release (end of drag).
 
+        Always processes release even if mouse is outside axes to prevent
+        vertices from getting stuck in drag mode.
+        """
         # End vertex dragging - apply snap and full render
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             room = self.rooms[self.edit_room_idx]
             current_pos = room['vertices'][self.edit_vertex_idx]
 
-            # Apply snap to mesh vertex if enabled
-            if self.snap_enabled and event.xdata is not None and event.ydata is not None:
+            # Apply snap to mesh vertex if enabled and mouse is over axes
+            if self.snap_enabled and event.inaxes == self.ax and event.xdata is not None and event.ydata is not None:
                 snapped_x, snapped_y = self._snap_to_vertex(current_pos[0], current_pos[1])
                 room['vertices'][self.edit_vertex_idx] = [float(snapped_x), float(snapped_y)]
 
-            # Full render with selector recreation
+            # Clear drag state
             self.edit_vertex_idx = None
             room_name = room.get('name', 'unnamed')
             self._update_status(f"Moved vertex in '{room_name}' - press 's' to save", 'green')
+
+            # Full render with selector recreation
             self._render_section()
             self._create_polygon_selector()
 
@@ -1220,7 +1224,15 @@ class BoundaryEditor:
         """Handle keyboard shortcuts."""
         if event.key in ('backspace', 'delete', 'escape'):
             if event.key == 'escape':
-                self._deselect_room()
+                # Release stuck vertex if dragging
+                if self.edit_vertex_idx is not None:
+                    self.edit_vertex_idx = None
+                    self.edit_room_idx = None
+                    self._update_status("Vertex drag cancelled", 'orange')
+                    self._render_section()
+                    self._create_polygon_selector()
+                else:
+                    self._deselect_room()
             return
         if event.key == 's':
             self._on_save_click(None)

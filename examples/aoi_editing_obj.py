@@ -74,7 +74,7 @@ obj_paths = [
 #   - 0.5 = reduce to 50% of original cells
 #   - 0.3 = reduce to 30% of original cells
 #   - None = no simplification (default)
-simplify_ratio = 0.3 
+simplify_ratio = 0.5 
 
 # detect_floors: Auto-detect floor levels on load
 #   - True = automatically detect floors (default, recommended)

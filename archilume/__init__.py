@@ -1,3 +1,4 @@
+from .obj_boundary_editor import BoundaryEditor
 from .hdr2wpd import Hdr2Wpd
 from .mtl_converter import MtlConverter
 from .objs2octree import Objs2Octree

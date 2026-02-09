@@ -6,7 +6,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 from PIL import Image
 import numpy as np
 import open3d as o3d
@@ -415,14 +415,15 @@ def parse_obj_materials(obj_path: Path) -> dict:
     }
 
 
-def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
+def display_obj(filenames: Union[str, Path, Sequence[Union[str, Path]]],
                 mtl_path: Optional[Path] = None,
                 glass_color: Optional[List[float]] = None):
     """Display OBJ files using open3d with enhanced visualization.
 
     Args:
         filenames: OBJ file path(s) to display
-        mtl_path: Optional MTL file path for material definitions
+        mtl_path: Optional MTL file path for material definitions. If not provided,
+                 will automatically look for .mtl files with the same name as each .obj file
         glass_color: Optional RGB color for glass materials [r, g, b] in range [0, 1]
                     Default is ocean blue [0.0, 0.4, 0.7]
     """
@@ -453,12 +454,25 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
     
     print(f"Visualizing {len(filenames)} OBJ file(s) with open3d...")
 
-    # Parse MTL file if provided
-    materials = {}
+    # Auto-detect MTL files if not explicitly provided
+    # Collect all materials from corresponding MTL files
+    all_materials = {}
     if mtl_path:
+        # Use explicitly provided MTL file
         print(f"Loading materials from: {mtl_path.name}")
-        materials = parse_mtl_file(mtl_path)
-        glass_materials = [name for name, props in materials.items() if props['is_glass']]
+        all_materials = parse_mtl_file(mtl_path)
+    else:
+        # Auto-detect MTL files for each OBJ file
+        for fname in filenames:
+            obj_path = Path(fname) if isinstance(fname, str) else fname
+            auto_mtl_path = obj_path.with_suffix('.mtl')
+            if auto_mtl_path.exists():
+                print(f"Loading materials from: {auto_mtl_path.name}")
+                mtl_materials = parse_mtl_file(auto_mtl_path)
+                all_materials.update(mtl_materials)
+
+    if all_materials:
+        glass_materials = [name for name, props in all_materials.items() if props['is_glass']]
         if glass_materials:
             print(f"Found {len(glass_materials)} glass materials: {', '.join(glass_materials[:5])}{' ...' if len(glass_materials) > 5 else ''}")
 
@@ -486,8 +500,8 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
         if not mesh.has_vertex_normals():
             mesh.compute_vertex_normals()
 
-        # Apply material-based coloring if MTL file is provided
-        if mtl_path and materials:
+        # Apply material-based coloring if materials are available
+        if all_materials:
             # Parse OBJ file to get face-to-material mapping
             obj_face_info = parse_obj_materials(filename)
             face_materials = obj_face_info['materials']
@@ -503,8 +517,8 @@ def display_obj(filenames: Union[str, Path, List[Union[str, Path]]],
                     break
 
                 # Determine color for this face
-                if mat_name and mat_name in materials:
-                    mat_props = materials[mat_name]
+                if mat_name and mat_name in all_materials:
+                    mat_props = all_materials[mat_name]
                     if mat_props['is_glass']:
                         face_color = glass_color
                     else:
