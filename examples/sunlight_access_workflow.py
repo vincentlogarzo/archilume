@@ -58,17 +58,17 @@ def sunlight_access_workflow():
                         "87Cowles_BLD_withWindows.obj", # Assessed building (must be first)
                         "87cowles_site.obj"             # Site context
                             ]],                         # OBJ exports must be coarse, in meters, hidden line visual style, assumed model is oriented to true north
-            timestep                    = 15,           # Time interval in minutes (recommended >= 5 min) 
+            timestep                    = 5,           # Time interval in minutes (recommended >= 5 min) 
             image_resolution            = 2048,         # Image size in pixels (512, 1024, 2048 <- recommended max, 4096)
-            rendering_mode              = "cpu",        # Options: 'cpu', 'gpu'
-            rendering_quality           = "med",        # Options if gpu is selected: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
+            rendering_mode              = "gpu",        # Options: 'cpu', 'gpu'
+            rendering_quality           = "4K",        # Options if gpu is selected: 'draft', 'stand', 'prod', 'final', '4K', 'custom', 'fast', 'med', 'high', 'detailed'
         )
 
         smart_cleanup(
-            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+            timestep_changed            = True,  # Set TRUE if timestep changed (e.g., 5min → 10min)
             resolution_changed          = True,   # Set TRUE if image_resolution changed (e.g., 512 → 1024)
             rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
-            rendering_quality_changed   = False   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+            rendering_quality_changed   = True   # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
         )
 
     with timer("Phase 1: Establishing 3D Scene..."):
@@ -106,26 +106,24 @@ def sunlight_access_workflow():
 
     with timer("Phase 5: Post-Process Stamping of Results..."):
         with timer("  5a: Generate AOI files..."):
-            coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
-            if coordinate_map_path is None:
-                raise RuntimeError("Failed to create pixel-to-world coordinate map")
+            coordinate_map_path         = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
             view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
         with timer("  5b: Generate Sunlit WPD and send to .xlsx..."):
             converter = Hdr2Wpd(
-                pixel_to_world_map          = coordinate_map_path
+                pixel_to_world_map      = coordinate_map_path
                 )
             converter.sunlight_sequence_wpd_extraction()
 
         with timer("  5c: Stamp images with results and combine into .apng..."):
             tiff_annotator = Tiff2Animation(
-                skyless_octree_path         = octree_generator.skyless_octree_path,
-                overcast_sky_file_path      = sky_generator.TenK_cie_overcast_sky_file_path,
-                x_res                       = renderer.x_res,
-                y_res                       = renderer.y_res,
-                latitude                    = inputs.project_latitude,
-                ffl_offset                  = inputs.ffl_offset,
-                animation_format            = "apng"  # Options: "gif" or "apng"
+                skyless_octree_path     = octree_generator.skyless_octree_path,
+                overcast_sky_file_path  = sky_generator.TenK_cie_overcast_sky_file_path,
+                x_res                   = renderer.x_res,
+                y_res                   = renderer.y_res,
+                latitude                = inputs.project_latitude,
+                ffl_offset              = inputs.ffl_offset,
+                animation_format        = "apng"  # Options: "gif" or "apng"
                 )
             tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
 

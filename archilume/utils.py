@@ -1299,7 +1299,7 @@ def get_hdr_resolution(hdr_file_path: Union[Path, str]) -> tuple[int, int]:
     except Exception as e:
         raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
 
-def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
+def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
     """
     Create pixel-to-world coordinate mapping from HDR file in the specified directory.
 
@@ -1314,9 +1314,10 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
                                      If None, defaults to image_dir.parent/aoi/
 
     Returns:
-        Optional[Path]: Path to the HDR file that was processed, or None if processing failed
+        Path: Path to the coordinate mapping file that was created
 
     Raises:
+        RuntimeError: If processing fails for any reason
         FileNotFoundError: If HDR file doesn't exist
         ValueError: If VIEW parameters or image dimensions cannot be extracted
 
@@ -1463,7 +1464,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
 
     except Exception as e:
         print(f"Error creating pixel-to-world mapping: {e}")
-        return None
+        raise RuntimeError("Failed to create pixel-to-world coordinate map") from e
 
 
 def print_timing_report(

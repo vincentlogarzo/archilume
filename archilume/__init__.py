@@ -1,3 +1,4 @@
+from .apng2mp4 import Apng2Mp4
 from .hdr2wpd import Hdr2Wpd
 from .mtl_converter import MtlConverter
 from .objs2octree import Objs2Octree
