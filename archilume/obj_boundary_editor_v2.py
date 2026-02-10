@@ -2,16 +2,16 @@
 # autopep8: off
 
 """
-Interactive Room Boundary Editor for OBJ Models.
+Interactive Room Boundary Editor for OBJ Models - Version 2 (Hierarchical).
 
 Slices a 3D OBJ mesh at a user-specified Z height to produce a 2D floor plan
-cross-section, then provides an interactive matplotlib-based polygon drawing
-tool for defining room boundaries. Exports to .aoi files and room boundaries
-CSV compatible with the existing ViewGenerator pipeline.
+cross-section for drawing apartment and sub-room boundaries. Supports hierarchical
+parent/child relationships (e.g. U101 → U101_BED1). Auto-saves JSON and CSV
+alongside the input OBJ on every save or delete action.
 
 Usage:
-    from archilume.obj_boundary_editor import BoundaryEditor
-    editor = BoundaryEditor(obj_path="model.obj")
+    from archilume.obj_boundary_editor_v2 import BoundaryEditorV2
+    editor = BoundaryEditorV2(obj_path="model.obj")
     editor.launch()
 """
 
@@ -29,7 +29,8 @@ from typing import List, Optional, Tuple, Union
 # Third-party imports
 import matplotlib.pyplot as plt
 from matplotlib.widgets import PolygonSelector, TextBox, Button, Slider
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, FancyBboxPatch
+from matplotlib.path import Path as MplPath
 from matplotlib.collections import LineCollection
 import numpy as np
 import pyvista as pv
@@ -335,8 +336,14 @@ class MeshSlicer:
         print(f"Pre-cached {len(self.slice_cache)} floor slices")
 
 
-class BoundaryEditor:
-    """Interactive room boundary drawing tool on a 2D floor plan section.
+class BoundaryEditorV2:
+    """Interactive room boundary drawing tool with hierarchical apartment/room support.
+
+    Version 2 Features:
+    - Draw apartment boundaries (parent rooms)
+    - Draw sub-room boundaries within apartments (children)
+    - Auto-prefix child room names with parent apartment name
+    - Warning when sub-room extends outside parent boundary
 
     Displays a PyVista-sliced cross-section in a matplotlib figure and
     provides a PolygonSelector for drawing room boundary polygons. Exports
@@ -409,6 +416,14 @@ class BoundaryEditor:
         self.hover_room_idx: Optional[int] = None  # Room under cursor
         self.hover_vertex_idx: Optional[int] = None  # Vertex under cursor
 
+        # Parent apartment selection (hierarchical support)
+        self.selected_parent: Optional[str] = None  # Currently selected parent apartment name
+        self.parent_options: List[str] = []  # List of available parent apartments on current floor
+
+        # Room list scroll state
+        self.room_list_scroll_offset: int = 0  # Scroll offset for saved rooms list
+        self._room_list_hit_boxes: List[Tuple] = []  # [(y_min, y_max, room_idx), ...] in axes coords
+
         # Slider debouncing
         self._z_slider_timer: Optional[int] = None
         self._pending_z_value: Optional[float] = None
@@ -460,6 +475,7 @@ class BoundaryEditor:
 
         # Event handlers (snap handler must come first to intercept before selector)
         self.fig.canvas.mpl_connect('button_press_event', self._on_click_with_snap)
+        self.fig.canvas.mpl_connect('button_press_event', self._on_list_click)
         self.fig.canvas.mpl_connect('button_release_event', self._on_button_release)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_mouse_motion)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
@@ -473,7 +489,7 @@ class BoundaryEditor:
         print("\n=== Boundary Editor ===")
         print("Draw room boundary polygons on the floor plan section.")
         if self.slicer.floor_levels:
-            print(f"Detected {len(self.slicer.floor_levels)} floor levels - use ↑↓ arrow keys to navigate")
+            print(f"Detected {len(self.slicer.floor_levels)} floor levels - use up/down arrow keys to navigate")
         print("Adjust the Z slider to change the section height.")
         print("Vertex snapping is ENABLED - clicks snap to mesh vertices.")
         print("Scroll: zoom | Right-click: select room | s: save | d: delete | q: quit")
@@ -551,144 +567,321 @@ class BoundaryEditor:
 
     def _setup_side_panel(self):
         """Create the side panel with inputs, buttons, and room list."""
-        pl = 0.02   # panel left (moved to left side)
-        pw = 0.28   # panel width
+        pl = 0.02    # panel left
+        pw = 0.28    # total panel width
+        pw_l = 0.13  # left column width (floor levels / inputs)
+        pw_r = 0.14  # right column width (button stack)
+        pr = pl + pw_l + 0.01  # right column start x
 
         # Soft color palette for UI elements
         self._btn_color = '#E8E8E0'       # Soft warm gray for buttons
         self._btn_hover = '#D8D8D0'       # Slightly darker on hover
         self._slider_color = '#A8C8A8'    # Soft sage green for sliders
 
-        # Instructions
+        # Instructions (full width)
         ax_instr = self.fig.add_axes([pl, 0.90, pw, 0.08])
         ax_instr.axis('off')
         ax_instr.text(0, 0.9, "BOUNDARY EDITOR", fontsize=11, fontweight='bold', color='#404040')
-        ax_instr.text(0, 0.55, "1. Use ↑↓ arrow keys or buttons to navigate floors", fontsize=9, color='#505050')
+        ax_instr.text(0, 0.55, "1. Use \u2191\u2193 arrow keys or buttons to navigate floors", fontsize=9, color='#505050')
         ax_instr.text(0, 0.25, "2. Click to draw (snaps to vertices)", fontsize=9, color='#505050')
         ax_instr.text(0, -0.05, "3. Press 'v' to toggle Plan/Elevation view", fontsize=9, color='#505050')
 
-        # Floor level navigation section
-        ax_floor_hdr = self.fig.add_axes([pl, 0.81, pw, 0.03])
+        # ── LEFT COLUMN: floor levels + input fields ──────────────────────────
+
+        # Floor level navigation section (left column)
+        ax_floor_hdr = self.fig.add_axes([pl, 0.82, pw_l, 0.03])
         ax_floor_hdr.axis('off')
         ax_floor_hdr.text(0, 0.5, "FLOOR LEVELS:", fontsize=10, fontweight='bold', color='#404040')
 
-        # Floor navigation arrow buttons (left of floor list, stacked vertically)
+        # Floor navigation arrow buttons
         btn_arrow_width = 0.025
         btn_arrow_height = 0.05
-        floor_list_left = pl + btn_arrow_width + 0.005  # Shift floor list right to make room
+        floor_list_left = pl + btn_arrow_width + 0.005
 
-        # Up arrow (upper floor) - top
-        ax_next_floor = self.fig.add_axes([pl, 0.74, btn_arrow_width, btn_arrow_height])
-        self.btn_next_floor = Button(ax_next_floor, '▲', color=self._btn_color, hovercolor=self._btn_hover)
+        ax_next_floor = self.fig.add_axes([pl, 0.75, btn_arrow_width, btn_arrow_height])
+        self.btn_next_floor = Button(ax_next_floor, '\u25b2', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_next_floor.on_clicked(self._on_next_floor_click)
 
-        # Down arrow (lower floor) - bottom
-        ax_prev_floor = self.fig.add_axes([pl, 0.68, btn_arrow_width, btn_arrow_height])
-        self.btn_prev_floor = Button(ax_prev_floor, '▼', color=self._btn_color, hovercolor=self._btn_hover)
+        ax_prev_floor = self.fig.add_axes([pl, 0.69, btn_arrow_width, btn_arrow_height])
+        self.btn_prev_floor = Button(ax_prev_floor, '\u25bc', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_prev_floor.on_clicked(self._on_prev_floor_click)
 
-        # Floor level list area (shifted right to accommodate arrows)
-        self.ax_floor_list = self.fig.add_axes([floor_list_left, 0.68, pw - btn_arrow_width - 0.005, 0.12])
+        self.ax_floor_list = self.fig.add_axes([floor_list_left, 0.69, pw_l - btn_arrow_width - 0.005, 0.12])
         self.ax_floor_list.axis('off')
 
-        # Apartment name input
-        ax_name_lbl = self.fig.add_axes([pl, 0.57, pw, 0.03])
+        # Parent apartment selector (half width - left column only)
+        ax_parent_lbl = self.fig.add_axes([pl, 0.635, pw_l, 0.03])
+        ax_parent_lbl.axis('off')
+        ax_parent_lbl.text(0, 0.5, "Parent Apartment:", fontsize=10, fontweight='bold')
+
+        ax_parent_btn = self.fig.add_axes([pl, 0.595, pw_l, 0.035])
+        self.btn_parent = Button(ax_parent_btn, '(None)', color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_parent.label.set_fontsize(8)
+        self.btn_parent.on_clicked(self._on_parent_cycle)
+
+        # Name preview label
+        ax_name_preview = self.fig.add_axes([pl, 0.570, pw_l, 0.02])
+        ax_name_preview.axis('off')
+        self.name_preview_text = ax_name_preview.text(0, 0.5, "", fontsize=8, color='#666666', style='italic')
+
+        # Room name input (half width - left column only)
+        ax_name_lbl = self.fig.add_axes([pl, 0.535, pw_l, 0.03])
         ax_name_lbl.axis('off')
-        ax_name_lbl.text(0, 0.5, "Apartment Name (Space ID):", fontsize=10, fontweight='bold')
-        ax_name = self.fig.add_axes([pl, 0.53, pw, 0.04])
+        self.name_label_text = ax_name_lbl.text(0, 0.5, "Apartment Name:", fontsize=9, fontweight='bold')
+        ax_name = self.fig.add_axes([pl, 0.490, pw_l, 0.040])
         self.name_textbox = TextBox(ax_name, '', initial='')
+        self.name_textbox.on_text_change(self._on_name_changed)
 
-        # Apartment type input
-        ax_type_lbl = self.fig.add_axes([pl, 0.49, pw, 0.03])
-        ax_type_lbl.axis('off')
-        ax_type_lbl.text(0, 0.5, "Apartment Type:", fontsize=10, fontweight='bold')
-        ax_type = self.fig.add_axes([pl, 0.45, pw, 0.04])
-        self.type_textbox = TextBox(ax_type, '', initial='')
-
-        # Status display
-        ax_status = self.fig.add_axes([pl, 0.40, pw, 0.03])
+        # Status display (left column)
+        ax_status = self.fig.add_axes([pl, 0.445, pw_l, 0.03])
         ax_status.axis('off')
         self.status_text = ax_status.text(
-            0, 0.5, "Status: Ready to draw", fontsize=9, color='blue', style='italic')
+            0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
 
-        # Button dimensions
-        btn_h = 0.028  # Button height
-        btn_gap = 0.005  # Gap between rows
+        # ── RIGHT COLUMN: vertical button stack ───────────────────────────────
 
-        # Buttons row 1
-        row1_y = 0.365
-        ax_save = self.fig.add_axes([pl, row1_y, pw * 0.48, btn_h])
-        self.btn_save = Button(ax_save, 'Save Apartment', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_save.on_clicked(self._on_save_click)
+        btn_h = 0.028   # button height
+        btn_gap = 0.005  # gap between buttons
+        btn_step = btn_h + btn_gap
 
-        ax_clear = self.fig.add_axes([pl + pw * 0.52, row1_y, pw * 0.48, btn_h])
-        self.btn_clear = Button(ax_clear, 'Clear Current', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_clear.on_clicked(self._on_clear_click)
+        btn_labels = [
+            ('btn_save',       'Save Room',       self._on_save_click),
+            ('btn_clear',      'Clear Current',   self._on_clear_click),
+            ('btn_export_aoi', 'Export AOI',      self._on_export_aoi_click),
+            ('btn_delete',     'Delete Selected', self._on_delete_click),
+            ('btn_export_csv', 'Export CSV',      self._on_export_csv_click),
+        ]
 
-        # Buttons row 2
-        row2_y = row1_y - btn_h - btn_gap
-        ax_export_aoi = self.fig.add_axes([pl, row2_y, pw * 0.48, btn_h])
-        self.btn_export_aoi = Button(ax_export_aoi, 'Export AOI', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_export_aoi.on_clicked(self._on_export_aoi_click)
+        btn_top = 0.820  # top of button stack (aligns with FLOOR LEVELS header)
+        for attr_name, label, callback in btn_labels:
+            btn_y = btn_top - btn_h
+            ax_btn = self.fig.add_axes([pr, btn_y, pw_r, btn_h])
+            btn = Button(ax_btn, label, color=self._btn_color, hovercolor=self._btn_hover)
+            btn.label.set_fontsize(8)
+            btn.on_clicked(callback)
+            setattr(self, attr_name, btn)
+            btn_top -= btn_step
 
-        ax_delete = self.fig.add_axes([pl + pw * 0.52, row2_y, pw * 0.48, btn_h])
-        self.btn_delete = Button(ax_delete, 'Delete Selected', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_delete.on_clicked(self._on_delete_click)
+        # ── BOTTOM STRIP: Snap | Edit Mode | Reset Zoom (full figure width) ──
 
-        # Buttons row 3
-        row3_y = row2_y - btn_h - btn_gap
-        ax_export_csv = self.fig.add_axes([pl, row3_y, pw * 0.48, btn_h])
-        self.btn_export_csv = Button(ax_export_csv, 'Export CSV', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_export_csv.on_clicked(self._on_export_csv_click)
+        bottom_btn_h = 0.045
+        bottom_btn_w = (0.96 - pl) / 3 - 0.005
+        bottom_btn_y = 0.012
 
-        ax_reset = self.fig.add_axes([pl + pw * 0.52, row3_y, pw * 0.48, btn_h])
-        self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
-
-        # Edit mode toggle button
-        row4_y = row3_y - btn_h - btn_gap
-        ax_edit_mode = self.fig.add_axes([pl, row4_y, pw, btn_h])
-        self.btn_edit_mode = Button(ax_edit_mode, 'Edit Mode: OFF (Press E)', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
-
-        # Snap to vertex toggle button and All floors button
-        row5_y = row4_y - btn_h - btn_gap
-        ax_snap = self.fig.add_axes([pl, row5_y, pw * 0.48, btn_h])
-        self.btn_snap = Button(ax_snap, 'Snap: ON' if self.snap_enabled else 'Snap: OFF', color=self._btn_color, hovercolor=self._btn_hover)
+        ax_snap_btn = self.fig.add_axes([pl, bottom_btn_y, bottom_btn_w, bottom_btn_h])
+        self.btn_snap = Button(ax_snap_btn,
+                               'Snap: ON' if self.snap_enabled else 'Snap: OFF',
+                               color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_snap.label.set_fontsize(9)
         self.btn_snap.on_clicked(self._on_snap_toggle)
 
-        ax_show_all = self.fig.add_axes([pl + pw * 0.52, row5_y, pw * 0.48, btn_h])
-        self.btn_show_all = Button(ax_show_all, 'All Floors: OFF', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_show_all.on_clicked(self._on_show_all_toggle)
+        ax_edit_btn = self.fig.add_axes([pl + bottom_btn_w + 0.005, bottom_btn_y,
+                                         bottom_btn_w, bottom_btn_h])
+        self.btn_edit_mode = Button(ax_edit_btn, 'Edit Mode: OFF (Press E)',
+                                    color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_edit_mode.label.set_fontsize(9)
+        self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
 
-        # Snap distance slider
-        row6_y = row5_y - btn_h - btn_gap
-        ax_snap_dist_lbl = self.fig.add_axes([pl, row6_y, pw, 0.02])
+        ax_reset_btn = self.fig.add_axes([pl + 2 * (bottom_btn_w + 0.005), bottom_btn_y,
+                                          bottom_btn_w, bottom_btn_h])
+        self.btn_reset_zoom = Button(ax_reset_btn, 'Reset Zoom',
+                                     color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_reset_zoom.label.set_fontsize(9)
+        self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
+
+        # ── FULL-WIDTH SECTION: snap slider ───────────────────────────────────
+
+        snap_lbl_y = 0.40
+        ax_snap_dist_lbl = self.fig.add_axes([pl, snap_lbl_y, pw, 0.02])
         ax_snap_dist_lbl.axis('off')
         ax_snap_dist_lbl.text(0, 0.5, f"Snap Distance: {self.snap_distance:.1f}m", fontsize=9, color='#505050')
         self.snap_dist_label = ax_snap_dist_lbl
 
-        slider_y = row6_y - 0.025
-        ax_snap_slider = self.fig.add_axes([pl, slider_y, pw, 0.015])
+        ax_snap_slider = self.fig.add_axes([pl, snap_lbl_y - 0.025, pw, 0.015])
         self.snap_slider = Slider(
-            ax_snap_slider,
-            '',
-            0.1,
-            2.0,
-            valinit=self.snap_distance,
-            valstep=0.1,
-            color=self._slider_color,
+            ax_snap_slider, '', 0.1, 2.0,
+            valinit=self.snap_distance, valstep=0.1, color=self._slider_color,
         )
         self.snap_slider.on_changed(self._on_snap_distance_changed)
 
-        # Room list header
-        ax_list_hdr = self.fig.add_axes([pl, 0.08, pw, 0.03])
-        ax_list_hdr.axis('off')
-        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (hover/click to edit):", fontsize=9, fontweight='bold')
+        # ── LEGEND ────────────────────────────────────────────────────────────
 
-        # Room list area
-        self.ax_list = self.fig.add_axes([pl, 0.02, pw, 0.06])
-        self.ax_list.axis('off')
+        ax_legend = self.fig.add_axes([pl, 0.245, pw, 0.115])
+        ax_legend.axis('off')
+        ax_legend.set_facecolor('#F0F0EC')
+        ax_legend.text(0, 0.97, "LEGEND", fontsize=8, fontweight='bold', color='#404040',
+                       transform=ax_legend.transAxes)
+
+        legend_items = [
+            ('green',    0.4,  'Apartment (current floor)'),
+            ('#2196F3',  0.4,  'Sub-room (current floor)'),
+            ('yellow',   0.35, 'Selected'),
+            ('cyan',     0.35, 'Being edited'),
+            ('magenta',  0.35, 'Hover vertex (edit mode)'),
+            ('gray',     0.15, 'Other floor'),
+        ]
+
+        n = len(legend_items)
+        for i, (color, alpha, label) in enumerate(legend_items):
+            row = i % 3
+            col = i // 3
+            x0 = col * 0.50
+            y0 = 0.78 - row * 0.28
+            rect = FancyBboxPatch((x0, y0 - 0.10), 0.05, 0.18,
+                                  boxstyle='round,pad=0.01',
+                                  facecolor=color, edgecolor=color,
+                                  alpha=alpha, transform=ax_legend.transAxes,
+                                  clip_on=False)
+            ax_legend.add_patch(rect)
+            ax_legend.text(x0 + 0.07, y0, label, fontsize=7, color='#404040',
+                           va='center', transform=ax_legend.transAxes)
+
+        # ── SAVED ROOMS: scrollable list ──────────────────────────────────────
+
+        ax_list_hdr = self.fig.add_axes([pl, 0.235, pw, 0.025])
+        ax_list_hdr.axis('off')
+        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (click to select/highlight):",
+                         fontsize=9, fontweight='bold')
+
+        # Scrollable room list — raised above bottom strip, with generous height
+        list_bottom = 0.075   # sits above the bottom button strip
+        list_top = 0.230      # just below the header
+        self.ax_list = self.fig.add_axes([pl, list_bottom, pw, list_top - list_bottom])
+        self.ax_list.set_facecolor('#FAFAF8')
+        self.ax_list.tick_params(left=False, bottom=False,
+                                 labelleft=False, labelbottom=False)
+        for spine in self.ax_list.spines.values():
+            spine.set_edgecolor('#CCCCCC')
+            spine.set_linewidth(0.5)
+
+    # -------------------------------------------------------------------------
+    # Parent/Child relationship helpers (hierarchical support)
+    # -------------------------------------------------------------------------
+
+    def _get_apartments_on_floor(self, z_height: float, tolerance: float = 0.5) -> List[str]:
+        """Return names of rooms without parents (apartments) on the given floor.
+
+        Args:
+            z_height: Floor Z-height in meters
+            tolerance: Z-height matching tolerance in meters
+
+        Returns:
+            List of apartment names on this floor
+        """
+        apartments = []
+        for room in self.rooms:
+            # Room is an apartment if it has no parent
+            if room.get('parent') is None:
+                if abs(room['z_height'] - z_height) < tolerance:
+                    apartments.append(room['name'])
+        return apartments
+
+    def _get_children(self, parent_name: str) -> List[dict]:
+        """Return all rooms that have the given parent.
+
+        Args:
+            parent_name: Name of the parent apartment
+
+        Returns:
+            List of child room dictionaries
+        """
+        return [room for room in self.rooms if room.get('parent') == parent_name]
+
+    def _get_parent_room(self, parent_name: str) -> Optional[dict]:
+        """Get the parent room dictionary by name.
+
+        Args:
+            parent_name: Name of the parent apartment
+
+        Returns:
+            Parent room dictionary or None if not found
+        """
+        for room in self.rooms:
+            if room['name'] == parent_name:
+                return room
+        return None
+
+    def _check_boundary_containment(self, child_verts: List[List[float]], parent_verts: List[List[float]]) -> bool:
+        """Check if child polygon is fully within parent polygon.
+
+        Args:
+            child_verts: List of [x, y] coordinates for child room
+            parent_verts: List of [x, y] coordinates for parent apartment
+
+        Returns:
+            True if all child vertices are inside parent polygon
+        """
+        if not parent_verts or len(parent_verts) < 3:
+            return True  # Can't check, assume OK
+
+        if not child_verts or len(child_verts) < 3:
+            return True  # Can't check, assume OK
+
+        # Ensure parent polygon is closed for proper containment checking
+        parent_array = np.array(parent_verts)
+        if not np.allclose(parent_array[0], parent_array[-1]):
+            # Close the polygon by appending the first vertex
+            parent_array = np.vstack([parent_array, parent_array[0]])
+
+        parent_path = MplPath(parent_array)
+
+        for vertex in child_verts:
+            if not parent_path.contains_point(vertex):
+                return False
+
+        return True
+
+    def _update_parent_options(self):
+        """Update the list of available parent apartments for current floor."""
+        self.parent_options = self._get_apartments_on_floor(self.current_z)
+
+    def _on_parent_cycle(self, event):
+        """Cycle through parent apartment options when button is clicked."""
+        self._update_parent_options()
+
+        if not self.parent_options:
+            # No apartments available - keep as None
+            self.selected_parent = None
+            self.btn_parent.label.set_text('(None - New Apartment)')
+            self.name_label_text.set_text("Apartment Name (Space ID):")
+        else:
+            # Build options list: None + all apartments
+            options = [None] + self.parent_options
+
+            # Find current index and move to next
+            try:
+                current_idx = options.index(self.selected_parent)
+                next_idx = (current_idx + 1) % len(options)
+            except ValueError:
+                next_idx = 0
+
+            self.selected_parent = options[next_idx]
+
+            if self.selected_parent is None:
+                self.btn_parent.label.set_text('(None - New Apartment)')
+                self.name_label_text.set_text("Apartment Name (Space ID):")
+            else:
+                self.btn_parent.label.set_text(self.selected_parent)
+                self.name_label_text.set_text("Room Name:")
+
+        self._update_name_preview()
+        self.fig.canvas.draw_idle()
+
+    def _on_name_changed(self, text):
+        """Update name preview when name textbox changes."""
+        self._update_name_preview()
+
+    def _update_name_preview(self):
+        """Update the name preview text showing what name will be saved."""
+        name = self.name_textbox.text.strip()
+        if not name:
+            self.name_preview_text.set_text("")
+        elif self.selected_parent:
+            full_name = f"{self.selected_parent}_{name}"
+            self.name_preview_text.set_text(f"Will save as: {full_name}")
+        else:
+            self.name_preview_text.set_text(f"Will save as: {name}")
+        self.fig.canvas.draw_idle()
 
     # -------------------------------------------------------------------------
     # Section rendering
@@ -811,6 +1004,7 @@ class BoundaryEditor:
         is_selected = (idx == self.selected_room_idx)
         is_hover = (idx == self.hover_room_idx)
         is_editing = (idx == self.edit_room_idx and self.edit_mode)
+        is_subroom = room.get('parent') is not None  # Has a parent = is a sub-room
 
         # Color scheme based on state
         if is_editing:
@@ -832,11 +1026,20 @@ class BoundaryEditor:
             lw = 2
             label_bg = 'magenta'
         elif is_current_floor:
-            edge_color = 'green'
-            face_color = 'green'
-            alpha = 0.25
-            lw = 2
-            label_bg = 'green'
+            if is_subroom:
+                # Sub-rooms: use blue/teal color to distinguish from apartments
+                edge_color = '#2196F3'  # Material blue
+                face_color = '#2196F3'
+                alpha = 0.3
+                lw = 2
+                label_bg = '#1976D2'  # Darker blue for label
+            else:
+                # Apartments: use green
+                edge_color = 'green'
+                face_color = 'green'
+                alpha = 0.25
+                lw = 2
+                label_bg = 'green'
         else:
             # Other floors: use gray with lower opacity
             edge_color = 'gray'
@@ -1122,7 +1325,16 @@ class BoundaryEditor:
         self._update_status(f"Polygon ready: {len(vertices)} pts, {area:.1f} m2", 'green')
 
     def _on_scroll(self, event):
-        """Handle scroll wheel for zooming with throttled redraws for smooth performance."""
+        """Handle scroll wheel for zooming (main axes) or list scrolling (room list)."""
+        # Scroll the room list when cursor is over it
+        if event.inaxes == self.ax_list:
+            if event.button == 'down':
+                self.room_list_scroll_offset += 1
+            else:
+                self.room_list_scroll_offset = max(0, self.room_list_scroll_offset - 1)
+            self._update_room_list()
+            return
+
         if event.inaxes != self.ax:
             return
         scale = 1.2 if event.button == 'down' else 1 / 1.2
@@ -1352,7 +1564,6 @@ class BoundaryEditor:
         self.selected_room_idx = idx
         room = self.rooms[idx]
         self.name_textbox.set_val(room.get('name', ''))
-        self.type_textbox.set_val(room.get('room_type', ''))
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
         self._render_section()  # Refresh to highlight
 
@@ -1361,7 +1572,6 @@ class BoundaryEditor:
         if self.selected_room_idx is not None:
             self.selected_room_idx = None
             self.name_textbox.set_val('')
-            self.type_textbox.set_val('')
             self._update_status("Ready to draw", 'blue')
             self._update_room_list()
             self.fig.canvas.draw_idle()
@@ -1404,7 +1614,7 @@ class BoundaryEditor:
         print(f"Saved edited boundary for '{name}'")
 
     def _save_current_room(self):
-        """Save the currently drawn polygon as a new room."""
+        """Save the currently drawn polygon as a new room with optional parent relationship."""
         if len(self.current_polygon_vertices) < 3:
             self._update_status("No polygon to save - draw one first", 'red')
             return
@@ -1413,12 +1623,31 @@ class BoundaryEditor:
         if not name:
             name = f"ROOM_{len(self.rooms) + 1:03d}"
 
-        room_type = self.type_textbox.text.strip()
+        # Auto-prefix with parent name if parent is selected
+        if self.selected_parent:
+            full_name = f"{self.selected_parent}_{name}"
+        else:
+            full_name = name
+
+        vertices = [[float(x), float(y)] for x, y in self.current_polygon_vertices]
+
+        # Check boundary containment if parent is selected
+        warning_msg = ""
+        is_outside_parent = False
+        if self.selected_parent:
+            parent_room = self._get_parent_room(self.selected_parent)
+            if parent_room:
+                is_outside_parent = not self._check_boundary_containment(vertices, parent_room['vertices'])
+                if is_outside_parent:
+                    warning_msg = " (WARNING: extends outside parent boundary!)"
+                    print(f"WARNING: Room '{full_name}' extends outside parent '{self.selected_parent}' boundary")
+            else:
+                print(f"Warning: Parent room '{self.selected_parent}' not found in rooms list")
 
         room = {
-            'name': name,
-            'room_type': room_type,
-            'vertices': [[float(x), float(y)] for x, y in self.current_polygon_vertices],
+            'name': full_name,
+            'parent': self.selected_parent,  # None for apartments, parent name for sub-rooms
+            'vertices': vertices,
             'z_height': self.current_z,
         }
         self.rooms.append(room)
@@ -1427,28 +1656,30 @@ class BoundaryEditor:
         self.current_polygon_vertices = []
         self.selector.clear()
         self.name_textbox.set_val('')
-        self.type_textbox.set_val('')
 
-        self._update_status(f"Saved '{name}' ({len(self.rooms)} total)", 'green')
+        # Update parent options since we may have added a new apartment
+        self._update_parent_options()
+        self._update_name_preview()
+
+        status_color = 'orange' if warning_msg else 'green'
+        self._update_status(f"Saved '{full_name}'{warning_msg}", status_color)
         self._update_room_list()
         self._update_floor_level_list()
         self._render_section()
         # Re-create selector after render
         self._create_polygon_selector()
-        print(f"Saved room '{name}' at Z={self.current_z:.1f}m ({len(self.rooms)} total)")
+        print(f"Saved room '{full_name}' at Z={self.current_z:.1f}m ({len(self.rooms)} total){warning_msg}")
 
         # Auto-save session to JSON after saving room
         self._save_session()
 
     def _update_selected_room(self):
-        """Update the name/type of the selected room."""
+        """Update the name of the selected room."""
         if self.selected_room_idx is None:
             return
         idx = self.selected_room_idx
         new_name = self.name_textbox.text.strip() or self.rooms[idx]['name']
-        new_type = self.type_textbox.text.strip()
         self.rooms[idx]['name'] = new_name
-        self.rooms[idx]['room_type'] = new_type
         self._update_status(f"Updated '{new_name}'", 'green')
         self._update_room_list()
         self._render_section()
@@ -1513,7 +1744,6 @@ class BoundaryEditor:
     def _on_show_all_toggle(self, event):
         """Toggle showing rooms from all floors vs current floor only."""
         self.show_all_floors = not self.show_all_floors
-        self.btn_show_all.label.set_text('All Floors: ON' if self.show_all_floors else 'All Floors: OFF')
         status = "all floors" if self.show_all_floors else "current floor only"
         self._update_status(f"Showing rooms from {status}", 'blue')
         self._render_section()
@@ -1666,32 +1896,144 @@ class BoundaryEditor:
             self.fig.canvas.draw_idle()
 
     def _update_room_list(self):
-        """Refresh the saved rooms list in the side panel."""
+        """Refresh the saved rooms list as a scrollable, click-to-select panel."""
         self.ax_list.clear()
-        self.ax_list.axis('off')
+        self.ax_list.set_facecolor('#FAFAF8')
+        self.ax_list.set_xlim(0, 1)
+        self.ax_list.tick_params(left=False, bottom=False,
+                                  labelleft=False, labelbottom=False)
+        for spine in self.ax_list.spines.values():
+            spine.set_edgecolor('#CCCCCC')
+            spine.set_linewidth(0.5)
+
+        self._room_list_hit_boxes = []
 
         if not self.rooms:
-            self.ax_list.text(0, 0.95, "(no rooms saved)", fontsize=8, style='italic', color='gray')
-        else:
-            max_display = 6
-            for i, room in enumerate(self.rooms[:max_display]):
-                y_pos = 0.95 - (i * 0.16)
-                name = room.get('name', 'unnamed')
-                z = room.get('z_height', 0)
-                text = f"{i + 1}. {name} (Z={z:.1f}m)"
-                if len(text) > 30:
-                    text = text[:27] + "..."
-                is_sel = (i == self.selected_room_idx)
-                self.ax_list.text(
-                    0, y_pos, text, fontsize=7,
-                    fontweight='bold' if is_sel else 'normal',
-                    color='orange' if is_sel else 'black',
-                )
-            if len(self.rooms) > max_display:
-                self.ax_list.text(0, 0.02, f"... and {len(self.rooms) - max_display} more",
-                                 fontsize=7, style='italic')
+            self.ax_list.set_ylim(0, 1)
+            self.ax_list.text(0.05, 0.5, "(no rooms saved)", fontsize=8,
+                              style='italic', color='gray', va='center')
+            self.fig.canvas.draw_idle()
+            return
+
+        # Build flat ordered list: apartments with children interleaved
+        flat_items = []  # list of (room_idx, indent_level)
+        apartments = [(i, r) for i, r in enumerate(self.rooms) if r.get('parent') is None]
+        children_by_parent = {}
+        for i, room in enumerate(self.rooms):
+            parent = room.get('parent')
+            if parent is not None:
+                children_by_parent.setdefault(parent, []).append((i, room))
+
+        for apt_idx, apt in apartments:
+            flat_items.append((apt_idx, 0))
+            for child_idx, _ in children_by_parent.get(apt.get('name', ''), []):
+                flat_items.append((child_idx, 1))
+
+        total_items = len(flat_items)
+        visible_rows = 10  # number of rows visible at once
+        pad_top = 0.04     # fraction of axes height reserved at top
+        pad_bot = 0.06     # fraction of axes height reserved at bottom
+        content_h = 1.0 - pad_top - pad_bot
+        row_h = content_h / visible_rows  # height per row in axes units
+
+        # Clamp scroll offset
+        max_offset = max(0, total_items - visible_rows)
+        self.room_list_scroll_offset = max(0, min(self.room_list_scroll_offset, max_offset))
+
+        self.ax_list.set_ylim(0, 1)
+
+        visible_slice = flat_items[self.room_list_scroll_offset:
+                                   self.room_list_scroll_offset + visible_rows]
+
+        for row_i, (room_idx, indent) in enumerate(visible_slice):
+            room = self.rooms[room_idx]
+            name = room.get('name', 'unnamed')
+            z = room.get('z_height', 0)
+            is_sel = (room_idx == self.selected_room_idx)
+            is_subroom = indent > 0
+
+            # Row top/bottom in axes coords (rows go top-down)
+            row_top = (1.0 - pad_top) - row_i * row_h
+            row_bot = row_top - row_h
+            row_mid = (row_top + row_bot) / 2
+
+            # Highlight background for selected room
+            if is_sel:
+        
+                bg = FancyBboxPatch((0.01, row_bot + 0.002), 0.98, row_h - 0.004,
+                                    boxstyle='round,pad=0.01',
+                                    facecolor='#FFE082', edgecolor='orange',
+                                    linewidth=1.0, transform=self.ax_list.transAxes,
+                                    clip_on=True)
+                self.ax_list.add_patch(bg)
+
+            # Build display text
+            if is_subroom:
+                short_name = name
+                parent_name = room.get('parent', '')
+                if name.startswith(f"{parent_name}_"):
+                    short_name = name[len(parent_name) + 1:]
+                display_text = f"    \u2514 {short_name}"
+                txt_color = '#0D47A1' if not is_sel else '#E65100'
+                fs = 7
+                fw = 'normal'
+            else:
+                child_count = len(children_by_parent.get(name, []))
+                suffix = f" ({child_count} rooms)" if child_count else f" Z={z:.1f}m"
+                display_text = f"{name}{suffix}"
+                txt_color = '#1B5E20' if not is_sel else '#E65100'
+                fs = 8
+                fw = 'bold' if not is_sel else 'bold'
+
+            self.ax_list.text(
+                0.03 + indent * 0.04, row_mid, display_text,
+                fontsize=fs, fontweight=fw, color=txt_color,
+                va='center', transform=self.ax_list.transAxes, clip_on=True,
+            )
+
+            # Store hit box (in axes coords 0-1) for click detection
+            self._room_list_hit_boxes.append((row_bot, row_top, room_idx))
+
+        # Scroll indicator if list is scrollable
+        if total_items > visible_rows:
+            scroll_pct = self.room_list_scroll_offset / max(1, max_offset)
+            indicator_h = visible_rows / total_items
+            indicator_y = (1.0 - indicator_h) * (1.0 - scroll_pct)
+    
+            scrollbar = FancyBboxPatch((0.965, indicator_y), 0.025, indicator_h,
+                                       boxstyle='round,pad=0.005',
+                                       facecolor='#AAAAAA', edgecolor='none',
+                                       transform=self.ax_list.transAxes, clip_on=True)
+            self.ax_list.add_patch(scrollbar)
+            # Scroll hint text at bottom
+            self.ax_list.text(0.5, 0.01,
+                              f"\u2191\u2193 scroll  ({self.room_list_scroll_offset + 1}"
+                              f"-{min(self.room_list_scroll_offset + visible_rows, total_items)}"
+                              f" of {total_items})",
+                              fontsize=6, color='#888888', ha='center', va='bottom',
+                              transform=self.ax_list.transAxes)
 
         self.fig.canvas.draw_idle()
+
+    def _on_list_click(self, event):
+        """Handle clicks on the saved rooms list to select and highlight a room."""
+        if event.inaxes != self.ax_list:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        # ydata is in data coordinates which equal axes coords since ylim=(0,1) and xlim=(0,1)
+        y = event.ydata
+        for (y_min, y_max, room_idx) in self._room_list_hit_boxes:
+            if y_min <= y <= y_max:
+                if self.selected_room_idx == room_idx:
+                    # Clicking again deselects
+                    self.selected_room_idx = None
+                else:
+                    self.selected_room_idx = room_idx
+                self._render_section()
+                self._update_room_list()
+                return
 
     def _update_floor_level_list(self):
         """Refresh the floor level list in the side panel (descending order - top floor first)."""
@@ -1771,8 +2113,8 @@ class BoundaryEditor:
     def export_room_boundaries_csv(self, output_path: Optional[Path] = None):
         """Export room boundaries as CSV compatible with ViewGenerator.
 
-        The CSV uses the headerless format with coordinate strings in
-        millimetres: apartment_no, room, X_mm Y_mm Z_mm, ...
+        The CSV format includes the parent column for hierarchical relationships:
+        name, parent, X_mm Y_mm Z_mm, ...
 
         Args:
             output_path: Output CSV path. Defaults to config.WPD_DIR / 'drawn_room_boundaries.csv'.
@@ -1791,7 +2133,9 @@ class BoundaryEditor:
             for x, y in room['vertices']:
                 coord_strings.append(f"X_{x * 1000:.3f} Y_{y * 1000:.3f} Z_{z_mm:.3f}")
 
-            row = [room['name'], room.get('room_type', '')] + coord_strings
+            # Include parent column (empty string if no parent)
+            parent = room.get('parent', '') or ''
+            row = [room['name'], parent] + coord_strings
             rows.append(row)
 
         # Pad all rows to the same column count
