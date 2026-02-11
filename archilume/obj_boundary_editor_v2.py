@@ -360,6 +360,7 @@ class BoundaryEditorV2:
         obj_path: Union[Path, str],
         mtl_path: Optional[Path] = None,
         session_path: Optional[Path] = None,
+        initial_csv_path: Optional[Union[Path, str]] = None,
         simplify_ratio: Optional[float] = None,
         detect_floors: bool = True,
         max_vertex_display: int = 5000,
@@ -370,6 +371,7 @@ class BoundaryEditorV2:
             obj_path: OBJ file path to load
             mtl_path: Optional MTL file path (not currently used)
             session_path: Path for saving/loading editor sessions
+            initial_csv_path: Optional CSV file with initial room boundaries (used if no session exists)
             simplify_ratio: Optional mesh decimation ratio (0.0-1.0) for large meshes
             detect_floors: Whether to auto-detect floor levels (disable for very large meshes)
             max_vertex_display: Maximum vertices to display (downsample if exceeded)
@@ -377,6 +379,7 @@ class BoundaryEditorV2:
         self.obj_path = Path(obj_path)
         self.mtl_path = mtl_path
         self.session_path = session_path or (self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.json")
+        self.initial_csv_path = Path(initial_csv_path) if initial_csv_path else None
         self.csv_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.csv"
         self.simplify_ratio = simplify_ratio
         self.detect_floors = detect_floors
@@ -400,7 +403,7 @@ class BoundaryEditorV2:
 
         # Vertex snapping with KD-tree optimization
         self.snap_enabled: bool = True
-        self.snap_distance: float = 0.5  # meters
+        self.snap_distance: float = 0.1  # meters
         self.current_vertices: np.ndarray = np.array([])  # (N, 2) array of slice vertices
         self._vertex_kdtree: Optional[cKDTree] = None  # Spatial index for fast snapping
 
@@ -415,6 +418,9 @@ class BoundaryEditorV2:
         self.edit_vertex_idx: Optional[int] = None  # Index of vertex being dragged
         self.hover_room_idx: Optional[int] = None  # Room under cursor
         self.hover_vertex_idx: Optional[int] = None  # Vertex under cursor
+        self.hover_edge_room_idx: Optional[int] = None  # Room containing hovered edge
+        self.hover_edge_idx: Optional[int] = None  # Index of first vertex of hovered edge
+        self.hover_edge_point: Optional[tuple] = None  # Projected insertion point on edge
 
         # Parent apartment selection (hierarchical support)
         self.selected_parent: Optional[str] = None  # Currently selected parent apartment name
@@ -430,12 +436,24 @@ class BoundaryEditorV2:
 
     def launch(self):
         """Load the mesh and open the interactive editor window."""
+        # Check for cached floor levels in session to skip expensive detection on repeat runs
+        cached_floor_levels = None
+        if self.session_path.exists():
+            try:
+                with open(self.session_path, 'r') as f:
+                    cached_floor_levels = json.load(f).get('floor_levels')
+            except Exception:
+                pass
+
         print("Loading OBJ mesh...")
         self.slicer = MeshSlicer(
             self.obj_path,
             simplify_ratio=self.simplify_ratio,
-            detect_floors=self.detect_floors
+            detect_floors=self.detect_floors and not cached_floor_levels
         )
+        if cached_floor_levels:
+            self.slicer.floor_levels = cached_floor_levels
+            print(f"Floor levels loaded from session cache ({len(cached_floor_levels)} floors, detection skipped)")
         print(f"Mesh loaded: {self.slicer.mesh.n_cells:,} cells, Z range [{self.slicer.z_min:.2f}, {self.slicer.z_max:.2f}]m")
 
         # Pre-cache floor level slices for instant navigation
@@ -451,7 +469,17 @@ class BoundaryEditorV2:
             self.current_floor_idx = None
 
         # Setup matplotlib figure with soft off-white background
-        self.fig = plt.figure(figsize=(18, 10), facecolor='#F5F5F0')
+        self.fig = plt.figure(figsize=(18, 9), facecolor='#F5F5F0')
+
+        # Maximise the window on open so it fills the screen regardless of OS placement
+        try:
+            plt.get_current_fig_manager().window.state('zoomed')   # TkAgg (Windows default)
+        except AttributeError:
+            try:
+                plt.get_current_fig_manager().window.showMaximized()  # Qt backends
+            except AttributeError:
+                pass
+
         # Main plot area on the right, side panel on the left
         self.ax = self.fig.add_axes([0.35, 0.10, 0.63, 0.85])
         self.ax.set_aspect('equal')
@@ -579,17 +607,35 @@ class BoundaryEditorV2:
         self._slider_color = '#A8C8A8'    # Soft sage green for sliders
 
         # Instructions (full width)
-        ax_instr = self.fig.add_axes([pl, 0.90, pw, 0.08])
+        ax_instr = self.fig.add_axes([pl, 0.83, pw, 0.15])
         ax_instr.axis('off')
-        ax_instr.text(0, 0.9, "BOUNDARY EDITOR", fontsize=11, fontweight='bold', color='#404040')
-        ax_instr.text(0, 0.55, "1. Use \u2191\u2193 arrow keys or buttons to navigate floors", fontsize=9, color='#505050')
-        ax_instr.text(0, 0.25, "2. Click to draw (snaps to vertices)", fontsize=9, color='#505050')
-        ax_instr.text(0, -0.05, "3. Press 'v' to toggle Plan/Elevation view", fontsize=9, color='#505050')
+        ax_instr.patch.set_visible(False)
+        ax_instr.text(0, 0.93, "BOUNDARY EDITOR", fontsize=11, fontweight='bold', color='#404040',
+                      transform=ax_instr.transAxes)
+        controls = [
+            ("\u2191/\u2193",     "Navigate floor levels"),
+            ("Left-click",        "Place vertex / drag (edit mode)"),
+            ("Right-click",       "Select existing room"),
+            ("Scroll",            "Zoom centred on cursor"),
+            ("s",                 "Save room / confirm edit"),
+            ("d",                 "Delete selected room"),
+            ("e",                 "Toggle Edit Mode"),
+            ("v",                 "Cycle views: Plan \u2192 Elev X \u2192 Elev Y"),
+            ("a",                 "Toggle all-floors display"),
+            ("r",                 "Reset zoom"),
+            ("q",                 "Quit"),
+        ]
+        for i, (key, desc) in enumerate(controls):
+            y = 0.85 - i * 0.08
+            ax_instr.text(0.00, y, key,  fontsize=7, color='#404040', fontweight='bold',
+                          transform=ax_instr.transAxes)
+            ax_instr.text(0.32, y, desc, fontsize=7, color='#505050',
+                          transform=ax_instr.transAxes)
 
         # ── LEFT COLUMN: floor levels + input fields ──────────────────────────
 
         # Floor level navigation section (left column)
-        ax_floor_hdr = self.fig.add_axes([pl, 0.82, pw_l, 0.03])
+        ax_floor_hdr = self.fig.add_axes([pl, 0.75, pw_l, 0.03])
         ax_floor_hdr.axis('off')
         ax_floor_hdr.text(0, 0.5, "FLOOR LEVELS:", fontsize=10, fontweight='bold', color='#404040')
 
@@ -598,100 +644,98 @@ class BoundaryEditorV2:
         btn_arrow_height = 0.05
         floor_list_left = pl + btn_arrow_width + 0.005
 
-        ax_next_floor = self.fig.add_axes([pl, 0.75, btn_arrow_width, btn_arrow_height])
+        ax_next_floor = self.fig.add_axes([pl, 0.68, btn_arrow_width, btn_arrow_height])
         self.btn_next_floor = Button(ax_next_floor, '\u25b2', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_next_floor.on_clicked(self._on_next_floor_click)
 
-        ax_prev_floor = self.fig.add_axes([pl, 0.69, btn_arrow_width, btn_arrow_height])
+        ax_prev_floor = self.fig.add_axes([pl, 0.62, btn_arrow_width, btn_arrow_height])
         self.btn_prev_floor = Button(ax_prev_floor, '\u25bc', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_prev_floor.on_clicked(self._on_prev_floor_click)
 
-        self.ax_floor_list = self.fig.add_axes([floor_list_left, 0.69, pw_l - btn_arrow_width - 0.005, 0.12])
+        self.ax_floor_list = self.fig.add_axes([floor_list_left, 0.62, pw_l - btn_arrow_width - 0.005, 0.12])
         self.ax_floor_list.axis('off')
 
         # Parent apartment selector (half width - left column only)
-        ax_parent_lbl = self.fig.add_axes([pl, 0.635, pw_l, 0.03])
+        ax_parent_lbl = self.fig.add_axes([pl, 0.565, pw_l, 0.03])
         ax_parent_lbl.axis('off')
         ax_parent_lbl.text(0, 0.5, "Parent Apartment:", fontsize=10, fontweight='bold')
 
-        ax_parent_btn = self.fig.add_axes([pl, 0.595, pw_l, 0.035])
+        ax_parent_btn = self.fig.add_axes([pl, 0.525, pw_l, 0.035])
         self.btn_parent = Button(ax_parent_btn, '(None)', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_parent.label.set_fontsize(8)
         self.btn_parent.on_clicked(self._on_parent_cycle)
 
         # Name preview label
-        ax_name_preview = self.fig.add_axes([pl, 0.570, pw_l, 0.02])
+        ax_name_preview = self.fig.add_axes([pl, 0.500, pw_l, 0.02])
         ax_name_preview.axis('off')
         self.name_preview_text = ax_name_preview.text(0, 0.5, "", fontsize=8, color='#666666', style='italic')
 
         # Room name input (half width - left column only)
-        ax_name_lbl = self.fig.add_axes([pl, 0.535, pw_l, 0.03])
+        ax_name_lbl = self.fig.add_axes([pl, 0.465, pw_l, 0.03])
         ax_name_lbl.axis('off')
         self.name_label_text = ax_name_lbl.text(0, 0.5, "Apartment Name:", fontsize=9, fontweight='bold')
-        ax_name = self.fig.add_axes([pl, 0.490, pw_l, 0.040])
+        ax_name = self.fig.add_axes([pl, 0.420, pw_l, 0.040])
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
 
         # Status display (left column)
-        ax_status = self.fig.add_axes([pl, 0.445, pw_l, 0.03])
+        ax_status = self.fig.add_axes([pl, 0.375, pw_l, 0.03])
         ax_status.axis('off')
         self.status_text = ax_status.text(
             0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
 
-        # ── RIGHT COLUMN: vertical button stack ───────────────────────────────
+        # ── RIGHT COLUMN: SAVED ROOMS list ──────────────────────────────────────
 
-        btn_h = 0.028   # button height
-        btn_gap = 0.005  # gap between buttons
-        btn_step = btn_h + btn_gap
+        list_hdr_y = 0.750
+        ax_list_hdr = self.fig.add_axes([pr, list_hdr_y, pw_r, 0.025])
+        ax_list_hdr.axis('off')
+        ax_list_hdr.text(0, 0.5, "SAVED ROOMS:",
+                         fontsize=9, fontweight='bold')
 
-        btn_labels = [
-            ('btn_save',       'Save Room',       self._on_save_click),
-            ('btn_clear',      'Clear Current',   self._on_clear_click),
-            ('btn_export_aoi', 'Export AOI',      self._on_export_aoi_click),
-            ('btn_delete',     'Delete Selected', self._on_delete_click),
-            ('btn_export_csv', 'Export CSV',      self._on_export_csv_click),
-        ]
+        # Scrollable room list — in right column
+        list_bottom = 0.375  # aligns with Status text level
+        list_top = list_hdr_y - 0.005
+        self.ax_list = self.fig.add_axes([pr, list_bottom, pw_r, list_top - list_bottom])
+        self.ax_list.set_facecolor('#FAFAF8')
+        self.ax_list.tick_params(left=False, bottom=False,
+                                 labelleft=False, labelbottom=False)
+        for spine in self.ax_list.spines.values():
+            spine.set_edgecolor('#CCCCCC')
+            spine.set_linewidth(0.5)
 
-        btn_top = 0.820  # top of button stack (aligns with FLOOR LEVELS header)
-        for attr_name, label, callback in btn_labels:
-            btn_y = btn_top - btn_h
-            ax_btn = self.fig.add_axes([pr, btn_y, pw_r, btn_h])
-            btn = Button(ax_btn, label, color=self._btn_color, hovercolor=self._btn_hover)
-            btn.label.set_fontsize(8)
-            btn.on_clicked(callback)
-            setattr(self, attr_name, btn)
-            btn_top -= btn_step
+        # ── BOTTOM STRIP: Snap | Edit Mode | Reset Zoom (below figure only) ──
 
-        # ── BOTTOM STRIP: Snap | Edit Mode | Reset Zoom (full figure width) ──
+        fig_left  = 0.35   # matches main axes left
+        fig_width = 0.63   # matches main axes width
+        gap = 0.005
+        bottom_btn_h = 0.030
+        bottom_btn_w = (fig_width - 2 * gap) / 3
+        bottom_btn_y = 0.015
 
-        bottom_btn_h = 0.045
-        bottom_btn_w = (0.96 - pl) / 3 - 0.005
-        bottom_btn_y = 0.012
-
-        ax_snap_btn = self.fig.add_axes([pl, bottom_btn_y, bottom_btn_w, bottom_btn_h])
+        ax_snap_btn = self.fig.add_axes([fig_left, bottom_btn_y, bottom_btn_w, bottom_btn_h])
         self.btn_snap = Button(ax_snap_btn,
                                'Snap: ON' if self.snap_enabled else 'Snap: OFF',
                                color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_snap.label.set_fontsize(9)
+        self.btn_snap.label.set_fontsize(8)
         self.btn_snap.on_clicked(self._on_snap_toggle)
 
-        ax_edit_btn = self.fig.add_axes([pl + bottom_btn_w + 0.005, bottom_btn_y,
+        ax_edit_btn = self.fig.add_axes([fig_left + bottom_btn_w + gap, bottom_btn_y,
                                          bottom_btn_w, bottom_btn_h])
         self.btn_edit_mode = Button(ax_edit_btn, 'Edit Mode: OFF (Press E)',
                                     color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_edit_mode.label.set_fontsize(9)
+        self.btn_edit_mode.label.set_fontsize(8)
         self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
 
-        ax_reset_btn = self.fig.add_axes([pl + 2 * (bottom_btn_w + 0.005), bottom_btn_y,
+        ax_reset_btn = self.fig.add_axes([fig_left + 2 * (bottom_btn_w + gap), bottom_btn_y,
                                           bottom_btn_w, bottom_btn_h])
         self.btn_reset_zoom = Button(ax_reset_btn, 'Reset Zoom',
                                      color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_reset_zoom.label.set_fontsize(9)
+        self.btn_reset_zoom.label.set_fontsize(8)
         self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
 
         # ── FULL-WIDTH SECTION: snap slider ───────────────────────────────────
 
-        snap_lbl_y = 0.40
+        snap_lbl_y = 0.33
         ax_snap_dist_lbl = self.fig.add_axes([pl, snap_lbl_y, pw, 0.02])
         ax_snap_dist_lbl.axis('off')
         ax_snap_dist_lbl.text(0, 0.5, f"Snap Distance: {self.snap_distance:.1f}m", fontsize=9, color='#505050')
@@ -704,12 +748,33 @@ class BoundaryEditorV2:
         )
         self.snap_slider.on_changed(self._on_snap_distance_changed)
 
-        # ── LEGEND ────────────────────────────────────────────────────────────
+        # ── ACTION BUTTONS (between snap slider and legend) ─────────────────────
+        btn_h = 0.028   # button height
+        btn_gap = 0.005  # gap between buttons
+        btn_w = (pw - 2 * btn_gap) / 3  # three buttons side by side
+        btn_y = snap_lbl_y - 0.070  # below snap slider
 
-        ax_legend = self.fig.add_axes([pl, 0.245, pw, 0.115])
+        btn_labels = [
+            ('btn_save',   'Save Room',       self._on_save_click),
+            ('btn_clear',  'Clear Current',   self._on_clear_click),
+            ('btn_delete', 'Delete Selected', self._on_delete_click),
+        ]
+
+        for i, (attr_name, label, callback) in enumerate(btn_labels):
+            btn_x = pl + i * (btn_w + btn_gap)
+            ax_btn = self.fig.add_axes([btn_x, btn_y, btn_w, btn_h])
+            btn = Button(ax_btn, label, color=self._btn_color, hovercolor=self._btn_hover)
+            btn.label.set_fontsize(8)
+            btn.on_clicked(callback)
+            setattr(self, attr_name, btn)
+
+        # ── LEGEND (in left panel, below buttons) ───────────────────────────────
+        legend_height = 0.085
+        legend_bottom = btn_y - btn_h - 0.015 - legend_height  # below action buttons
+        ax_legend = self.fig.add_axes([pl, legend_bottom, pw, legend_height])
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
-        ax_legend.text(0, 0.97, "LEGEND", fontsize=8, fontweight='bold', color='#404040',
+        ax_legend.text(0.01, 0.92, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
                        transform=ax_legend.transAxes)
 
         legend_items = [
@@ -721,38 +786,20 @@ class BoundaryEditorV2:
             ('gray',     0.15, 'Other floor'),
         ]
 
-        n = len(legend_items)
+        # Two-column layout for legend items
         for i, (color, alpha, label) in enumerate(legend_items):
+            col = i // 3  # 0 for first 3, 1 for last 3
             row = i % 3
-            col = i // 3
-            x0 = col * 0.50
-            y0 = 0.78 - row * 0.28
-            rect = FancyBboxPatch((x0, y0 - 0.10), 0.05, 0.18,
+            x_base = 0.01 + col * 0.50
+            y0 = 0.72 - row * 0.26
+            rect = FancyBboxPatch((x_base, y0 - 0.10), 0.04, 0.18,
                                   boxstyle='round,pad=0.01',
                                   facecolor=color, edgecolor=color,
                                   alpha=alpha, transform=ax_legend.transAxes,
                                   clip_on=False)
             ax_legend.add_patch(rect)
-            ax_legend.text(x0 + 0.07, y0, label, fontsize=7, color='#404040',
+            ax_legend.text(x_base + 0.06, y0, label, fontsize=6, color='#404040',
                            va='center', transform=ax_legend.transAxes)
-
-        # ── SAVED ROOMS: scrollable list ──────────────────────────────────────
-
-        ax_list_hdr = self.fig.add_axes([pl, 0.235, pw, 0.025])
-        ax_list_hdr.axis('off')
-        ax_list_hdr.text(0, 0.5, "SAVED ROOMS (click to select/highlight):",
-                         fontsize=9, fontweight='bold')
-
-        # Scrollable room list — raised above bottom strip, with generous height
-        list_bottom = 0.075   # sits above the bottom button strip
-        list_top = 0.230      # just below the header
-        self.ax_list = self.fig.add_axes([pl, list_bottom, pw, list_top - list_bottom])
-        self.ax_list.set_facecolor('#FAFAF8')
-        self.ax_list.tick_params(left=False, bottom=False,
-                                 labelleft=False, labelbottom=False)
-        for spine in self.ax_list.spines.values():
-            spine.set_edgecolor('#CCCCCC')
-            spine.set_linewidth(0.5)
 
     # -------------------------------------------------------------------------
     # Parent/Child relationship helpers (hierarchical support)
@@ -800,6 +847,40 @@ class BoundaryEditorV2:
             if room['name'] == parent_name:
                 return room
         return None
+
+    def _make_unique_name(self, base_name: str, exclude_idx: Optional[int] = None) -> str:
+        """Ensure room name is unique by appending numeric suffix if needed.
+
+        Args:
+            base_name: The desired room name
+            exclude_idx: Room index to exclude from check (for updates)
+
+        Returns:
+            Unique name, possibly with numeric suffix (e.g., BED -> BED1 -> BED2)
+        """
+        existing_names = set()
+        for i, room in enumerate(self.rooms):
+            if exclude_idx is not None and i == exclude_idx:
+                continue
+            existing_names.add(room['name'])
+
+        if base_name not in existing_names:
+            return base_name
+
+        # Strip any existing numeric suffix to get the root name
+        import re
+        match = re.match(r'^(.*?)(\d+)$', base_name)
+        if match:
+            root = match.group(1)
+        else:
+            root = base_name
+
+        # Find the next available number
+        counter = 1
+        while f"{root}{counter}" in existing_names:
+            counter += 1
+
+        return f"{root}{counter}"
 
     def _check_boundary_containment(self, child_verts: List[List[float]], parent_verts: List[List[float]]) -> bool:
         """Check if child polygon is fully within parent polygon.
@@ -1064,25 +1145,34 @@ class BoundaryEditorV2:
                 is_dragging = (idx == self.edit_room_idx and v_idx == self.edit_vertex_idx)
 
                 if is_dragging:
-                    # Currently dragging this vertex
                     marker_color = 'yellow'
-                    marker_size = 14
+                    marker_size = 9
                 elif is_hovered:
-                    # Hovering over this vertex
                     marker_color = 'red'
-                    marker_size = 12
+                    marker_size = 8
                 else:
-                    # Regular editable vertex
                     marker_color = 'cyan'
-                    marker_size = 7
+                    marker_size = 5
 
                 self.ax.plot([vx], [vy], 'o',
                            markersize=marker_size,
                            color=marker_color,
                            markeredgecolor='black',
-                           markeredgewidth=1.5,
+                           markeredgewidth=1.0,
                            zorder=100,
-                           picker=5)  # Enable picking with 5pt tolerance
+                           picker=5)
+
+            # Highlight hovered edge and show insertion preview
+            if idx == self.hover_edge_room_idx and self.hover_edge_idx is not None:
+                n = len(verts)
+                j = self.hover_edge_idx
+                ex = [verts[j][0], verts[(j + 1) % n][0]]
+                ey = [verts[j][1], verts[(j + 1) % n][1]]
+                self.ax.plot(ex, ey, '-', color='lime', linewidth=3, zorder=99, alpha=0.8)
+                if self.hover_edge_point is not None:
+                    self.ax.plot([self.hover_edge_point[0]], [self.hover_edge_point[1]], 'o',
+                                markersize=8, color='lime', markeredgecolor='darkgreen',
+                                markeredgewidth=1.5, zorder=101, alpha=0.9)
 
         # Add label with floor level info if showing all floors
         centroid = np.array(verts).mean(axis=0)
@@ -1179,6 +1269,16 @@ class BoundaryEditorV2:
     # -------------------------------------------------------------------------
     # Vertex snapping helper
     # -------------------------------------------------------------------------
+
+    def _point_to_segment_dist(self, px, py, ax, ay, bx, by):
+        """Return (distance, proj_x, proj_y) from point P to segment A→B."""
+        dx, dy = bx - ax, by - ay
+        seg_len_sq = dx*dx + dy*dy
+        if seg_len_sq == 0:
+            return np.hypot(px - ax, py - ay), ax, ay
+        t = max(0.0, min(1.0, ((px - ax)*dx + (py - ay)*dy) / seg_len_sq))
+        proj_x, proj_y = ax + t*dx, ay + t*dy
+        return np.hypot(px - proj_x, py - proj_y), proj_x, proj_y
 
     def _snap_to_vertex(self, x: float, y: float) -> tuple:
         """Snap a point to the nearest vertex if within snap distance.
@@ -1332,7 +1432,12 @@ class BoundaryEditorV2:
                 self.room_list_scroll_offset += 1
             else:
                 self.room_list_scroll_offset = max(0, self.room_list_scroll_offset - 1)
-            self._update_room_list()
+            # Throttle room list redraws for smoother scrolling
+            now = time.monotonic()
+            last = getattr(self, '_last_list_scroll_draw', 0.0)
+            if now - last >= 0.05:  # ~20fps max for list scrolling
+                self._last_list_scroll_draw = now
+                self._update_room_list()
             return
 
         if event.inaxes != self.ax:
@@ -1374,18 +1479,30 @@ class BoundaryEditorV2:
             self._update_status('Cannot draw in elevation view - press "v" for Plan view', 'red')
             return
 
-        # Right-click: select room (works in all views)
+        # Right-click in edit mode: delete hovered vertex; otherwise select room
         if event.button == 3:
-            # Room selection only works in plan view
+            if self.edit_mode and self.hover_vertex_idx is not None and self.hover_room_idx is not None:
+                room = self.rooms[self.hover_room_idx]
+                if len(room['vertices']) > 3:
+                    room['vertices'].pop(self.hover_vertex_idx)
+                    rname = room.get('name', 'unnamed')
+                    self.hover_vertex_idx = None
+                    self.hover_room_idx = None
+                    self._update_status(f"Removed vertex from '{rname}' - press 's' to save", 'green')
+                    self._save_session()
+                    self._render_section()
+                else:
+                    self._update_status("Cannot remove - polygon must have at least 3 vertices", 'red')
+                return
+            # Normal right-click: select room
             if self.view_mode == 'plan':
                 self._select_room_at(event.xdata, event.ydata)
             else:
                 self._update_status('Room selection only in Plan view', 'orange')
             return
 
-        # Left-click in edit mode: start vertex drag on any hovered vertex
+        # Left-click in edit mode: drag vertex or insert vertex on edge
         if event.button == 1 and self.edit_mode and event.xdata is not None and event.ydata is not None:
-            # Check if clicking on a hovered vertex (from any room)
             if self.hover_vertex_idx is not None and self.hover_room_idx is not None:
                 # Start dragging this vertex
                 self.edit_room_idx = self.hover_room_idx
@@ -1393,7 +1510,23 @@ class BoundaryEditorV2:
                 room_name = self.rooms[self.hover_room_idx].get('name', 'unnamed')
                 self._update_status(f"Dragging vertex in '{room_name}'", 'cyan')
                 return
-            # If not on vertex, clicking does nothing in edit mode
+            elif self.hover_edge_room_idx is not None and self.hover_edge_point is not None:
+                # Insert new vertex on the hovered edge
+                room = self.rooms[self.hover_edge_room_idx]
+                insert_idx = self.hover_edge_idx + 1
+                px, py = self.hover_edge_point
+                if self.snap_enabled:
+                    px, py = self._snap_to_vertex(px, py)
+                room['vertices'].insert(insert_idx, [float(px), float(py)])
+                rname = room.get('name', 'unnamed')
+                self.hover_edge_room_idx = None
+                self.hover_edge_idx = None
+                self.hover_edge_point = None
+                self._update_status(f"Added vertex to '{rname}' - press 's' to save", 'green')
+                self._save_session()
+                self._render_section()
+                return
+            # Click on empty space in edit mode — no action
             return
 
         # Left-click: apply snapping before selector sees the event (plan view only, not in edit mode)
@@ -1420,8 +1553,9 @@ class BoundaryEditorV2:
 
             # Full render with selector recreation
             self.edit_vertex_idx = None
+            self._save_session()
             room_name = room.get('name', 'unnamed')
-            self._update_status(f"Moved vertex in '{room_name}' - press 's' to save", 'green')
+            self._update_status(f"Moved vertex in '{room_name}'", 'green')
             self._render_section()
             self._create_polygon_selector()
 
@@ -1448,7 +1582,7 @@ class BoundaryEditorV2:
             return
 
         # Check for vertex hover across ALL visible rooms
-        hover_threshold = 1.0  # More generous: 1 meter
+        hover_threshold = 0.3  # metres - kept tight so edge hover activates near existing vertices
         closest_vertex = None
         closest_dist = float('inf')
         closest_room_idx = None
@@ -1477,16 +1611,63 @@ class BoundaryEditorV2:
             if changed:
                 self.hover_room_idx = closest_room_idx
                 self.hover_vertex_idx = closest_vertex_idx
+                self.hover_edge_room_idx = None
+                self.hover_edge_idx = None
+                self.hover_edge_point = None
                 room_name = self.rooms[closest_room_idx].get('name', 'unnamed')
-                self._update_status(f"Vertex in '{room_name}' - click to drag", 'cyan')
+                self._update_status(f"Vertex in '{room_name}' - drag or right-click to remove", 'cyan')
                 self._render_section()
         else:
-            # No vertex nearby - clear hover state
-            if self.hover_vertex_idx is not None or self.hover_room_idx is not None:
+            # No vertex nearby - clear vertex hover and check for edge hover
+            vertex_state_changed = self.hover_vertex_idx is not None or self.hover_room_idx is not None
+            if vertex_state_changed:
                 self.hover_vertex_idx = None
                 self.hover_room_idx = None
-                self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                self._render_section()
+
+            # Check proximity to polygon edges for vertex insertion
+            edge_threshold = 0.4  # slightly larger than vertex hover so edges are reachable near vertices
+            best_edge_dist = float('inf')
+            best_edge_room = None
+            best_edge_idx = None
+            best_edge_point = None
+
+            for i, room in enumerate(self.rooms):
+                is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
+                if not self.show_all_floors and not is_current_floor:
+                    continue
+                verts = room['vertices']
+                n = len(verts)
+                for j in range(n):
+                    ax_, ay_ = verts[j]
+                    bx_, by_ = verts[(j + 1) % n]
+                    dist, proj_x, proj_y = self._point_to_segment_dist(x, y, ax_, ay_, bx_, by_)
+                    if dist < best_edge_dist:
+                        best_edge_dist = dist
+                        best_edge_room = i
+                        best_edge_idx = j
+                        best_edge_point = (proj_x, proj_y)
+
+            if best_edge_dist < edge_threshold:
+                changed = (self.hover_edge_room_idx != best_edge_room or
+                           self.hover_edge_idx != best_edge_idx)
+                self.hover_edge_room_idx = best_edge_room
+                self.hover_edge_idx = best_edge_idx
+                self.hover_edge_point = best_edge_point
+                if changed:
+                    rname = self.rooms[best_edge_room].get('name', 'unnamed')
+                    self._update_status(f"Click to add vertex to '{rname}'", 'green')
+                    self._render_section()
+            else:
+                if self.hover_edge_room_idx is not None:
+                    self.hover_edge_room_idx = None
+                    self.hover_edge_idx = None
+                    self.hover_edge_point = None
+                    self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
+                    self._render_section()
+                elif vertex_state_changed:
+                    # Vertex hover was cleared but no edge found - redraw to remove old highlight
+                    self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
+                    self._render_section()
 
     def _on_key_press(self, event):
         """Handle keyboard shortcuts."""
@@ -1629,6 +1810,9 @@ class BoundaryEditorV2:
         else:
             full_name = name
 
+        # Ensure unique name by appending numeric suffix if needed
+        full_name = self._make_unique_name(full_name)
+
         vertices = [[float(x), float(y)] for x, y in self.current_polygon_vertices]
 
         # Check boundary containment if parent is selected
@@ -1679,6 +1863,10 @@ class BoundaryEditorV2:
             return
         idx = self.selected_room_idx
         new_name = self.name_textbox.text.strip() or self.rooms[idx]['name']
+
+        # Ensure unique name by appending numeric suffix if needed
+        new_name = self._make_unique_name(new_name, exclude_idx=idx)
+
         self.rooms[idx]['name'] = new_name
         self._update_status(f"Updated '{new_name}'", 'green')
         self._update_room_list()
@@ -1719,14 +1907,6 @@ class BoundaryEditorV2:
             self.ax.set_ylim(self.original_ylim)
             self.fig.canvas.draw_idle()
 
-    def _on_export_aoi_click(self, event):
-        """Export all rooms as .aoi files."""
-        self.export_aoi_files()
-
-    def _on_export_csv_click(self, event):
-        """Export all rooms as a room boundaries CSV."""
-        self.export_room_boundaries_csv()
-
     def _on_snap_toggle(self, event):
         """Toggle vertex snapping on/off."""
         self.snap_enabled = not self.snap_enabled
@@ -1766,6 +1946,11 @@ class BoundaryEditorV2:
             self.edit_vertex_idx = None
             self.hover_room_idx = None
             self.hover_vertex_idx = None
+            self.hover_edge_room_idx = None
+            self.hover_edge_idx = None
+            self.hover_edge_point = None
+            # Save any pending vertex changes before leaving edit mode
+            self._save_session()
             # Re-enable polygon selector
             self._create_polygon_selector()
             self._update_status("Edit Mode OFF - Draw mode enabled", 'blue')
@@ -1908,18 +2093,23 @@ class BoundaryEditorV2:
 
         self._room_list_hit_boxes = []
 
-        if not self.rooms:
+        # Filter rooms to current floor level only
+        floor_rooms = [(i, r) for i, r in enumerate(self.rooms)
+                       if abs(r.get('z_height', 0) - self.current_z) < 0.5]
+
+        if not floor_rooms:
             self.ax_list.set_ylim(0, 1)
-            self.ax_list.text(0.05, 0.5, "(no rooms saved)", fontsize=8,
+            self.ax_list.text(0.05, 0.5, "(no rooms on this floor)", fontsize=7,
                               style='italic', color='gray', va='center')
             self.fig.canvas.draw_idle()
             return
 
         # Build flat ordered list: apartments with children interleaved
         flat_items = []  # list of (room_idx, indent_level)
-        apartments = [(i, r) for i, r in enumerate(self.rooms) if r.get('parent') is None]
+        floor_indices = {i for i, _ in floor_rooms}
+        apartments = [(i, r) for i, r in floor_rooms if r.get('parent') is None]
         children_by_parent = {}
-        for i, room in enumerate(self.rooms):
+        for i, room in floor_rooms:
             parent = room.get('parent')
             if parent is not None:
                 children_by_parent.setdefault(parent, []).append((i, room))
@@ -1930,9 +2120,9 @@ class BoundaryEditorV2:
                 flat_items.append((child_idx, 1))
 
         total_items = len(flat_items)
-        visible_rows = 10  # number of rows visible at once
-        pad_top = 0.04     # fraction of axes height reserved at top
-        pad_bot = 0.06     # fraction of axes height reserved at bottom
+        visible_rows = 22  # number of rows visible at once (tight spacing)
+        pad_top = 0.01     # fraction of axes height reserved at top
+        pad_bot = 0.03     # fraction of axes height reserved at bottom
         content_h = 1.0 - pad_top - pad_bot
         row_h = content_h / visible_rows  # height per row in axes units
 
@@ -1973,17 +2163,17 @@ class BoundaryEditorV2:
                 parent_name = room.get('parent', '')
                 if name.startswith(f"{parent_name}_"):
                     short_name = name[len(parent_name) + 1:]
-                display_text = f"    \u2514 {short_name}"
+                display_text = f"  \u2514 {short_name}"
                 txt_color = '#0D47A1' if not is_sel else '#E65100'
-                fs = 7
+                fs = 6.5
                 fw = 'normal'
             else:
                 child_count = len(children_by_parent.get(name, []))
-                suffix = f" ({child_count} rooms)" if child_count else f" Z={z:.1f}m"
+                suffix = f" ({child_count})" if child_count else ""
                 display_text = f"{name}{suffix}"
                 txt_color = '#1B5E20' if not is_sel else '#E65100'
-                fs = 8
-                fw = 'bold' if not is_sel else 'bold'
+                fs = 7
+                fw = 'bold'
 
             self.ax_list.text(
                 0.03 + indent * 0.04, row_mid, display_text,
@@ -2079,37 +2269,6 @@ class BoundaryEditorV2:
     # Export functions
     # -------------------------------------------------------------------------
 
-    def export_aoi_files(self, output_dir: Optional[Path] = None):
-        """Export room boundaries as .aoi files (IESVE-compatible format).
-
-        Each room is written to a separate file in the output directory.
-
-        Args:
-            output_dir: Directory for .aoi files. Defaults to config.AOI_DIR.
-        """
-        if not self.rooms:
-            self._update_status("No rooms to export", 'red')
-            return
-
-        output_dir = Path(output_dir) if output_dir else config.AOI_DIR
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        for room in self.rooms:
-            name = room['name']
-            room_type = room.get('room_type', '')
-            verts = room['vertices']
-            filepath = output_dir / f"{name}.aoi"
-
-            with open(filepath, 'w') as f:
-                f.write("AoI Points File : X,Y positions\n")
-                f.write(f"ZONE {name} {room_type}\n")
-                f.write(f"POINTS {len(verts)}\n")
-                for x, y in verts:
-                    f.write(f"{x:.4f} {y:.4f}\n")
-
-        self._update_status(f"Exported {len(self.rooms)} .aoi files", 'green')
-        print(f"Exported {len(self.rooms)} AOI files to {output_dir}")
-
     def export_room_boundaries_csv(self, output_path: Optional[Path] = None):
         """Export room boundaries as CSV compatible with ViewGenerator.
 
@@ -2158,6 +2317,7 @@ class BoundaryEditorV2:
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             'obj_path': str(self.obj_path),
+            'floor_levels': self.slicer.floor_levels if hasattr(self, 'slicer') else [],
             'rooms': self.rooms,
         }
         with open(self.session_path, 'w') as f:
@@ -2169,15 +2329,137 @@ class BoundaryEditorV2:
         self.export_room_boundaries_csv(output_path=self.csv_path)
 
     def _load_session(self):
-        """Load previously saved room boundaries from JSON."""
-        if not self.session_path.exists():
+        """Load previously saved room boundaries from JSON, or from initial CSV if no session exists."""
+        if self.session_path.exists():
+            with open(self.session_path, 'r') as f:
+                data = json.load(f)
+            self.rooms = data.get('rooms', [])
+            source = "session"
+        elif self.initial_csv_path and self.initial_csv_path.exists():
+            # No session exists, load from initial CSV
+            self._load_from_csv(self.initial_csv_path)
+            source = "initial CSV"
+        else:
             return
 
-        with open(self.session_path, 'r') as f:
-            data = json.load(f)
+        # Enforce unique names on load (fix any duplicates from older sessions)
+        renamed_count = self._enforce_unique_names()
+        if renamed_count > 0:
+            print(f"Renamed {renamed_count} rooms to ensure uniqueness")
+            self._save_session()  # Persist the fixes
 
-        self.rooms = data.get('rooms', [])
-        self._update_status(f"Loaded {len(self.rooms)} rooms from session", 'green')
+        self._update_status(f"Loaded {len(self.rooms)} rooms from {source}", 'green')
         if hasattr(self, 'ax'):
             self._render_section()
-        print(f"Loaded {len(self.rooms)} rooms from {self.session_path}")
+        print(f"Loaded {len(self.rooms)} rooms from {source}")
+
+    def _load_from_csv(self, csv_path: Path):
+        """Load room boundaries from a CSV file.
+
+        CSV format: apartment_name, room_type, X_val Y_val Z_val, X_val Y_val Z_val, ...
+        Coordinates are in millimeters and converted to meters.
+
+        Room type interpretation:
+        - Descriptive types like "3 BED", "4 BED", "STUDIO" = apartment boundary (parent=None)
+        - Short codes like "T", "K", "L", "B1" = sub-room (parent=apartment_name)
+
+        Args:
+            csv_path: Path to the CSV file
+        """
+        import re
+        self.rooms = []
+        seen_apartments = set()  # Track which apartments we've seen
+
+        with open(csv_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                parts = line.split(',')
+                if len(parts) < 3:
+                    continue
+
+                apartment_name = parts[0].strip()
+                room_type = parts[1].strip()
+
+                # Determine if this is an apartment boundary or a sub-room
+                # Apartment boundaries have descriptive types like "3 BED", "4 BED", "STUDIO", etc.
+                # or are the first entry for a given apartment name
+                is_apartment_boundary = (
+                    apartment_name not in seen_apartments or
+                    ' BED' in room_type.upper() or
+                    room_type.upper() in ('STUDIO', 'PENTHOUSE', '')
+                )
+
+                if is_apartment_boundary:
+                    name = apartment_name
+                    parent = None
+                    seen_apartments.add(apartment_name)
+                else:
+                    # Sub-room: use apartment_name_room_type
+                    name = f"{apartment_name}_{room_type}"
+                    parent = apartment_name
+
+                # Parse vertices (format: X_value Y_value Z_value)
+                vertices = []
+                z_height = None
+                for vertex_str in parts[2:]:
+                    vertex_str = vertex_str.strip()
+                    if not vertex_str:
+                        continue
+
+                    match = re.match(r'X_([-\d.]+)\s+Y_([-\d.]+)\s+Z_([-\d.]+)', vertex_str)
+                    if match:
+                        x_mm = float(match.group(1))
+                        y_mm = float(match.group(2))
+                        z_mm = float(match.group(3))
+                        # Convert mm to meters
+                        x_m = x_mm / 1000.0
+                        y_m = y_mm / 1000.0
+                        z_m = z_mm / 1000.0
+                        vertices.append([x_m, y_m])
+                        if z_height is None:
+                            z_height = z_m
+
+                if len(vertices) >= 3 and z_height is not None:
+                    self.rooms.append({
+                        'name': name,
+                        'parent': parent,
+                        'vertices': vertices,
+                        'z_height': z_height,
+                    })
+
+        print(f"Loaded {len(self.rooms)} rooms from CSV: {csv_path}")
+
+    def _enforce_unique_names(self) -> int:
+        """Ensure all room names are unique by appending numeric suffixes to duplicates.
+
+        Returns:
+            Number of rooms that were renamed
+        """
+        import re
+        seen_names = set()
+        renamed_count = 0
+
+        for room in self.rooms:
+            name = room['name']
+            if name not in seen_names:
+                seen_names.add(name)
+                continue
+
+            # Duplicate found - generate unique name
+            match = re.match(r'^(.*?)(\d+)$', name)
+            root = match.group(1) if match else name
+
+            counter = 1
+            while f"{root}{counter}" in seen_names:
+                counter += 1
+
+            new_name = f"{root}{counter}"
+            print(f"Renamed duplicate '{name}' -> '{new_name}'")
+            room['name'] = new_name
+            seen_names.add(new_name)
+            renamed_count += 1
+
+        return renamed_count

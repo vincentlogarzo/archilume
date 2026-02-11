@@ -36,23 +36,17 @@ from archilume.obj_boundary_editor_v2 import BoundaryEditorV2
 from archilume import config
 
 
-obj_path = config.INPUTS_DIR / "cowles" / "87Cowles_BLD_withWindows.obj"
-
 # simplify_ratio: 0.0-1.0 mesh decimation for large files (None = off)
-simplify_ratio = None
-
 # detect_floors: set False to skip auto floor detection on very large meshes
-detect_floors = True
-
 # max_vertex_display: downsample snap-point display above this count
-max_vertex_display = 5000
-
+# initial_csv_path: optional CSV with pre-existing room boundaries (loaded if no session exists)
 
 if __name__ == "__main__":
     editor = BoundaryEditorV2(
-        obj_path=obj_path,
-        simplify_ratio=simplify_ratio,
-        detect_floors=detect_floors,
-        max_vertex_display=max_vertex_display,
+        obj_path            = config.INPUTS_DIR / "87Cowles_BLD_withWindows.obj",
+        initial_csv_path    = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
+        simplify_ratio      = None,
+        detect_floors       = True,
+        max_vertex_display  = 5000,
     )
     editor.launch()
