@@ -17,8 +17,7 @@ Use the below in the command prompt only not in powershell. Oconv required utf-8
     obj2rad -n inputs/87cowles_site.obj > outputs/rad/87cowles_site.qual 
     obj2rad -n inputs/22041_T3_R25_BLD_COARSE.obj > outputs/rad/22041_T3_R25_BLD_COARSE.qual
 
-    oconv -f outputs/rad/materials.mtl outputs/rad/22041_T3_R25_BLD_COARSE.rad > outputs/octree/22041_T3_R25_BLD_COARSE.oct
-    oconv inputs/default_mat.rad outputs/rad/87cowles_BLD_noWindows.rtm > outputs/octree/87cowles_BLD_noWindows.oct
+    oconv -f outputs/rad/materials.mtl outputs/rad/87Cowles_BLD_withWindows.rad outputs/rad/87cowles_site.rad > outputs/octree/22041_T3_R25_BLD_COARSE.oct
 
     oconv -i octree/87cowles_BLD_noWindows_with_site_skyless.oct sky/SS_0621_0900.sky > octree/87cowles_BLD_noWindows_with_site_SS_0621_0900.oct
 
@@ -88,7 +87,15 @@ FUTURE implementaiton A of RenderingPipelines
     .\archilume\accelerad_rpict.ps1 87Cowles_BLD_withWindows_with_site_TenK_cie_overcast high 512
 
     
+--- 7. ---
+AcceleradRT 
 
+    $VIEW="C:\Projects\archilume\outputs\view\plan_ffl_096590.vp"
+    .\.devcontainer\accelerad_07_beta_Windows\bin\AcceleradRT.exe -x 900 -y 900
+    .\.devcontainer\accelerad_07_beta_Windows\bin\AcceleradRT.exe -x 1200 -y 1200
+
+ 
+    falsecolor -i outputs\image\exterior_and_site.hdr -s 10000 -l lux -pal hot -n 10 -lw 0 | ra_tiff - outputs\image\exterior_and_site.tiff
 
 
 

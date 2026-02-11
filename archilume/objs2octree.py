@@ -120,21 +120,21 @@ class Objs2Octree:
             output_rad_path = config.RAD_DIR / input_obj_path.with_suffix('.rad').name
             self.output_rad_paths.append(output_rad_path)
 
-            # Build the command string with proper quoting for paths with spaces
-            command = f'"{exe_path}" "{input_obj_path}" > "{output_rad_path}"'
-            print(f"Running: {command}")
+            print(f"Running: \"{exe_path}\" \"{input_obj_path}\" > \"{output_rad_path}\"")
 
-            exit_code = os.system(command)
+            with open(output_rad_path, 'wb') as f_out:
+                result = subprocess.run(
+                    [str(exe_path), str(input_obj_path)],
+                    stdout=f_out,
+                    stderr=subprocess.PIPE
+                )
 
-            # On Unix, os.system returns exit status << 8, so divide by 256
-            if sys.platform != "win32":
-                exit_code = exit_code >> 8
-
-            if exit_code == 0:
+            if result.returncode == 0:
                 print("Command executed successfully")
             else:
-                print(f"Command failed with exit code: {exit_code}")
-                return exit_code  # Return immediately on failure
+                print(f"Command failed with exit code: {result.returncode}")
+                print(f"STDERR: {result.stderr.decode(errors='replace')}")
+                return result.returncode
 
         return 0  # Return 0 if all commands succeeded
    
