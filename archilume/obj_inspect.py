@@ -1,3 +1,24 @@
+"""
+obj_inspect.py — OBJ File Inspector
+
+A one-off diagnostic script for inspecting a Wavefront .obj file. It parses
+the file and prints a summary of its contents, useful for understanding what's
+inside a large architectural 3D model before processing it.
+
+What it does:
+1. File stats      — Reports the file size in MB and total line count.
+2. Element counts  — Counts each OBJ primitive type: vertices (v), faces (f),
+                     normals (vn), texture coordinates (vt), named objects (o),
+                     groups (g), and material switches (usemtl).
+3. Bounding box    — Computes the axis-aligned bounding box by scanning all
+                     vertex coordinates, reporting min/max extents and center
+                     point for X, Y, and Z axes.
+4. Face distribution — Tracks how many faces belong to each named object and
+                       prints the top 20 by face count with percentage of total.
+
+Usage: Run directly as a script. Target file is set via config.INPUTS_DIR.
+"""
+
 import os
 from pathlib import Path
 from archilume import config

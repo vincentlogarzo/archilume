@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate sunlight analysis Excel report from .wpd files.
+Generate sunlight analysis .xlsx report from .wpd files.
 
 This script reads .wpd files containing sunlight analysis results and produces
 a formatted Excel workbook with:
@@ -17,7 +17,7 @@ from openpyxl.formatting.rule import ColorScaleRule, FormulaRule
 from openpyxl.utils import get_column_letter
 
 
-class Wpd2Report:
+class Wpd2Xlsx:
     """Generate Excel report from sunlight analysis .wpd files."""
 
     def __init__(
@@ -715,7 +715,7 @@ def main():
     pixel_increment_y = 0.014  # Pixel increment Y in meters
     pixel_to_world_map = Path(__file__).parent.parent / "outputs" / "aoi" / "pixel_to_world_coordinate_map.txt"
 
-    report = Wpd2SunlightComplianceReport(
+    report = Wpd2Xlsx(
         wpd_dir=wpd_dir,
         area_per_pixel=area_per_pixel,
         pixel_increment_x=pixel_increment_x,

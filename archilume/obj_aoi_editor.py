@@ -10,8 +10,8 @@ parent/child relationships (e.g. U101 → U101_BED1). Auto-saves JSON and CSV
 alongside the input OBJ on every save or delete action.
 
 Usage:
-    from archilume.obj_boundary_editor_v2 import BoundaryEditorV2
-    editor = BoundaryEditorV2(obj_path="model.obj")
+    from archilume.obj_aoi_editor import ObjAoiEditor
+    editor = ObjAoiEditor(obj_path="model.obj")
     editor.launch()
 """
 
@@ -24,7 +24,7 @@ import json
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 # Third-party imports
 import matplotlib.pyplot as plt
@@ -336,7 +336,7 @@ class MeshSlicer:
         print(f"Pre-cached {len(self.slice_cache)} floor slices")
 
 
-class BoundaryEditorV2:
+class ObjAoiEditor:
     """Interactive room boundary drawing tool with hierarchical apartment/room support.
 
     Version 2 Features:
@@ -431,8 +431,17 @@ class BoundaryEditorV2:
         self._room_list_hit_boxes: List[Tuple] = []  # [(y_min, y_max, room_idx), ...] in axes coords
 
         # Slider debouncing
-        self._z_slider_timer: Optional[int] = None
+        self._z_slider_timer: Optional[Any] = None  # matplotlib TimerBase
         self._pending_z_value: Optional[float] = None
+
+        # Cached matplotlib artists for incremental rendering (performance optimization)
+        self._mesh_line_collection = None  # Persistent LineCollection for mesh segments
+        self._vertex_scatter = None        # Persistent scatter plot for snap vertices
+        self._room_patch_cache = {}        # room_idx -> Polygon artist
+        self._room_label_cache = {}        # room_idx -> Text artist
+        self._edit_vertex_scatter = None   # Batched scatter for edit mode vertices
+        self._last_view_mode = None        # Track view mode changes for full redraws
+        self._last_hover_check = 0.0       # Throttle hover detection
 
     def launch(self):
         """Load the mesh and open the interactive editor window."""
@@ -469,14 +478,25 @@ class BoundaryEditorV2:
             self.current_floor_idx = None
 
         # Setup matplotlib figure with soft off-white background
-        self.fig = plt.figure(figsize=(18, 9), facecolor='#F5F5F0')
+        # Use a moderate default size that fits most screens; window will be maximized after
+        self.fig = plt.figure(figsize=(14, 8), facecolor='#F5F5F0')
+
+        # Adjust subplot parameters to ensure content fits within the figure
+        self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.05)
 
         # Maximise the window on open so it fills the screen regardless of OS placement
         try:
-            plt.get_current_fig_manager().window.state('zoomed')   # TkAgg (Windows default)
+            manager = plt.get_current_fig_manager()
+            manager.window.state('zoomed')   # TkAgg (Windows default)
+            # Force a resize event after maximization to update figure content
+            self.fig.canvas.mpl_connect('resize_event', self._on_resize)
+            # Schedule a deferred resize to ensure the window has finished maximizing
+            self.fig.canvas.get_tk_widget().after(100, self._force_resize_update)
         except AttributeError:
             try:
-                plt.get_current_fig_manager().window.showMaximized()  # Qt backends
+                manager = plt.get_current_fig_manager()
+                manager.window.showMaximized()  # Qt backends
+                self.fig.canvas.mpl_connect('resize_event', self._on_resize)
             except AttributeError:
                 pass
 
@@ -521,7 +541,7 @@ class BoundaryEditorV2:
         print("Adjust the Z slider to change the section height.")
         print("Vertex snapping is ENABLED - clicks snap to mesh vertices.")
         print("Scroll: zoom | Right-click: select room | s: save | d: delete | q: quit")
-        print("↑/↓: next/prev floor | r: reset zoom | S: save session")
+        print("Up/Down: next/prev floor | r: reset zoom | S: save session")
         print("========================\n")
         plt.show()
 
@@ -544,6 +564,7 @@ class BoundaryEditorV2:
             orientation='vertical',
             color='#A8C8A8',  # Soft sage green
         )
+        self.z_slider.valtext.set_visible(False)  # Hide built-in value display
         self.z_slider.on_changed(self._on_z_changed_debounced)
 
         # Add label above the slider
@@ -570,7 +591,7 @@ class BoundaryEditorV2:
         btn_spacing = 0.005
 
         # Soft colors for view mode buttons
-        view_btn_color = '#E8E8E0'
+        view_btn_color = "#E8E8E0"
         view_btn_hover = '#D8D8D0'
         view_btn_active = '#C8E0C8'  # Soft green when active
 
@@ -746,6 +767,7 @@ class BoundaryEditorV2:
             ax_snap_slider, '', 0.1, 2.0,
             valinit=self.snap_distance, valstep=0.1, color=self._slider_color,
         )
+        self.snap_slider.valtext.set_visible(False)  # Hide built-in value display (we have our own label)
         self.snap_slider.on_changed(self._on_snap_distance_changed)
 
         # ── ACTION BUTTONS (between snap slider and legend) ─────────────────────
@@ -968,17 +990,42 @@ class BoundaryEditorV2:
     # Section rendering
     # -------------------------------------------------------------------------
 
-    def _render_section(self, reset_view: bool = False):
+    def _render_section(self, reset_view: bool = False, force_full: bool = False):
         """Render the mesh cross-section (plan or elevation view).
+
+        Uses incremental rendering for performance - only does full redraws when
+        view mode changes, Z level changes, or force_full=True.
 
         Args:
             reset_view: If True, reset zoom/pan to fit content (used when switching view modes)
+            force_full: If True, force a complete redraw (used after room modifications)
         """
         # Preserve current zoom state before clearing (unless resetting)
         xlim = self.ax.get_xlim()
         ylim = self.ax.get_ylim()
 
+        # Determine if we need a full redraw
+        view_changed = self._last_view_mode != self.view_mode
+        need_full_redraw = force_full or view_changed or reset_view
+
+        if need_full_redraw:
+            self._last_view_mode = self.view_mode
+            self._do_full_render(xlim, ylim, reset_view)
+        else:
+            # Incremental update - just update room visuals without clearing
+            self._update_room_visuals()
+            self.fig.canvas.draw_idle()
+
+    def _do_full_render(self, xlim, ylim, reset_view: bool):
+        """Perform a complete redraw of the scene (expensive, avoid when possible)."""
         self.ax.clear()
+
+        # Clear cached artists since we're doing a full redraw
+        self._mesh_line_collection = None
+        self._vertex_scatter = None
+        self._room_patch_cache.clear()
+        self._room_label_cache.clear()
+        self._edit_vertex_scatter = None
 
         # Get slice based on view mode
         if self.view_mode == 'plan':
@@ -997,19 +1044,19 @@ class BoundaryEditorV2:
 
         if segments:
             line_data = [[(s[0], s[1]), (s[2], s[3])] for s in segments]
-            lc = LineCollection(line_data, colors='black', linewidths=0.5)
-            self.ax.add_collection(lc)
+            self._mesh_line_collection = LineCollection(line_data, colors='black', linewidths=0.5)
+            self.ax.add_collection(self._mesh_line_collection)
 
         # Draw vertices as points if snap is enabled (with downsampling for performance)
         if self.snap_enabled and len(vertices) > 0:
             if len(vertices) <= self.max_vertex_display:
                 # Show all vertices
-                self.ax.plot(vertices[:, 0], vertices[:, 1], 'o',
+                self._vertex_scatter, = self.ax.plot(vertices[:, 0], vertices[:, 1], 'o',
                             markersize=1.5, color='blue', alpha=0.4, zorder=1)
             else:
                 # Downsample vertices for display only (snapping still uses all vertices)
                 step = len(vertices) // self.max_vertex_display
-                self.ax.plot(vertices[::step, 0], vertices[::step, 1], 'o',
+                self._vertex_scatter, = self.ax.plot(vertices[::step, 0], vertices[::step, 1], 'o',
                             markersize=1.5, color='blue', alpha=0.3, zorder=1)
                 # Add small notice in corner
                 self.ax.text(0.02, 0.02, f'Showing {len(vertices[::step]):,}/{len(vertices):,} vertices',
@@ -1021,15 +1068,7 @@ class BoundaryEditorV2:
         self.room_labels.clear()
 
         if self.view_mode == 'plan':
-            for i, room in enumerate(self.rooms):
-                is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
-
-                if self.show_all_floors:
-                    # Show all rooms, but distinguish current floor vs others
-                    self._draw_room_polygon(room, i, is_current_floor=is_current_floor)
-                elif is_current_floor:
-                    # Only show rooms at current Z level
-                    self._draw_room_polygon(room, i, is_current_floor=True)
+            self._draw_all_room_polygons()
         else:
             # In elevation view, show room boundaries as vertical lines
             self._draw_rooms_elevation()
@@ -1069,6 +1108,70 @@ class BoundaryEditorV2:
         self.ax.set_title(title, fontsize=12, fontweight='bold')
         self.ax.grid(True, alpha=0.3)
         self.fig.canvas.draw_idle()
+
+    def _draw_all_room_polygons(self):
+        """Draw all room polygons for the current view."""
+        for i, room in enumerate(self.rooms):
+            is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
+
+            if self.show_all_floors:
+                self._draw_room_polygon(room, i, is_current_floor=is_current_floor)
+            elif is_current_floor:
+                self._draw_room_polygon(room, i, is_current_floor=True)
+
+    def _update_room_visuals(self):
+        """Update room polygon colors/styles without full redraw (for hover/selection changes)."""
+        if self.view_mode != 'plan':
+            return
+
+        # Update existing patches in place where possible
+        for i, room in enumerate(self.rooms):
+            is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
+            if not is_current_floor and not self.show_all_floors:
+                continue
+
+            patch = self._room_patch_cache.get(i)
+            if patch is None:
+                continue
+
+            # Determine current visual state
+            is_selected = (i == self.selected_room_idx)
+            is_hover = (i == self.hover_room_idx)
+            is_editing = (i == self.edit_room_idx and self.edit_mode)
+            is_subroom = room.get('parent') is not None
+
+            # Update colors based on state
+            if is_editing:
+                patch.set_edgecolor('cyan')
+                patch.set_facecolor('cyan')
+                patch.set_alpha(0.3)
+                patch.set_linewidth(3)
+            elif is_selected:
+                patch.set_edgecolor('yellow')
+                patch.set_facecolor('yellow')
+                patch.set_alpha(0.35)
+                patch.set_linewidth(4)
+            elif is_hover and self.edit_mode:
+                patch.set_edgecolor('magenta')
+                patch.set_facecolor('magenta')
+                patch.set_alpha(0.2)
+                patch.set_linewidth(2)
+            elif is_current_floor:
+                if is_subroom:
+                    patch.set_edgecolor('#2196F3')
+                    patch.set_facecolor('#2196F3')
+                    patch.set_alpha(0.3)
+                    patch.set_linewidth(2)
+                else:
+                    patch.set_edgecolor('green')
+                    patch.set_facecolor('green')
+                    patch.set_alpha(0.25)
+                    patch.set_linewidth(2)
+            else:
+                patch.set_edgecolor('gray')
+                patch.set_facecolor('gray')
+                patch.set_alpha(0.15)
+                patch.set_linewidth(1)
 
     def _draw_room_polygon(self, room: dict, idx: int, is_current_floor: bool = True):
         """Draw a single saved room polygon on the axes.
@@ -1135,10 +1238,14 @@ class BoundaryEditorV2:
         )
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
+        self._room_patch_cache[idx] = poly  # Cache for incremental updates
 
         # Draw vertices as editable points in edit mode (ALL rooms, not just one being edited)
+        # Use batched scatter plot for better performance
         if self.edit_mode and is_current_floor:
             verts_array = np.array(verts)
+            xs, ys, colors, sizes = [], [], [], []
+
             for v_idx, (vx, vy) in enumerate(verts_array):
                 # Highlight vertex under cursor
                 is_hovered = (idx == self.hover_room_idx and v_idx == self.hover_vertex_idx)
@@ -1154,13 +1261,16 @@ class BoundaryEditorV2:
                     marker_color = 'cyan'
                     marker_size = 5
 
-                self.ax.plot([vx], [vy], 'o',
-                           markersize=marker_size,
-                           color=marker_color,
-                           markeredgecolor='black',
-                           markeredgewidth=1.0,
-                           zorder=100,
-                           picker=5)
+                xs.append(vx)
+                ys.append(vy)
+                colors.append(marker_color)
+                sizes.append(marker_size ** 2)  # scatter uses area, not diameter
+
+            # Single batched scatter call instead of individual plots
+            if xs:
+                self.ax.scatter(xs, ys, c=colors, s=sizes,
+                               edgecolors='black', linewidths=1.0,
+                               zorder=100, picker=5)
 
             # Highlight hovered edge and show insertion preview
             if idx == self.hover_edge_room_idx and self.hover_edge_idx is not None:
@@ -1188,6 +1298,7 @@ class BoundaryEditorV2:
             bbox=dict(boxstyle='round', facecolor=label_bg, alpha=0.7 if is_current_floor else 0.5),
         )
         self.room_labels.append(label_text)
+        self._room_label_cache[idx] = label_text  # Cache for incremental updates
 
     def _draw_rooms_elevation(self):
         """Draw room boundaries in elevation view as colored rectangles at their Z-height."""
@@ -1404,7 +1515,7 @@ class BoundaryEditorV2:
         # Preserve zoom state
         xlim = self.ax.get_xlim()
         ylim = self.ax.get_ylim()
-        self._render_section()
+        self._render_section(force_full=True)  # Z level changed, need full redraw
         self.ax.set_xlim(xlim)
         self.ax.set_ylim(ylim)
         # Re-create the polygon selector after clearing axes
@@ -1469,6 +1580,45 @@ class BoundaryEditorV2:
             self._scroll_draw_timer.add_callback(lambda: self.fig.canvas.draw_idle())
             self._scroll_draw_timer.start()
 
+    def _on_resize(self, event):
+        """Handle window resize events to ensure proper redraw of figure content."""
+        # Skip if not fully initialized yet
+        if not getattr(self, '_launch_complete', False):
+            return
+        # Only redraw if the figure is actually visible and has meaningful dimensions
+        if event.width > 0 and event.height > 0:
+            # Throttle resize redraws to avoid excessive work during drag-resizing
+            now = time.monotonic()
+            last = getattr(self, '_last_resize_draw', 0.0)
+            if now - last >= 0.1:  # Max 10fps for resize redraws
+                self._last_resize_draw = now
+                self.fig.canvas.draw_idle()
+
+    def _force_resize_update(self):
+        """Force a resize update after window maximization completes.
+
+        This is called after a short delay to ensure the window manager has
+        finished the maximization before we try to update the figure.
+        """
+        try:
+            # Mark launch as complete so resize events are handled
+            self._launch_complete = True
+            # Get the Tk widget and force it to update its geometry
+            canvas = self.fig.canvas
+            tk_widget = canvas.get_tk_widget()
+            # Force Tk to process pending events and update geometry
+            tk_widget.update_idletasks()
+            # Get actual window dimensions and resize the figure to match
+            width = tk_widget.winfo_width()
+            height = tk_widget.winfo_height()
+            if width > 1 and height > 1:
+                # Resize figure to actual widget size
+                canvas.resize(width, height)
+            # Trigger a full redraw
+            canvas.draw_idle()
+        except Exception:
+            pass  # Ignore errors if figure is not ready
+
     def _on_click_with_snap(self, event):
         """Handle mouse clicks with snapping for left-click, room selection for right-click."""
         if event.inaxes != self.ax:
@@ -1490,7 +1640,7 @@ class BoundaryEditorV2:
                     self.hover_room_idx = None
                     self._update_status(f"Removed vertex from '{rname}' - press 's' to save", 'green')
                     self._save_session()
-                    self._render_section()
+                    self._render_section(force_full=True)  # Vertex removed
                 else:
                     self._update_status("Cannot remove - polygon must have at least 3 vertices", 'red')
                 return
@@ -1524,7 +1674,7 @@ class BoundaryEditorV2:
                 self.hover_edge_point = None
                 self._update_status(f"Added vertex to '{rname}' - press 's' to save", 'green')
                 self._save_session()
-                self._render_section()
+                self._render_section(force_full=True)  # Vertex added
                 return
             # Click on empty space in edit mode — no action
             return
@@ -1556,7 +1706,7 @@ class BoundaryEditorV2:
             self._save_session()
             room_name = room.get('name', 'unnamed')
             self._update_status(f"Moved vertex in '{room_name}'", 'green')
-            self._render_section()
+            self._render_section(force_full=True)  # Vertex moved
             self._create_polygon_selector()
 
     def _on_mouse_motion(self, event):
@@ -1574,12 +1724,18 @@ class BoundaryEditorV2:
             # Update vertex position (don't snap during drag for responsiveness)
             room['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
             # Quick redraw without recreating selector
-            self._render_section()
+            self._render_section(force_full=True)
             return
 
         # Hover detection in edit mode only
         if not self.edit_mode:
             return
+
+        # Throttle hover detection to ~15fps for performance (O(m×v) is expensive)
+        now = time.monotonic()
+        if now - self._last_hover_check < 0.067:
+            return
+        self._last_hover_check = now
 
         # Check for vertex hover across ALL visible rooms
         hover_threshold = 0.3  # metres - kept tight so edge hover activates near existing vertices
@@ -1610,13 +1766,13 @@ class BoundaryEditorV2:
                       self.hover_vertex_idx != closest_vertex_idx)
             if changed:
                 self.hover_room_idx = closest_room_idx
-                self.hover_vertex_idx = closest_vertex_idx
+                self.hover_vertex_idx = int(closest_vertex_idx) if closest_vertex_idx is not None else None
                 self.hover_edge_room_idx = None
                 self.hover_edge_idx = None
                 self.hover_edge_point = None
                 room_name = self.rooms[closest_room_idx].get('name', 'unnamed')
                 self._update_status(f"Vertex in '{room_name}' - drag or right-click to remove", 'cyan')
-                self._render_section()
+                self._render_section(force_full=True)  # Vertex highlight colors changed
         else:
             # No vertex nearby - clear vertex hover and check for edge hover
             vertex_state_changed = self.hover_vertex_idx is not None or self.hover_room_idx is not None
@@ -1656,18 +1812,18 @@ class BoundaryEditorV2:
                 if changed:
                     rname = self.rooms[best_edge_room].get('name', 'unnamed')
                     self._update_status(f"Click to add vertex to '{rname}'", 'green')
-                    self._render_section()
+                    self._render_section(force_full=True)  # Edge highlight changed
             else:
                 if self.hover_edge_room_idx is not None:
                     self.hover_edge_room_idx = None
                     self.hover_edge_idx = None
                     self.hover_edge_point = None
                     self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                    self._render_section()
+                    self._render_section(force_full=True)  # Edge highlight cleared
                 elif vertex_state_changed:
                     # Vertex hover was cleared but no edge found - redraw to remove old highlight
                     self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                    self._render_section()
+                    self._render_section(force_full=True)  # Vertex highlight cleared
 
     def _on_key_press(self, event):
         """Handle keyboard shortcuts."""
@@ -1746,7 +1902,7 @@ class BoundaryEditorV2:
         room = self.rooms[idx]
         self.name_textbox.set_val(room.get('name', ''))
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
-        self._render_section()  # Refresh to highlight
+        self._render_section()  # Selection change can use incremental update
 
     def _deselect_room(self):
         """Deselect any selected room."""
@@ -1788,7 +1944,7 @@ class BoundaryEditorV2:
         self.edit_room_idx = None
         self.hover_vertex_idx = None
         self._update_status(f"Saved boundary changes for '{name}'", 'green')
-        self._render_section()
+        self._render_section(force_full=True)  # Room changed, need full redraw
         self._create_polygon_selector()
         self._update_room_list()
         self._update_floor_level_list()
@@ -1849,7 +2005,7 @@ class BoundaryEditorV2:
         self._update_status(f"Saved '{full_name}'{warning_msg}", status_color)
         self._update_room_list()
         self._update_floor_level_list()
-        self._render_section()
+        self._render_section(force_full=True)  # New room added
         # Re-create selector after render
         self._create_polygon_selector()
         print(f"Saved room '{full_name}' at Z={self.current_z:.1f}m ({len(self.rooms)} total){warning_msg}")
@@ -1870,7 +2026,7 @@ class BoundaryEditorV2:
         self.rooms[idx]['name'] = new_name
         self._update_status(f"Updated '{new_name}'", 'green')
         self._update_room_list()
-        self._render_section()
+        self._render_section(force_full=True)  # Room name changed
 
         # Auto-save session to JSON after updating room
         self._save_session()
@@ -1894,7 +2050,7 @@ class BoundaryEditorV2:
         self._update_status(f"Deleted '{name}'", 'green')
         self._update_room_list()
         self._update_floor_level_list()
-        self._render_section()
+        self._render_section(force_full=True)  # Room deleted
         print(f"Deleted room '{name}'")
 
         # Auto-save session to JSON after deleting room
@@ -1913,7 +2069,7 @@ class BoundaryEditorV2:
         self.btn_snap.label.set_text('Snap: ON' if self.snap_enabled else 'Snap: OFF')
         status = "ON" if self.snap_enabled else "OFF"
         self._update_status(f"Vertex snapping: {status}", 'blue')
-        self._render_section()
+        self._render_section(force_full=True)  # Snap points visibility changed
 
     def _on_snap_distance_changed(self, val):
         """Handle snap distance slider changes."""
@@ -1926,7 +2082,7 @@ class BoundaryEditorV2:
         self.show_all_floors = not self.show_all_floors
         status = "all floors" if self.show_all_floors else "current floor only"
         self._update_status(f"Showing rooms from {status}", 'blue')
-        self._render_section()
+        self._render_section(force_full=True)  # Display mode changed
         # Re-create selector after render
         self._create_polygon_selector()
 
@@ -1955,7 +2111,7 @@ class BoundaryEditorV2:
             self._create_polygon_selector()
             self._update_status("Edit Mode OFF - Draw mode enabled", 'blue')
 
-        self._render_section()
+        self._render_section(force_full=True)  # Edit mode visual state changed
 
     def _enter_edit_mode_for_room(self, room_idx: int):
         """Enter edit mode for a specific room's boundary.
@@ -1967,7 +2123,7 @@ class BoundaryEditorV2:
         self.hover_vertex_idx = None
         room = self.rooms[room_idx]
         self._update_status(f"Editing: {room.get('name', 'unnamed')} - drag vertices to modify", 'cyan')
-        self._render_section()
+        self._render_section(force_full=True)  # Edit room selection changed
         self._create_polygon_selector()
 
     def _set_view_mode(self, mode: str):
@@ -2309,6 +2465,63 @@ class BoundaryEditorV2:
         print(f"Exported room boundaries CSV to {output_path}")
 
     # -------------------------------------------------------------------------
+    # Floor level alignment
+    # -------------------------------------------------------------------------
+
+    def _align_floor_levels_with_rooms(self, tolerance: float = 0.5):
+        """Align detected floor levels with Z-heights from loaded rooms.
+
+        If a room's Z-height is close to (but not exactly matching) a detected
+        floor level, override the detected floor's Z-height with the room's Z-height.
+        This ensures rooms from CSV are correctly associated with floor levels.
+
+        Args:
+            tolerance: Maximum Z-difference (meters) to consider a match
+        """
+        if not self.rooms or not self.slicer or not self.slicer.floor_levels:
+            return
+
+        # Collect unique Z-heights from rooms
+        room_z_heights = set()
+        for room in self.rooms:
+            z = room.get('z_height')
+            if z is not None:
+                room_z_heights.add(round(z, 3))  # Round to avoid float precision issues
+
+        if not room_z_heights:
+            return
+
+        # Check each detected floor level against room Z-heights
+        updated_floors = []
+        alignments_made = 0
+
+        for floor_z in self.slicer.floor_levels:
+            best_match = None
+            best_dist = float('inf')
+
+            # Find closest room Z-height within tolerance
+            for room_z in room_z_heights:
+                dist = abs(floor_z - room_z)
+                if dist < tolerance and dist < best_dist:
+                    best_dist = dist
+                    best_match = room_z
+
+            if best_match is not None and best_match != floor_z:
+                # Override with room Z-height
+                print(f"Aligned floor Z={floor_z:.2f}m -> Z={best_match:.2f}m (from CSV rooms)")
+                updated_floors.append(best_match)
+                alignments_made += 1
+            else:
+                updated_floors.append(floor_z)
+
+        if alignments_made > 0:
+            self.slicer.floor_levels = sorted(updated_floors)
+            # Update current Z if it was on an aligned floor
+            if self.current_floor_idx is not None and self.current_floor_idx < len(self.slicer.floor_levels):
+                self.current_z = self.slicer.floor_levels[self.current_floor_idx]
+            print(f"Aligned {alignments_made} floor level(s) with CSV room Z-heights")
+
+    # -------------------------------------------------------------------------
     # Session persistence
     # -------------------------------------------------------------------------
 
@@ -2348,9 +2561,13 @@ class BoundaryEditorV2:
             print(f"Renamed {renamed_count} rooms to ensure uniqueness")
             self._save_session()  # Persist the fixes
 
+        # Align detected floor levels with CSV Z-heights if loading from CSV
+        if source == "initial CSV" and self.slicer and self.slicer.floor_levels:
+            self._align_floor_levels_with_rooms()
+
         self._update_status(f"Loaded {len(self.rooms)} rooms from {source}", 'green')
         if hasattr(self, 'ax'):
-            self._render_section()
+            self._render_section(force_full=True)  # Session loaded
         print(f"Loaded {len(self.rooms)} rooms from {source}")
 
     def _load_from_csv(self, csv_path: Path):

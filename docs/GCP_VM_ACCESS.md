@@ -43,12 +43,6 @@ cat ~/.ssh/google_cloud_vm_key.pub
 3. Scrolls to "SSH Keys" section → Add Item
 4. Pastes your public key → Save
 
-**Option B: Admin adds via gcloud CLI**
-```bash
-gcloud compute instances add-metadata <YOUR-VM-INSTANCE-NAME> \
-  --metadata-from-file ssh-keys=path/to/your/public-key.pub \
-  --zone <vm-zone>
-```
 
 ### Step 3: Configure Your Local SSH Config
 
