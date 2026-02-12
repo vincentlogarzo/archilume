@@ -6,7 +6,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Tuple, Union
 from PIL import Image
 import numpy as np
 import open3d as o3d
@@ -383,7 +383,7 @@ def parse_mtl_file(mtl_path: Path) -> dict:
     # Identify glass materials based on name or transparency
     for mat_name, props in materials.items():
         mat_lower = mat_name.lower()
-        if 'glass' in mat_lower or 'gl' in mat_lower or 'glaz' in mat_lower or props['d'] < 0.5:
+        if 'glass' in mat_lower or 'glaz' in mat_lower or props['d'] < 0.5:
             props['is_glass'] = True
 
     return materials
@@ -415,20 +415,42 @@ def parse_obj_materials(obj_path: Path) -> dict:
     }
 
 
-def display_obj(filenames: Union[str, Path, Sequence[Union[str, Path]]],
+def display_obj(filenames: list[Path],
                 mtl_path: Optional[Path] = None,
-                glass_color: Optional[List[float]] = None):
+                glass_color: Optional[List[float]] = None,
+                focus_first: bool = True):
     """Display OBJ files using open3d with enhanced visualization.
 
     Args:
-        filenames: OBJ file path(s) to display
+        filenames: OBJ file paths to display
         mtl_path: Optional MTL file path for material definitions. If not provided,
-                 will automatically look for .mtl files with the same name as each .obj file
+                  auto-detected from the first OBJ file (same name, .mtl suffix).
+                  Raises FileNotFoundError if no MTL file can be found.
         glass_color: Optional RGB color for glass materials [r, g, b] in range [0, 1]
                     Default is ocean blue [0.0, 0.4, 0.7]
+        focus_first: If True (default), the initial view centres on and zooms to
+                     the first OBJ file rather than the full combined scene.
     """
-    if isinstance(filenames, (str, Path)):
-        filenames = [filenames]
+
+    # Validate all OBJ files exist before doing anything
+    for f in filenames:
+        if not f.exists():
+            raise FileNotFoundError(f"OBJ file not found: {f}")
+
+    # Auto-detect MTL from first OBJ file if not provided
+    if mtl_path is None:
+        first_obj = Path(filenames[0])
+        candidate = first_obj.with_suffix(".mtl")
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"No MTL file found for '{first_obj.name}'. "
+                f"Expected: {candidate}"
+            )
+        mtl_path = candidate
+
+    mtl_path = Path(mtl_path)
+    if not mtl_path.exists():
+        raise FileNotFoundError(f"MTL file not found: {mtl_path}")
 
     # Default ocean blue for glass
     if glass_color is None:
@@ -454,30 +476,18 @@ def display_obj(filenames: Union[str, Path, Sequence[Union[str, Path]]],
     
     print(f"Visualizing {len(filenames)} OBJ file(s) with open3d...")
 
-    # Auto-detect MTL files if not explicitly provided
-    # Collect all materials from corresponding MTL files
-    all_materials = {}
+    # Parse MTL file if provided
+    materials = {}
     if mtl_path:
-        # Use explicitly provided MTL file
         print(f"Loading materials from: {mtl_path.name}")
-        all_materials = parse_mtl_file(mtl_path)
-    else:
-        # Auto-detect MTL files for each OBJ file
-        for fname in filenames:
-            obj_path = Path(fname) if isinstance(fname, str) else fname
-            auto_mtl_path = obj_path.with_suffix('.mtl')
-            if auto_mtl_path.exists():
-                print(f"Loading materials from: {auto_mtl_path.name}")
-                mtl_materials = parse_mtl_file(auto_mtl_path)
-                all_materials.update(mtl_materials)
-
-    if all_materials:
-        glass_materials = [name for name, props in all_materials.items() if props['is_glass']]
+        materials = parse_mtl_file(mtl_path)
+        glass_materials = [name for name, props in materials.items() if props['is_glass']]
         if glass_materials:
             print(f"Found {len(glass_materials)} glass materials: {', '.join(glass_materials[:5])}{' ...' if len(glass_materials) > 5 else ''}")
 
     combined_mesh = o3d.geometry.TriangleMesh()
     valid_files = []
+    first_mesh_bbox = None
 
     # Load and combine all meshes
     for filename in filenames:
@@ -496,20 +506,26 @@ def display_obj(filenames: Union[str, Path, Sequence[Union[str, Path]]],
 
         valid_files.append(filename)
 
+        # Record bounding box of the first valid mesh for initial view focus
+        if focus_first and first_mesh_bbox is None:
+            first_mesh_bbox = mesh.get_axis_aligned_bounding_box()
+
         # Compute normals for proper lighting
         if not mesh.has_vertex_normals():
             mesh.compute_vertex_normals()
 
-        # Apply material-based coloring if materials are available
-        if all_materials:
+        # Apply material-based coloring if MTL file is provided
+        if mtl_path and materials:
             # Parse OBJ file to get face-to-material mapping
             obj_face_info = parse_obj_materials(filename)
             face_materials = obj_face_info['materials']
 
-            # Create per-vertex color array
+            # Create per-vertex color array; track whether each vertex has been
+            # assigned a glass color so glass always wins over non-glass at
+            # shared boundary vertices.
             num_triangles = len(mesh.triangles)
-            vertex_colors = np.zeros((len(mesh.vertices), 3))
-            vertex_color_count = np.zeros(len(mesh.vertices))
+            vertex_colors = np.full((len(mesh.vertices), 3), DEFAULT_MATERIAL_COLOR)
+            vertex_is_glass = np.zeros(len(mesh.vertices), dtype=bool)
 
             # Assign colors per face based on material
             for face_idx, mat_name in enumerate(face_materials):
@@ -517,25 +533,20 @@ def display_obj(filenames: Union[str, Path, Sequence[Union[str, Path]]],
                     break
 
                 # Determine color for this face
-                if mat_name and mat_name in all_materials:
-                    mat_props = all_materials[mat_name]
-                    if mat_props['is_glass']:
-                        face_color = glass_color
-                    else:
-                        face_color = mat_props['Kd']
+                if mat_name and mat_name in materials:
+                    mat_props = materials[mat_name]
+                    is_glass = mat_props['is_glass']
+                    face_color = glass_color if is_glass else mat_props['Kd']
                 else:
+                    is_glass = False
                     face_color = DEFAULT_MATERIAL_COLOR
 
-                # Apply color to the three vertices of this triangle
+                # Apply color to the three vertices; glass takes priority
                 triangle = mesh.triangles[face_idx]
                 for vertex_idx in triangle:
-                    vertex_colors[vertex_idx] += face_color
-                    vertex_color_count[vertex_idx] += 1
-
-            # Average colors for shared vertices
-            for i in range(len(mesh.vertices)):
-                if vertex_color_count[i] > 0:
-                    vertex_colors[i] /= vertex_color_count[i]
+                    if is_glass or not vertex_is_glass[vertex_idx]:
+                        vertex_colors[vertex_idx] = face_color
+                        vertex_is_glass[vertex_idx] = is_glass or vertex_is_glass[vertex_idx]
 
             mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
             print(f"Applied material-based coloring to {filename.name}")
@@ -658,10 +669,14 @@ def display_obj(filenames: Union[str, Path, Sequence[Union[str, Path]]],
     if not has_key_callback:
         print("   Note: Keyboard view shortcuts not available in this Open3D version")
     
-    # Center the view on the mesh
+    # Set initial view focus
     vis.poll_events()
     vis.update_renderer()
-    view_ctrl.set_zoom(0.8)
+    if focus_first and first_mesh_bbox is not None:
+        view_ctrl.set_lookat(first_mesh_bbox.get_center())
+        view_ctrl.set_zoom(0.5)
+    else:
+        view_ctrl.set_zoom(0.8)
     
     # Display enhanced controls
     print("-> Enhanced Navigation Controls:")
@@ -1313,7 +1328,7 @@ def get_hdr_resolution(hdr_file_path: Union[Path, str]) -> tuple[int, int]:
     except Exception as e:
         raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
 
-def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
+def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
     """
     Create pixel-to-world coordinate mapping from HDR file in the specified directory.
 
@@ -1328,9 +1343,10 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
                                      If None, defaults to image_dir.parent/aoi/
 
     Returns:
-        Optional[Path]: Path to the HDR file that was processed, or None if processing failed
+        Path: Path to the coordinate mapping file that was created
 
     Raises:
+        RuntimeError: If processing fails for any reason
         FileNotFoundError: If HDR file doesn't exist
         ValueError: If VIEW parameters or image dimensions cannot be extracted
 
@@ -1477,7 +1493,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Optional[Path]:
 
     except Exception as e:
         print(f"Error creating pixel-to-world mapping: {e}")
-        return None
+        raise RuntimeError("Failed to create pixel-to-world coordinate map") from e
 
 
 def print_timing_report(

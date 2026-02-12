@@ -168,15 +168,6 @@ class MtlConverter:
         rm.export_materials_to_file(self.materials, self.output_mtl_path)
 
 
-if __name__ == "__main__":
-    # Initialize processor
-    mtl_creator = MtlConverter(
-        rad_paths=[Path("C:/Projects/archilume/outputs/rad/87cowles_BLD_noWindows.rad")],
-        mtl_paths=[Path("C:/Projects/archilume/inputs/87cowles_BLD_noWindows.mtl")]
-        )
-
-    # Run the pipeline
-    mtl_creator.create_radiance_mtl_file()
 
 
 

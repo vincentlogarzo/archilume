@@ -3,7 +3,7 @@ from archilume import config
 
 # Standard library imports
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from datetime import datetime
 import concurrent.futures
@@ -62,9 +62,21 @@ class Tiff2Animation:
 
         self._combine_tiffs_by_view(output_format=self.animation_format, fps=2, number_of_workers=config.WORKERS["gif_animation"])
 
+        # Convert APNG files to MP4 if animation format is APNG
+        if self.animation_format.lower() == 'apng':
+            self._convert_apng_to_mp4()
+
         print("\nRendering sequence completed successfully.\n")
 
-    def _combine_tiffs_by_view(self, output_format: str = 'gif', fps: int = None, number_of_workers: int = 4) -> None:
+    def _convert_apng_to_mp4(self) -> None:
+        """Convert all APNG files in image directory to MP4 format."""
+        from archilume.apng2mp4 import Apng2Mp4
+
+        print("Converting APNG files to MP4...")
+        converter = Apng2Mp4(input_dir=self.image_dir, fps=2)
+        converter.convert()
+
+    def _combine_tiffs_by_view(self, output_format: str = 'gif', fps: Optional[int] = None, number_of_workers: int = 4) -> None:
         """Create separate animated files grouped by view file names using parallel processing."""
 
         def _combine_tiffs(tiff_paths: list[Path], output_path: Path, duration_ms: int = 4000, output_format: str = 'gif') -> None:
@@ -244,7 +256,7 @@ def _process_parallel(items: list, worker_func, num_workers: int):
                 if result and result.startswith("Error"):
                     print(f"  {result}")
 
-def _load_font(font_size: int) -> ImageFont.FreeTypeFont:
+def _load_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Load Arial font or fallback to default."""
     try:
         return ImageFont.truetype("arial.ttf", font_size)

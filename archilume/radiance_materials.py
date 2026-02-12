@@ -6,7 +6,7 @@ primitive types using the pyradiance library's Primitive class. It offers type-s
 material creation with proper parameter validation and consistent formatting.
 
 CONTENTS:
-=========
+=============================================================================
 
 BASIC MATERIALS (8 functions):
 - create_plastic_material() - Standard opaque plastic surfaces
