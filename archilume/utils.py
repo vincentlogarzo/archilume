@@ -839,12 +839,13 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
             number_of_workers (int): Number of parallel workers
         """
         # Track which command index we're on for selective verbose output
-        command_counter = {'count': 0, 'total': len(commands), 'completed': 0, 'last_printed_pct': -1}
+        command_counter = {'count': 0, 'total': len(commands), 'completed': 0, 'last_printed_pct': -1, 'last_render_pct': -1}
 
         def _run_command_with_progress(command: str) -> None:
             """Execute a single command with real-time output streaming."""
             # Increment counter and determine if this is the first command
             command_counter['count'] += 1
+            command_counter['last_render_pct'] = -1  # Reset per-command render progress
             is_first = command_counter['count'] == 1
             is_verbose = is_first  # Only show detailed output for first command
 
@@ -895,7 +896,17 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                             if 'frozen octree' in stripped.lower():
                                 continue
                             if 'rays,' in stripped.lower() and '%' in stripped:
-                                continue  # Skip "rpict: X rays, Y% after Z hours" messages
+                                try:
+                                    pct = float(stripped.split('%')[0].split()[-1])
+                                    last = command_counter.get('last_render_pct', -1)
+                                    if int(pct) > last:
+                                        command_counter['last_render_pct'] = int(pct)
+                                        print(f"\r  Rendering: {pct:.0f}%", end='', flush=True)
+                                        if pct >= 100:
+                                            print()
+                                except (ValueError, IndexError):
+                                    pass
+                                continue
                             # Only show errors (always) or other messages for first command
                             if any(kw in stripped for kw in ['error', 'warning']):
                                 if sum(c.isprintable() or c.isspace() for c in stripped) / max(len(stripped), 1) > 0.8:
@@ -925,7 +936,17 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                             if 'frozen octree' in stripped.lower():
                                 continue
                             if 'rays,' in stripped.lower() and '%' in stripped:
-                                continue  # Skip "rpict: X rays, Y% after Z hours" messages
+                                try:
+                                    pct = float(stripped.split('%')[0].split()[-1])
+                                    last = command_counter.get('last_render_pct', -1)
+                                    if int(pct) > last:
+                                        command_counter['last_render_pct'] = int(pct)
+                                        print(f"\r  Rendering: {pct:.0f}%", end='', flush=True)
+                                        if pct >= 100:
+                                            print()
+                                except (ValueError, IndexError):
+                                    pass
+                                continue
                             # Only show errors (always) or other messages for first command
                             if any(kw in stripped for kw in ['error', 'warning']):
                                 if sum(c.isprintable() or c.isspace() for c in stripped) / max(len(stripped), 1) > 0.8:
@@ -1402,7 +1423,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
         if not view_line:
             raise ValueError("No VIEW line found in HDR file header")
 
-        print(f"Found VIEW line: {view_line}")
+        print(f"VIEW line:              {view_line}")
 
         # ===================================================================
         # STEP 4: PARSE VIEWPOINT AND VIEW ANGLE VALUES
@@ -1418,14 +1439,14 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
             raise ValueError("Could not extract -vp values from VIEW line")
 
         vp_x, vp_y, vp_z = map(float, vp_match.groups())
-        print(f"Viewpoint (vp): x={vp_x}, y={vp_y}, z={vp_z}")
+        print(f"Viewpoint (vp):         x={vp_x}, y={vp_y}, z={vp_z}")
 
         # Extract -vh (horizontal view angle) and -vv (vertical view angle)
         # These define the camera's field of view in degrees
         # Example: -vh 45 means the camera sees 45° horizontally
         vh = float(re.search(r'-vh\s+([\d.-]+)', view_line).group(1))
         vv = float(re.search(r'-vv\s+([\d.-]+)', view_line).group(1))
-        print(f"View distance - horizontal (vh): {vh}m, vertical (vv): {vv}m")
+        print(f"View size (vh, vv):     {vh}m x {vv}m")
 
         #FIXME: future iteration should determine if -vtl or -vtv is used in the view line. This will determeine how the real world dimensions are calculated. 
 
@@ -1441,8 +1462,8 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
         world_units_per_pixel_x = vh / width
         world_units_per_pixel_y = vv / height
 
-        print(f"World dimensions: {vh:.3f} x {vv:.3f} units")
-        print(f"World units per pixel: x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
+        print(f"World dimensions:       {vh:.3f} x {vv:.3f} units")
+        print(f"World units per pixel:  x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
 
         # ===================================================================
         # STEP 6: GENERATE AND SAVE THE PIXEL-TO-WORLD MAPPING FILE
@@ -1486,7 +1507,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
         for px, py, label in key_points:
             world_x = vp_x + (px - width/2) * world_units_per_pixel_x
             world_y = vp_y + (height/2 - py) * world_units_per_pixel_y
-            print(f"  {label}: pixel({px}, {py}) -> world({world_x:.3f}, {world_y:.3f})")
+            print(f"  {label:<12} pixel({px:>4}, {py:>4})  ->  world({world_x:.3f}, {world_y:.3f})")
 
         print(f"Coordinate mapping generated for: {hdr_file_path.name}")
         return output_file
@@ -1583,7 +1604,7 @@ def iesve_aoi_to_room_boundaries_csv(
     then writes the combined boundary data as a headerless CSV with coordinates in
     millimeters (as expected by ViewGenerator).
 
-    Output path is auto-generated as {WPD_DIR}/{input_stem}_boundaries.csv
+    Output path is auto-generated as {AOI_DIR}/{input_stem}_boundaries.csv
 
     Args:
         iesve_room_data_path: Path to the IESVE room data spreadsheet (.xlsx disguised as .csv).
@@ -1592,7 +1613,7 @@ def iesve_aoi_to_room_boundaries_csv(
     Returns:
         Path to the written CSV file
     """
-    output_path = config.WPD_DIR / f"{Path(iesve_room_data_path).stem}_boundaries.csv"
+    output_path = config.AOI_DIR / f"{Path(iesve_room_data_path).stem}_boundaries.csv"
     aoi_dir = iesve_room_data_path.parent
 
     # Load IESVE room data - build lookup: Space ID -> (Space Name, Z height in meters)

@@ -262,10 +262,6 @@ if __name__ == "__main__":
 #       - Reduce polygon count for context buildings
 #       - Keep assessed building at higher detail
 
-# TODO: Add optional false-color visualization before stamping
-#       - Reference: radiance_testpad.py implementation A
-#       - Useful for visual QA of illuminance distribution
-
 # TODO: Implement logging system to replace print statements
 #       - Use Python logging module for better control
 #       - Simplify terminal output for cleaner user experience

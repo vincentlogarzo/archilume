@@ -257,6 +257,78 @@ class Hdr2Wpd:
 
         print("\n" + "=" * 80 + "\nSunlight sequence wpd extraction completed successfully.\n" + "=" * 80)
 
+    def daylight_wpd_extraction(self) -> None:
+        """Extract per-pixel daylight factor (DF%) from single-HDR-per-view renders.
+
+        For each view group (1 HDR + N AOIs):
+        1. Read HDR via pvalue → float32 numpy array
+        2. Scale by 0.01 to convert 10K lux irradiance to DF%
+        3. For each AOI: rasterize polygon, write per-pixel DF% to .wpd
+        """
+        print("=" * 80 + "\nDAYLIGHT FACTOR WPD EXTRACTION\n" + "=" * 80)
+
+        hdr_files, aoi_files = self._scan_directories()
+        if not hdr_files or not aoi_files:
+            print("No files found to process.")
+            return
+
+        view_groups = self._group_files_by_view(aoi_files, hdr_files)
+        DF_SCALE = 0.01
+
+        for view_name, group in view_groups.items():
+            aoi_list, hdr_list = group['aoi_files'], group['hdr_files']
+            if not aoi_list or not hdr_list:
+                continue
+
+            if len(hdr_list) != 1:
+                print(f"  WARNING: View '{view_name}' has {len(hdr_list)} HDRs, expected 1. Using first.")
+            hdr_file = hdr_list[0]
+
+            # Read HDR → numpy float32 (height, width)
+            width, height = utils.get_hdr_resolution(hdr_file)
+            try:
+                result = subprocess.run(
+                    ['pvalue', '-h', '-H', '-b', '-df', str(hdr_file)],
+                    capture_output=True, check=True
+                )
+                raw_image = np.frombuffer(result.stdout, dtype=np.float32).reshape((height, width))
+                df_image = raw_image * DF_SCALE
+            except Exception as e:
+                print(f"  Skipping view '{view_name}': {e}")
+                continue
+
+            print(f"\n  View: {view_name} | HDR: {hdr_file.name} | AOIs: {len(aoi_list)}")
+
+            # Per-AOI: rasterize polygon, write per-pixel DF% to .wpd
+            for aoi_file in aoi_list:
+                with open(aoi_file, 'r') as f:
+                    lines = f.readlines()
+
+                xs, ys = [], []
+                for line in lines[5:]:
+                    parts = line.strip().split()
+                    if len(parts) >= 4:
+                        xs.append(int(parts[2]))
+                        ys.append(int(parts[3]))
+
+                if not xs:
+                    print(f"    Skipping {aoi_file.name}: no polygon points")
+                    continue
+
+                rr, cc = polygon(ys, xs, shape=(height, width))
+                total_pixels = len(rr)
+
+                wpd_path = self.wpd_dir / (aoi_file.stem + '.wpd')
+                with open(wpd_path, 'w') as f:
+                    f.write(f"total_pixels_in_polygon: {total_pixels}\n")
+                    f.write("pixel_x pixel_y illuminance df_percent\n")
+                    for i in range(total_pixels):
+                        f.write(f"{cc[i]} {rr[i]} {raw_image[rr[i], cc[i]]:.4f} {df_image[rr[i], cc[i]]:.4f}\n")
+
+                print(f"    {aoi_file.stem}: {total_pixels} px -> {wpd_path.name}")
+
+        print("\n" + "=" * 80 + "\nDaylight factor wpd extraction completed.\n" + "=" * 80)
+
     def _calculate_area_per_pixel(self) -> tuple[float, float, float]:
         """Calculate the area represented by a single pixel from the pixel_to_world_map file.
 

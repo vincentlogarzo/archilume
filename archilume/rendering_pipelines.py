@@ -21,6 +21,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import time
 import subprocess
+import threading
+import psutil
 from PIL import Image
 import platform
 
@@ -59,7 +61,7 @@ class DaylightRenderer:
     octree_path: Path
     rdp_path: Path
     x_res: int
-    view_files: Path | List[Path]
+    view_files: List[Path]  # accepts a single Path or list; normalised to list in __post_init__
 
     # Optional with defaults
     y_res: Optional[int]        = field(default=None)
@@ -108,27 +110,13 @@ class DaylightRenderer:
             amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
 
             if IS_LINUX:
-                cmd = (
-                    rf"rtpict -n {N_CPUS} -t 1"
-                    rf" -vf {view_file}"
-                    rf" -x {self.x_res} -y {self.y_res}"
-                    rf" @{self.rdp_path}"
-                    rf" -af {amb_path}"
-                    rf" {self.octree_path}"
-                    rf" > {hdr_path}"
-                )
+                cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {hdr_path}"
             else:
-                cmd = (
-                    rf"rpict -w -t 2"
-                    rf" -vf {view_file}"
-                    rf" -x {self.x_res} -y {self.y_res}"
-                    rf" @{self.rdp_path}"
-                    rf" -af {amb_path}"
-                    rf" {self.octree_path}"
-                    rf" > {hdr_path}"
-                )
+                cmd = rf"rpict -w -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {hdr_path}"
 
+            print(f"Rendering view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{self.x_res}x{self.y_res}] started {time.strftime('%H:%M:%S')}")
             utils.execute_new_radiance_commands(cmd, number_of_workers=1)
+            print(f"Rendering view {view_name} complete {time.strftime('%H:%M:%S')}")
             rendered_hdrs.append(hdr_path)
 
         # Stop CPU usage logger
@@ -144,42 +132,32 @@ class DaylightRenderer:
         print(f"\nDaylight pipeline complete. {len(rendered_hdrs)} view(s) rendered to {self.image_dir}")
 
     def _postprocess_hdr(self, hdr_path: Path) -> None:
-        """Generate smooth, falsecolor, and contour overlay outputs for a single HDR."""
+        """Generate falsecolor and contour overlay outputs for a single HDR."""
         stem = hdr_path.stem
         d = self.image_dir
 
+        dimmed      = d / f"{stem}_dimmed_temp.hdr"
+        falsecolor  = d / f'{stem}_df_false.tiff'
+        contour     =  d / f'{stem}_df_cntr.hdr'
         commands = [
-            # Smoothed image (half resolution)
-            rf"pfilt -x /2 -y /2 {hdr_path} > {d / f'{stem}_smooth.hdr'}",
-
             # Falsecolor visualisation
-            rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 10 -l 'DF %%' -lw 0 > {d / f'{stem}_df_false.hdr'}",
+            rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 10 -l 'DF %' -lw 0 | ra_tiff - {falsecolor}",
 
-            # Create dimmed background (temporary file for contour overlay)
-            rf"pfilt -e 0.5 {hdr_path} > {d / f'{stem}_dimmed_temp.hdr'}",
+            # Contour HDR
+            rf"pcomb -s 0.01 {hdr_path} | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 0 -lh 0 > {contour}",
 
-            # Contour overlay on dimmed source image (using temporary file instead of process substitution)
-            (
-                rf"pcomb -s 0.01 {hdr_path}"
-                rf" | falsecolor -cl -s 2 -n 4 -l 'DF %%' -lw 0"
-                rf" | tee {d / f'{stem}_df_cntr.hdr'}"
-                rf" | pcomb"
-                rf" -e 'cond=ri(2)+gi(2)+bi(2)'"
-                rf" -e 'ro=if(cond-.01,ri(2),ri(1))'"
-                rf" -e 'go=if(cond-.01,gi(2),gi(1))'"
-                rf" -e 'bo=if(cond-.01,bi(2),bi(1))'"
-                rf" {d / f'{stem}_dimmed_temp.hdr'}"
-                rf" -"
-                rf" | ra_tiff - {d / f'{stem}_df_cntr_overlay.tiff'}"
-            ),
+            # Dimmed background (written to file to avoid bash process substitution)
+            rf"pfilt -e 0.5 {hdr_path} > {dimmed}",
+
+            # Contour overlay: composite contour over dimmed background → tiff
+            rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' {dimmed} {contour} | ra_tiff - {d / f'{stem}_df_cntr_overlay.tiff'}",
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)
 
-        # Clean up temporary dimmed file after processing
-        dimmed_temp = d / f'{stem}_dimmed_temp.hdr'
-        if dimmed_temp.exists():
-            dimmed_temp.unlink()
+        for tmp in (dimmed, contour):
+            if tmp.exists():
+                tmp.unlink()
 
     def _generate_legends(self) -> None:
         """Generate standalone falsecolor and contour legend TIFF images."""
@@ -187,45 +165,83 @@ class DaylightRenderer:
 
         commands = [
             # Falsecolor legend
-            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l 'DF%%' -lw 400 -lh 1600 | ra_tiff - {d / 'df_false_legend.tiff'}",
+            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {d / 'df_false_legend.tiff'}",
 
             # Contour legend
-            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l 'DF%%' -lw 400 -lh 1600 | ra_tiff - {d / 'df_cntr_legend.tiff'}",
+            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {d / 'df_cntr_legend.tiff'}",
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)
 
-    def _start_cpu_logger(self) -> subprocess.Popen | None:
-        """Start a background CPU usage logger. Returns the process handle."""
+    def _start_cpu_logger(self) -> threading.Event | None:
+        """Start a background CPU/memory logger using psutil. Returns a stop event."""
         log_path = self.image_dir / "cpu_log.txt"
+        stop_event = threading.Event()
 
-        if IS_LINUX:
-            # pidstat: sample every 60s, up to 100 samples, log all per-process CPU usage
-            cmd = ["pidstat", "-u", "-l", "60", "100"]
-        else:
-            # Windows: PowerShell typeperf sampling total CPU % every 60s
-            cmd = ["powershell", "-Command",
-                   f"typeperf '\\Processor(_Total)\\% Processor Time' -si 60 -o '{log_path}'"]
+        def _log_loop():
+            # Prime per-cpu percent (first call returns 0.0)
+            psutil.cpu_percent(percpu=True)
+            with open(log_path, "w") as f:
+                while not stop_event.wait(timeout=30.0):
+                    ts = time.strftime("%H:%M:%S")
+                    cpu_total = psutil.cpu_percent(interval=None)
+                    per_core = psutil.cpu_percent(percpu=True)
+                    freq = psutil.cpu_freq()
+                    load1, load5, load15 = psutil.getloadavg()
+                    vm = psutil.virtual_memory()
+                    sw = psutil.swap_memory()
+                    procs = sorted(
+                        psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]),
+                        key=lambda p: p.info.get("cpu_percent") or 0.0,
+                        reverse=True,
+                    )[:5]
 
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=open(log_path, "w") if IS_LINUX else subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            print(f"CPU logger started (PID {proc.pid}) -> {log_path}")
-            return proc
-        except FileNotFoundError:
-            print(f"CPU logger not available ({'pidstat' if IS_LINUX else 'typeperf'} not found), skipping.")
-            return None
+                    f.write(f"=== {ts} ===\n")
+                    # CPU summary
+                    freq_str = f"{freq.current:.0f} MHz" if freq else "n/a"
+                    f.write(f"CPU total: {cpu_total:.1f}%  freq: {freq_str}  "
+                            f"load avg: {load1:.2f} {load5:.2f} {load15:.2f}\n")
+                    # Per-core
+                    core_str = "  ".join(f"C{i}:{v:.0f}%" for i, v in enumerate(per_core))
+                    f.write(f"Cores: {core_str}\n")
+                    # Memory
+                    f.write(
+                        f"Mem: used {vm.used/1e6:.0f} MB / {vm.total/1e6:.0f} MB  "
+                        f"avail {vm.available/1e6:.0f} MB  cached {vm.cached/1e6:.0f} MB  "
+                        f"buffers {vm.buffers/1e6:.0f} MB\n"
+                    )
+                    f.write(
+                        f"Swap: used {sw.used/1e6:.0f} MB / {sw.total/1e6:.0f} MB\n"
+                    )
+                    # Top processes
+                    f.write(f"{'PID':>7}  {'CPU%':>6}  {'MEM MB':>8}  NAME\n")
+                    for p in procs:
+                        try:
+                            rss = (p.info["memory_info"].rss if p.info.get("memory_info") else 0) / 1e6
+                            f.write(
+                                f"{p.info['pid']:>7}  {p.info['cpu_percent']:>6.1f}  "
+                                f"{rss:>8.1f}  {p.info['name']}\n"
+                            )
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    f.write("\n")
+                    f.flush()
 
-    def _stop_cpu_logger(self, proc: subprocess.Popen | None) -> None:
-        """Terminate the background CPU usage logger."""
-        if proc is None:
+        thread = threading.Thread(target=_log_loop, daemon=True, name="cpu_logger")
+        thread.start()
+        stop_event._thread = thread  # type: ignore[attr-defined]
+        print(f"CPU logger started -> {log_path}")
+        return stop_event
+
+    def _stop_cpu_logger(self, stop_event: threading.Event | None) -> None:
+        """Stop the background CPU/memory logger."""
+        if stop_event is None:
             return
-        proc.terminate()
-        proc.wait(timeout=5)
-        print(f"CPU logger stopped (PID {proc.pid})")
+        stop_event.set()
+        thread = getattr(stop_event, "_thread", None)
+        if thread is not None:
+            thread.join(timeout=5)
+        print("CPU logger stopped")
 
 
 @dataclass
