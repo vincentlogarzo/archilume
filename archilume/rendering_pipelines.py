@@ -161,14 +161,13 @@ class DaylightRenderer:
 
     def _generate_legends(self) -> None:
         """Generate standalone falsecolor and contour legend TIFF images."""
-        d = self.image_dir
 
         commands = [
             # Falsecolor legend
-            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {d / 'df_false_legend.tiff'}",
+            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / 'df_false_legend.tiff'}",
 
             # Contour legend
-            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {d / 'df_cntr_legend.tiff'}",
+            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / 'df_cntr_legend.tiff'}",
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)

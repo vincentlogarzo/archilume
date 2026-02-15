@@ -46,6 +46,8 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
             RES=$((2048))
             rtpict -n 19 -vf inputs/view.vp -x $RES -y $RES @inputs/${IMAGE_NAME}.rdp -af outputs/image/${IMAGE_NAME}.amb inputs/model.oct > outputs/image/${IMAGE_NAME}.hdr
 
+    ximage outputs/image/model_plan_ffl_25300.hdr
+
         
     3.2. Post-processing
         3.2.1 # Create separate legend for reporting
@@ -68,6 +70,14 @@ to be test on creation of ambient and direct rpict runs, where the ambient file 
                     <(pfilt -e 0.5 outputs/image/${IMAGE_NAME}.hdr) \
                     - \
                 | ra_tiff - outputs/image/${IMAGE_NAME}_df_cntr_overlay.tiff
+
+        # Extract pixel values in tab-separated format, one pixel per line (Falsecolor internally applied this radiometri W/m2 to illuminance by applying 179. )
+        
+        pcomb -e 'lo=179*li(1)' outputs/image/model_plan_ffl_25300.hdr | pvalue -o -d -b > outputs/wpd/model_plan_ffl_25300_illuminance.txt
+
+
+#
+
 
     
 --- 5. ---

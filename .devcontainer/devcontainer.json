@@ -22,7 +22,8 @@
         "mcrespo.veriv",
         "ms-azuretools.vscode-docker",
         "analytic-signal.preview-tiff",
-        "mechatroner.rainbow-csv"
+        "mechatroner.rainbow-csv",
+        "GrapeCity.gc-excelviewer"
       ],
       "settings": {
         "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
