@@ -247,7 +247,7 @@ class Hdr2Wpd:
 
         print("\n" + "=" * 80 + "\nSunlight sequence wpd extraction completed successfully.\n" + "=" * 80)
 
-    def daylight_wpd_extraction(self, df_thresholds: List[float] = None) -> None:
+    def daylight_wpd_extraction(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5)) -> None:
         """Extract per-pixel daylight factor (DF%) from single-HDR-per-view renders.
 
         For each view group (1 HDR + N AOIs):
@@ -258,10 +258,8 @@ class Hdr2Wpd:
 
         Args:
             df_thresholds: DF% compliance thresholds. For each value, the summary will include
-                           the pixel count and area >= that threshold. Defaults to [0.5, 1.0, 2.0].
+                           the pixel count and area >= that threshold.
         """
-        if df_thresholds is None:
-            df_thresholds = [0.5, 1.0, 2.0]
 
         print("=" * 80 + "\nDAYLIGHT FACTOR WPD EXTRACTION\n" + "=" * 80)
 
@@ -340,7 +338,7 @@ class Hdr2Wpd:
 
                 print(f"    {aoi_file.stem}: {total_pixels} px -> {wpd_path.name}")
 
-    def _generate_daylight_excel_report(self, df_thresholds: List[float] = None) -> None:
+    def _generate_daylight_excel_report(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5)) -> None:
         """Generate Excel report from daylight factor .wpd files.
 
         Reads each .wpd file (format: pixel_x pixel_y illuminance df_percent)
@@ -350,10 +348,8 @@ class Hdr2Wpd:
         - Raw Data: all per-pixel values from every .wpd file
 
         Args:
-            df_thresholds: DF% compliance thresholds for summary columns. Defaults to [0.5, 1.0, 2.0].
+            df_thresholds: DF% compliance thresholds for summary columns.
         """
-        if df_thresholds is None:
-            df_thresholds = [0.5, 1.0, 2.0]
         print("\n" + "=" * 80 + "\nGENERATING DAYLIGHT EXCEL REPORT\n" + "=" * 80)
 
         wpd_files = sorted(self.wpd_dir.glob("*.wpd"))

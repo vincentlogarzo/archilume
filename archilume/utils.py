@@ -1624,7 +1624,7 @@ def smart_cleanup(
     # Delete wpd directory contents (skip .gitkeep)
     if wpd_dir.exists():
         for wpd_file in wpd_dir.iterdir():
-            if wpd_file.is_file() and wpd_file.name != ".gitkeep":
+            if wpd_file.is_file() and wpd_file.name not in {".gitkeep", ".gitignore"}:
                 wpd_file.unlink()
                 files_removed.append(f"wpd/{wpd_file.name}")
 
@@ -1692,7 +1692,7 @@ def smart_cleanup(
         # Delete image outputs (conditionally delete .amb based on quality/mode change)
         if image_dir.exists():
             for img_file in image_dir.iterdir():
-                if img_file.is_file() and img_file.name != ".gitkeep":
+                if img_file.is_file() and img_file.name not in {".gitkeep", ".gitignore"}:
                     # Delete .amb files if quality/mode changed, otherwise retain them
                     if img_file.suffix == ".amb" and not delete_amb_files:
                         files_retained.append(f"image/{img_file.name}")
@@ -1715,7 +1715,7 @@ def smart_cleanup(
         # Delete all image files including .amb (skip .gitkeep)
         if image_dir.exists():
             for img_file in image_dir.iterdir():
-                if img_file.is_file() and img_file.name != ".gitkeep":
+                if img_file.is_file() and img_file.name not in {".gitkeep", ".gitignore"}:
                     img_file.unlink()
                     files_removed.append(f"image/{img_file.name}")
 
@@ -1740,7 +1740,7 @@ def smart_cleanup(
         # Delete rendered outputs and conditionally .amb files (skip .gitkeep)
         if image_dir.exists():
             for img_file in image_dir.iterdir():
-                if img_file.is_file() and img_file.name != ".gitkeep":
+                if img_file.is_file() and img_file.name not in {".gitkeep", ".gitignore"}:
                     # Always delete .hdr and .tiff
                     if img_file.suffix in [".hdr", ".tiff", ".tif"]:
                         img_file.unlink()

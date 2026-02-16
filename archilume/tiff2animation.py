@@ -13,10 +13,6 @@ import re
 
 # Third-party imports
 
-
-# Constants
-MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
 @dataclass
 class Tiff2Animation:
     """Post-processes rendered TIFF images with metadata annotations, AOI overlays, and animations."""
@@ -55,10 +51,10 @@ class Tiff2Animation:
         tiff_files = list(self.image_dir.glob('*_combined.tiff'))
 
         # Combined stamping: 2x faster by opening/saving each file only once
-        _stamp_tiff_files_combined(tiff_files, self.latitude, self.ffl_offset,
-                                   metadata_font_size=24, metadata_color=(255, 255, 255), metadata_bg_alpha=180,
-                                   aoi_lineweight=2, aoi_font_size=32, aoi_color=(255, 0, 0), aoi_bg_alpha=180,
-                                   number_of_workers=config.WORKERS["metadata_stamping"])
+        self._stamp_tiff_files_combined(tiff_files,
+                                        metadata_font_size=24, metadata_color=(255, 255, 255), metadata_bg_alpha=180,
+                                        aoi_lineweight=2, aoi_font_size=32, aoi_color=(255, 0, 0), aoi_bg_alpha=180,
+                                        number_of_workers=config.WORKERS["metadata_stamping"])
 
         self._combine_tiffs_by_view(output_format=self.animation_format, fps=2, number_of_workers=config.WORKERS["gif_animation"])
 
@@ -228,26 +224,15 @@ class Tiff2Animation:
                               duration=duration, loop=0)
             print(f"Created grid animation: {len(grid_frames)} frames, {len(gifs_data)} views in {cols}x{rows} grid")
 
-def _process_parallel(items: list, worker_func, num_workers: int):
-    """Execute worker function on items in parallel or sequentially."""
-    total = len(items)
-    completed = 0
+    @staticmethod
+    def _process_parallel(items: list, worker_func, num_workers: int):
+        """Execute worker function on items in parallel or sequentially."""
+        total = len(items)
+        completed = 0
 
-    if num_workers == 1:
-        for item in items:
-            result = worker_func(item)
-            completed += 1
-            # Show progress every 25% or on first/last
-            if completed == 1 or completed == total or completed % max(1, total // 4) == 0:
-                print(f"Progress: {completed}/{total} files processed")
-            # Always print errors
-            if result and result.startswith("Error"):
-                print(f"  {result}")
-    else:
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = [executor.submit(worker_func, item) for item in items]
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
+        if num_workers == 1:
+            for item in items:
+                result = worker_func(item)
                 completed += 1
                 # Show progress every 25% or on first/last
                 if completed == 1 or completed == total or completed % max(1, total // 4) == 0:
@@ -255,154 +240,171 @@ def _process_parallel(items: list, worker_func, num_workers: int):
                 # Always print errors
                 if result and result.startswith("Error"):
                     print(f"  {result}")
+        else:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = [executor.submit(worker_func, item) for item in items]
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    completed += 1
+                    # Show progress every 25% or on first/last
+                    if completed == 1 or completed == total or completed % max(1, total // 4) == 0:
+                        print(f"Progress: {completed}/{total} files processed")
+                    # Always print errors
+                    if result and result.startswith("Error"):
+                        print(f"  {result}")
 
-def _load_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Load Arial font or fallback to default."""
-    try:
-        return ImageFont.truetype("arial.ttf", font_size)
-    except (OSError, IOError):
-        return ImageFont.load_default()
-
-def _stamp_tiff_files_combined(tiff_paths: list[Path], latitude: float, ffl_offset: float,
-                               metadata_font_size: int = 24, metadata_color: tuple = (255, 255, 0),
-                               metadata_bg_alpha: int = 0, padding: int = 10,
-                               aoi_lineweight: int = 1, aoi_font_size: int = 32,
-                               aoi_color: tuple = (255, 0, 0), aoi_bg_alpha: int = 180,
-                               number_of_workers: int = 10) -> None:
-    """Stamp TIFF files with both metadata AND AOI polygons in a single pass.
-
-    Combines _stamp_tiff_files_with_metadata and _stamp_tiff_files_with_aoi
-    to eliminate redundant file I/O operations (2x faster than separate calls).
-    """
-    if not tiff_paths:
-        return
-
-    # Load AOI files once at the start
-    aoi_dir = config.AOI_DIR
-    aoi_files = list(aoi_dir.glob("*.aoi")) if aoi_dir.exists() else []
-
-    # Parse all AOI files once (not per-image)
-    parsed_aois = {}
-    for aoi_file in aoi_files:
+    @staticmethod
+    def _load_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        """Load Arial font or fallback to default."""
         try:
-            with open(aoi_file, 'r') as f:
-                lines = [line.strip() for line in f.readlines()]
+            return ImageFont.truetype("arial.ttf", font_size)
+        except (OSError, IOError):
+            return ImageFont.load_default()
 
-            perimeter_pixels = [(int(parts[2]), int(parts[3]))
-                               for line in lines[5:] if line and ' ' in line
-                               if (parts := line.split()) and len(parts) >= 4]
+    def _stamp_tiff_files_combined(
+            self,
+            tiff_paths: list[Path],
+            metadata_font_size: int = 24,
+            metadata_color: tuple = (255, 255, 0),
+            metadata_bg_alpha: int = 0,
+            padding: int = 10,
+            aoi_lineweight: int = 1,
+            aoi_font_size: int = 32,
+            aoi_color: tuple = (255, 0, 0),
+            aoi_bg_alpha: int = 180,
+            number_of_workers: int = 10
+            ) -> None:
+        """Stamp TIFF files with metadata AND .aoi polygons."""
+        if not tiff_paths:
+            return
 
-            central_pixel = (sum(p[0] for p in perimeter_pixels) // len(perimeter_pixels),
-                            sum(p[1] for p in perimeter_pixels) // len(perimeter_pixels)) if perimeter_pixels else None
+        # Load AOI files once at the start
+        aoi_dir = config.AOI_DIR
+        aoi_files = list(aoi_dir.glob("*.aoi")) if aoi_dir.exists() else []
 
-            aoi_data = {
-                'apartment_room': lines[0].replace("AOI Points File: ", ""),
-                'view_file': lines[1].replace("ASSOCIATED VIEW FILE: ", ""),
-                'z_height': float(lines[2].replace("FFL z height(m): ", "")),
-                'central_pixel': central_pixel,
-                'perimeter_pixels': perimeter_pixels
-            }
+        # Parse all AOI files once (not per-image)
+        parsed_aois = {}
+        for aoi_file in aoi_files:
+            try:
+                with open(aoi_file, 'r') as f:
+                    lines = [line.strip() for line in f.readlines()]
 
-            # Group by view file for faster lookup
-            view = aoi_data['view_file']
-            if view not in parsed_aois:
-                parsed_aois[view] = []
-            parsed_aois[view].append(aoi_data)
-        except Exception as e:
-            print(f"Error parsing {aoi_file}: {e}")
+                perimeter_pixels = [(int(parts[2]), int(parts[3]))
+                                   for line in lines[5:] if line and ' ' in line
+                                   if (parts := line.split()) and len(parts) >= 4]
 
-    def _stamp_combined(tiff_path: Path) -> str:
-        try:
-            if not tiff_path.exists():
-                return f"Not found: {tiff_path.name}"
+                central_pixel = (sum(p[0] for p in perimeter_pixels) // len(perimeter_pixels),
+                                sum(p[1] for p in perimeter_pixels) // len(perimeter_pixels)) if perimeter_pixels else None
 
-            filename = tiff_path.stem
+                aoi_data = {
+                    'apartment_room': lines[0].replace("AOI Points File: ", ""),
+                    'view_file': lines[1].replace("ASSOCIATED VIEW FILE: ", ""),
+                    'z_height': float(lines[2].replace("FFL z height(m): ", "")),
+                    'central_pixel': central_pixel,
+                    'perimeter_pixels': perimeter_pixels
+                }
 
-            # Open image once
-            image = Image.open(tiff_path).convert('RGBA')
-            draw = ImageDraw.Draw(image)
+                # Group by view file for faster lookup
+                view = aoi_data['view_file']
+                if view not in parsed_aois:
+                    parsed_aois[view] = []
+                parsed_aois[view].append(aoi_data)
+            except Exception as e:
+                print(f"Error parsing {aoi_file}: {e}")
 
-            # ===== PART 1: Add Metadata Stamp =====
-            current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
-            level, timestep = "Unknown", "Unknown"
+        latitude = self.latitude
+        ffl_offset = self.ffl_offset
 
-            if ts := re.search(r'(\d{4}_\d{4})', filename):
-                ts_str = ts.group(1)
-                timestep = f"{MONTH_NAMES[int(ts_str[:2])-1]} {int(ts_str[2:4])} {ts_str[5:7]}:{ts_str[7:9]}"
+        def _stamp_combined(tiff_path: Path) -> str:
+            try:
+                if not tiff_path.exists():
+                    return f"Not found: {tiff_path.name}"
 
-            # Extract FFL height (in millimeters) from filename pattern: plan_ffl_090000
-            if level_match := re.search(r'plan_ffl_(-?\d+)', filename):
-                ffl_mm = int(level_match.group(1))
-                ffl_m = ffl_mm / 1000  # Convert millimeters to meters
-                level = f"{ffl_m:.2f}m"
+                filename = tiff_path.stem
 
-            metadata_text = f"Created: {current_datetime}, Latitude: {latitude}, FFL: {level}, FFL Offset: {ffl_offset}m, Timestep: {timestep}"
+                # Open image once
+                image = Image.open(tiff_path).convert('RGBA')
+                draw = ImageDraw.Draw(image)
 
-            # Calculate responsive font size based on image dimensions
-            # Scale down from default: use 60% of the base font size parameter
-            # 1024px → 14pt (60% of 24pt), 512px → 7pt, 2048px → 28pt
-            responsive_metadata_font_size = max(8, int((image.width / 1024) * metadata_font_size * 0.6))
-            metadata_font = _load_font(responsive_metadata_font_size)
+                # ===== PART 1: Add Metadata Stamp =====
+                current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M")
+                level, timestep = "Unknown", "Unknown"
 
-            # Calculate metadata text position (bottom-right)
-            bbox = draw.textbbox((0, 0), metadata_text, font=metadata_font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x, y = image.width - tw - padding, image.height - th - padding
+                if ts := re.search(r'(\d{4}_\d{4})', filename):
+                    ts_str = ts.group(1)
+                    timestep = f"{config.MONTH_NAMES[int(ts_str[:2])-1]} {int(ts_str[2:4])} {ts_str[5:7]}:{ts_str[7:9]}"
 
-            # Draw metadata background
-            if metadata_bg_alpha > 0:
-                overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
-                overlay_draw = ImageDraw.Draw(overlay)
-                overlay_draw.rectangle([x - padding//2, y - padding//2, x + tw + padding//2, y + th + padding//2],
-                                      fill=(0, 0, 0, metadata_bg_alpha))
-                image = Image.alpha_composite(image, overlay)
-                draw = ImageDraw.Draw(image)  # Recreate draw object after composite
+                # Extract FFL height (in millimeters) from filename pattern: plan_ffl_090000
+                if level_match := re.search(r'plan_ffl_(-?\d+)', filename):
+                    ffl_mm = int(level_match.group(1))
+                    ffl_m = ffl_mm / 1000  # Convert millimeters to meters
+                    level = f"{ffl_m:.2f}m"
 
-            # Draw metadata text
-            draw.text((x, y), metadata_text, font=metadata_font, fill=metadata_color + (255,))
+                metadata_text = f"Created: {current_datetime}, Latitude: {latitude}, FFL: {level}, FFL Offset: {ffl_offset}m, Timestep: {timestep}"
 
-            # ===== PART 2: Add AOI Polygons and Labels =====
-            rooms = 0
-            # Match pattern: plan_ffl_90000 or plan_ffl_-02500 (millimeters as integer)
-            if aoi_files and (match := re.search(r'plan_ffl_-?\d+', filename)):
-                view_file = f"{match.group(0)}.vp"
-                matching_aois = parsed_aois.get(view_file, [])
+                # Calculate responsive font size based on image dimensions
+                # Scale down from default: use 60% of the base font size parameter
+                # 1024px → 14pt (60% of 24pt), 512px → 7pt, 2048px → 28pt
+                responsive_metadata_font_size = max(8, int((image.width / 1024) * metadata_font_size * 0.6))
+                metadata_font = Tiff2Animation._load_font(responsive_metadata_font_size)
 
-                if matching_aois:
-                    # Calculate responsive AOI font size based on image dimensions
-                    # Scale down from default: use 50% of the base font size parameter
-                    # 1024px → 16pt (50% of 32pt), 512px → 8pt, 2048px → 32pt
-                    responsive_aoi_font_size = max(10, int((image.width / 1024) * aoi_font_size * 0.5))
-                    aoi_font = _load_font(responsive_aoi_font_size)
+                # Calculate metadata text position (bottom-right)
+                bbox = draw.textbbox((0, 0), metadata_text, font=metadata_font)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                x, y = image.width - tw - padding, image.height - th - padding
 
-                    for aoi in matching_aois:
-                        if len(aoi['perimeter_pixels']) < 3:
-                            continue
+                # Draw metadata background
+                if metadata_bg_alpha > 0:
+                    overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+                    overlay_draw = ImageDraw.Draw(overlay)
+                    overlay_draw.rectangle([x - padding//2, y - padding//2, x + tw + padding//2, y + th + padding//2],
+                                          fill=(0, 0, 0, metadata_bg_alpha))
+                    image = Image.alpha_composite(image, overlay)
+                    draw = ImageDraw.Draw(image)  # Recreate draw object after composite
 
-                        # Draw polygon perimeter
-                        polygon = aoi['perimeter_pixels'] + [aoi['perimeter_pixels'][0]]
-                        for i in range(len(polygon) - 1):
-                            draw.line([polygon[i], polygon[i + 1]], fill=aoi_color, width=aoi_lineweight)
+                # Draw metadata text
+                draw.text((x, y), metadata_text, font=metadata_font, fill=metadata_color + (255,))
 
-                        # Draw room label at center (text only, no background)
-                        if cp := aoi['central_pixel']:
-                            label = aoi['apartment_room']
-                            bbox = draw.textbbox((0, 0), label, font=aoi_font)
-                            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                            lx, ly = cp[0] - tw // 2, cp[1] - th // 2
+                # ===== PART 2: Add AOI Polygons and Labels =====
+                rooms = 0
+                # Match pattern: plan_ffl_90000 or plan_ffl_-02500 (millimeters as integer)
+                if aoi_files and (match := re.search(r'plan_ffl_-?\d+', filename)):
+                    view_file = f"{match.group(0)}.vp"
+                    matching_aois = parsed_aois.get(view_file, [])
 
-                            # Draw text with no background (transparent)
-                            draw.text((lx, ly), label, font=aoi_font, fill=aoi_color + (255,))
-                            rooms += 1
+                    if matching_aois:
+                        # Calculate responsive AOI font size based on image dimensions
+                        # Scale down from default: use 50% of the base font size parameter
+                        # 1024px → 16pt (50% of 32pt), 512px → 8pt, 2048px → 32pt
+                        responsive_aoi_font_size = max(10, int((image.width / 1024) * aoi_font_size * 0.5))
+                        aoi_font = Tiff2Animation._load_font(responsive_aoi_font_size)
 
-            # Save once with all stamps applied
-            image.save(tiff_path, format='TIFF')
-            return f"Stamped {tiff_path.name}: metadata + {rooms} rooms"
-        except Exception as e:
-            return f"Error {tiff_path.name}: {e}"
+                        for aoi in matching_aois:
+                            if len(aoi['perimeter_pixels']) < 3:
+                                continue
 
-    print(f"Stamping {len(tiff_paths)} files with metadata + AOI overlays using {number_of_workers} workers")
-    _process_parallel(tiff_paths, _stamp_combined, number_of_workers)
-    print(f"[OK] Stamping completed")
+                            # Draw polygon perimeter
+                            polygon = aoi['perimeter_pixels'] + [aoi['perimeter_pixels'][0]]
+                            for i in range(len(polygon) - 1):
+                                draw.line([polygon[i], polygon[i + 1]], fill=aoi_color, width=aoi_lineweight)
 
+                            # Draw room label at center (text only, no background)
+                            if cp := aoi['central_pixel']:
+                                label = aoi['apartment_room']
+                                bbox = draw.textbbox((0, 0), label, font=aoi_font)
+                                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                                lx, ly = cp[0] - tw // 2, cp[1] - th // 2
 
+                                # Draw text with no background (transparent)
+                                draw.text((lx, ly), label, font=aoi_font, fill=aoi_color + (255,))
+                                rooms += 1
+
+                # Save once with all stamps applied
+                image.save(tiff_path, format='TIFF')
+                return f"Stamped {tiff_path.name}: metadata + {rooms} rooms"
+            except Exception as e:
+                return f"Error {tiff_path.name}: {e}"
+
+        print(f"Stamping {len(tiff_paths)} files with metadata + AOI overlays using {number_of_workers} workers")
+        self._process_parallel(tiff_paths, _stamp_combined, number_of_workers)
+        print(f"[OK] Stamping completed")

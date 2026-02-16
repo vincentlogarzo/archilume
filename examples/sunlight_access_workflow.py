@@ -149,6 +149,7 @@ if __name__ == "__main__":
 # TODO: Implement inline @v{rdp_file_path} implementation seen in radiance testpad.py. See example below. This could greatly simplify the parameters sets and the command line outputs simplicity. It would mean that only a cople rdp files would need to be created and then reference in all subsequent rpict/rtpict calls.
 #       - rtpict -n 56 -t 1 -vf inputs/image10.vp -x 2048 -y 2048 @inputs/image10.rdp -af outputs/image/image10_high.amb inputs/image10.oct > outputs/image/image10_high.hdr
 
+# TODO: break tiff2animation into wpd2tiff and then tiff2animation, it breaks the existing funtionality into two classes that are clearer in their functions. It will also allow creation of more generic classes to perform these tasks between the sunlight and daylight access workflows. 
 
 # TODO: Implement PNG conversion after TIFF generation for AI-compatible processing
 #       - Convert TIFF to PNG post-render

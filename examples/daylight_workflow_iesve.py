@@ -68,7 +68,7 @@ def iesve_daylight_parallel_images():
         octree_path         = config.INPUTS_DIR / "model.oct"
         rendering_params    = config.INPUTS_DIR / "high.rdp"
         iesve_room_data     = config.INPUTS_DIR / "aoi" / "iesve_room_data.csv"
-        df_thresholds       = [0.5, 1.0, 1.5] # % of floor area meeting threshold
+        df_thresholds       = (0.5, 1.0, 1.5) # % of floor area meeting threshold
 
         # TODO: implement inputs validations checks alike to sunlight access workflow.
 
@@ -116,17 +116,7 @@ def iesve_daylight_parallel_images():
                 )
             converter.daylight_wpd_extraction(df_thresholds=df_thresholds)
 
-    #    with timer("  3c: Stamp images with results and combine into .apng..."):
-    #         tiff_annotator = Tiff2Animation(
-    #             skyless_octree_path     = octree_generator.skyless_octree_path,
-    #             overcast_sky_file_path  = sky_generator.TenK_cie_overcast_sky_file_path,
-    #             x_res                   = renderer.x_res,
-    #             y_res                   = renderer.y_res,
-    #             latitude                = inputs.project_latitude,
-    #             ffl_offset              = inputs.ffl_offset,
-    #             animation_format        = "apng"  # Options: "gif" or "apng"
-    #             )
-    #         tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
+    # TODO: Move to the next module for an interactive aoi editor using the df_false.tiff files. It overlays the aoi allows editing of subrooms using the existing json session implementation, df_thresholds for these spaces or by type assignment of space and then extraction of image stamped with what it viewed of screen, a toggle between green dot red dot, and actual result should be provided and then when export is clicked, both the amenede tiff files with suffix of its changed, df_false_stamped.tiff and df_false_dot.tiff.
 
 
 
@@ -134,15 +124,11 @@ if __name__ == "__main__":
     iesve_daylight_parallel_images()
 
 
-
-
-
-
-# TODO: eventually it this should utilised model.rad inputs and the source .mtl file to allow for parametetric simulation utilising different glass VLTs. e.g. 1 x model.rad + list of .mtl + list of cpu .rdp + list .rdv. This would allow for more flexible workflows and parametric analysis.
+# TODO: eventually it this should utilised model.rad inputs and the source .mtl file to allow for parametetric simulation utilising different glass VLTs. e.g. 1 x model.rad + list of .mtl + list of cpu .rdp + list .rdv. This would allow for more flexible workflows and parametric analysis. I.e. modify window VLT given a window material name, or wall or ceiling LRV given an input name to modify.
     # TODO: add functionality to allow multiple parameters input files to run parametric analysis, or low param for initial checks and setup of aoi with high run results coming in later. 
 #TODO: add feature to run by room or run by floor plate, this will either create a floor plate from input .aoi files or create a view per aoi file. This should only be implemented when the grid size in mm is implemneted instead of resolution input. 
 #TODO: setup the inputs strcutrue to take in grid_res instead of image res, this wouuld be a dynamically calculated parameters. It would mean that we set the grid_red for images to be e.g. 20mm then no matter the size of the view the images will be consistent in their resolution when viewed by a human. This would mean that we could then setup half grid_res to run first then subsequent runs second, so that a user can use the first images to begging aoi checks and redrawing or intial setup of boundaries boundaries for post processing final results. 
 # TODO add inputs validator, extend its functionality for this use case. e.g. validate input IES room data csv has the correct columns identifiers. 
 #TODO: augment the view offset from FFL input to use the actual parameters for offset in the .views files as intended by radiance. This way, the offset will reveal itself in the image file header. 
 
-#TODO : Fix the Smartcleanup function, it should not require inputs at all. It should only, It should look to either make a decision on retaining the ambient file or not. This is the largest time sink, all other processes can happen again no matter what.  look at the setup outputs checkings on commands just before they are run, then remove command from list if output file exists, (i.e. has same parameters or other conditions with which to not re-run this simulation e.g. the ambient file use can only be re-used for the same view with the all same parameters (except resolution, this can change between runs))
+#TODO : Fix the Smartcleanup function, it should not require inputs at all. It should only, It should look to either make a decision on retaining the ambient file or not based on the input given and the file headers of existing .hdr files. This is the largest time sink, all other processes can happen again no matter what.  look at the setup outputs checkings on commands just before they are run, then remove command from list if output file exists, (i.e. has same parameters or other conditions with which to not re-run this simulation e.g. the ambient file use can only be re-used for the same view with the all same parameters (except resolution, this can change between runs))

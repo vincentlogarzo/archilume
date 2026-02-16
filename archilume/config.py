@@ -59,6 +59,11 @@ _path_sep = ";" if sys.platform == "win32" else ":"
 RAYPATH = os.getenv("RAYPATH", f"{ACCELERAD_LIB_PATH}{_path_sep}{RADIANCE_LIB_PATH}")
 
 # ============================================================================
+# CALENDAR
+# ============================================================================
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# ============================================================================
 # PARALLEL EXECUTION SETTINGS
 # ============================================================================
 # Detect CPU core count
@@ -67,14 +72,14 @@ DEFAULT_MAX_WORKERS = multiprocessing.cpu_count()
 # Worker counts for different operations (adjust based on hardware)
 WORKERS = {
     "overcast_octree"           : 1,
-    "rpict_overture"            : min(384, DEFAULT_MAX_WORKERS),
-    "rpict_medium_quality"      : min(384, DEFAULT_MAX_WORKERS),
-    "oconv_compile"             : min(384, DEFAULT_MAX_WORKERS),
-    "rpict_direct_sun"          : min(384, DEFAULT_MAX_WORKERS),
-    "pcomb_tiff_conversion"     : min(384, DEFAULT_MAX_WORKERS),
-    "metadata_stamping"         : min(384, DEFAULT_MAX_WORKERS),
-    "gif_animation"             : min(384, DEFAULT_MAX_WORKERS),
-    "wpd_processing"            : min(384, DEFAULT_MAX_WORKERS),
+    "rpict_overture"            : min(64, DEFAULT_MAX_WORKERS),
+    "rpict_medium_quality"      : min(64, DEFAULT_MAX_WORKERS),
+    "oconv_compile"             : min(64, DEFAULT_MAX_WORKERS),
+    "rpict_direct_sun"          : min(64, DEFAULT_MAX_WORKERS),
+    "pcomb_tiff_conversion"     : min(64, DEFAULT_MAX_WORKERS),
+    "metadata_stamping"         : min(64, DEFAULT_MAX_WORKERS),
+    "gif_animation"             : min(64, DEFAULT_MAX_WORKERS),
+    "wpd_processing"            : min(64, DEFAULT_MAX_WORKERS),
 }
 
 class InputValidator:
