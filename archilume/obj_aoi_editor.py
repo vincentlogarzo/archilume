@@ -1,6 +1,3 @@
-# fmt: off
-# autopep8: off
-
 """
 Interactive Room Boundary Editor for OBJ Models - Version 2 (Hierarchical).
 
@@ -35,6 +32,9 @@ from matplotlib.collections import LineCollection
 import numpy as np
 import pyvista as pv
 from scipy.spatial import cKDTree
+
+# fmt: off
+# autopep8: off
 
 
 class MeshSlicer:
@@ -486,8 +486,12 @@ class ObjAoiEditor:
 
         # Maximise the window on open so it fills the screen regardless of OS placement
         try:
+            import sys
             manager = plt.get_current_fig_manager()
-            manager.window.state('zoomed')   # TkAgg (Windows default)
+            if sys.platform == "win32":
+                manager.window.state('zoomed')       # Windows TkAgg
+            else:
+                manager.window.attributes('-zoomed', True)  # Linux TkAgg
             # Force a resize event after maximization to update figure content
             self.fig.canvas.mpl_connect('resize_event', self._on_resize)
             # Schedule a deferred resize to ensure the window has finished maximizing
@@ -976,7 +980,7 @@ class ObjAoiEditor:
 
     def _update_name_preview(self):
         """Update the name preview text showing what name will be saved."""
-        name = self.name_textbox.text.strip()
+        name = self.name_textbox.text.strip().upper()
         if not name:
             self.name_preview_text.set_text("")
         elif self.selected_parent:
@@ -1956,7 +1960,7 @@ class ObjAoiEditor:
             self._update_status("No polygon to save - draw one first", 'red')
             return
 
-        name = self.name_textbox.text.strip()
+        name = self.name_textbox.text.strip().upper()
         if not name:
             name = f"ROOM_{len(self.rooms) + 1:03d}"
 
@@ -2018,7 +2022,7 @@ class ObjAoiEditor:
         if self.selected_room_idx is None:
             return
         idx = self.selected_room_idx
-        new_name = self.name_textbox.text.strip() or self.rooms[idx]['name']
+        new_name = self.name_textbox.text.strip().upper() or self.rooms[idx]['name']
 
         # Ensure unique name by appending numeric suffix if needed
         new_name = self._make_unique_name(new_name, exclude_idx=idx)
