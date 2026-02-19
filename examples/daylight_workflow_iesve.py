@@ -118,7 +118,7 @@ def iesve_daylight_parallel_images():
 
     # TODO: Move to the next module for an interactive aoi editor using the df_false.tiff files. It overlays the aoi allows editing of subrooms using the existing json session implementation, df_thresholds for these spaces or by type assignment of space and then extraction of image stamped with what it viewed of screen, a toggle between green dot red dot, and actual result should be provided and then when export is clicked, both the amenede tiff files with suffix of its changed, df_false_stamped.tiff and df_false_dot.tiff. 
 
-    #TODO: detemrine after the above is created if phase 3 is required at all. 
+    #TODO: detemrine if phase 3b is required at all. Results are extracted in the ui. 
 
 
 

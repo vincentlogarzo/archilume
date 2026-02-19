@@ -17,6 +17,7 @@ Controls:
     s             Save room / confirm edit
     d             Delete selected room
     e             Toggle Edit Mode
+    o             Toggle orthogonal lines (H/V snap)
     a             Toggle all-HDR display
     r             Reset zoom
     q             Quit
@@ -61,78 +62,149 @@ class HdrAoiEditor:
 
     Args:
         image_dir: Directory containing .hdr files and associated .tiff files.
-        initial_csv_path: Optional CSV with pre-existing room boundaries.
+        aoi_dir: Directory containing .aoi files with pixel-mapped room boundaries.
         session_path: Optional path for saving/loading editor sessions (JSON).
     """
 
     def __init__(
         self,
-        image_dir: Union[Path, str],
-        initial_csv_path: Optional[Union[Path, str]] = None,
-        session_path: Optional[Path] = None,
+        image_dir:              Union[Path, str]            = config.IMAGE_DIR,
+        aoi_dir:                Union[Path, str]            = config.AOI_DIR,
+        session_path:           Optional[Path]              = None,
     ):
-        self.image_dir = Path(image_dir)
-        self.initial_csv_path = Path(initial_csv_path) if initial_csv_path else None
-        self.session_path = session_path or (self.image_dir / "aoi_session.json")
-        self.csv_path = self.image_dir / "aoi_boundaries.csv"
+        self.image_dir                                  = Path(image_dir)
+        self.aoi_dir                                    = Path(aoi_dir)
+        self.session_path                               = session_path or (self.image_dir / "aoi_session.json")
+        self.csv_path                                   = self.image_dir / "aoi_boundaries.csv"
 
         # Scan HDR files in image_dir
-        self.hdr_files: List[dict] = self._scan_hdr_files()
-        self.current_hdr_idx: int = 0
+        self.hdr_files:             List[dict]          = self._scan_hdr_files()
+        self.current_hdr_idx:       int                 = 0
 
         # Image variant toggle state (HDR + associated TIFFs for current HDR)
-        self.image_variants: List[Path] = []
-        self.current_variant_idx: int = 0
+        self.image_variants:        List[Path]          = []
+        self.current_variant_idx:   int                 = 0
         self._rebuild_image_variants()
 
         # Room storage
-        self.rooms: List[dict] = []
-        self.room_patches: List[Polygon] = []
-        self.room_labels: List = []
-        self.current_polygon_vertices = []
-        self.selected_room_idx: Optional[int] = None
+        self.rooms:                 List[dict]          = []
+        self.room_patches:          List[Polygon]       = []
+        self.room_labels:           List                = []
+        self.current_polygon_vertices                   = []
+        self.selected_room_idx:     Optional[int]       = None
 
         # Zoom state
-        self.original_xlim = None
-        self.original_ylim = None
+        self.original_xlim                              = None
+        self.original_ylim                              = None
 
         # Image dimensions (set on first render)
-        self._image_width: int = 1
-        self._image_height: int = 1
+        self._image_width:          int                 = 1
+        self._image_height:         int                 = 1
 
-        # Snap: snap to existing polygon vertices (always on, no UI control)
-        self._snap_distance_px: float = 10.0  # pixels
-        self.current_vertices: np.ndarray = np.array([])  # current floor room vertices for snapping
+        # Snap to existing polygon vertices (always on, no UI control)
+        self._snap_distance_px:     float               = 10.0
+        self.current_vertices:      np.ndarray          = np.array([])
+        self.ortho_mode:            bool                = True
 
         # Visualization options
-        self.show_all_floors: bool = False  # Toggle to show rooms from all HDR files
+        self.show_all_floors:       bool                = False
 
         # Vertex editing mode
-        self.edit_mode: bool = False
-        self.edit_room_idx: Optional[int] = None
-        self.edit_vertex_idx: Optional[int] = None
-        self.hover_room_idx: Optional[int] = None
-        self.hover_vertex_idx: Optional[int] = None
-        self.hover_edge_room_idx: Optional[int] = None
-        self.hover_edge_idx: Optional[int] = None
-        self.hover_edge_point: Optional[tuple] = None
+        self.edit_mode:             bool                = False
+        self.edit_room_idx:         Optional[int]       = None
+        self.edit_vertex_idx:       Optional[int]       = None
+        self.hover_room_idx:        Optional[int]       = None
+        self.hover_vertex_idx:      Optional[int]       = None
+        self.hover_edge_room_idx:   Optional[int]       = None
+        self.hover_edge_idx:        Optional[int]       = None
+        self.hover_edge_point:      Optional[tuple]     = None
 
         # Parent apartment selection
-        self.selected_parent: Optional[str] = None
-        self.parent_options: List[str] = []
+        self.selected_parent:       Optional[str]       = None
+        self.parent_options:        List[str]           = []
 
         # Room list scroll state
-        self.room_list_scroll_offset: int = 0
-        self._room_list_hit_boxes: List[Tuple] = []
+        self.room_list_scroll_offset: int               = 0
+        self._room_list_hit_boxes:  List[Tuple]         = []
+
+        # Image cache: path → numpy array (avoids reloading from disk)
+        self._image_cache:          dict                = {}
 
         # Cached matplotlib artists for incremental rendering
-        self._room_patch_cache = {}
-        self._room_label_cache = {}
-        self._edit_vertex_scatter = None
-        self._last_view_mode = None
-        self._last_hover_check = 0.0
-        self._image_handle = None  # ax.imshow handle
-        self.ax_legend = None     # dedicated axes for legend image (left of main image)
+        self._room_patch_cache                          = {}
+        self._room_label_cache                          = {}
+        self._edit_vertex_scatter                       = None
+        self._last_view_mode                            = None
+        self._last_hover_check                          = 0.0
+        self._image_handle                              = None
+        self.ax_legend                                  = None
+
+    # -------------------------------------------------------------------------
+    # Layout helper — top-left coordinate system
+    # -------------------------------------------------------------------------
+
+    def _axes(self, x, y, w, h):
+        """Create figure axes at (x, y) measured from top-left corner.
+
+        x increases right, y increases down — unlike matplotlib's native
+        bottom-left origin. Converts to fig.add_axes([left, bottom, w, h]).
+        """
+        return self.fig.add_axes((x, 1.0 - y - h, w, h))
+
+    # -------------------------------------------------------------------------
+    # Coordinate mapping (world metres ↔ pixel)
+    # -------------------------------------------------------------------------
+
+    def _load_from_aoi_files(self, aoi_dir: Path):
+        """Load room boundaries from .aoi files (pixel coordinates already included).
+
+        AOI format:
+            AOI Points File: <name> <level>
+            ASSOCIATED VIEW FILE: plan_ffl_<z_mm>.vp
+            FFL z height(m): <z>
+            CENTRAL x,y: <cx> <cy>
+            NO. PERIMETER POINTS <n>: x,y pixel_x pixel_y positions
+            <world_x> <world_y> <pixel_x> <pixel_y>
+            ...
+        """
+        aoi_files = sorted(aoi_dir.glob('*.aoi'))
+        for aoi_path in aoi_files:
+            with open(aoi_path, 'r') as f:
+                lines = [l.strip() for l in f.readlines()]
+            if len(lines) < 6:
+                continue
+
+            # Header: name from line 0
+            name_match = re.match(r'AOI Points File:\s*(.+)', lines[0])
+            name       = name_match.group(1).strip() if name_match else aoi_path.stem
+
+            # HDR file from view file reference (plan_ffl_28700.vp → model_plan_ffl_28700)
+            vp_match = re.search(r'plan_ffl_(\d+)', lines[1])
+            hdr_file = self.current_hdr_name
+            if vp_match:
+                ffl_val = vp_match.group(1)
+                for entry in self.hdr_files:
+                    if ffl_val in entry['name']:
+                        hdr_file = entry['name']
+                        break
+
+            # Vertex lines: world_x world_y pixel_x pixel_y
+            vertices = []
+            for line in lines[5:]:
+                parts = line.split()
+                if len(parts) >= 4:
+                    px, py = float(parts[2]), float(parts[3])
+                    vertices.append([px, py])
+
+            if len(vertices) >= 3:
+                self.rooms.append({
+                    'name':     name,
+                    'parent':   None,
+                    'vertices': vertices,
+                    'hdr_file': hdr_file,
+                })
+
+        print(f"Loaded {len(self.rooms)} rooms from {len(aoi_files)} .aoi files in {aoi_dir}")
 
     # -------------------------------------------------------------------------
     # Image scanning and loading
@@ -204,29 +276,35 @@ class HdrAoiEditor:
     def _load_image(self, path: Path) -> Optional[np.ndarray]:
         """Load an image file as a normalised float32 numpy array.
 
+        Results are cached in memory so repeated renders don't hit disk.
+
         Args:
             path: Path to .hdr or .tiff file.
 
         Returns:
             Array of shape (H, W, 3) with values in [0, 1], or None on failure.
         """
+        key = str(path)
+        if key in self._image_cache:
+            return self._image_cache[key]
+
         try:
             if path.suffix.lower() == '.hdr':
                 import imageio.v2 as imageio
                 img = imageio.imread(str(path)).astype(np.float32)
                 if img.ndim == 2:
                     img = np.stack([img, img, img], axis=-1)
-                # Normalise by 99th-percentile luminance to preserve contrast,
-                # then apply gamma 2.2 for display.
                 p99 = np.percentile(img, 99)
                 if p99 > 0:
                     img = img / p99
                 img = np.clip(img ** (1.0 / 2.2), 0.0, 1.0)
-                return img
             else:
                 from PIL import Image
                 pil_img = Image.open(path).convert('RGB')
-                return np.array(pil_img, dtype=np.float32) / 255.0
+                img = np.array(pil_img, dtype=np.float32) / 255.0
+
+            self._image_cache[key] = img
+            return img
         except Exception as exc:
             print(f"Warning: could not load image {path}: {exc}")
             return None
@@ -278,14 +356,13 @@ class HdrAoiEditor:
             except AttributeError:
                 pass
 
-        # Main plot area — height tuned so axes ratio ~matches 2.6:1 floor plan
-        # Figure is 20×8in; axes width = 0.63×20 = 12.6in; for 2.6:1 → h = 4.85in → 4.85/8 = 0.606
-        self.ax = self.fig.add_axes([0.12, 0.10, 0.86, 0.60])
+        # Main plot area (top-left: x=0.12, y=0.30, w=0.86, h=0.60)
+        self.ax = self._axes(0.12, 0.30, 0.86, 0.60)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
         # Legend axes: narrow strip between side panel and main image
-        self.ax_legend = self.fig.add_axes([0.08, 0.10, 0.04, 0.60])
+        self.ax_legend = self._axes(0.08, 0.30, 0.04, 0.60)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(False)
 
@@ -327,206 +404,173 @@ class HdrAoiEditor:
     # -------------------------------------------------------------------------
 
     def _setup_side_panel(self):
-        """Create the side panel with inputs, buttons, and room list."""
+        """Create the side panel with inputs, buttons, and room list.
+
+        All positions use _axes(x, y, w, h) where x/y are from the top-left
+        corner of the figure. Increasing x → right, increasing y → down.
+        """
         pl = 0.02   # panel left (x)
-        pw = 0.28   # total panel width (x: 0.02 → 0.30)
+        pw = 0.28   # panel width
 
         self._btn_color    = '#E8E8E0'
         self._btn_hover    = '#D8D8D0'
-        self._slider_color = '#A8C8A8'
 
-        # ── SIDE PANEL TOP: Instructions only ───────────────────────────────────
+        lbl_h   = 0.016
+        input_h = 0.032
+        gap     = 0.008
+        sub_h   = 0.014
 
-        ax_instr = self.fig.add_axes([pl, 0.86, 0.28, 0.12])
+        # ── Instructions (top-left) ────────────────────────────────────────────
+        instr_w = 0.12
+        ax_instr = self._axes(pl, 0.02, instr_w, 0.15)
         ax_instr.axis('off')
         ax_instr.patch.set_visible(False)
-        ax_instr.text(0, 0.93, "HDR BOUNDARY EDITOR", fontsize=9, fontweight='bold',
+        ax_instr.text(0, 0.95, "HDR BOUNDARY EDITOR", fontsize=9, fontweight='bold',
                       color='#404040', transform=ax_instr.transAxes)
         controls = [
-            ("\u2191/\u2193",   "Navigate HDR files"),
-            ("t",               "Toggle image (HDR / TIFFs)"),
-            ("Left-click",      "Place vertex / drag"),
-            ("Right-click",     "Select existing room"),
-            ("Scroll",          "Zoom centred on cursor"),
-            ("s",               "Save room / confirm edit"),
-            ("d",               "Delete selected room"),
-            ("e",               "Toggle Edit Mode"),
-            ("a",               "Toggle all-HDR display"),
-            ("r",               "Reset zoom"),
-            ("q",               "Quit"),
+            ("\u2191/\u2193", "Navigate HDR files"),
+            ("t",             "Toggle image (HDR / TIFFs)"),
+            ("Left-click",    "Place vertex / drag"),
+            ("Right-click",   "Select existing room"),
+            ("Scroll",        "Zoom centred on cursor"),
+            ("s",             "Save room / confirm edit"),
+            ("d",             "Delete selected room"),
+            ("e",             "Toggle Edit Mode"),
+            ("o",             "Toggle orthogonal lines"),
+            ("a",             "Toggle all-HDR display"),
+            ("r",             "Reset zoom"),
+            ("q",             "Quit"),
         ]
         for i, (key, desc) in enumerate(controls):
-            y = 0.85 - i * 0.08
+            y = 0.87 - i * 0.08
             ax_instr.text(0.00, y, key,  fontsize=7.5, color='#404040', fontweight='bold',
                           transform=ax_instr.transAxes)
-            ax_instr.text(0.22, y, desc, fontsize=7.5, color='#505050',
+            ax_instr.text(0.38, y, desc, fontsize=7.5, color='#505050',
                           transform=ax_instr.transAxes)
 
-        # ── ABOVE IMAGE: HDR FILES nav | Parent Apartment + Name | Action Buttons ──
-        # All coordinates computed from fixed measurements, bottom-up.
-        #
-        #  lbl_h     label row height
-        #  input_h   input widget (button / textbox) height
-        #  gap       gap between rows / items
-        #  sub_h     status line height
-        #
-        #  strip bottom = strip_y  (image top = strip_y - 0.005)
-        #  strip layout (bottom → top):
-        #    sub_h   : status / preview
-        #    gap
-        #    lbl_h   : "Apartment Name:" label
-        #    input_h : name textbox
-        #    gap
-        #    lbl_h   : "Parent Apartment:" label
-        #    input_h : parent button
-        #    gap
-        #    lbl_h   : "HDR FILES:" label (left col only)
-
-        img_left = 0.12
-        lbl_h    = 0.016
-        input_h  = 0.032
-        gap      = 0.004
-        sub_h    = 0.014
-        strip_y  = 0.715   # bottom of the control strip (image top = 0.70)
-
-        # Derived y positions (bottom-up, label always above its input):
-        #   status_y                          ← bottom
-        #   name_inp_y  = status + sub_h + gap
-        #   name_lbl_y  = name_inp + input_h + gap   ← label sits above textbox
-        #   parent_inp_y = name_lbl + lbl_h + gap
-        #   parent_lbl_y = parent_inp + input_h + gap ← label sits above button
-        #   hdr_lbl_y   = parent_lbl + lbl_h + gap
-        status_y      = strip_y
-        name_inp_y    = status_y      + sub_h   + gap
-        name_lbl_y    = name_inp_y    + input_h + gap
-        parent_inp_y  = name_lbl_y   + lbl_h   + gap
-        parent_lbl_y  = parent_inp_y  + input_h + gap
-        hdr_lbl_y     = parent_lbl_y  + lbl_h   + gap
-
-        total_h = hdr_lbl_y + lbl_h - strip_y
-
-        # ── HDR FILES section — anchored to side panel left (pl) ────────────────
+        # ── HDR FILES nav (top, right of instructions) ─────────────────────
+        col2_x  = pl + instr_w + 0.01
+        row_y   = 0.02
         arrow_w = 0.025
-        arrow_h = parent_inp_y + input_h - name_inp_y  # span both input rows
+        arrow_h = input_h * 2 + gap
 
-        ax_hdr_hdr = self.fig.add_axes([pl, hdr_lbl_y, arrow_w * 2 + 0.004, lbl_h])
+        ax_hdr_hdr = self._axes(col2_x, row_y, arrow_w * 2 + 0.004, lbl_h)
         ax_hdr_hdr.axis('off')
         ax_hdr_hdr.text(0, 0.5, "HDR FILES:", fontsize=9, fontweight='bold', color='#404040')
 
-        ax_next_hdr = self.fig.add_axes([pl, name_inp_y, arrow_w, arrow_h])
+        arrows_y = row_y + lbl_h + gap
+        ax_next_hdr = self._axes(col2_x, arrows_y, arrow_w, arrow_h)
         self.btn_next_hdr = Button(ax_next_hdr, '\u25b2', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_next_hdr.on_clicked(self._on_next_hdr_click)
 
-        ax_prev_hdr = self.fig.add_axes([pl + arrow_w + 0.004, name_inp_y, arrow_w, arrow_h])
+        ax_prev_hdr = self._axes(col2_x + arrow_w + 0.004, arrows_y, arrow_w, arrow_h)
         self.btn_prev_hdr = Button(ax_prev_hdr, '\u25bc', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_prev_hdr.on_clicked(self._on_prev_hdr_click)
 
-        hdr_list_x = pl + arrow_w * 2 + 0.008
-        hdr_list_w = 0.060
-        self.ax_hdr_list = self.fig.add_axes([hdr_list_x, name_inp_y, hdr_list_w, arrow_h + lbl_h + gap])
+        hdr_list_x = col2_x + arrow_w * 2 + 0.008
+        self.ax_hdr_list = self._axes(hdr_list_x, row_y, 0.060, lbl_h + gap + arrow_h)
         self.ax_hdr_list.axis('off')
 
-        # ── Stacked column: Parent Apartment (top) / Apartment Name (bottom) ────
-        prnt_x = img_left + 0.040   # start well clear of the image left edge
+        # ── Parent Apartment (right of HDR files) ─────────────────────────
+        prnt_x = col2_x + 0.18
         prnt_w = 0.150
 
-        # Parent Apartment: label above, button below
-        ax_parent_lbl = self.fig.add_axes([prnt_x, parent_lbl_y, prnt_w, lbl_h])
+        ax_parent_lbl = self._axes(prnt_x, row_y, prnt_w, lbl_h)
         ax_parent_lbl.axis('off')
         ax_parent_lbl.text(0, 0.5, "Parent Apartment:", fontsize=9, fontweight='bold')
 
-        ax_parent_btn = self.fig.add_axes([prnt_x, parent_inp_y, prnt_w, input_h])
+        ax_parent_btn = self._axes(prnt_x, row_y + lbl_h + gap, prnt_w, input_h)
         self.btn_parent = Button(ax_parent_btn, '(None)', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_parent.label.set_fontsize(8)
         self.btn_parent.on_clicked(self._on_parent_cycle)
 
-        # Apartment Name: label above, textbox below
-        ax_name_lbl2 = self.fig.add_axes([prnt_x, name_lbl_y, prnt_w, lbl_h])
-        ax_name_lbl2.axis('off')
-        self.name_label_text = ax_name_lbl2.text(0, 0.5, "Apartment Name:", fontsize=9, fontweight='bold')
+        # ── Apartment Name (below parent) ──────────────────────────────────
+        name_y = row_y + lbl_h + gap + input_h + gap
 
-        ax_name = self.fig.add_axes([prnt_x, name_inp_y, prnt_w, input_h])
+        ax_name_lbl = self._axes(prnt_x, name_y, prnt_w, lbl_h)
+        ax_name_lbl.axis('off')
+        self.name_label_text = ax_name_lbl.text(0, 0.5, "Apartment Name:", fontsize=9, fontweight='bold')
+
+        ax_name = self._axes(prnt_x, name_y + lbl_h + gap, prnt_w, input_h)
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
 
-        ax_name_preview = self.fig.add_axes([prnt_x, status_y, prnt_w, sub_h])
-        ax_name_preview.axis('off')
-        self.name_preview_text = ax_name_preview.text(0, 0.5, "", fontsize=8, color='#666666', style='italic')
+        # ── Status / preview line ──────────────────────────────────────────
+        status_y = name_y + lbl_h + gap + input_h + gap
 
-        ax_status = self.fig.add_axes([prnt_x, status_y, prnt_w, sub_h])
+        ax_preview = self._axes(prnt_x, status_y, prnt_w, sub_h)
+        ax_preview.axis('off')
+        self.name_preview_text = ax_preview.text(0, 0.5, "", fontsize=8, color='#666666', style='italic')
+
+        ax_status = self._axes(prnt_x, status_y, prnt_w, sub_h)
         ax_status.axis('off')
         self.status_text = ax_status.text(
             0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
 
-        # ── ACTION BUTTONS: stacked vertically to the right ──────────────────────
+        # ── Action buttons (right of parent/name) ─────────────────────────
         stack_x = prnt_x + prnt_w + 0.012
         stack_w = 0.090
+        total_h = status_y + sub_h - row_y
         n_btns  = 3
         btn_gap = 0.004
         each_h  = (total_h - btn_gap * (n_btns - 1)) / n_btns
 
-        btn_labels = [
+        for i, (attr, label, cb) in enumerate([
             ('btn_save',   'Save Room',       self._on_save_click),
             ('btn_clear',  'Clear Current',   self._on_clear_click),
             ('btn_delete', 'Delete Selected', self._on_delete_click),
-        ]
-        for i, (attr_name, label, callback) in enumerate(btn_labels):
-            row_y = strip_y + (n_btns - 1 - i) * (each_h + btn_gap)
-            ax_btn = self.fig.add_axes([stack_x, row_y, stack_w, each_h])
+        ]):
+            btn_y  = row_y + i * (each_h + btn_gap)
+            ax_btn = self._axes(stack_x, btn_y, stack_w, each_h)
             btn = Button(ax_btn, label, color=self._btn_color, hovercolor=self._btn_hover)
             btn.label.set_fontsize(7)
-            btn.on_clicked(callback)
-            setattr(self, attr_name, btn)
+            btn.on_clicked(cb)
+            setattr(self, attr, btn)
 
-        # ── SAVED ROOMS list (y = 0.10 → 0.785, 1/3 panel width) ────────────────
+        # ── Saved rooms list ─────────────────────────────────────────────────
+        list_w    = pw / 3
+        list_hdr_y = 0.31
 
-        list_w      = pw / 3            # ≈ 0.093
-        list_hdr_y  = 0.690
-        ax_list_hdr = self.fig.add_axes([pl, list_hdr_y, list_w, 0.025])
+        ax_list_hdr = self._axes(pl, list_hdr_y, list_w, 0.025)
         ax_list_hdr.axis('off')
         ax_list_hdr.text(0, 0.5, "SAVED ROOMS:", fontsize=9, fontweight='bold')
 
-        list_bottom = 0.10
-        list_top    = list_hdr_y - 0.005
-        self.ax_list = self.fig.add_axes([pl, list_bottom, list_w, list_top - list_bottom])
+        list_top = list_hdr_y + 0.030
+        list_h   = 0.58
+        self.ax_list = self._axes(pl, list_top, list_w, list_h)
         self.ax_list.set_facecolor('#FAFAF8')
         self.ax_list.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         for spine in self.ax_list.spines.values():
             spine.set_edgecolor('#CCCCCC')
             spine.set_linewidth(0.5)
 
-        # ── BOTTOM STRIP: Toggle Image | Edit Mode | Reset Zoom ─────────────────
+        # ── Bottom strip: Toggle Image | Edit Mode | Reset Zoom ──────────────
+        btm_x = 0.35
+        btm_w = 0.63
+        btm_h = 0.030
+        btm_y = 0.955
+        btn_w = (btm_w - 2 * gap) / 3
 
-        fig_left     = 0.35
-        fig_width    = 0.63
-        gap          = 0.005
-        bottom_btn_h = 0.030
-        bottom_btn_w = (fig_width - 2 * gap) / 3
-        bottom_btn_y = 0.015
-
-        ax_toggle_btn = self.fig.add_axes([fig_left, bottom_btn_y, bottom_btn_w, bottom_btn_h])
-        self.btn_image_toggle = Button(ax_toggle_btn, 'Image: HDR (T)',
+        ax_toggle = self._axes(btm_x, btm_y, btn_w, btm_h)
+        self.btn_image_toggle = Button(ax_toggle, 'Image: HDR (T)',
                                        color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_image_toggle.label.set_fontsize(8)
         self.btn_image_toggle.on_clicked(self._on_image_toggle_click)
 
-        ax_edit_btn = self.fig.add_axes([fig_left + bottom_btn_w + gap, bottom_btn_y,
-                                         bottom_btn_w, bottom_btn_h])
-        self.btn_edit_mode = Button(ax_edit_btn, 'Edit Mode: OFF (Press E)',
+        ax_edit = self._axes(btm_x + btn_w + gap, btm_y, btn_w, btm_h)
+        self.btn_edit_mode = Button(ax_edit, 'Edit Mode: OFF (Press E)',
                                     color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_edit_mode.label.set_fontsize(8)
         self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
 
-        ax_reset_btn = self.fig.add_axes([fig_left + 2 * (bottom_btn_w + gap), bottom_btn_y,
-                                          bottom_btn_w, bottom_btn_h])
-        self.btn_reset_zoom = Button(ax_reset_btn, 'Reset Zoom',
+        ax_reset = self._axes(btm_x + 2 * (btn_w + gap), btm_y, btn_w, btm_h)
+        self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom',
                                      color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_reset_zoom.label.set_fontsize(8)
         self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
 
-        # ── LEGEND ──────────────────────────────────────────────────────────────
-
-        ax_legend = self.fig.add_axes([pl, 0.015, pw, 0.075])
+        # ── Legend ───────────────────────────────────────────────────────────
+        ax_legend = self._axes(pl, 0.91, pw, 0.075)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
         ax_legend.text(0.01, 0.92, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
@@ -903,7 +947,8 @@ class HdrAoiEditor:
             edge_color, face_color, alpha, lw, label_bg = 'gray', 'gray', 0.15, 1, 'gray'
 
         poly = Polygon(verts, closed=True,
-                       edgecolor=edge_color, facecolor=face_color, alpha=alpha, linewidth=lw)
+                       edgecolor=edge_color, facecolor=face_color, alpha=alpha, linewidth=lw,
+                       clip_on=True)
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
         self._room_patch_cache[idx] = poly
@@ -948,10 +993,11 @@ class HdrAoiEditor:
         label_text = self.ax.text(
             centroid[0], centroid[1], label,
             color='white', fontsize=8 if is_current_floor else 7,
-            ha='center', va='center',
+            ha='center', va='center', clip_on=True,
             bbox=dict(boxstyle='round', facecolor=label_bg,
                       alpha=0.7 if is_current_floor else 0.5),
         )
+        label_text.set_clip_path(self.ax.patch)
         self.room_labels.append(label_text)
         self._room_label_cache[idx] = label_text
 
@@ -1010,6 +1056,11 @@ class HdrAoiEditor:
         proj_x, proj_y = ax + t*dx, ay + t*dy
         return np.hypot(px - proj_x, py - proj_y), proj_x, proj_y
 
+    @staticmethod
+    def _snap_to_pixel(x: float, y: float) -> tuple:
+        """Snap coordinates to the nearest pixel centre (int + 0.5)."""
+        return int(x) + 0.5, int(y) + 0.5
+
     # -------------------------------------------------------------------------
     # Event handlers
     # -------------------------------------------------------------------------
@@ -1063,9 +1114,21 @@ class HdrAoiEditor:
                 return
             return  # click on empty space in edit mode
 
-        # Left-click: apply snap then let selector handle it
+        # Left-click: apply ortho constraint + vertex snap, then let selector handle it
         if event.button == 1 and not self.edit_mode and event.xdata is not None and event.ydata is not None:
-            snapped_x, snapped_y = self._snap_to_vertex(event.xdata, event.ydata)
+            x, y = event.xdata, event.ydata
+
+            # Orthogonal constraint: lock to horizontal or vertical from last vertex
+            if self.ortho_mode and hasattr(self, 'selector') and self.selector.verts:
+                last_x, last_y = self.selector.verts[-1]
+                dx, dy = abs(x - last_x), abs(y - last_y)
+                if dx >= dy:
+                    y = last_y   # horizontal line
+                else:
+                    x = last_x   # vertical line
+
+            x, y = self._snap_to_pixel(x, y)
+            snapped_x, snapped_y = self._snap_to_vertex(x, y)
             event.xdata = snapped_x
             event.ydata = snapped_y
 
@@ -1076,8 +1139,9 @@ class HdrAoiEditor:
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             room = self.rooms[self.edit_room_idx]
             current_pos = room['vertices'][self.edit_vertex_idx]
-            # Snap to existing vertex after drag
-            sx, sy = self._snap_to_vertex(current_pos[0], current_pos[1])
+            # Snap to pixel centre, then to existing vertex if close
+            px, py = self._snap_to_pixel(current_pos[0], current_pos[1])
+            sx, sy = self._snap_to_vertex(px, py)
             room['vertices'][self.edit_vertex_idx] = [float(sx), float(sy)]
             self.edit_vertex_idx = None
             self._save_session()
@@ -1094,10 +1158,19 @@ class HdrAoiEditor:
         if x is None or y is None:
             return
 
-        # Vertex dragging
+        # Vertex dragging — update polygon in-place without full re-render
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             self.rooms[self.edit_room_idx]['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
-            self._render_section(force_full=True)
+            patch = self._room_patch_cache.get(self.edit_room_idx)
+            if patch is not None:
+                patch.set_xy(self.rooms[self.edit_room_idx]['vertices'])
+                label = self._room_label_cache.get(self.edit_room_idx)
+                if label is not None:
+                    centroid = np.array(self.rooms[self.edit_room_idx]['vertices']).mean(axis=0)
+                    label.set_position((centroid[0], centroid[1]))
+                self.fig.canvas.draw_idle()
+            else:
+                self._render_section(force_full=True)
             return
 
         if not self.edit_mode:
@@ -1142,7 +1215,7 @@ class HdrAoiEditor:
                 self.hover_edge_point    = None
                 room_name = self.rooms[closest_room_idx].get('name', 'unnamed')
                 self._update_status(f"Vertex in '{room_name}' - drag or right-click to remove", 'cyan')
-                self._render_section(force_full=True)
+                self._render_section()
         else:
             vertex_state_changed = self.hover_vertex_idx is not None or self.hover_room_idx is not None
             if vertex_state_changed:
@@ -1180,17 +1253,17 @@ class HdrAoiEditor:
                 self.hover_edge_point    = best_edge_point
                 if changed:
                     self._update_status("Click on edge to insert vertex", 'blue')
-                    self._render_section(force_full=True)
+                    self._render_section()
             else:
                 if self.hover_edge_room_idx is not None:
                     self.hover_edge_room_idx = None
                     self.hover_edge_idx      = None
                     self.hover_edge_point    = None
                     self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                    self._render_section(force_full=True)
+                    self._render_section()
                 elif vertex_state_changed:
                     self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                    self._render_section(force_full=True)
+                    self._render_section()
 
     def _on_key_press(self, event):
         """Handle keyboard shortcuts."""
@@ -1218,6 +1291,10 @@ class HdrAoiEditor:
             self._on_image_toggle_click(None)
         elif event.key == 'e':
             self._on_edit_mode_toggle(None)
+        elif event.key == 'o':
+            self.ortho_mode = not self.ortho_mode
+            state = "ON" if self.ortho_mode else "OFF"
+            self._update_status(f"Orthogonal mode: {state}", 'blue')
 
     def _on_scroll(self, event):
         """Handle scroll wheel for zooming or room list scrolling."""
@@ -1484,14 +1561,6 @@ class HdrAoiEditor:
         self.ax.set_ylim(self._image_height, 0)
         self.fig.canvas.draw_idle()
 
-    def _on_image_toggle_click(self, event):
-        """Cycle to the next image variant (also bound to 't' key)."""
-        if not self.image_variants:
-            return
-        self.current_variant_idx = (self.current_variant_idx + 1) % len(self.image_variants)
-        self._update_image_toggle_label()
-        self._render_section(force_full=True)
-
     def _on_edit_mode_toggle(self, event):
         """Toggle edit mode for modifying existing room boundaries."""
         self.edit_mode = not self.edit_mode
@@ -1687,15 +1756,15 @@ class HdrAoiEditor:
             print(f"Removed stale CSV: {self.csv_path}")
 
     def _load_session(self):
-        """Load room boundaries from JSON session, or initial CSV if no session exists."""
+        """Load room boundaries from JSON session or AOI files."""
         if self.session_path.exists():
             with open(self.session_path, 'r') as f:
                 data = json.load(f)
             self.rooms = data.get('rooms', [])
             source = "session"
-        elif self.initial_csv_path and self.initial_csv_path.exists():
-            self._load_from_csv(self.initial_csv_path)
-            source = "initial CSV"
+        elif self.aoi_dir.exists() and list(self.aoi_dir.glob('*.aoi')):
+            self._load_from_aoi_files(self.aoi_dir)
+            source = "AOI files"
         else:
             return
 
@@ -1709,44 +1778,6 @@ class HdrAoiEditor:
             self._render_section(force_full=True)
         print(f"Loaded {len(self.rooms)} rooms from {source}")
 
-    def _load_from_csv(self, csv_path: Path):
-        """Load room boundaries from a CSV file.
-
-        Expects columns: name, parent, hdr_file, X_px Y_px, X_px Y_px, ...
-        Falls back gracefully to old 3D-coordinate format (X_v Y_v Z_v).
-        """
-        self.rooms = []
-        with open(csv_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split(',')
-                if len(parts) < 3:
-                    continue
-
-                name     = parts[0].strip()
-                parent   = parts[1].strip() or None
-                hdr_file = parts[2].strip() if len(parts) > 2 else self.current_hdr_name
-
-                vertices = []
-                for coord_str in parts[3:]:
-                    coord_str = coord_str.strip()
-                    if not coord_str:
-                        continue
-                    # Support new "X_px Y_px" format
-                    m = re.match(r'X_([-\d.]+)\s+Y_([-\d.]+)', coord_str)
-                    if m:
-                        vertices.append([float(m.group(1)), float(m.group(2))])
-
-                if len(vertices) >= 3:
-                    self.rooms.append({
-                        'name':     name,
-                        'parent':   parent,
-                        'vertices': vertices,
-                        'hdr_file': hdr_file,
-                    })
-        print(f"Loaded {len(self.rooms)} rooms from CSV: {csv_path}")
 
     # -------------------------------------------------------------------------
     # Export
