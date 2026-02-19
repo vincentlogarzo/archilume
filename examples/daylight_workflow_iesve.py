@@ -65,10 +65,10 @@ def iesve_daylight_parallel_images():
     with timer("Phase 0: User input 3D Scene file + Rendering parameter (.rdp) and aoi (.aoi)..."):
         image_resolution    = 2048                            
         ffl_offset          = 0.00
-        octree_path         = config.INPUTS_DIR / "model.oct"
-        rendering_params    = config.INPUTS_DIR / "high.rdp"
+        octree_path         = config.INPUTS_DIR / "model.oct" # Must use a 10K Lux CIE Overcast sky
+        rendering_params    = config.INPUTS_DIR / "preview.rdp"
         iesve_room_data     = config.INPUTS_DIR / "aoi" / "iesve_room_data.csv"
-        df_thresholds       = (0.5, 1.0, 1.5) # % of floor area meeting threshold
+        df_thresholds       = (0.5, 1.0, 1.5) # % of floor area meeting daylight factor threshold
 
         # TODO: implement inputs validations checks alike to sunlight access workflow.
 
@@ -116,7 +116,9 @@ def iesve_daylight_parallel_images():
                 )
             converter.daylight_wpd_extraction(df_thresholds=df_thresholds)
 
-    # TODO: Move to the next module for an interactive aoi editor using the df_false.tiff files. It overlays the aoi allows editing of subrooms using the existing json session implementation, df_thresholds for these spaces or by type assignment of space and then extraction of image stamped with what it viewed of screen, a toggle between green dot red dot, and actual result should be provided and then when export is clicked, both the amenede tiff files with suffix of its changed, df_false_stamped.tiff and df_false_dot.tiff.
+    # TODO: Move to the next module for an interactive aoi editor using the df_false.tiff files. It overlays the aoi allows editing of subrooms using the existing json session implementation, df_thresholds for these spaces or by type assignment of space and then extraction of image stamped with what it viewed of screen, a toggle between green dot red dot, and actual result should be provided and then when export is clicked, both the amenede tiff files with suffix of its changed, df_false_stamped.tiff and df_false_dot.tiff. 
+
+    #TODO: detemrine after the above is created if phase 3 is required at all. 
 
 
 

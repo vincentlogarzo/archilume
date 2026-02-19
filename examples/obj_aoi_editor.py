@@ -43,8 +43,8 @@ from archilume import config
 
 if __name__ == "__main__":
     editor = ObjAoiEditor(
-        obj_path            = config.INPUTS_DIR / "87Cowles_BLD_withWindows.obj",
-        initial_csv_path    = config.INPUTS_DIR / "87cowles_BLD_room_boundaries.csv",
+        obj_path            = config.INPUTS_DIR / "cowles" / "87Cowles_BLD_withWindows.obj",
+        initial_csv_path    = config.INPUTS_DIR / "cowles" /"87cowles_BLD_room_boundaries.csv",
         simplify_ratio      = None,
         detect_floors       = True,
         max_vertex_display  = 5000,

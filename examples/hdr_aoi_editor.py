@@ -42,3 +42,13 @@ if __name__ == "__main__":
         initial_csv_path = config.AOI_DIR / "iesve_room_data_boundaries.csv"
     )
     editor.launch()
+
+    # TODO: reshuffle all the buttons to allow the image to be largers and minimise hite space between all the buttons.
+    #TODO ensure that intial csv aoi are presented on load, they do not show up.
+    # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel.
+    # TODO: when drawing a subroom, better functionaly to detect parent room so that you dont have to click none placeholder in the parent room input box, and better functionality to snap a point to an existing vertex edge, subrooms are really only a divide or break down o fthe main apartment. 
+    #Remove the HDR file, it should not be loaded, it is slowing down the interface, determine what are the UI speed limits, the lag on the cursor etc. 
+
+    
+
+

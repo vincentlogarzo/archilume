@@ -15,7 +15,7 @@ import re
 
 @dataclass
 class Tiff2Animation:
-    """Post-processes rendered TIFF images with metadata annotations, AOI overlays, and animations."""
+    """Post-processes rendered TIFF images with metadata annotations, .aoi overlays, and animations."""
 
     skyless_octree_path: Path
     overcast_sky_file_path: Path
