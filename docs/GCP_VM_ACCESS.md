@@ -71,9 +71,54 @@ You should see:
 Welcome to Debian GNU/Linux...
 ```
 
-### Step 5: Install Docker and Git, Clone Repository
+### Step 5: Format Local SSD, Install Docker and Git, Clone Repository
 
-Once connected to the VM, install the required tools and clone the Archilume repository:
+Once connected to the VM, set up the local SSD, install the required tools, and clone the Archilume repository:
+
+#### 5.1: Format and Mount the Local SSD
+
+```bash
+# List attached disks to find the local SSD device
+ls -l /dev/disk/by-id/google-*
+
+# For local SSDs, the device is typically /dev/nvme0n1 or similar
+# You can also check with:
+lsblk
+
+# Format the local SSD with ext4 filesystem
+# Replace /dev/nvme0n1 with your actual device name
+sudo mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard /dev/nvme0n1
+
+# Create mount point directory
+sudo mkdir -p /mnt/disks/localssd
+
+# Mount the local SSD
+sudo mount -o discard,defaults /dev/nvme0n1 /mnt/disks/localssd
+
+# Set permissions so all users can read/write
+sudo chmod a+w /mnt/disks/localssd
+
+# Create a workspace directory for the project
+mkdir -p /mnt/disks/localssd/workspace
+```
+
+#### 5.2: Enable Automatic Mounting on Reboot (Recommended)
+
+```bash
+# Get the UUID of the local SSD
+sudo blkid /dev/nvme0n1
+
+# Add entry to /etc/fstab for automatic mounting
+# Replace UUID_VALUE with the actual UUID from the blkid command
+echo "UUID=UUID_VALUE /mnt/disks/localssd ext4 discard,nofail 0 2" | sudo tee -a /etc/fstab
+
+# Verify fstab entry is correct (this will fail safely if there's an error)
+sudo mount -a
+```
+
+**Note**: Local SSDs are ephemeral storage - data is lost if the VM is stopped or deleted. Always back up important work to persistent storage or git.
+
+#### 5.3: Install Docker and Git
 
 ```bash
 # Update package manager
@@ -90,6 +135,13 @@ sudo usermod -aG docker $USER
 
 # Activate the new group membership
 newgrp docker
+```
+
+#### 5.4: Clone Repository to Local SSD
+
+```bash
+# Navigate to the local SSD workspace
+cd /mnt/disks/localssd/workspace
 
 # Clone the Archilume repository
 git clone https://github.com/vincentlogarzo/archilume.git
@@ -100,6 +152,9 @@ bash .devcontainer/setup.sh
 
 # Source bashrc to update PATH
 source ~/.bashrc
+
+# Optional: Create a symlink in home directory for convenience
+ln -s /mnt/disks/localssd/workspace/archilume ~/archilume
 ```
 
 This will automatically install:
