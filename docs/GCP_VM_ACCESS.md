@@ -71,6 +71,45 @@ You should see:
 Welcome to Debian GNU/Linux...
 ```
 
+### Step 5: Install Docker and Git, Clone Repository
+
+Once connected to the VM, install the required tools and clone the Archilume repository:
+
+```bash
+# Update package manager
+sudo apt-get update
+
+# Install Git
+sudo apt-get install -y git
+
+# Install Docker
+sudo apt-get install -y docker.io
+
+# Add your user to the docker group (so you don't need sudo for docker)
+sudo usermod -aG docker $USER
+
+# Activate the new group membership
+newgrp docker
+
+# Clone the Archilume repository
+git clone https://github.com/vincentlogarzo/archilume.git
+cd archilume
+
+# Run the automated setup script
+bash .devcontainer/setup.sh
+
+# Source bashrc to update PATH
+source ~/.bashrc
+```
+
+This will automatically install:
+
+- **Radiance 6.1.5** (for rendering)
+- **Accelerad** (GPU acceleration for rendering)
+- **uv package manager** (Python dependency manager)
+- **Python dependencies** (via `uv sync`)
+- **System dependencies** (OpenGL, Radiance libraries)
+
 ## Troubleshooting
 
 ### Connection timeout
