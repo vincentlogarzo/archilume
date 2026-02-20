@@ -17,12 +17,12 @@ Controls:
     ↑/↓           Navigate HDR files
     t             Toggle image variant (HDR / TIFFs)
     Left-click    Place vertex (draw) or drag vertex (edit mode)
+    Shift+click   Drag entire edge in edit mode (moves both endpoints together)
     Right-click   Select existing room
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
     d             Delete selected room
     e             Toggle Edit Mode
-    a             Toggle all-HDR display
     r             Reset zoom
     q             Quit
 

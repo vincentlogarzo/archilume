@@ -12,13 +12,14 @@ Controls:
     ↑/↓           Navigate HDR files
     t             Toggle image variant (HDR / TIFFs)
     Left-click    Place vertex (draw) or drag vertex (edit mode)
+    Shift+click   Drag entire edge in edit mode (moves both endpoints together)
     Right-click   Select existing room
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
     d             Delete selected room
     e             Toggle Edit Mode
+    Ctrl+Z        Undo last vertex edit (edit mode)
     o             Toggle orthogonal lines (H/V snap)
-    a             Toggle all-HDR display
     r             Reset zoom
     q             Quit
 
@@ -100,15 +101,13 @@ class HdrAoiEditor:
         # Image dimensions (set on first render)
         self._image_width:          int                 = 1
         self._image_height:         int                 = 1
+        self._reference_view_w:     float               = 1.0  # view width at default zoom
 
         # Snap to existing polygon vertices (always on, no UI control)
         self._snap_distance_px:     float               = 10.0
         self.current_vertices:      np.ndarray          = np.array([])
         self.ortho_mode:            bool                = True
         self._pending_snap:         Optional[tuple]     = None
-
-        # Visualization options
-        self.show_all_floors:       bool                = False
 
         # Vertex editing mode
         self.edit_mode:             bool                = False
@@ -130,6 +129,11 @@ class HdrAoiEditor:
         # Room list scroll state
         self.room_list_scroll_offset: int               = 0
         self._room_list_hit_boxes:  List[Tuple]         = []
+
+        # Undo stack for edit-mode vertex operations
+        # Each entry: (room_idx, vertices_snapshot)
+        self._edit_undo_stack:      List[Tuple]         = []
+        self._edit_undo_max:        int                 = 50
 
         # Image cache: path → numpy array (avoids reloading from disk)
         self._image_cache:          dict                = {}
@@ -339,6 +343,7 @@ class HdrAoiEditor:
             raise FileNotFoundError(f"No .hdr files found in {self.image_dir}")
 
         # Setup matplotlib figure — wide to match ~2.6:1 floor plan aspect ratio
+        plt.rcParams['savefig.directory'] = str(self.image_dir)
         self.fig = plt.figure(figsize=(20, 8), facecolor='#F5F5F0')
         self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.05)
 
@@ -360,13 +365,13 @@ class HdrAoiEditor:
             except AttributeError:
                 pass
 
-        # Main plot area (top-left: x=0.12, y=0.30, w=0.86, h=0.60)
-        self.ax = self._axes(0.12, 0.30, 0.86, 0.60)
+        # Main plot area (top-left: x=0.12, y=0.30, w=0.81, h=0.60)
+        self.ax = self._axes(0.12, 0.30, 0.81, 0.60)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
-        # Legend axes: narrow strip between side panel and main image
-        self.ax_legend = self._axes(0.08, 0.30, 0.04, 0.60)
+        # Legend axes: narrow strip to the right of the main image
+        self.ax_legend = self._axes(0.93, 0.30, 0.06, 0.60)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(False)
 
@@ -435,13 +440,14 @@ class HdrAoiEditor:
             ("\u2191/\u2193", "Navigate HDR files"),
             ("t",             "Toggle image (HDR / TIFFs)"),
             ("Left-click",    "Place vertex / drag"),
+            ("Shift+click",   "Drag edge (edit mode)"),
             ("Right-click",   "Select existing room"),
             ("Scroll",        "Zoom centred on cursor"),
             ("s",             "Save room / confirm edit"),
             ("d",             "Delete selected room"),
             ("e",             "Toggle Edit Mode"),
+            ("ctrl+z",        "Undo last edit"),
             ("o",             "Toggle orthogonal lines"),
-            ("a",             "Toggle all-HDR display"),
             ("r",             "Reset zoom"),
             ("q",             "Quit"),
         ]
@@ -573,11 +579,11 @@ class HdrAoiEditor:
         self.btn_reset_zoom.label.set_fontsize(8)
         self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
 
-        # ── Legend ───────────────────────────────────────────────────────────
-        ax_legend = self._axes(pl, 0.91, pw, 0.075)
+        # ── Legend (colour key) — bottom of the side panel ───────────────────
+        ax_legend = self._axes(pl, 0.89, pw / 3, 0.10)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
-        ax_legend.text(0.01, 0.92, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
+        ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
                        transform=ax_legend.transAxes)
 
         legend_items = [
@@ -588,12 +594,14 @@ class HdrAoiEditor:
             ('magenta',  0.35, 'Hover vertex (edit mode)'),
             ('gray',     0.15, 'Other HDR file'),
         ]
+        row_h  = 0.27   # vertical step between rows
+        swatch = 0.14   # swatch height
         for i, (color, alpha, label) in enumerate(legend_items):
             col    = i // 3
             row    = i % 3
             x_base = 0.01 + col * 0.50
-            y0     = 0.72 - row * 0.26
-            rect = FancyBboxPatch((x_base, y0 - 0.10), 0.04, 0.18,
+            y0     = 0.74 - row * row_h
+            rect = FancyBboxPatch((x_base, y0 - swatch / 2), 0.04, swatch,
                                   boxstyle='round,pad=0.01',
                                   facecolor=color, edgecolor=color, alpha=alpha,
                                   transform=ax_legend.transAxes, clip_on=False)
@@ -853,6 +861,7 @@ class HdrAoiEditor:
             H, W = img.shape[:2]
             self._image_width  = W
             self._image_height = H
+            self._reference_view_w = float(W)
             self._image_handle = self.ax.imshow(
                 img, origin='upper',
                 extent=[0, W, H, 0],
@@ -897,7 +906,7 @@ class HdrAoiEditor:
                     lH, lW = legend_img.shape[:2]
                     self.ax_legend.imshow(
                         legend_img, origin='upper',
-                        extent=[0, lW, lH, 0], aspect='equal',
+                        extent=[0, lW, lH, 0], aspect='auto',
                     )
                     self.ax_legend.set_xlim(0, lW)
                     self.ax_legend.set_ylim(lH, 0)
@@ -920,9 +929,7 @@ class HdrAoiEditor:
         """Draw all room polygons for the current view."""
         for i, room in enumerate(self.rooms):
             is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if self.show_all_floors:
-                self._draw_room_polygon(room, i, is_current_floor=is_current)
-            elif is_current:
+            if is_current:
                 self._draw_room_polygon(room, i, is_current_floor=True)
 
     def _draw_room_polygon(self, room: dict, idx: int, is_current_floor: bool):
@@ -937,21 +944,18 @@ class HdrAoiEditor:
         is_subroom  = room.get('parent') is not None
 
         if is_editing:
-            edge_color, face_color, alpha, lw, label_bg = 'cyan',    'cyan',    0.30, 3, 'cyan'
+            edge_color, lw = 'cyan',    3
         elif is_selected:
-            edge_color, face_color, alpha, lw, label_bg = 'yellow',  'yellow',  0.35, 4, 'orange'
+            edge_color, lw = 'yellow',  4
         elif is_hover and self.edit_mode:
-            edge_color, face_color, alpha, lw, label_bg = 'magenta', 'magenta', 0.20, 2, 'magenta'
+            edge_color, lw = 'magenta', 2
         elif is_current_floor:
-            if is_subroom:
-                edge_color, face_color, alpha, lw, label_bg = '#2196F3', '#2196F3', 0.30, 2, '#1976D2'
-            else:
-                edge_color, face_color, alpha, lw, label_bg = 'green',   'green',   0.25, 2, 'green'
+            edge_color, lw = 'red',     self._zoom_linewidth()
         else:
-            edge_color, face_color, alpha, lw, label_bg = 'gray', 'gray', 0.15, 1, 'gray'
+            edge_color, lw = 'gray',    self._zoom_linewidth(base=1.0)
 
         poly = Polygon(verts, closed=True,
-                       edgecolor=edge_color, facecolor=face_color, alpha=alpha, linewidth=lw,
+                       edgecolor=edge_color, facecolor='none', alpha=1.0, linewidth=lw,
                        clip_on=True)
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
@@ -996,10 +1000,8 @@ class HdrAoiEditor:
 
         label_text = self.ax.text(
             centroid[0], centroid[1], label,
-            color='white', fontsize=8 if is_current_floor else 7,
+            color='red', fontsize=self._zoom_fontsize(),
             ha='center', va='center', clip_on=True,
-            bbox=dict(boxstyle='round', facecolor=label_bg,
-                      alpha=0.7 if is_current_floor else 0.5),
         )
         label_text.set_clip_path(self.ax.patch)
         self.room_labels.append(label_text)
@@ -1009,7 +1011,7 @@ class HdrAoiEditor:
         """Update room colours without a full redraw (for hover/selection changes)."""
         for i, room in enumerate(self.rooms):
             is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if not is_current and not self.show_all_floors:
+            if not is_current:
                 continue
             patch = self._room_patch_cache.get(i)
             if patch is None:
@@ -1020,24 +1022,49 @@ class HdrAoiEditor:
             is_subroom  = room.get('parent') is not None
 
             if is_editing:
-                patch.set_edgecolor('cyan');    patch.set_facecolor('cyan');    patch.set_alpha(0.3);  patch.set_linewidth(3)
+                patch.set_edgecolor('cyan');    patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(3)
             elif is_selected:
-                patch.set_edgecolor('yellow');  patch.set_facecolor('yellow');  patch.set_alpha(0.35); patch.set_linewidth(4)
+                patch.set_edgecolor('yellow');  patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(4)
             elif is_hover and self.edit_mode:
-                patch.set_edgecolor('magenta'); patch.set_facecolor('magenta'); patch.set_alpha(0.2);  patch.set_linewidth(2)
+                patch.set_edgecolor('magenta'); patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(2)
             elif is_current:
-                if is_subroom:
-                    patch.set_edgecolor('#2196F3'); patch.set_facecolor('#2196F3'); patch.set_alpha(0.3); patch.set_linewidth(2)
-                else:
-                    patch.set_edgecolor('green');   patch.set_facecolor('green');   patch.set_alpha(0.25); patch.set_linewidth(2)
+                patch.set_edgecolor('red');     patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(self._zoom_linewidth())
             else:
-                patch.set_edgecolor('gray'); patch.set_facecolor('gray'); patch.set_alpha(0.15); patch.set_linewidth(1)
+                patch.set_edgecolor('gray');    patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(self._zoom_linewidth(base=1.0))
 
         self.fig.canvas.draw_idle()
 
     # -------------------------------------------------------------------------
     # Vertex snapping (snap to existing polygon vertices)
     # -------------------------------------------------------------------------
+
+    def _push_undo(self, room_idx: int):
+        """Push a snapshot of a room's vertices onto the undo stack."""
+        verts_copy = [list(v) for v in self.rooms[room_idx]['vertices']]
+        self._edit_undo_stack.append((room_idx, verts_copy))
+        if len(self._edit_undo_stack) > self._edit_undo_max:
+            self._edit_undo_stack.pop(0)
+
+    def _undo_edit(self):
+        """Restore the last undone vertex state (Ctrl+Z in edit mode)."""
+        if not self.edit_mode:
+            return
+        if not self._edit_undo_stack:
+            self._update_status("Nothing to undo", 'orange')
+            return
+        room_idx, verts_snapshot = self._edit_undo_stack.pop()
+        self.rooms[room_idx]['vertices'] = verts_snapshot
+        self.edit_vertex_idx     = None
+        self.edit_room_idx       = None
+        self.edit_edge_room_idx  = None
+        self.edit_edge_idx       = None
+        self.edit_edge_start     = None
+        room_name = self.rooms[room_idx].get('name', 'unnamed')
+        remaining = len(self._edit_undo_stack)
+        self._update_status(
+            f"Undid change to '{room_name}' ({remaining} undo{'s' if remaining != 1 else ''} left)", 'blue')
+        self._save_session()
+        self._render_section(force_full=True)
 
     def _snap_to_vertex(self, x: float, y: float) -> tuple:
         """Snap to nearest existing polygon vertex within snap_distance_px pixels."""
@@ -1079,6 +1106,7 @@ class HdrAoiEditor:
             if self.edit_mode and self.hover_vertex_idx is not None and self.hover_room_idx is not None:
                 room = self.rooms[self.hover_room_idx]
                 if len(room['vertices']) > 3:
+                    self._push_undo(self.hover_room_idx)
                     room['vertices'].pop(self.hover_vertex_idx)
                     rname = room.get('name', 'unnamed')
                     self.hover_vertex_idx = None
@@ -1096,6 +1124,7 @@ class HdrAoiEditor:
         if event.button == 1 and self.edit_mode and event.xdata is not None and event.ydata is not None:
             if self.hover_vertex_idx is not None and self.hover_room_idx is not None:
                 # Begin vertex drag
+                self._push_undo(self.hover_room_idx)
                 self.edit_room_idx   = self.hover_room_idx
                 self.edit_vertex_idx = self.hover_vertex_idx
                 room_name = self.rooms[self.edit_room_idx].get('name', 'unnamed')
@@ -1106,6 +1135,7 @@ class HdrAoiEditor:
             if self.hover_edge_room_idx is not None and self.hover_edge_idx is not None and self.hover_edge_point is not None:
                 if event.key == 'shift':
                     # Shift+click: begin edge drag (move both endpoints together)
+                    self._push_undo(self.hover_edge_room_idx)
                     self.edit_edge_room_idx = self.hover_edge_room_idx
                     self.edit_edge_idx      = self.hover_edge_idx
                     self.edit_edge_start    = (event.xdata, event.ydata)
@@ -1113,6 +1143,7 @@ class HdrAoiEditor:
                     self._update_status(f"Dragging edge in '{room_name}'", 'cyan')
                     return
                 # Click: insert new vertex on edge
+                self._push_undo(self.hover_edge_room_idx)
                 room  = self.rooms[self.hover_edge_room_idx]
                 j     = self.hover_edge_idx
                 room['vertices'].insert(j + 1, list(self.hover_edge_point))
@@ -1256,7 +1287,7 @@ class HdrAoiEditor:
 
         for i, room in enumerate(self.rooms):
             is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if not self.show_all_floors and not is_current:
+            if not is_current:
                 continue
             verts = np.array(room['vertices'])
             distances = np.hypot(verts[:, 0] - x, verts[:, 1] - y)
@@ -1294,7 +1325,7 @@ class HdrAoiEditor:
 
             for i, room in enumerate(self.rooms):
                 is_current = (room.get('hdr_file') == self.current_hdr_name)
-                if not self.show_all_floors and not is_current:
+                if not is_current:
                     continue
                 verts = room['vertices']
                 n     = len(verts)
@@ -1348,8 +1379,6 @@ class HdrAoiEditor:
             self._on_next_hdr_click(None)
         elif event.key == 'down':
             self._on_prev_hdr_click(None)
-        elif event.key == 'a':
-            self._on_show_all_toggle(None)
         elif event.key == 't':
             self._on_image_toggle_click(None)
         elif event.key == 'e':
@@ -1358,6 +1387,8 @@ class HdrAoiEditor:
             self.ortho_mode = not self.ortho_mode
             state = "ON" if self.ortho_mode else "OFF"
             self._update_status(f"Orthogonal mode: {state}", 'blue')
+        elif event.key == 'ctrl+z':
+            self._undo_edit()
 
     def _on_scroll(self, event):
         """Handle scroll wheel for zooming or room list scrolling."""
@@ -1384,6 +1415,9 @@ class HdrAoiEditor:
         rely   = (ydata - ylim[0]) / (ylim[1] - ylim[0])
         self.ax.set_xlim([xdata - new_w * relx,   xdata + new_w * (1 - relx)])
         self.ax.set_ylim([ydata - new_h * rely,   ydata + new_h * (1 - rely)])
+        self._apply_zoom_linewidths()
+        self._apply_zoom_fontsizes()
+
         now = time.monotonic()
         if now - getattr(self, '_last_scroll_draw', 0.0) >= 0.033:
             self._last_scroll_draw = now
@@ -1432,7 +1466,7 @@ class HdrAoiEditor:
             return
         for i, room in enumerate(self.rooms):
             is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if not self.show_all_floors and not is_current:
+            if not is_current:
                 continue
             verts = np.array(room['vertices'])
             if MplPath(verts).contains_point((x, y)):
@@ -1618,10 +1652,62 @@ class HdrAoiEditor:
         print(f"Deleted room '{name}'")
         self._save_session()
 
+    def _view_ratio(self) -> float:
+        """Return view_w / image_width. 1.0 = fully zoomed out, <1 = zoomed in."""
+        if self._image_width <= 1:
+            return 1.0
+        view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        return max(0.01, view_w / self._image_width)
+
+    def _zoom_fontsize(self, base: float = 8.0) -> float:
+        """Return font size scaled relative to the default (full-image) zoom.
+
+        At default zoom returns base. Scales down when zoomed out further,
+        scales up when zoomed in. Clamps to [4, 20].
+        """
+        if self._reference_view_w <= 1:
+            return base
+        view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        scale  = self._reference_view_w / max(view_w, 1.0)
+        return max(4.0, min(20.0, base * scale))
+
+    def _apply_zoom_fontsizes(self):
+        """Reapply zoom-dependent font sizes to all cached room labels."""
+        fs = self._zoom_fontsize()
+        for label in self._room_label_cache.values():
+            if label is not None:
+                label.set_fontsize(fs)
+
+    def _zoom_linewidth(self, base: float = 1.5) -> float:
+        """Return linewidth that stays visually constant regardless of zoom.
+
+        Scales proportionally with view_ratio so the line appears the same
+        screen thickness at all zoom levels. Clamps to [0.3, base].
+        """
+        lw = base * self._view_ratio()
+        return max(0.3, min(base, lw))
+
+    def _apply_zoom_linewidths(self):
+        """Reapply zoom-dependent linewidths to all cached room patches."""
+        for i, room in enumerate(self.rooms):
+            patch = self._room_patch_cache.get(i)
+            if patch is None:
+                continue
+            ec = patch.get_edgecolor()
+            r, g, b = ec[0], ec[1], ec[2]
+            # Only scale red and gray patches; leave cyan/yellow/magenta fixed
+            if np.allclose([r, g, b], [1, 0, 0]):
+                patch.set_linewidth(self._zoom_linewidth())
+            elif np.allclose([r, g, b], [0.5, 0.5, 0.5], atol=0.1):
+                patch.set_linewidth(self._zoom_linewidth(base=1.0))
+
+
     def _on_reset_zoom_click(self, event):
         """Reset zoom to the full image extent."""
         self.ax.set_xlim(0, self._image_width)
         self.ax.set_ylim(self._image_height, 0)
+        self._apply_zoom_linewidths()
+        self._apply_zoom_fontsizes()
         self.fig.canvas.draw_idle()
 
     def _on_edit_mode_toggle(self, event):
@@ -1631,6 +1717,7 @@ class HdrAoiEditor:
             'Edit Mode: ON (Press E)' if self.edit_mode else 'Edit Mode: OFF (Press E)')
 
         if self.edit_mode:
+            self._edit_undo_stack.clear()
             if hasattr(self, 'selector'):
                 self.selector.set_active(False)
             self._update_status("Edit Mode: Hover over any vertex to drag (all rooms editable)", 'cyan')
@@ -1642,6 +1729,7 @@ class HdrAoiEditor:
             self.hover_edge_room_idx = None
             self.hover_edge_idx      = None
             self.hover_edge_point    = None
+            self._edit_undo_stack.clear()
             self._save_session()
             self._create_polygon_selector()
             self._update_status("Edit Mode OFF - Draw mode enabled", 'blue')
@@ -1657,13 +1745,6 @@ class HdrAoiEditor:
         self._render_section(force_full=True)
         self._create_polygon_selector()
 
-    def _on_show_all_toggle(self, event):
-        """Toggle showing rooms from all HDR files vs current only."""
-        self.show_all_floors = not self.show_all_floors
-        status = "all HDR files" if self.show_all_floors else "current HDR only"
-        self._update_status(f"Showing rooms from {status}", 'blue')
-        self._render_section(force_full=True)
-        self._create_polygon_selector()
 
     # -------------------------------------------------------------------------
     # Status and room list display
