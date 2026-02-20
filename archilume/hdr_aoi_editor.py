@@ -105,6 +105,7 @@ class HdrAoiEditor:
         self._snap_distance_px:     float               = 10.0
         self.current_vertices:      np.ndarray          = np.array([])
         self.ortho_mode:            bool                = True
+        self._pending_snap:         Optional[tuple]     = None
 
         # Visualization options
         self.show_all_floors:       bool                = False
@@ -118,6 +119,9 @@ class HdrAoiEditor:
         self.hover_edge_room_idx:   Optional[int]       = None
         self.hover_edge_idx:        Optional[int]       = None
         self.hover_edge_point:      Optional[tuple]     = None
+        self.edit_edge_room_idx:    Optional[int]       = None
+        self.edit_edge_idx:         Optional[int]       = None
+        self.edit_edge_start:       Optional[tuple]     = None
 
         # Parent apartment selection
         self.selected_parent:       Optional[str]       = None
@@ -1100,7 +1104,15 @@ class HdrAoiEditor:
                 return
 
             if self.hover_edge_room_idx is not None and self.hover_edge_idx is not None and self.hover_edge_point is not None:
-                # Insert new vertex on edge
+                if event.key == 'shift':
+                    # Shift+click: begin edge drag (move both endpoints together)
+                    self.edit_edge_room_idx = self.hover_edge_room_idx
+                    self.edit_edge_idx      = self.hover_edge_idx
+                    self.edit_edge_start    = (event.xdata, event.ydata)
+                    room_name = self.rooms[self.edit_edge_room_idx].get('name', 'unnamed')
+                    self._update_status(f"Dragging edge in '{room_name}'", 'cyan')
+                    return
+                # Click: insert new vertex on edge
                 room  = self.rooms[self.hover_edge_room_idx]
                 j     = self.hover_edge_idx
                 room['vertices'].insert(j + 1, list(self.hover_edge_point))
@@ -1114,7 +1126,7 @@ class HdrAoiEditor:
                 return
             return  # click on empty space in edit mode
 
-        # Left-click: apply ortho constraint + vertex snap, then let selector handle it
+        # Left-click in draw mode: store snapped position for correction on release
         if event.button == 1 and not self.edit_mode and event.xdata is not None and event.ydata is not None:
             x, y = event.xdata, event.ydata
 
@@ -1129,13 +1141,23 @@ class HdrAoiEditor:
 
             x, y = self._snap_to_pixel(x, y)
             snapped_x, snapped_y = self._snap_to_vertex(x, y)
-            event.xdata = snapped_x
-            event.ydata = snapped_y
+            self._pending_snap = (snapped_x, snapped_y)
 
     def _on_button_release(self, event):
-        """Handle mouse button release (end of drag)."""
+        """Handle mouse button release (end of drag, or snap correction)."""
         if event.inaxes != self.ax:
             return
+
+        # Correct the vertex the PolygonSelector just placed with our snapped position
+        if (event.button == 1 and not self.edit_mode
+                and hasattr(self, '_pending_snap') and self._pending_snap is not None):
+            sx, sy = self._pending_snap
+            self._pending_snap = None
+            # _xys[-1] is the cursor tracking point; the just-added vertex is [-2]
+            if len(self.selector._xys) >= 2 and not self.selector._selection_completed:
+                self.selector._xys[-2] = (sx, sy)
+                self.selector._draw_polygon()
+
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             room = self.rooms[self.edit_room_idx]
             current_pos = room['vertices'][self.edit_vertex_idx]
@@ -1147,6 +1169,23 @@ class HdrAoiEditor:
             self._save_session()
             room_name = room.get('name', 'unnamed')
             self._update_status(f"Moved vertex in '{room_name}'", 'green')
+            self._render_section(force_full=True)
+            self._create_polygon_selector()
+
+        if self.edit_edge_room_idx is not None and self.edit_edge_idx is not None:
+            room = self.rooms[self.edit_edge_room_idx]
+            j  = self.edit_edge_idx
+            j2 = (j + 1) % len(room['vertices'])
+            # Snap both endpoints to pixel centre
+            for vi in (j, j2):
+                px, py = self._snap_to_pixel(room['vertices'][vi][0], room['vertices'][vi][1])
+                room['vertices'][vi] = [float(px), float(py)]
+            self.edit_edge_room_idx = None
+            self.edit_edge_idx      = None
+            self.edit_edge_start    = None
+            self._save_session()
+            room_name = room.get('name', 'unnamed')
+            self._update_status(f"Moved edge in '{room_name}'", 'green')
             self._render_section(force_full=True)
             self._create_polygon_selector()
 
@@ -1167,6 +1206,30 @@ class HdrAoiEditor:
                 label = self._room_label_cache.get(self.edit_room_idx)
                 if label is not None:
                     centroid = np.array(self.rooms[self.edit_room_idx]['vertices']).mean(axis=0)
+                    label.set_position((centroid[0], centroid[1]))
+                self.fig.canvas.draw_idle()
+            else:
+                self._render_section(force_full=True)
+            return
+
+        # Edge dragging — move both endpoints by the same delta
+        if self.edit_edge_room_idx is not None and self.edit_edge_idx is not None:
+            dx = x - self.edit_edge_start[0]
+            dy = y - self.edit_edge_start[1]
+            room = self.rooms[self.edit_edge_room_idx]
+            j  = self.edit_edge_idx
+            j2 = (j + 1) % len(room['vertices'])
+            room['vertices'][j][0]  += dx
+            room['vertices'][j][1]  += dy
+            room['vertices'][j2][0] += dx
+            room['vertices'][j2][1] += dy
+            self.edit_edge_start = (x, y)
+            patch = self._room_patch_cache.get(self.edit_edge_room_idx)
+            if patch is not None:
+                patch.set_xy(room['vertices'])
+                label = self._room_label_cache.get(self.edit_edge_room_idx)
+                if label is not None:
+                    centroid = np.array(room['vertices']).mean(axis=0)
                     label.set_position((centroid[0], centroid[1]))
                 self.fig.canvas.draw_idle()
             else:
@@ -1252,7 +1315,7 @@ class HdrAoiEditor:
                 self.hover_edge_idx      = best_edge_idx
                 self.hover_edge_point    = best_edge_point
                 if changed:
-                    self._update_status("Click on edge to insert vertex", 'blue')
+                    self._update_status("Click to insert vertex, Shift+click to drag edge", 'blue')
                     self._render_section()
             else:
                 if self.hover_edge_room_idx is not None:
