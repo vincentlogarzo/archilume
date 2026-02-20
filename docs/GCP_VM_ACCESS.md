@@ -110,7 +110,7 @@ sudo blkid /dev/nvme0n1
 
 # Add entry to /etc/fstab for automatic mounting
 # Replace UUID_VALUE with the actual UUID from the blkid command
-echo "UUID=UUID_VALUE /mnt/disks/localssd ext4 discard,nofail 0 2" | sudo tee -a /etc/fstab
+echo "UUID=0466be6c-2217-42fb-9d0c-9587ce84812d /mnt/disks/localssd ext4 discard,nofail 0 2" | sudo tee -a /etc/fstab
 
 # Verify fstab entry is correct (this will fail safely if there's an error)
 sudo mount -a
@@ -153,8 +153,9 @@ bash .devcontainer/setup.sh
 # Source bashrc to update PATH
 source ~/.bashrc
 
-# Optional: Create a symlink in home directory for convenience
-ln -s /mnt/disks/localssd/workspace/archilume ~/archilume
+# in vs code open folder and post this into the input. 
+/mnt/disks/localssd/workspace/archilume
+
 ```
 
 This will automatically install:
