@@ -38,6 +38,7 @@ Workflow:
 import csv
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
@@ -50,7 +51,8 @@ from matplotlib.path import Path as MplPath
 import numpy as np
 
 # Archilume imports
-from archilume import config
+from archilume import config, utils
+from archilume.hdr2wpd import Hdr2Wpd
 
 
 class HdrAoiEditor:
@@ -141,11 +143,19 @@ class HdrAoiEditor:
         # Cached matplotlib artists for incremental rendering
         self._room_patch_cache                          = {}
         self._room_label_cache                          = {}
+        self._df_text_cache:        list                = []
         self._edit_vertex_scatter                       = None
         self._last_view_mode                            = None
         self._last_hover_check                          = 0.0
         self._image_handle                              = None
         self.ax_legend                                  = None
+
+        # Daylight factor analysis
+        self.df_thresholds:         List[float]         = [0.5, 1.0, 1.5]
+        self._df_image:             Optional[np.ndarray]= None   # (H, W) DF% for current HDR
+        self._df_image_cache:       dict                = {}     # hdr_path_str → np.ndarray
+        self._room_df_results:      dict                = {}     # room_idx → list of result strings
+        self._hdr2wpd:              Optional[Hdr2Wpd]   = None
 
     # -------------------------------------------------------------------------
     # Layout helper — top-left coordinate system
@@ -337,14 +347,33 @@ class HdrAoiEditor:
     # Launch
     # -------------------------------------------------------------------------
 
+    _WINDOW_TITLE = "Archilume - HDR AOI Editor"
+
     def launch(self):
         """Open the interactive editor window."""
         if not self.hdr_files:
             raise FileNotFoundError(f"No .hdr files found in {self.image_dir}")
 
+        # Close any previous editor window that was left open
+        for fig_num in plt.get_fignums():
+            fig = plt.figure(fig_num)
+            if getattr(fig, '_archilume_editor', False):
+                plt.close(fig)
+
+        # Initialise daylight factor analysis (Phase 3 from daylight_workflow_iesve)
+        try:
+            coordinate_map_path = utils.create_pixel_to_world_coord_map(self.image_dir)
+            self._hdr2wpd = Hdr2Wpd(pixel_to_world_map=coordinate_map_path)
+            print(f"DF analysis ready (area_per_pixel={self._hdr2wpd.area_per_pixel} m2)")
+        except Exception as exc:
+            print(f"Warning: DF analysis unavailable ({exc}). Results will not be shown.")
+            self._hdr2wpd = None
+
         # Setup matplotlib figure — wide to match ~2.6:1 floor plan aspect ratio
         plt.rcParams['savefig.directory'] = str(self.image_dir)
         self.fig = plt.figure(figsize=(20, 8), facecolor='#F5F5F0')
+        self.fig._archilume_editor = True
+        self.fig.canvas.manager.set_window_title(self._WINDOW_TITLE)
         self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.05)
 
         # Maximise window
@@ -403,7 +432,7 @@ class HdrAoiEditor:
 
         print("\n=== HDR Boundary Editor ===")
         print(f"Loaded {len(self.hdr_files)} HDR file(s) from {self.image_dir}")
-        print("Use ↑/↓ to navigate HDR files, 't' to toggle image variant.")
+        print("Use Up/Down to navigate HDR files, 't' to toggle image variant.")
         print("Scroll: zoom | Right-click: select room | s: save | d: delete | q: quit")
         print("===========================\n")
         plt.show()
@@ -537,6 +566,26 @@ class HdrAoiEditor:
             btn.on_clicked(cb)
             setattr(self, attr, btn)
 
+        # ── DF Thresholds (%) ────────────────────────────────────────────────
+        df_y  = 0.21
+        df_lbl_w = 0.06
+        df_inp_w = 0.10
+        df_btn_w = 0.025
+
+        ax_df_lbl = self._axes(pl, df_y, df_lbl_w + df_inp_w, lbl_h)
+        ax_df_lbl.axis('off')
+        ax_df_lbl.text(0, 0.5, "DF Thresholds (%):", fontsize=9, fontweight='bold', color='#404040')
+
+        df_refresh_w = 0.06
+        ax_df_input = self._axes(pl, df_y + lbl_h + gap, df_inp_w, input_h)
+        self.df_textbox = TextBox(ax_df_input, '', initial=', '.join(f'{t:g}' for t in self.df_thresholds))
+        self.df_textbox.on_submit(self._on_df_thresholds_submit)
+
+        ax_df_refresh = self._axes(pl + df_inp_w + 0.004, df_y + lbl_h + gap, df_refresh_w, input_h)
+        self.btn_df_refresh = Button(ax_df_refresh, 'Refresh', color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_df_refresh.label.set_fontsize(7)
+        self.btn_df_refresh.on_clicked(self._on_df_refresh)
+
         # ── Saved rooms list ─────────────────────────────────────────────────
         list_w    = pw / 3
         list_hdr_y = 0.31
@@ -554,12 +603,22 @@ class HdrAoiEditor:
             spine.set_edgecolor('#CCCCCC')
             spine.set_linewidth(0.5)
 
-        # ── Bottom strip: Toggle Image | Edit Mode | Reset Zoom ──────────────
+        # ── Export progress bar (hidden until export starts) ────────────────
+        self.ax_progress = self._axes(0.35, 0.935, 0.63, 0.014)
+        self.ax_progress.set_xlim(0, 1)
+        self.ax_progress.set_ylim(0, 1)
+        self.ax_progress.axis('off')
+        self.ax_progress.set_visible(False)
+        self._progress_bar_patch = None
+        self._progress_text = None
+
+        # ── Bottom strip: Toggle Image | Edit Mode | Reset Zoom | Export Report
         btm_x = 0.35
         btm_w = 0.63
         btm_h = 0.030
         btm_y = 0.955
-        btn_w = (btm_w - 2 * gap) / 3
+        n_btm = 4
+        btn_w = (btm_w - (n_btm - 1) * gap) / n_btm
 
         ax_toggle = self._axes(btm_x, btm_y, btn_w, btm_h)
         self.btn_image_toggle = Button(ax_toggle, 'Image: HDR (T)',
@@ -567,7 +626,7 @@ class HdrAoiEditor:
         self.btn_image_toggle.label.set_fontsize(8)
         self.btn_image_toggle.on_clicked(self._on_image_toggle_click)
 
-        ax_edit = self._axes(btm_x + btn_w + gap, btm_y, btn_w, btm_h)
+        ax_edit = self._axes(btm_x + (btn_w + gap), btm_y, btn_w, btm_h)
         self.btn_edit_mode = Button(ax_edit, 'Edit Mode: OFF (Press E)',
                                     color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_edit_mode.label.set_fontsize(8)
@@ -578,6 +637,12 @@ class HdrAoiEditor:
                                      color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_reset_zoom.label.set_fontsize(8)
         self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
+
+        ax_export = self._axes(btm_x + 3 * (btn_w + gap), btm_y, btn_w, btm_h)
+        self.btn_export = Button(ax_export, 'Export Report',
+                                 color='#C8E6C9', hovercolor='#A5D6A7')
+        self.btn_export.label.set_fontsize(8)
+        self.btn_export.on_clicked(self._on_export_report)
 
         # ── Legend (colour key) — bottom of the side panel ───────────────────
         ax_legend = self._axes(pl, 0.89, pw / 3, 0.10)
@@ -665,7 +730,7 @@ class HdrAoiEditor:
                 y_pos = 0.95 - (display_idx * 0.12)
                 is_current = (self.current_hdr_idx == i)
                 room_count = sum(1 for r in self.rooms if r.get('hdr_file') == name)
-                indicator  = "●" if is_current else "○"
+                indicator  = "*" if is_current else "o"
                 text       = f"{indicator} {name}"
                 if room_count > 0:
                     text += f" ({room_count})"
@@ -827,6 +892,26 @@ class HdrAoiEditor:
         self.fig.canvas.draw_idle()
 
     # -------------------------------------------------------------------------
+    # DF threshold controls
+    # -------------------------------------------------------------------------
+
+    def _on_df_thresholds_submit(self, text):
+        """Parse comma-separated DF thresholds from the text box and refresh."""
+        try:
+            values = [float(v.strip()) for v in text.split(',') if v.strip()]
+            if values:
+                self.df_thresholds = sorted(values)
+        except ValueError:
+            self._update_status("Invalid DF thresholds - use comma-separated numbers", 'red')
+            return
+        self._compute_all_room_df_results()
+        self._render_section(force_full=True)
+
+    def _on_df_refresh(self, event):
+        """Re-parse thresholds from the text box and refresh DF results on screen."""
+        self._on_df_thresholds_submit(self.df_textbox.text)
+
+    # -------------------------------------------------------------------------
     # Rendering
     # -------------------------------------------------------------------------
 
@@ -847,6 +932,7 @@ class HdrAoiEditor:
         self.ax.clear()
         self._room_patch_cache.clear()
         self._room_label_cache.clear()
+        self._df_text_cache.clear()
         self._edit_vertex_scatter = None
         self._image_handle = None
 
@@ -880,6 +966,10 @@ class HdrAoiEditor:
             if room.get('hdr_file') == self.current_hdr_name:
                 all_verts.extend(room['vertices'])
         self.current_vertices = np.array(all_verts) if all_verts else np.array([])
+
+        # Load DF image for current HDR (cached)
+        self._load_current_df_image()
+        self._compute_all_room_df_results()
 
         # Draw room polygons
         self.room_patches.clear()
@@ -921,9 +1011,43 @@ class HdrAoiEditor:
         hdr_name = self.current_hdr_name or "(no HDR)"
         variant  = self.current_variant_path
         variant_label = variant.stem if variant else ""
-        self.ax.set_title(f"{hdr_name}  ·  {variant_label}", fontsize=11, fontweight='bold')
+        self.ax.set_title(f"{hdr_name}  -  {variant_label}", fontsize=11, fontweight='bold')
 
         self.fig.canvas.draw_idle()
+
+    def _load_current_df_image(self):
+        """Load the DF% image for the current HDR file (cached)."""
+        if self._hdr2wpd is None or not self.hdr_files:
+            self._df_image = None
+            return
+        hdr_path = self.hdr_files[self.current_hdr_idx]['hdr_path']
+        key = str(hdr_path)
+        if key in self._df_image_cache:
+            self._df_image = self._df_image_cache[key]
+            return
+        self._df_image = Hdr2Wpd.load_df_image(hdr_path)
+        if self._df_image is not None:
+            self._df_image_cache[key] = self._df_image
+
+    def _compute_all_room_df_results(self):
+        """Compute DF threshold results for every room on the current HDR floor."""
+        self._room_df_results.clear()
+        if self._df_image is None or self._hdr2wpd is None:
+            return
+        for i, room in enumerate(self.rooms):
+            if room.get('hdr_file') != self.current_hdr_name:
+                continue
+            verts = room['vertices']
+            if len(verts) < 3:
+                continue
+            result = self._hdr2wpd.compute_df_for_polygon(
+                self._df_image, verts, tuple(self.df_thresholds))
+            total_area = result['total_area_m2']
+            lines = []
+            for tr in result['thresholds']:
+                pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
+                lines.append(f"{tr['area_m2']:.1f} m\u00b2 ({pct:.0f}%) @ {tr['threshold']:g}%")
+            self._room_df_results[i] = lines
 
     def _draw_all_room_polygons(self):
         """Draw all room polygons for the current view."""
@@ -1006,6 +1130,23 @@ class HdrAoiEditor:
         label_text.set_clip_path(self.ax.patch)
         self.room_labels.append(label_text)
         self._room_label_cache[idx] = label_text
+
+        # DF results as smaller subtext below the room name
+        df_lines = self._room_df_results.get(idx, [])
+        if df_lines and is_current_floor:
+            line_step = self._df_line_step()
+            for line_i, line in enumerate(df_lines):
+                dy = (line_i + 1) * line_step
+                df_text = self.ax.text(
+                    centroid[0], centroid[1] + dy, line,
+                    color='red', fontsize=self._zoom_fontsize(base=6.5),
+                    ha='center', va='center', clip_on=True, alpha=0.85,
+                )
+                df_text.set_clip_path(self.ax.patch)
+                # Store centroid + line index for zoom repositioning
+                df_text._df_centroid = centroid
+                df_text._df_line_i  = line_i
+                self._df_text_cache.append(df_text)
 
     def _update_room_visuals(self):
         """Update room colours without a full redraw (for hover/selection changes)."""
@@ -1525,7 +1666,7 @@ class HdrAoiEditor:
             np.dot([v[0] for v in vertices], np.roll([v[1] for v in vertices], 1))
             - np.dot([v[1] for v in vertices], np.roll([v[0] for v in vertices], 1))
         )
-        self._update_status(f"Polygon ready: {len(vertices)} pts, {area:.0f} px²", 'green')
+        self._update_status(f"Polygon ready: {len(vertices)} pts, {area:.0f} px2", 'green')
 
     # -------------------------------------------------------------------------
     # Button callbacks
@@ -1671,12 +1812,26 @@ class HdrAoiEditor:
         scale  = self._reference_view_w / max(view_w, 1.0)
         return max(4.0, min(20.0, base * scale))
 
+    def _df_line_step(self) -> float:
+        """Return zoom-aware vertical spacing (in data coords) between DF result lines."""
+        view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
+        return view_w * 0.025
+
     def _apply_zoom_fontsizes(self):
-        """Reapply zoom-dependent font sizes to all cached room labels."""
+        """Reapply zoom-dependent font sizes to all cached room labels and DF text."""
         fs = self._zoom_fontsize()
         for label in self._room_label_cache.values():
             if label is not None:
                 label.set_fontsize(fs)
+        fs_df = self._zoom_fontsize(base=6.5)
+        line_step = self._df_line_step()
+        for dt in self._df_text_cache:
+            dt.set_fontsize(fs_df)
+            # Reposition based on current zoom-aware line step
+            centroid = getattr(dt, '_df_centroid', None)
+            line_i   = getattr(dt, '_df_line_i', None)
+            if centroid is not None and line_i is not None:
+                dt.set_position((centroid[0], centroid[1] + (line_i + 1) * line_step))
 
     def _zoom_linewidth(self, base: float = 1.5) -> float:
         """Return linewidth that stays visually constant regardless of zoom.
@@ -1926,6 +2081,222 @@ class HdrAoiEditor:
     # -------------------------------------------------------------------------
     # Export
     # -------------------------------------------------------------------------
+
+    def _show_progress(self, fraction: float, label: str = ""):
+        """Update the export progress bar (0.0–1.0) and optional label."""
+        if not hasattr(self, 'ax_progress'):
+            return
+        self.ax_progress.clear()
+        self.ax_progress.set_xlim(0, 1)
+        self.ax_progress.set_ylim(0, 1)
+        self.ax_progress.axis('off')
+
+        # Background track
+        self.ax_progress.add_patch(FancyBboxPatch(
+            (0, 0.1), 1.0, 0.8, boxstyle='round,pad=0.02',
+            facecolor='#E0E0E0', edgecolor='#CCCCCC', linewidth=0.5,
+        ))
+        # Filled portion
+        if fraction > 0:
+            self.ax_progress.add_patch(FancyBboxPatch(
+                (0, 0.1), max(0.01, min(fraction, 1.0)), 0.8,
+                boxstyle='round,pad=0.02',
+                facecolor='#4CAF50', edgecolor='none',
+            ))
+        # Label
+        display = label or f"{fraction * 100:.0f}%"
+        self.ax_progress.text(
+            0.5, 0.5, display, fontsize=7, color='#333333',
+            ha='center', va='center', fontweight='bold',
+        )
+        self.ax_progress.set_visible(True)
+
+    def _hide_progress(self):
+        """Hide the export progress bar."""
+        if hasattr(self, 'ax_progress'):
+            self.ax_progress.set_visible(False)
+
+    def _on_export_report(self, event):
+        """Export .aoi files for all rooms, generate .wpd files, and produce Excel report.
+
+        The heavy work (pvalue, rasterisation, Excel) runs in a background
+        thread so the UI stays responsive.  A matplotlib timer polls for
+        completion and updates the progress bar.
+        """
+        if self._hdr2wpd is None:
+            self._update_status("Export unavailable - DF analysis not initialised", 'red')
+            return
+        if not self.rooms:
+            self._update_status("No rooms to export", 'red')
+            return
+        if getattr(self, '_export_thread', None) and self._export_thread.is_alive():
+            self._update_status("Export already in progress...", 'orange')
+            return
+
+        # Phase 1 (fast, main thread): write .aoi files and clear stale .wpd
+        try:
+            n_aoi = self._export_rooms_as_aoi_files()
+            wpd_dir = config.WPD_DIR
+            if wpd_dir.exists():
+                for wpd_file in wpd_dir.glob('*.wpd'):
+                    wpd_file.unlink()
+        except Exception as exc:
+            self._update_status(f"Export failed writing .aoi: {exc}", 'red')
+            return
+
+        self._update_status(f"Exporting {n_aoi} rooms...", 'orange')
+        self.btn_export.label.set_text('Exporting...')
+        self._show_progress(0.0, f"0 / {n_aoi} rooms")
+        self.fig.canvas.draw_idle()
+
+        # Shared progress state updated by background thread
+        progress = {'done': 0, 'total': n_aoi, 'phase': 'wpd', 'error': None}
+
+        def _run():
+            try:
+                # --- WPD generation (per-room progress) ---
+                hdr_files, aoi_files = self._hdr2wpd._scan_directories()
+                if hdr_files and aoi_files:
+                    view_groups = self._hdr2wpd._group_aoi_by_view(aoi_files, hdr_files)
+                    # Count total AOIs across all groups
+                    total_aois = sum(len(g['aoi_files']) for g in view_groups.values())
+                    progress['total'] = max(total_aois, 1)
+                    processed = 0
+                    for view_name, group in view_groups.items():
+                        aoi_list, hdr_list = group['aoi_files'], group['hdr_files']
+                        if not aoi_list or not hdr_list:
+                            continue
+                        # Process this view group (creates .wpd files)
+                        self._hdr2wpd._process_daylight_view_groups({view_name: group})
+                        processed += len(aoi_list)
+                        progress['done'] = processed
+
+                # --- Excel report ---
+                progress['phase'] = 'excel'
+                self._hdr2wpd._generate_daylight_excel_report(
+                    df_thresholds=tuple(self.df_thresholds))
+                progress['phase'] = 'done'
+            except Exception as exc:
+                progress['error'] = exc
+
+        self._export_thread = threading.Thread(target=_run, daemon=True)
+        self._export_thread.start()
+
+        # Poll every 300 ms — update progress bar on the main thread
+        def _check_progress():
+            total = max(progress['total'], 1)
+            done  = progress['done']
+            phase = progress['phase']
+
+            if self._export_thread.is_alive():
+                if phase == 'excel':
+                    self._show_progress(0.95, "Generating Excel report...")
+                else:
+                    frac = done / total * 0.9  # reserve last 10% for Excel
+                    self._show_progress(frac, f"{done} / {total} rooms")
+                self.fig.canvas.draw_idle()
+                return  # timer fires again
+
+            # Thread finished
+            self._export_poll_timer.stop()
+            if progress['error']:
+                self._update_status(f"Export failed: {progress['error']}", 'red')
+                print(f"Export error: {progress['error']}")
+                self._show_progress(1.0, "Export failed")
+            else:
+                self._update_status(f"Export complete - {n_aoi} rooms -> Excel report", 'green')
+                self._show_progress(1.0, "Export complete")
+            self.btn_export.label.set_text('Export Report')
+            self.fig.canvas.draw_idle()
+
+            # Auto-hide progress bar after 4 seconds
+            hide_timer = self.fig.canvas.new_timer(interval=4000)
+            hide_timer.single_shot = True
+            hide_timer.add_callback(lambda: (self._hide_progress(), self.fig.canvas.draw_idle()))
+            hide_timer.start()
+
+        self._export_poll_timer = self.fig.canvas.new_timer(interval=300)
+        self._export_poll_timer.add_callback(_check_progress)
+        self._export_poll_timer.start()
+
+    def _export_rooms_as_aoi_files(self) -> int:
+        """Write editor rooms as .aoi files compatible with Hdr2Wpd.
+
+        Each .aoi file follows the standard format with headers that
+        Hdr2Wpd._group_aoi_by_view() and _process_daylight_view_groups()
+        expect. Pixel→world conversion uses the coordinate map header.
+
+        Returns:
+            Number of .aoi files written.
+        """
+        # Parse pixel→world mapping parameters from the coordinate map header
+        coord_map_path = self.aoi_dir / "pixel_to_world_coordinate_map.txt"
+        vp_x = vp_y = vh = vv = 0.0
+        img_w = img_h = 1
+        if coord_map_path.exists():
+            with open(coord_map_path, 'r') as f:
+                header_lines = [f.readline() for _ in range(4)]
+            # Line 0: # VIEW: VIEW= -vtl v -vp X Y Z ... -vh VH -vv VV
+            view_line = header_lines[0]
+            vp_match = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', view_line)
+            if vp_match:
+                vp_x, vp_y = float(vp_match.group(1)), float(vp_match.group(2))
+            vh_match = re.search(r'-vh\s+([\d.-]+)', view_line)
+            vv_match = re.search(r'-vv\s+([\d.-]+)', view_line)
+            if vh_match:
+                vh = float(vh_match.group(1))
+            if vv_match:
+                vv = float(vv_match.group(1))
+            # Line 1: # Image dimensions in pixels: width=W, height=H
+            dim_line = header_lines[1]
+            img_w = int(dim_line.split('width=')[1].split(',')[0])
+            img_h = int(dim_line.split('height=')[1])
+
+        self.aoi_dir.mkdir(parents=True, exist_ok=True)
+        count = 0
+
+        for room in self.rooms:
+            name     = room.get('name', 'unnamed')
+            hdr_name = room.get('hdr_file', '')
+            verts    = room['vertices']
+            if len(verts) < 3:
+                continue
+
+            # Derive associated view file from HDR name (e.g. model_plan_ffl_25300 → plan_ffl_25300.vp)
+            ffl_match = re.search(r'plan_ffl_(\d+)', hdr_name)
+            associated_vp = f"plan_ffl_{ffl_match.group(1)}.vp" if ffl_match else f"{hdr_name}.vp"
+
+            # Compute centroid in pixel space
+            cx = sum(v[0] for v in verts) / len(verts)
+            cy = sum(v[1] for v in verts) / len(verts)
+
+            # Build vertex lines: world_x world_y pixel_x pixel_y
+            vertex_lines = []
+            for px, py in verts:
+                if vh > 0 and vv > 0:
+                    world_x = vp_x + (px - img_w / 2) * (vh / img_w)
+                    world_y = vp_y + (img_h / 2 - py) * (vv / img_h)
+                else:
+                    world_x, world_y = px, py
+                vertex_lines.append(f"{world_x:.4f} {world_y:.4f} {int(round(px))} {int(round(py))}")
+
+            content = "\n".join([
+                f"AOI Points File: {name}",
+                f"ASSOCIATED VIEW FILE: {associated_vp}",
+                f"FFL z height(m): 0.0",
+                f"CENTRAL x,y: {cx:.4f} {cy:.4f}",
+                f"NO. PERIMETER POINTS {len(verts)}: x,y pixel_x pixel_y positions",
+            ] + vertex_lines)
+
+            clean_name = re.sub(r'[^\w\s-]', '', name).strip()
+            clean_name = re.sub(r'[-\s]+', '_', clean_name)
+            filepath = self.aoi_dir / f"{clean_name}.aoi"
+            with open(filepath, 'w') as f:
+                f.write(content)
+            count += 1
+
+        print(f"Wrote {count} .aoi files to {self.aoi_dir}")
+        return count
 
     def export_room_boundaries_csv(self, output_path: Optional[Path] = None):
         """Export room boundaries as CSV.

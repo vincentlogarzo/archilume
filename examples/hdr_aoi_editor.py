@@ -1,9 +1,7 @@
 """
 Archilume: Interactive Room Boundary Editor for HDR/TIFF Floor Plan Images
 
-NOTE: daylight_workflow_iesve.py must be run successfully before launching
-this interactive results viewer. It generates the HDR/TIFF images and .aoi
-boundary files that this editor depends on.
+NOTE: daylight_workflow_iesve.py must be run successfully before launching this interactive results viewer. It generates the HDR/TIFF images and .aoi boundary files that this editor depends on.
 
 Draw apartment and sub-room boundaries on top of HDR or associated TIFF
 rendered floor plan images. JSON and CSV are saved automatically to the
@@ -28,9 +26,9 @@ Controls:
 
 Workflow:
     1. Navigate to the desired HDR file with ↑/↓
-    2. Draw apartment boundary → name "U101" → Save
+    2. Draw apartment boundary to name "U101" to  Save
     3. Select "U101" as parent
-    4. Draw sub-rooms (e.g. "BED1" → auto-saved as "U101_BED1")
+    4. Draw sub-rooms (e.g. "BED1" to auto-saved as "U101_BED1")
     5. Repeat for each HDR file / floor
 """
 
@@ -43,6 +41,10 @@ if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
+    #TODO: change aparmtent name location logic to be centre of mass, not the centre of polygon points, as this can be outside of the polygon if it is a weird shape, and the name can be lost.
+
+    #TODO: would it be faster for the daylight factor results to be stored in the aoi boundaries.json file, and then the UI would only dynaically calcualte new boundaries when an aoi is changed or created and then restore in the json file. 
+    #TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points. 
     # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel.
     # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this. 
     # TODO: when drawing a subroom, better functionaly to detect parent room so that you dont have to click none placeholder in the parent room input box, and better functionality to snap a point to an existing vertex edge, subrooms are really only a divide or break down o fthe main apartment.

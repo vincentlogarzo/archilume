@@ -66,7 +66,7 @@ def iesve_daylight_parallel_images():
         image_resolution    = 2048                            
         ffl_offset          = 0.00
         octree_path         = config.INPUTS_DIR / "model.oct" # Must use a 10K Lux CIE Overcast sky
-        rendering_params    = config.INPUTS_DIR / "preview.rdp"
+        rendering_params    = config.INPUTS_DIR / "high.rdp"
         iesve_room_data     = config.INPUTS_DIR / "aoi" / "iesve_room_data.csv"
         df_thresholds       = (0.5, 1.0, 1.5) # % of floor area meeting daylight factor threshold
 
@@ -75,10 +75,10 @@ def iesve_daylight_parallel_images():
         # TODO: allowance for gpu rendering mode if a user wishes to have this. This would mean this could run on windows machine alike to the sunlight rendering workflow.
 
         smart_cleanup(
-            timestep_changed            = True,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-            resolution_changed          = True,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-            rendering_mode_changed      = True,  # Set TRUE if switched cpu/gpu
-            rendering_quality_changed   = True  # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
+            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
+            resolution_changed          = False,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+            rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
+            rendering_quality_changed   = False  # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
             )
 
     with timer("Phase 1: Prepare Camera Views..."):
@@ -110,27 +110,25 @@ def iesve_daylight_parallel_images():
             coordinate_map_path         = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
             view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
-        with timer("  3b: Generate Daylight .wpd ..."):
-            converter = Hdr2Wpd(
-                pixel_to_world_map      = coordinate_map_path
-                )
-            converter.daylight_wpd_extraction(df_thresholds=df_thresholds)
-
-    # TODO: Move to the next module for an interactive aoi editor using the df_false.tiff files. It overlays the aoi allows editing of subrooms using the existing json session implementation, df_thresholds for these spaces or by type assignment of space and then extraction of image stamped with what it viewed of screen, a toggle between green dot red dot, and actual result should be provided and then when export is clicked, both the amenede tiff files with suffix of its changed, df_false_stamped.tiff and df_false_dot.tiff. 
-
-    #TODO: detemrine if phase 3b is required at all. Results are extracted in the ui. 
-
-
 
 if __name__ == "__main__":
     iesve_daylight_parallel_images()
 
 
-# TODO: eventually it this should utilised model.rad inputs and the source .mtl file to allow for parametetric simulation utilising different glass VLTs. e.g. 1 x model.rad + list of .mtl + list of cpu .rdp + list .rdv. This would allow for more flexible workflows and parametric analysis. I.e. modify window VLT given a window material name, or wall or ceiling LRV given an input name to modify.
-    # TODO: add functionality to allow multiple parameters input files to run parametric analysis, or low param for initial checks and setup of aoi with high run results coming in later. 
-#TODO: add feature to run by room or run by floor plate, this will either create a floor plate from input .aoi files or create a view per aoi file. This should only be implemented when the grid size in mm is implemneted instead of resolution input. 
-#TODO: setup the inputs strcutrue to take in grid_res instead of image res, this wouuld be a dynamically calculated parameters. It would mean that we set the grid_red for images to be e.g. 20mm then no matter the size of the view the images will be consistent in their resolution when viewed by a human. This would mean that we could then setup half grid_res to run first then subsequent runs second, so that a user can use the first images to begging aoi checks and redrawing or intial setup of boundaries boundaries for post processing final results. 
-# TODO add inputs validator, extend its functionality for this use case. e.g. validate input IES room data csv has the correct columns identifiers. 
-#TODO: augment the view offset from FFL input to use the actual parameters for offset in the .views files as intended by radiance. This way, the offset will reveal itself in the image file header. 
-
-#TODO : Fix the Smartcleanup function, it should not require inputs at all. It should only, It should look to either make a decision on retaining the ambient file or not based on the input given and the file headers of existing .hdr files. This is the largest time sink, all other processes can happen again no matter what.  look at the setup outputs checkings on commands just before they are run, then remove command from list if output file exists, (i.e. has same parameters or other conditions with which to not re-run this simulation e.g. the ambient file use can only be re-used for the same view with the all same parameters (except resolution, this can change between runs))
+# TODO: Parametric materials – use model.rad + swappable .mtl files to vary
+#   glass VLT, wall/ceiling LRV, etc. Support multiple .rdp/.rdv per run.
+# TODO: Parametric params – accept multiple parameter input files (or
+#   low/high param sets) for incremental refinement of AOI checks.
+# TODO: Grid-based resolution – replace image resolution with grid_res (mm). this brings consistency to any image produced across any model no matter how large the building. 
+#   Dynamically size images so pixel density is consistent across views.
+#   Run at half grid_res first for quick AOI review, full res second.
+# TODO: Room/floor-plate mode – run per-room or per-floor by compositing
+#   .aoi files into a single floor-plate view (depends on grid_res).
+# TODO: Input validation – extend validator to check IES room-data CSV
+#   column identifiers and other workflow-specific constraints.
+# TODO: View offset – use Radiance .views offset parameters instead of
+#   manual FFL offset, so the offset is captured in the .hdr header.
+# TODO: Smart cleanup – remove input dependency; decide whether to keep
+#   the ambient file by comparing .hdr headers to current parameters.
+#   Skip commands whose output files already match (same view, same
+#   params; resolution changes are allowed).

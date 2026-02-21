@@ -247,6 +247,85 @@ class Hdr2Wpd:
 
         print("\n" + "=" * 80 + "\nSunlight sequence wpd extraction completed successfully.\n" + "=" * 80)
 
+    @staticmethod
+    def load_df_image(hdr_path: Path) -> Optional[np.ndarray]:
+        """Load an HDR file via pvalue and convert to a DF% image array.
+
+        Uses the Radiance `pvalue` tool to extract single-channel brightness,
+        then converts radiometric W/m² → illuminance (lux) → DF% against a
+        10K lux CIE overcast sky reference.
+
+        Args:
+            hdr_path: Path to a Radiance .hdr file.
+
+        Returns:
+            Float32 numpy array of shape (H, W) containing DF% values per pixel,
+            or None if loading fails (e.g. pvalue not installed).
+        """
+        try:
+            width, height = utils.get_hdr_resolution(hdr_path)
+            result = subprocess.run(
+                ['pvalue', '-h', '-H', '-b', '-df', str(hdr_path)],
+                capture_output=True, check=True,
+            )
+            raw_image = np.frombuffer(result.stdout, dtype=np.float32).reshape((height, width))
+            df_image = raw_image * 1.79  # W/m² → DF%  (179 luminous efficacy × 100 / 10 000 lux)
+            return df_image
+        except Exception as exc:
+            print(f"Warning: could not load DF image from {hdr_path}: {exc}")
+            return None
+
+    def compute_df_for_polygon(
+        self,
+        df_image: np.ndarray,
+        pixel_vertices: List[list],
+        df_thresholds: tuple = (0.5, 1.0, 1.5),
+    ) -> dict:
+        """Compute DF threshold results for a single polygon on a pre-loaded DF image.
+
+        Rasterises the polygon using skimage.draw.polygon (same method as the
+        batch pipeline) and counts pixels meeting each DF% threshold.
+
+        Args:
+            df_image:        (H, W) float32 array of DF% values.
+            pixel_vertices:  [[px, py], …] polygon vertices in pixel coordinates.
+            df_thresholds:   DF% thresholds to evaluate.
+
+        Returns:
+            Dict with keys:
+                total_pixels  – int, pixels inside polygon
+                total_area_m2 – float, polygon area in m²
+                thresholds    – list of dicts with 'threshold', 'passing_pixels', 'area_m2'
+        """
+        xs = [int(round(v[0])) for v in pixel_vertices]
+        ys = [int(round(v[1])) for v in pixel_vertices]
+        rr, cc = polygon(ys, xs, shape=df_image.shape)
+        total_pixels = len(rr)
+
+        threshold_results = []
+        if total_pixels > 0:
+            df_vals = df_image[rr, cc]
+            for t in df_thresholds:
+                passing = int((df_vals >= t).sum())
+                threshold_results.append({
+                    'threshold': t,
+                    'passing_pixels': passing,
+                    'area_m2': round(passing * self.area_per_pixel, 2),
+                })
+        else:
+            for t in df_thresholds:
+                threshold_results.append({
+                    'threshold': t,
+                    'passing_pixels': 0,
+                    'area_m2': 0.0,
+                })
+
+        return {
+            'total_pixels': total_pixels,
+            'total_area_m2': round(total_pixels * self.area_per_pixel, 2),
+            'thresholds': threshold_results,
+        }
+
     def daylight_wpd_extraction(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5)) -> None:
         """Extract per-pixel daylight factor (DF%) from single-HDR-per-view renders.
 
@@ -269,7 +348,7 @@ class Hdr2Wpd:
             return
 
         view_groups = self._group_aoi_by_view(aoi_files, hdr_files)
-        self._process_daylight_view_groups(view_groups)
+        self._process_daylight_view_groups(view_groups, df_thresholds=df_thresholds)
         self._generate_daylight_excel_report(df_thresholds)
 
         print("\n" + "=" * 80 + "\nDaylight factor wpd extraction completed.\n" + "=" * 80)
@@ -278,9 +357,10 @@ class Hdr2Wpd:
         """Process view groups for daylight factor extraction.
 
         For each view group (expects 1 HDR + N AOIs):
-        1. Read HDR via pvalue → float32 numpy array
+        1. Read HDR via pvalue -> float32 numpy array
         2. Convert to illuminance (lux) and DF%
-        3. For each AOI: rasterize polygon, write per-pixel DF% to .wpd
+        3. For each AOI: rasterize polygon, compute summary stats via numpy,
+           write compact .wpd with aggregated results (no per-pixel dump).
 
         Args:
             view_groups: Dictionary of view groups from _group_aoi_by_view
@@ -294,7 +374,7 @@ class Hdr2Wpd:
                 print(f"  WARNING: View '{view_name}' has {len(hdr_list)} HDRs, expected 1. Using first.")
             hdr_file = hdr_list[0]
 
-            # Read HDR → numpy float32 (height, width)
+            # Read HDR -> numpy float32 (height, width)
             width, height = utils.get_hdr_resolution(hdr_file)
             try:
                 result = subprocess.run(
@@ -302,15 +382,15 @@ class Hdr2Wpd:
                     capture_output=True, check=True
                 )
                 raw_image = np.frombuffer(result.stdout, dtype=np.float32).reshape((height, width))
-                illuminance_image = raw_image * 179  # Convert radiometric W/m² to illuminance (lux)
-                df_image = illuminance_image * 100 / 10_000  # Convert lux to DF% (against 10K lux sky)
+                illuminance_image = raw_image * 179
+                df_image = illuminance_image * 100 / 10_000
             except Exception as e:
                 print(f"  Skipping view '{view_name}': {e}")
                 continue
 
             print(f"\n  View: {view_name} | HDR: {hdr_file.name} | AOIs: {len(aoi_list)}")
 
-            # Per-AOI: rasterize polygon, write per-pixel DF% to .wpd
+            # Pre-parse all AOI polygons, then process with numpy vectorised ops
             for aoi_file in aoi_list:
                 with open(aoi_file, 'r') as f:
                     lines = f.readlines()
@@ -328,24 +408,33 @@ class Hdr2Wpd:
 
                 rr, cc = polygon(ys, xs, shape=(height, width))
                 total_pixels = len(rr)
+                if total_pixels == 0:
+                    continue
+
+                # Vectorised extraction - no Python loop over pixels
+                illum_vals = illuminance_image[rr, cc]
+                df_vals    = df_image[rr, cc]
 
                 wpd_path = self.wpd_dir / (aoi_file.stem + '.wpd')
                 with open(wpd_path, 'w') as f:
                     f.write(f"total_pixels_in_polygon: {total_pixels}\n")
-                    f.write("pixel_x pixel_y illuminance df_percent\n")
-                    for i in range(total_pixels):
-                        f.write(f"{cc[i]} {rr[i]} {illuminance_image[rr[i], cc[i]]:.4f} {df_image[rr[i], cc[i]]:.4f}\n")
+                    f.write(f"area_m2: {total_pixels * self.area_per_pixel:.6f}\n")
+                    f.write(f"mean_illuminance_lux: {float(illum_vals.mean()):.4f}\n")
+                    f.write(f"min_illuminance_lux: {float(illum_vals.min()):.4f}\n")
+                    f.write(f"max_illuminance_lux: {float(illum_vals.max()):.4f}\n")
+                    f.write(f"mean_df_percent: {float(df_vals.mean()):.4f}\n")
+                    f.write(f"min_df_percent: {float(df_vals.min()):.4f}\n")
+                    f.write(f"max_df_percent: {float(df_vals.max()):.4f}\n")
+                    f.write(f"median_df_percent: {float(np.median(df_vals)):.4f}\n")
 
                 print(f"    {aoi_file.stem}: {total_pixels} px -> {wpd_path.name}")
 
     def _generate_daylight_excel_report(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5)) -> None:
-        """Generate Excel report from daylight factor .wpd files.
+        """Generate Excel report from daylight factor .wpd summary files.
 
-        Reads each .wpd file (format: pixel_x pixel_y illuminance df_percent)
-        and produces two sheets:
-        - Summary: per-AOI statistics (mean/min/max illuminance and DF%, pixel count, area,
-                   and per-threshold compliance columns)
-        - Raw Data: all per-pixel values from every .wpd file
+        Reads each compact .wpd file (key: value format with pre-computed stats)
+        and produces a Summary sheet with per-AOI statistics plus DF threshold
+        compliance columns computed by re-reading the HDR for each view group.
 
         Args:
             df_thresholds: DF% compliance thresholds for summary columns.
@@ -359,103 +448,143 @@ class Hdr2Wpd:
             print("No .wpd files found.")
             return
 
+        # We need per-threshold pixel counts which require the actual DF image.
+        # Group .wpd files by view (same as AOIs) so we load each HDR only once.
+        hdr_files, aoi_files = self._scan_directories()
+        view_groups = self._group_aoi_by_view(aoi_files, hdr_files) if hdr_files and aoi_files else {}
+
+        # Build a fast lookup: aoi_stem -> aoi_file Path (for polygon coords)
+        aoi_by_stem = {af.stem: af for af in aoi_files} if aoi_files else {}
+
         summary_rows = []
-        raw_rows = []
 
+        # First pass: read pre-computed stats from .wpd files
+        wpd_stats = {}
         for wpd_file in wpd_files:
-            aoi_name = wpd_file.stem
-
+            stats = {}
             with open(wpd_file, 'r') as f:
-                lines = f.readlines()
+                for line in f:
+                    if ':' in line:
+                        key, val = line.split(':', 1)
+                        stats[key.strip()] = val.strip()
+            wpd_stats[wpd_file.stem] = stats
 
-            if len(lines) < 2:
+        # Second pass: load each HDR once and compute threshold compliance for all its AOIs
+        # Track which wpd stems we've processed
+        processed_stems = set()
+
+        for view_name, group in view_groups.items():
+            hdr_list = group['hdr_files']
+            aoi_list = group['aoi_files']
+            if not hdr_list or not aoi_list:
                 continue
 
-            # Line 0: "total_pixels_in_polygon: N"
-            total_pixels = int(lines[0].split(':')[1].strip())
+            hdr_file = hdr_list[0]
+            width, height = utils.get_hdr_resolution(hdr_file)
 
-            # Lines 2+: pixel_x pixel_y illuminance df_percent
-            illuminance_vals = []
-            df_vals = []
-            for line in lines[2:]:
-                parts = line.strip().split()
-                if len(parts) == 4:
-                    px, py = int(parts[0]), int(parts[1])
-                    illum, df = float(parts[2]), float(parts[3])
-                    illuminance_vals.append(illum)
-                    df_vals.append(df)
-                    raw_rows.append({
-                        'aoi': aoi_name,
-                        'pixel_x': px,
-                        'pixel_y': py,
-                        'illuminance_lux': illum,
-                        'df_percent': df,
-                    })
+            # Load DF image once per view
+            try:
+                result = subprocess.run(
+                    ['pvalue', '-h', '-H', '-b', '-df', str(hdr_file)],
+                    capture_output=True, check=True
+                )
+                raw_image = np.frombuffer(result.stdout, dtype=np.float32).reshape((height, width))
+                df_image = raw_image * 1.79
+            except Exception:
+                df_image = None
 
-            if not illuminance_vals:
+            for aoi_file in aoi_list:
+                stem = aoi_file.stem
+                stats = wpd_stats.get(stem)
+                if not stats:
+                    continue
+                processed_stems.add(stem)
+
+                total_pixels = int(stats.get('total_pixels_in_polygon', 0))
+                if total_pixels == 0:
+                    continue
+
+                row = {
+                    'aoi': stem,
+                    'total_pixels': total_pixels,
+                    'area_m2': round(float(stats.get('area_m2', 0)), 4),
+                    'mean_illuminance_lux': round(float(stats.get('mean_illuminance_lux', 0)), 2),
+                    'min_illuminance_lux': round(float(stats.get('min_illuminance_lux', 0)), 2),
+                    'max_illuminance_lux': round(float(stats.get('max_illuminance_lux', 0)), 2),
+                    'mean_df_percent': round(float(stats.get('mean_df_percent', 0)), 4),
+                    'min_df_percent': round(float(stats.get('min_df_percent', 0)), 4),
+                    'max_df_percent': round(float(stats.get('max_df_percent', 0)), 4),
+                    'median_df_percent': round(float(stats.get('median_df_percent', 0)), 4),
+                }
+
+                # Threshold compliance: rasterize polygon against DF image
+                if df_image is not None:
+                    with open(aoi_file, 'r') as f:
+                        lines = f.readlines()
+                    xs, ys = [], []
+                    for line in lines[5:]:
+                        parts = line.strip().split()
+                        if len(parts) >= 4:
+                            xs.append(int(parts[2]))
+                            ys.append(int(parts[3]))
+                    if xs:
+                        rr, cc = polygon(ys, xs, shape=(height, width))
+                        df_vals = df_image[rr, cc]
+                        for t in df_thresholds:
+                            passing = int((df_vals >= t).sum())
+                            label = f"{t:g}pct"
+                            row[f'pixels_df_gte_{label}'] = passing
+                            row[f'pct_area_df_gte_{label}'] = round(passing / total_pixels * 100, 2)
+                            row[f'area_df_gte_{label}_m2'] = round(passing * self.area_per_pixel, 4)
+
+                summary_rows.append(row)
+
+        # Include any .wpd files that weren't matched to a view group (stats only, no thresholds)
+        for stem, stats in wpd_stats.items():
+            if stem in processed_stems:
                 continue
-
-            illum_arr = np.array(illuminance_vals)
-            df_arr = np.array(df_vals)
-            area_m2 = total_pixels * self.area_per_pixel
-
-            row = {
-                'aoi': aoi_name,
+            total_pixels = int(stats.get('total_pixels_in_polygon', 0))
+            if total_pixels == 0:
+                continue
+            summary_rows.append({
+                'aoi': stem,
                 'total_pixels': total_pixels,
-                'area_m2': round(area_m2, 4),
-                'mean_illuminance_lux': round(float(illum_arr.mean()), 2),
-                'min_illuminance_lux': round(float(illum_arr.min()), 2),
-                'max_illuminance_lux': round(float(illum_arr.max()), 2),
-                'mean_df_percent': round(float(df_arr.mean()), 4),
-                'min_df_percent': round(float(df_arr.min()), 4),
-                'max_df_percent': round(float(df_arr.max()), 4),
-                'median_df_percent': round(float(np.median(df_arr)), 4),
-            }
-            for t in df_thresholds:
-                passing = int((df_arr >= t).sum())
-                label = f"{t:g}pct"
-                row[f'pixels_df_gte_{label}'] = passing
-                row[f'pct_area_df_gte_{label}'] = round(passing / total_pixels * 100, 2) if total_pixels else 0.0
-                row[f'area_df_gte_{label}_m2'] = round(passing * self.area_per_pixel, 4)
-            summary_rows.append(row)
+                'area_m2': round(float(stats.get('area_m2', 0)), 4),
+                'mean_illuminance_lux': round(float(stats.get('mean_illuminance_lux', 0)), 2),
+                'min_illuminance_lux': round(float(stats.get('min_illuminance_lux', 0)), 2),
+                'max_illuminance_lux': round(float(stats.get('max_illuminance_lux', 0)), 2),
+                'mean_df_percent': round(float(stats.get('mean_df_percent', 0)), 4),
+                'min_df_percent': round(float(stats.get('min_df_percent', 0)), 4),
+                'max_df_percent': round(float(stats.get('max_df_percent', 0)), 4),
+                'median_df_percent': round(float(stats.get('median_df_percent', 0)), 4),
+            })
 
         if not summary_rows:
             print("No valid data found in .wpd files.")
             return
 
         summary_df = pd.DataFrame(summary_rows).sort_values('aoi')
-        raw_df = pd.DataFrame(raw_rows)
 
         # Write Excel file
-        def write_excel_file(summary_df: pd.DataFrame, raw_df: pd.DataFrame) -> None:
-            """Write formatted Excel file with Summary and Raw Data sheets."""
+        area_per_pixel_mm2 = self.area_per_pixel * 1_000_000
+        pixel_x_mm = round(self.pixel_increment_x * 1_000)
+        pixel_y_mm = round(self.pixel_increment_y * 1_000)
+        meta_text = (f"{pixel_x_mm} mm x {pixel_y_mm} mm grid | "
+                     f"Area per pixel: {self.area_per_pixel} m2 ({area_per_pixel_mm2:.2f} mm2) | "
+                     f"Source: {self.pixel_to_world_map}")
 
-            def format_sheet(ws) -> None:
-                """Apply metadata header, hide gridlines, and autofit columns."""
-                area_per_pixel_mm2 = self.area_per_pixel * 1_000_000
-                pixel_x_mm = round(self.pixel_increment_x * 1_000)
-                pixel_y_mm = round(self.pixel_increment_y * 1_000)
-                ws['B1'] = (f"{pixel_x_mm} mm × {pixel_y_mm} mm grid | "
-                            f"Area per pixel: {self.area_per_pixel} m² ({area_per_pixel_mm2:.2f} mm²) | "
-                            f"Source: {self.pixel_to_world_map}")
-                ws.sheet_view.showGridLines = False
-                for column in ws.columns:
-                    max_length = max((len(str(cell.value)) for cell in column if cell.value), default=0)
-                    ws.column_dimensions[column[0].column_letter].width = max_length + 2
+        output_excel = self.wpd_dir / "daylight_factor_results.xlsx"
+        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+            summary_df.to_excel(writer, sheet_name='Summary', index=False, startrow=1, startcol=1)
+            ws = writer.sheets['Summary']
+            ws['B1'] = meta_text
+            ws.sheet_view.showGridLines = False
+            for column in ws.columns:
+                max_length = max((len(str(cell.value)) for cell in column if cell.value), default=0)
+                ws.column_dimensions[column[0].column_letter].width = max_length + 2
 
-            output_excel = self.wpd_dir / "daylight_factor_results.xlsx"
-            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-                summary_df.to_excel(writer, sheet_name='Summary', index=False, startrow=1, startcol=1)
-                raw_df.to_excel(writer, sheet_name='Raw Data', index=False, startrow=1, startcol=1)
-                format_sheet(writer.sheets['Summary'])
-                format_sheet(writer.sheets['Raw Data'])
-
-            print(f"\nResults saved to: {output_excel}")
-            print(f"  Sheet 1: 'Summary'  - per-AOI illuminance & DF% statistics")
-            print(f"  Sheet 2: 'Raw Data' - all per-pixel values")
-            print(f"\n{summary_df.to_string(index=False)}")
-
-        write_excel_file(summary_df, raw_df)
+        print(f"\nResults saved to: {output_excel}")
+        print(f"\n{summary_df.to_string(index=False)}")
 
     def _calculate_area_per_pixel(self) -> tuple[float, float, float]:
         """Calculate the area represented by a single pixel from the pixel_to_world_map file.
