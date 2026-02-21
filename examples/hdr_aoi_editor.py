@@ -1,7 +1,7 @@
 """
 Archilume: Interactive Room Boundary Editor for HDR/TIFF Floor Plan Images
 
-NOTE: daylight_workflow_iesve.py must be run successfully before launching this interactive results viewer. It generates the HDR/TIFF images and .aoi boundary files that this editor depends on.
+NOTE: daylight_workflow_iesve.py must be run before use of this editor. The workflow generates the HDR/Tiff images and .aoi boundaries this editors depends on.
 
 Draw apartment and sub-room boundaries on top of HDR or associated TIFF
 rendered floor plan images. JSON and CSV are saved automatically to the
@@ -37,16 +37,20 @@ Workflow:
 
 from archilume.hdr_aoi_editor import HdrAoiEditor
 
+# NOTE: daylight_workflow_iesve.py must be run before use of this editor. The workflow generates the HDR/Tiff images and .aoi boundaries this editors depends on.
+
 if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
-    #TODO: change aparmtent name location logic to be centre of mass, not the centre of polygon points, as this can be outside of the polygon if it is a weird shape, and the name can be lost.
+    # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points.
 
-    #TODO: would it be faster for the daylight factor results to be stored in the aoi boundaries.json file, and then the UI would only dynaically calcualte new boundaries when an aoi is changed or created and then restore in the json file. 
-    #TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points. 
     # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel.
-    # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this. 
-    # TODO: when drawing a subroom, better functionaly to detect parent room so that you dont have to click none placeholder in the parent room input box, and better functionality to snap a point to an existing vertex edge, subrooms are really only a divide or break down o fthe main apartment.
-    #Remove the HDR file, it should not be loaded, it is slowing down the interface, determine what are the UI speed limits, the lag on the cursor etc.
-    # TODO: Add grouping functionality if a user wishes to see the worst apartments overall contributing to non-comliance of the development. That way these apartments can be considered as a whole. or individual results can be considered. 
+
+    # TODO: 
+
+    # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this.
+
+    # TODO: when drawing a subroom, better functionaly to detect parent room so that you dont have to click none placeholder in the parent room input box, and better functionality to snap a point to an existing vertex edge, subrooms are really only a divide or break down of the main apartment.
+
+    # TODO: Add grouping functionality if a user wishes to see the worst apartments overall contributing to non-comliance of the development. That way these apartments can be considered as a whole. or individual results can be considered. Grouping should occur by multiple clicks of rooms and then click the button called group. 

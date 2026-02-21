@@ -156,6 +156,9 @@ class HdrAoiEditor:
         self._df_image_cache:       dict                = {}     # hdr_path_str → np.ndarray
         self._room_df_results:      dict                = {}     # room_idx → list of result strings
         self._hdr2wpd:              Optional[Hdr2Wpd]   = None
+        # Persistent DF cache: keyed by (hdr_file, vertices_tuple, thresholds_tuple)
+        # Stored on each room dict as 'df_cache' = {'thresholds': [...], 'results': [...], 'vertices_hash': str}
+        # This avoids recomputation when rooms haven't changed.
 
     # -------------------------------------------------------------------------
     # Layout helper — top-left coordinate system
@@ -374,7 +377,7 @@ class HdrAoiEditor:
         self.fig = plt.figure(figsize=(20, 8), facecolor='#F5F5F0')
         self.fig._archilume_editor = True
         self.fig.canvas.manager.set_window_title(self._WINDOW_TITLE)
-        self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.05)
+        self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
 
         # Maximise window
         try:
@@ -394,18 +397,22 @@ class HdrAoiEditor:
             except AttributeError:
                 pass
 
-        # Main plot area (top-left: x=0.12, y=0.30, w=0.81, h=0.60)
-        self.ax = self._axes(0.12, 0.30, 0.81, 0.60)
+        # Main plot area — maximised to fill available space
+        self.ax = self._axes(0.12, 0.28, 0.86, 0.70)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
-        # Legend axes: narrow strip to the right of the main image
-        self.ax_legend = self._axes(0.93, 0.30, 0.06, 0.60)
+        # DF% legend axes: horizontal strip just above the main image (rotated 90°)
+        self.ax_legend = self._axes(0.12, 0.21, 0.86, 0.06)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(False)
 
         # Setup side panel
         self._setup_side_panel()
+
+        # Apply initial bevel styling to toggle buttons
+        self._style_toggle_button(self.btn_edit_mode, self.edit_mode)
+        self._style_toggle_button(self.btn_ortho, self.ortho_mode)
 
         # Initial render
         self._render_section()
@@ -452,6 +459,8 @@ class HdrAoiEditor:
 
         self._btn_color    = '#E8E8E0'
         self._btn_hover    = '#D8D8D0'
+        self._btn_on_color = '#8A8A84'   # dark grey when ON (sunken)
+        self._btn_on_hover = '#7A7A74'
 
         lbl_h   = 0.016
         input_h = 0.032
@@ -588,14 +597,14 @@ class HdrAoiEditor:
 
         # ── Saved rooms list ─────────────────────────────────────────────────
         list_w    = pw / 3
-        list_hdr_y = 0.31
+        list_hdr_y = 0.29
 
         ax_list_hdr = self._axes(pl, list_hdr_y, list_w, 0.025)
         ax_list_hdr.axis('off')
         ax_list_hdr.text(0, 0.5, "SAVED ROOMS:", fontsize=9, fontweight='bold')
 
         list_top = list_hdr_y + 0.030
-        list_h   = 0.58
+        list_h   = 0.68
         self.ax_list = self._axes(pl, list_top, list_w, list_h)
         self.ax_list.set_facecolor('#FAFAF8')
         self.ax_list.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
@@ -603,8 +612,49 @@ class HdrAoiEditor:
             spine.set_edgecolor('#CCCCCC')
             spine.set_linewidth(0.5)
 
-        # ── Export progress bar (hidden until export starts) ────────────────
-        self.ax_progress = self._axes(0.35, 0.935, 0.63, 0.014)
+        # ── Top-right strip: Toggle Image | Edit Mode | Ortho | Reset Zoom | Export
+        tr_x = 0.62               # left edge of the top-right button row
+        tr_w = 0.36               # total width available
+        tr_y = 0.02               # distance from top
+        tr_h = 0.030              # button height
+        n_tr = 5
+        tr_btn_w = (tr_w - (n_tr - 1) * gap) / n_tr
+
+        ax_toggle = self._axes(tr_x, tr_y, tr_btn_w, tr_h)
+        self.btn_image_toggle = Button(ax_toggle, 'Toggle Image Layers: HDR (Press T)',
+                                       color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_image_toggle.label.set_fontsize(7)
+        self.btn_image_toggle.on_clicked(self._on_image_toggle_click)
+
+        ax_edit = self._axes(tr_x + (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
+        self.btn_edit_mode = Button(ax_edit, 'Edit Mode: OFF (Press E)',
+                                    color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_edit_mode.label.set_fontsize(7)
+        self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
+
+        ax_ortho = self._axes(tr_x + 2 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
+        ortho_label = 'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)'
+        ortho_color = self._btn_on_color if self.ortho_mode else self._btn_color
+        ortho_hover = self._btn_on_hover if self.ortho_mode else self._btn_hover
+        self.btn_ortho = Button(ax_ortho, ortho_label,
+                                color=ortho_color, hovercolor=ortho_hover)
+        self.btn_ortho.label.set_fontsize(7)
+        self.btn_ortho.on_clicked(self._on_ortho_toggle)
+
+        ax_reset = self._axes(tr_x + 3 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
+        self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom',
+                                     color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_reset_zoom.label.set_fontsize(7)
+        self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
+
+        ax_export = self._axes(tr_x + 4 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
+        self.btn_export = Button(ax_export, 'Export Report',
+                                 color='#C8E6C9', hovercolor='#A5D6A7')
+        self.btn_export.label.set_fontsize(7)
+        self.btn_export.on_clicked(self._on_export_report)
+
+        # ── Export progress bar (below top-right buttons, hidden until export) ─
+        self.ax_progress = self._axes(tr_x, tr_y + tr_h + gap, tr_w, 0.014)
         self.ax_progress.set_xlim(0, 1)
         self.ax_progress.set_ylim(0, 1)
         self.ax_progress.axis('off')
@@ -612,52 +662,22 @@ class HdrAoiEditor:
         self._progress_bar_patch = None
         self._progress_text = None
 
-        # ── Bottom strip: Toggle Image | Edit Mode | Reset Zoom | Export Report
-        btm_x = 0.35
-        btm_w = 0.63
-        btm_h = 0.030
-        btm_y = 0.955
-        n_btm = 4
-        btn_w = (btm_w - (n_btm - 1) * gap) / n_btm
-
-        ax_toggle = self._axes(btm_x, btm_y, btn_w, btm_h)
-        self.btn_image_toggle = Button(ax_toggle, 'Image: HDR (T)',
-                                       color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_image_toggle.label.set_fontsize(8)
-        self.btn_image_toggle.on_clicked(self._on_image_toggle_click)
-
-        ax_edit = self._axes(btm_x + (btn_w + gap), btm_y, btn_w, btm_h)
-        self.btn_edit_mode = Button(ax_edit, 'Edit Mode: OFF (Press E)',
-                                    color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_edit_mode.label.set_fontsize(8)
-        self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
-
-        ax_reset = self._axes(btm_x + 2 * (btn_w + gap), btm_y, btn_w, btm_h)
-        self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom',
-                                     color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_reset_zoom.label.set_fontsize(8)
-        self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
-
-        ax_export = self._axes(btm_x + 3 * (btn_w + gap), btm_y, btn_w, btm_h)
-        self.btn_export = Button(ax_export, 'Export Report',
-                                 color='#C8E6C9', hovercolor='#A5D6A7')
-        self.btn_export.label.set_fontsize(8)
-        self.btn_export.on_clicked(self._on_export_report)
-
-        # ── Legend (colour key) — bottom of the side panel ───────────────────
-        ax_legend = self._axes(pl, 0.89, pw / 3, 0.10)
+        # ── Legend (colour key) — below buttons in top-right area ─────────────
+        legend_y = tr_y + tr_h + gap + 0.018
+        legend_w = 0.18
+        legend_h = 0.10
+        ax_legend = self._axes(tr_x, legend_y, legend_w, legend_h)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
         ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
                        transform=ax_legend.transAxes)
 
         legend_items = [
-            ('green',    0.4,  'Apartment (current HDR)'),
-            ('#2196F3',  0.4,  'Sub-room (current HDR)'),
-            ('yellow',   0.35, 'Selected'),
-            ('cyan',     0.35, 'Being edited'),
-            ('magenta',  0.35, 'Hover vertex (edit mode)'),
-            ('gray',     0.15, 'Other HDR file'),
+            ('red',      0.6,  'Room (current HDR)'),
+            ('yellow',   0.5,  'Selected'),
+            ('cyan',     0.5,  'Being edited'),
+            ('magenta',  0.5,  'Hover (edit mode)'),
+            ('gray',     0.25, 'Other HDR file'),
         ]
         row_h  = 0.27   # vertical step between rows
         swatch = 0.14   # swatch height
@@ -760,19 +780,19 @@ class HdrAoiEditor:
     def _update_image_toggle_label(self):
         """Update the toggle button label to show the active variant."""
         if not self.image_variants:
-            self.btn_image_toggle.label.set_text('Image: (none)')
+            self.btn_image_toggle.label.set_text('Toggle Image Layers: (none)')
             return
         idx  = self.current_variant_idx % len(self.image_variants)
         path = self.image_variants[idx]
         # Show a short label: HDR stem or TIFF suffix portion
         if path.suffix.lower() == '.hdr':
-            label = 'Image: HDR (T)'
+            label = 'Toggle Image Layers: HDR (Press T)'
         else:
             # e.g. model_plan_ffl_25300_df_false → show "df_false"
             hdr_stem = self.hdr_files[self.current_hdr_idx]['name']
             suffix   = path.stem[len(hdr_stem):]  # e.g. "_df_false"
             suffix   = suffix.lstrip('_')
-            label    = f'Image: {suffix} (T)'
+            label    = f'Toggle Image Layers: {suffix} (Press T)'
         self.btn_image_toggle.label.set_text(label)
         self.fig.canvas.draw_idle()
 
@@ -908,7 +928,10 @@ class HdrAoiEditor:
         self._render_section(force_full=True)
 
     def _on_df_refresh(self, event):
-        """Re-parse thresholds from the text box and refresh DF results on screen."""
+        """Force-refresh all DF results by clearing caches first."""
+        # Invalidate all room DF caches so everything is recomputed
+        for room in self.rooms:
+            room.pop('df_cache', None)
         self._on_df_thresholds_submit(self.df_textbox.text)
 
     # -------------------------------------------------------------------------
@@ -993,10 +1016,12 @@ class HdrAoiEditor:
             if legend_path is not None:
                 legend_img = self._load_image(legend_path)
                 if legend_img is not None:
+                    # Rotate 90° CCW so the tall legend becomes a horizontal strip
+                    legend_img = np.rot90(legend_img, k=1)
                     lH, lW = legend_img.shape[:2]
                     self.ax_legend.imshow(
                         legend_img, origin='upper',
-                        extent=[0, lW, lH, 0], aspect='auto',
+                        extent=[0, lW, lH, 0], aspect='equal',
                     )
                     self.ax_legend.set_xlim(0, lW)
                     self.ax_legend.set_ylim(lH, 0)
@@ -1029,25 +1054,61 @@ class HdrAoiEditor:
         if self._df_image is not None:
             self._df_image_cache[key] = self._df_image
 
+    @staticmethod
+    def _vertices_hash(vertices: list) -> str:
+        """Return a compact hash string for a list of vertex coordinates."""
+        return str([(round(v[0], 2), round(v[1], 2)) for v in vertices])
+
     def _compute_all_room_df_results(self):
-        """Compute DF threshold results for every room on the current HDR floor."""
+        """Compute DF threshold results for every room on the current HDR floor.
+
+        Uses per-room caching: each room dict stores a 'df_cache' entry with
+        the computed results, the thresholds used, and a hash of the vertices.
+        Results are only recomputed when vertices or thresholds change.
+        """
         self._room_df_results.clear()
         if self._df_image is None or self._hdr2wpd is None:
             return
+        thresholds_key = tuple(self.df_thresholds)
         for i, room in enumerate(self.rooms):
             if room.get('hdr_file') != self.current_hdr_name:
                 continue
             verts = room['vertices']
             if len(verts) < 3:
                 continue
-            result = self._hdr2wpd.compute_df_for_polygon(
-                self._df_image, verts, tuple(self.df_thresholds))
-            total_area = result['total_area_m2']
-            lines = []
-            for tr in result['thresholds']:
-                pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
-                lines.append(f"{tr['area_m2']:.1f} m\u00b2 ({pct:.0f}%) @ {tr['threshold']:g}%")
+            lines = self._compute_room_df(room, verts, thresholds_key)
             self._room_df_results[i] = lines
+
+    def _compute_room_df(self, room: dict, verts: list, thresholds_key: tuple) -> list:
+        """Compute DF results for a single room, using its cached df_cache if valid."""
+        verts_hash = self._vertices_hash(verts)
+        cache = room.get('df_cache')
+        if (cache
+                and cache.get('vertices_hash') == verts_hash
+                and tuple(cache.get('thresholds', [])) == thresholds_key):
+            return cache['display_lines']
+
+        # Cache miss — recompute
+        result = self._hdr2wpd.compute_df_for_polygon(
+            self._df_image, verts, thresholds_key)
+        total_area = result['total_area_m2']
+        lines = []
+        for tr in result['thresholds']:
+            pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
+            lines.append(f"{tr['area_m2']:.1f} m\u00b2 ({pct:.0f}%) @ {tr['threshold']:g}%")
+        # Store cache on the room dict itself (persisted via _save_session)
+        room['df_cache'] = {
+            'vertices_hash':  verts_hash,
+            'thresholds':     list(thresholds_key),
+            'display_lines':  lines,
+            'raw_result':     result,
+        }
+        return lines
+
+    def _invalidate_room_df_cache(self, room_idx: int):
+        """Clear the DF cache for a specific room, forcing recomputation."""
+        if 0 <= room_idx < len(self.rooms):
+            self.rooms[room_idx].pop('df_cache', None)
 
     def _draw_all_room_polygons(self):
         """Draw all room polygons for the current view."""
@@ -1115,8 +1176,8 @@ class HdrAoiEditor:
                                  markersize=8, color='lime', markeredgecolor='darkgreen',
                                  markeredgewidth=1.5, zorder=101, alpha=0.9)
 
-        # Label
-        centroid = np.array(verts).mean(axis=0)
+        # Label — use true centroid (centre of mass), guaranteed inside polygon
+        centroid = self._polygon_label_point(verts)
         label    = room.get('name', '')
         if not is_current_floor:
             hf = room.get('hdr_file', '')
@@ -1136,7 +1197,7 @@ class HdrAoiEditor:
         if df_lines and is_current_floor:
             line_step = self._df_line_step()
             for line_i, line in enumerate(df_lines):
-                dy = (line_i + 1) * line_step
+                dy = (line_i + 0.5) * line_step
                 df_text = self.ax.text(
                     centroid[0], centroid[1] + dy, line,
                     color='red', fontsize=self._zoom_fontsize(base=6.5),
@@ -1195,6 +1256,7 @@ class HdrAoiEditor:
             return
         room_idx, verts_snapshot = self._edit_undo_stack.pop()
         self.rooms[room_idx]['vertices'] = verts_snapshot
+        self._invalidate_room_df_cache(room_idx)
         self.edit_vertex_idx     = None
         self.edit_room_idx       = None
         self.edit_edge_room_idx  = None
@@ -1227,6 +1289,86 @@ class HdrAoiEditor:
         t = max(0.0, min(1.0, ((px - ax)*dx + (py - ay)*dy) / seg_len_sq))
         proj_x, proj_y = ax + t*dx, ay + t*dy
         return np.hypot(px - proj_x, py - proj_y), proj_x, proj_y
+
+    @staticmethod
+    def _polygon_label_point(verts) -> np.ndarray:
+        """Return a point guaranteed to be inside the polygon for label placement.
+
+        Uses the true geometric centroid (centre of mass via the shoelace
+        formula) rather than the simple average of vertices.  If the centroid
+        falls outside a concave polygon, falls back to scanning interior
+        candidate points to find one that is inside and as far from the edges
+        as possible.
+        """
+        pts = np.array(verts, dtype=float)
+        n = len(pts)
+        if n < 3:
+            return pts.mean(axis=0)
+
+        # --- Signed area via shoelace formula ---
+        x, y = pts[:, 0], pts[:, 1]
+        x1, y1 = np.roll(x, -1), np.roll(y, -1)
+        cross = x * y1 - x1 * y
+        signed_area = cross.sum() / 2.0
+
+        if abs(signed_area) < 1e-10:
+            # Degenerate polygon — fall back to vertex average
+            return pts.mean(axis=0)
+
+        # --- True centroid (centre of mass) ---
+        cx = ((x + x1) * cross).sum() / (6.0 * signed_area)
+        cy = ((y + y1) * cross).sum() / (6.0 * signed_area)
+        centroid = np.array([cx, cy])
+
+        # Check if centroid is inside the polygon
+        path = MplPath(pts)
+        if path.contains_point(centroid):
+            return centroid
+
+        # --- Fallback: find best interior point for concave polygons ---
+        # Sample candidate points on a grid inside the bounding box and pick
+        # the one with the greatest distance to the nearest edge (visual
+        # "pole of inaccessibility" approximation).
+        xmin, ymin = pts.min(axis=0)
+        xmax, ymax = pts.max(axis=0)
+        w, h = xmax - xmin, ymax - ymin
+        # Use ~20 steps along the longer dimension
+        steps = 20
+        xs = np.linspace(xmin, xmax, max(steps, 4))
+        ys = np.linspace(ymin, ymax, max(steps, 4))
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        candidates = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+
+        inside_mask = path.contains_points(candidates)
+        inside_pts = candidates[inside_mask]
+
+        if len(inside_pts) == 0:
+            # Extremely unlikely — return vertex average as last resort
+            return pts.mean(axis=0)
+
+        # For each inside point, compute min distance to any polygon edge
+        best_point = inside_pts[0]
+        best_dist  = -1.0
+        for cp in inside_pts:
+            min_d = np.inf
+            for i in range(n):
+                j = (i + 1) % n
+                a, b = pts[i], pts[j]
+                edge = b - a
+                edge_len_sq = edge @ edge
+                if edge_len_sq < 1e-12:
+                    d = np.linalg.norm(cp - a)
+                else:
+                    t = np.clip((cp - a) @ edge / edge_len_sq, 0, 1)
+                    proj = a + t * edge
+                    d = np.linalg.norm(cp - proj)
+                if d < min_d:
+                    min_d = d
+            if min_d > best_dist:
+                best_dist  = min_d
+                best_point = cp
+
+        return best_point
 
     @staticmethod
     def _snap_to_pixel(x: float, y: float) -> tuple:
@@ -1377,7 +1519,7 @@ class HdrAoiEditor:
                 patch.set_xy(self.rooms[self.edit_room_idx]['vertices'])
                 label = self._room_label_cache.get(self.edit_room_idx)
                 if label is not None:
-                    centroid = np.array(self.rooms[self.edit_room_idx]['vertices']).mean(axis=0)
+                    centroid = self._polygon_label_point(self.rooms[self.edit_room_idx]['vertices'])
                     label.set_position((centroid[0], centroid[1]))
                 self.fig.canvas.draw_idle()
             else:
@@ -1401,7 +1543,7 @@ class HdrAoiEditor:
                 patch.set_xy(room['vertices'])
                 label = self._room_label_cache.get(self.edit_edge_room_idx)
                 if label is not None:
-                    centroid = np.array(room['vertices']).mean(axis=0)
+                    centroid = self._polygon_label_point(room['vertices'])
                     label.set_position((centroid[0], centroid[1]))
                 self.fig.canvas.draw_idle()
             else:
@@ -1525,9 +1667,7 @@ class HdrAoiEditor:
         elif event.key == 'e':
             self._on_edit_mode_toggle(None)
         elif event.key == 'o':
-            self.ortho_mode = not self.ortho_mode
-            state = "ON" if self.ortho_mode else "OFF"
-            self._update_status(f"Orthogonal mode: {state}", 'blue')
+            self._on_ortho_toggle(None)
         elif event.key == 'ctrl+z':
             self._undo_edit()
 
@@ -1813,9 +1953,23 @@ class HdrAoiEditor:
         return max(4.0, min(20.0, base * scale))
 
     def _df_line_step(self) -> float:
-        """Return zoom-aware vertical spacing (in data coords) between DF result lines."""
+        """Return zoom-aware vertical spacing (in data coords) between DF result lines.
+
+        The spacing must stay proportional to the rendered font height.
+        Because _zoom_fontsize clamps at 4 pt, a pure view_w fraction
+        would shrink below the text height when zoomed in. Instead we
+        derive spacing from the actual DF font size converted back to
+        data coordinates, guaranteeing no overlap at any zoom level.
+        """
         view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
-        return view_w * 0.025
+        fs = self._zoom_fontsize(base=6.5)          # actual DF font size (pts)
+        ref_fs = 6.5                                  # font size at default zoom
+        ref_step = self._reference_view_w * 0.015     # spacing at default zoom
+        if ref_fs <= 0 or self._reference_view_w <= 1:
+            return view_w * 0.015
+        # Scale the default-zoom spacing by (current font / default font)
+        # and by (current view / default view) to stay in data coords
+        return ref_step * (fs / ref_fs) * (view_w / self._reference_view_w)
 
     def _apply_zoom_fontsizes(self):
         """Reapply zoom-dependent font sizes to all cached room labels and DF text."""
@@ -1831,16 +1985,21 @@ class HdrAoiEditor:
             centroid = getattr(dt, '_df_centroid', None)
             line_i   = getattr(dt, '_df_line_i', None)
             if centroid is not None and line_i is not None:
-                dt.set_position((centroid[0], centroid[1] + (line_i + 1) * line_step))
+                dt.set_position((centroid[0], centroid[1] + (line_i + 0.5) * line_step))
 
     def _zoom_linewidth(self, base: float = 1.5) -> float:
         """Return linewidth that stays visually constant regardless of zoom.
 
-        Scales proportionally with view_ratio so the line appears the same
-        screen thickness at all zoom levels. Clamps to [0.3, base].
+        Matplotlib linewidths are in *points* (screen units) but the polygon
+        edges are in *data* coordinates, so when you zoom in the data-space
+        features grow on-screen while the point-width stays fixed — making
+        lines appear thinner.  To compensate we scale inversely with the
+        view ratio: zooming in (smaller view_ratio) → larger linewidth.
+        Clamped to [base * 0.5, base * 4] to stay reasonable at extremes.
         """
-        lw = base * self._view_ratio()
-        return max(0.3, min(base, lw))
+        ratio = self._view_ratio()                       # 1.0 = full image, <1 = zoomed in
+        lw = base / max(ratio, 0.01)                     # inverse: zoom in → thicker
+        return max(base * 0.5, min(base * 4.0, lw))
 
     def _apply_zoom_linewidths(self):
         """Reapply zoom-dependent linewidths to all cached room patches."""
@@ -1865,11 +2024,52 @@ class HdrAoiEditor:
         self._apply_zoom_fontsizes()
         self.fig.canvas.draw_idle()
 
+    def _style_toggle_button(self, btn, is_on: bool):
+        """Apply pressed/depressed bevel styling to a toggle button.
+
+        ON  = sunken look: darker background, inset border via dark edges.
+        OFF = raised look: lighter background, default flat appearance.
+        """
+        ax = btn.ax
+        if is_on:
+            btn.color      = self._btn_on_color
+            btn.hovercolor = self._btn_on_hover
+            ax.set_facecolor(self._btn_on_color)
+            # Inset bevel: dark top-left edges, light bottom-right
+            for spine, color, lw in [
+                ('top',    '#555555', 1.8),
+                ('left',   '#555555', 1.8),
+                ('bottom', '#AAAAAA', 1.2),
+                ('right',  '#AAAAAA', 1.2),
+            ]:
+                ax.spines[spine].set_color(color)
+                ax.spines[spine].set_linewidth(lw)
+                ax.spines[spine].set_visible(True)
+            btn.label.set_fontweight('bold')
+            btn.label.set_color('#FFFFFF')
+        else:
+            btn.color      = self._btn_color
+            btn.hovercolor = self._btn_hover
+            ax.set_facecolor(self._btn_color)
+            # Raised bevel: light top-left, dark bottom-right
+            for spine, color, lw in [
+                ('top',    '#FFFFFF', 1.2),
+                ('left',   '#FFFFFF', 1.2),
+                ('bottom', '#999999', 1.5),
+                ('right',  '#999999', 1.5),
+            ]:
+                ax.spines[spine].set_color(color)
+                ax.spines[spine].set_linewidth(lw)
+                ax.spines[spine].set_visible(True)
+            btn.label.set_fontweight('normal')
+            btn.label.set_color('#000000')
+
     def _on_edit_mode_toggle(self, event):
         """Toggle edit mode for modifying existing room boundaries."""
         self.edit_mode = not self.edit_mode
         self.btn_edit_mode.label.set_text(
             'Edit Mode: ON (Press E)' if self.edit_mode else 'Edit Mode: OFF (Press E)')
+        self._style_toggle_button(self.btn_edit_mode, self.edit_mode)
 
         if self.edit_mode:
             self._edit_undo_stack.clear()
@@ -1890,6 +2090,16 @@ class HdrAoiEditor:
             self._update_status("Edit Mode OFF - Draw mode enabled", 'blue')
 
         self._render_section(force_full=True)
+
+    def _on_ortho_toggle(self, event):
+        """Toggle orthogonal lines mode."""
+        self.ortho_mode = not self.ortho_mode
+        self.btn_ortho.label.set_text(
+            'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)')
+        self._style_toggle_button(self.btn_ortho, self.ortho_mode)
+        state = "ON" if self.ortho_mode else "OFF"
+        self._update_status(f"Orthogonal mode: {state}", 'blue')
+        self.fig.canvas.draw_idle()
 
     def _enter_edit_mode_for_room(self, room_idx: int):
         """Enter edit mode for a specific room."""
@@ -2040,11 +2250,12 @@ class HdrAoiEditor:
     # -------------------------------------------------------------------------
 
     def _save_session(self):
-        """Save all room boundaries to JSON only."""
+        """Save all room boundaries and DF cache to JSON."""
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            'image_dir': str(self.image_dir),
-            'rooms':     self.rooms,
+            'image_dir':      str(self.image_dir),
+            'df_thresholds':  self.df_thresholds,
+            'rooms':          self.rooms,
         }
         with open(self.session_path, 'w') as f:
             json.dump(data, f, indent=2)
@@ -2055,12 +2266,18 @@ class HdrAoiEditor:
             print(f"Removed stale CSV: {self.csv_path}")
 
     def _load_session(self):
-        """Load room boundaries from JSON session or AOI files."""
+        """Load room boundaries and cached DF results from JSON session or AOI files."""
         if self.session_path.exists():
             with open(self.session_path, 'r') as f:
                 data = json.load(f)
             self.rooms = data.get('rooms', [])
+            saved_thresholds = data.get('df_thresholds')
+            if saved_thresholds:
+                self.df_thresholds = saved_thresholds
             source = "session"
+            cached = sum(1 for r in self.rooms if r.get('df_cache'))
+            if cached:
+                print(f"Restored DF cache for {cached}/{len(self.rooms)} rooms")
         elif self.aoi_dir.exists() and list(self.aoi_dir.glob('*.aoi')):
             self._load_from_aoi_files(self.aoi_dir)
             source = "AOI files"
@@ -2266,9 +2483,9 @@ class HdrAoiEditor:
             ffl_match = re.search(r'plan_ffl_(\d+)', hdr_name)
             associated_vp = f"plan_ffl_{ffl_match.group(1)}.vp" if ffl_match else f"{hdr_name}.vp"
 
-            # Compute centroid in pixel space
-            cx = sum(v[0] for v in verts) / len(verts)
-            cy = sum(v[1] for v in verts) / len(verts)
+            # Compute centroid in pixel space (true centre of mass)
+            centroid_pt = self._polygon_label_point(verts)
+            cx, cy = centroid_pt[0], centroid_pt[1]
 
             # Build vertex lines: world_x world_y pixel_x pixel_y
             vertex_lines = []
