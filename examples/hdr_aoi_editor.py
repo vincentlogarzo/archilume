@@ -47,8 +47,6 @@ if __name__ == "__main__":
 
     # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel.
 
-    # TODO: 
-
     # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this.
 
     # TODO: when drawing a subroom, better functionaly to detect parent room so that you dont have to click none placeholder in the parent room input box, and better functionality to snap a point to an existing vertex edge, subrooms are really only a divide or break down of the main apartment.

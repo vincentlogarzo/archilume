@@ -150,8 +150,11 @@ class HdrAoiEditor:
         self._image_handle                              = None
         self.ax_legend                                  = None
 
-        # Daylight factor analysis
-        self.df_thresholds:         List[float]         = [0.5, 1.0, 1.5]
+        # Room type tagging (BED / LIVING — LIVING requires sub-rooms)
+        self.room_type:             Optional[str]       = None
+
+        # Daylight factor analysis — thresholds are fixed per room type
+        self.DF_THRESHOLDS          = {'BED': 0.5, 'LIVING': 1.0}
         self._df_image:             Optional[np.ndarray]= None   # (H, W) DF% for current HDR
         self._df_image_cache:       dict                = {}     # hdr_path_str → np.ndarray
         self._room_df_results:      dict                = {}     # room_idx → list of result strings
@@ -398,12 +401,12 @@ class HdrAoiEditor:
                 pass
 
         # Main plot area — maximised to fill available space
-        self.ax = self._axes(0.12, 0.28, 0.86, 0.70)
+        self.ax = self._axes(0.12, 0.28, 0.86, 0.66)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
-        # DF% legend axes: horizontal strip just above the main image (rotated 90°)
-        self.ax_legend = self._axes(0.12, 0.21, 0.86, 0.06)
+        # DF% legend axes: top-right, just above the main image (rotated 90°)
+        self.ax_legend = self._axes(0.62, 0.19, 0.36, 0.08)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(False)
 
@@ -413,6 +416,7 @@ class HdrAoiEditor:
         # Apply initial bevel styling to toggle buttons
         self._style_toggle_button(self.btn_edit_mode, self.edit_mode)
         self._style_toggle_button(self.btn_ortho, self.ortho_mode)
+        self._update_room_type_buttons()
 
         # Initial render
         self._render_section()
@@ -543,8 +547,31 @@ class HdrAoiEditor:
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
 
+        # ── Room Type (below name input) ──────────────────────────────────
+        rtype_y = name_y + lbl_h + gap + input_h + gap
+
+        ax_rtype_lbl = self._axes(prnt_x, rtype_y, prnt_w, lbl_h)
+        ax_rtype_lbl.axis('off')
+        ax_rtype_lbl.text(0, 0.5, "Room Type:", fontsize=9, fontweight='bold', color='#404040')
+
+        rtype_btn_y = rtype_y + lbl_h + gap
+        n_rtype = 2
+        rtype_btn_w = (prnt_w - (n_rtype - 1) * gap) / n_rtype
+
+        ax_bed = self._axes(prnt_x, rtype_btn_y, rtype_btn_w, input_h)
+        self.btn_room_type_bed = Button(ax_bed, 'BED',
+                                        color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_room_type_bed.label.set_fontsize(7)
+        self.btn_room_type_bed.on_clicked(self._on_room_type_bed)
+
+        ax_living = self._axes(prnt_x + (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, input_h)
+        self.btn_room_type_living = Button(ax_living, 'LIVING',
+                                           color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_room_type_living.label.set_fontsize(7)
+        self.btn_room_type_living.on_clicked(self._on_room_type_living)
+
         # ── Status / preview line ──────────────────────────────────────────
-        status_y = name_y + lbl_h + gap + input_h + gap
+        status_y = rtype_y + lbl_h + gap + input_h + gap
 
         ax_preview = self._axes(prnt_x, status_y, prnt_w, sub_h)
         ax_preview.axis('off')
@@ -575,36 +602,16 @@ class HdrAoiEditor:
             btn.on_clicked(cb)
             setattr(self, attr, btn)
 
-        # ── DF Thresholds (%) ────────────────────────────────────────────────
-        df_y  = 0.21
-        df_lbl_w = 0.06
-        df_inp_w = 0.10
-        df_btn_w = 0.025
-
-        ax_df_lbl = self._axes(pl, df_y, df_lbl_w + df_inp_w, lbl_h)
-        ax_df_lbl.axis('off')
-        ax_df_lbl.text(0, 0.5, "DF Thresholds (%):", fontsize=9, fontweight='bold', color='#404040')
-
-        df_refresh_w = 0.06
-        ax_df_input = self._axes(pl, df_y + lbl_h + gap, df_inp_w, input_h)
-        self.df_textbox = TextBox(ax_df_input, '', initial=', '.join(f'{t:g}' for t in self.df_thresholds))
-        self.df_textbox.on_submit(self._on_df_thresholds_submit)
-
-        ax_df_refresh = self._axes(pl + df_inp_w + 0.004, df_y + lbl_h + gap, df_refresh_w, input_h)
-        self.btn_df_refresh = Button(ax_df_refresh, 'Refresh', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_df_refresh.label.set_fontsize(7)
-        self.btn_df_refresh.on_clicked(self._on_df_refresh)
-
         # ── Saved rooms list ─────────────────────────────────────────────────
         list_w    = pw / 3
-        list_hdr_y = 0.29
+        list_hdr_y = 0.22
 
         ax_list_hdr = self._axes(pl, list_hdr_y, list_w, 0.025)
         ax_list_hdr.axis('off')
         ax_list_hdr.text(0, 0.5, "SAVED ROOMS:", fontsize=9, fontweight='bold')
 
         list_top = list_hdr_y + 0.030
-        list_h   = 0.68
+        list_h   = 0.75
         self.ax_list = self._axes(pl, list_top, list_w, list_h)
         self.ax_list.set_facecolor('#FAFAF8')
         self.ax_list.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
@@ -612,10 +619,10 @@ class HdrAoiEditor:
             spine.set_edgecolor('#CCCCCC')
             spine.set_linewidth(0.5)
 
-        # ── Top-right strip: Toggle Image | Edit Mode | Ortho | Reset Zoom | Export
-        tr_x = 0.62               # left edge of the top-right button row
-        tr_w = 0.36               # total width available
-        tr_y = 0.02               # distance from top
+        # ── Bottom strip: Toggle Image | Edit Mode | Ortho | Reset Zoom | Export
+        tr_x = 0.12               # left edge (aligned with image)
+        tr_w = 0.86               # total width (same as image)
+        tr_y = 0.95               # below the main image
         tr_h = 0.030              # button height
         n_tr = 5
         tr_btn_w = (tr_w - (n_tr - 1) * gap) / n_tr
@@ -653,7 +660,7 @@ class HdrAoiEditor:
         self.btn_export.label.set_fontsize(7)
         self.btn_export.on_clicked(self._on_export_report)
 
-        # ── Export progress bar (below top-right buttons, hidden until export) ─
+        # ── Export progress bar (below bottom buttons, hidden until export) ──
         self.ax_progress = self._axes(tr_x, tr_y + tr_h + gap, tr_w, 0.014)
         self.ax_progress.set_xlim(0, 1)
         self.ax_progress.set_ylim(0, 1)
@@ -662,11 +669,11 @@ class HdrAoiEditor:
         self._progress_bar_patch = None
         self._progress_text = None
 
-        # ── Legend (colour key) — below buttons in top-right area ─────────────
-        legend_y = tr_y + tr_h + gap + 0.018
+        # ── Legend (colour key) — top-right area ──────────────────────────────
+        legend_y = 0.02
         legend_w = 0.18
         legend_h = 0.10
-        ax_legend = self._axes(tr_x, legend_y, legend_w, legend_h)
+        ax_legend = self._axes(0.62, legend_y, legend_w, legend_h)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
         ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
@@ -915,25 +922,6 @@ class HdrAoiEditor:
     # DF threshold controls
     # -------------------------------------------------------------------------
 
-    def _on_df_thresholds_submit(self, text):
-        """Parse comma-separated DF thresholds from the text box and refresh."""
-        try:
-            values = [float(v.strip()) for v in text.split(',') if v.strip()]
-            if values:
-                self.df_thresholds = sorted(values)
-        except ValueError:
-            self._update_status("Invalid DF thresholds - use comma-separated numbers", 'red')
-            return
-        self._compute_all_room_df_results()
-        self._render_section(force_full=True)
-
-    def _on_df_refresh(self, event):
-        """Force-refresh all DF results by clearing caches first."""
-        # Invalidate all room DF caches so everything is recomputed
-        for room in self.rooms:
-            room.pop('df_cache', None)
-        self._on_df_thresholds_submit(self.df_textbox.text)
-
     # -------------------------------------------------------------------------
     # Rendering
     # -------------------------------------------------------------------------
@@ -1059,29 +1047,67 @@ class HdrAoiEditor:
         """Return a compact hash string for a list of vertex coordinates."""
         return str([(round(v[0], 2), round(v[1], 2)) for v in vertices])
 
+    def _effective_room_type(self, room: dict) -> Optional[str]:
+        """Return the effective room type for a room (sub-rooms inherit parent's type)."""
+        rtype = room.get('room_type')
+        if rtype:
+            return rtype
+        parent_name = room.get('parent')
+        if parent_name:
+            for r in self.rooms:
+                if r.get('name') == parent_name:
+                    return r.get('room_type')
+        return None
+
+    def _threshold_for_type(self, room_type: Optional[str]) -> Optional[float]:
+        """Return the DF threshold for a given room type, or None if untagged."""
+        return self.DF_THRESHOLDS.get(room_type)
+
     def _compute_all_room_df_results(self):
         """Compute DF threshold results for every room on the current HDR floor.
 
-        Uses per-room caching: each room dict stores a 'df_cache' entry with
-        the computed results, the thresholds used, and a hash of the vertices.
-        Results are only recomputed when vertices or thresholds change.
+        Each room type has a single fixed threshold (BED=0.5%, LIVING=1.0%).
+        Only rooms with a type (or inherited type) get results computed.
         """
         self._room_df_results.clear()
         if self._df_image is None or self._hdr2wpd is None:
             return
-        thresholds_key = tuple(self.df_thresholds)
+        any_new = False
         for i, room in enumerate(self.rooms):
             if room.get('hdr_file') != self.current_hdr_name:
                 continue
             verts = room['vertices']
             if len(verts) < 3:
                 continue
-            lines = self._compute_room_df(room, verts, thresholds_key)
+            eff_type = self._effective_room_type(room)
+            threshold = self._threshold_for_type(eff_type)
+            if threshold is None:
+                continue
+            had_cache = bool(room.get('df_cache'))
+            lines = self._compute_room_df(room, verts, (threshold,))
             self._room_df_results[i] = lines
+            if not had_cache and room.get('df_cache'):
+                any_new = True
+        # Persist newly computed DF caches to the session JSON
+        if any_new:
+            self._save_session()
 
     def _compute_room_df(self, room: dict, verts: list, thresholds_key: tuple) -> list:
-        """Compute DF results for a single room, using its cached df_cache if valid."""
+        """Compute DF results for a single room, using its cached df_cache if valid.
+
+        For LIVING rooms, sub-room areas are subtracted so the result
+        represents only the remaining (non-sub-room) area of the apartment.
+        """
+        # Build hash including child vertices for LIVING rooms
+        is_apartment = room.get('room_type') == 'LIVING'
+        children = self._get_children(room.get('name', '')) if is_apartment else []
+        child_verts_list = [c['vertices'] for c in children if len(c.get('vertices', [])) >= 3]
+
         verts_hash = self._vertices_hash(verts)
+        if child_verts_list:
+            child_hashes = tuple(self._vertices_hash(cv) for cv in child_verts_list)
+            verts_hash = hash((verts_hash, child_hashes))
+
         cache = room.get('df_cache')
         if (cache
                 and cache.get('vertices_hash') == verts_hash
@@ -1089,14 +1115,17 @@ class HdrAoiEditor:
             return cache['display_lines']
 
         # Cache miss — recompute
-        result = self._hdr2wpd.compute_df_for_polygon(
-            self._df_image, verts, thresholds_key)
+        if is_apartment and child_verts_list:
+            result = self._hdr2wpd.compute_df_for_polygon_excluding(
+                self._df_image, verts, child_verts_list, thresholds_key)
+        else:
+            result = self._hdr2wpd.compute_df_for_polygon(
+                self._df_image, verts, thresholds_key)
         total_area = result['total_area_m2']
         lines = []
         for tr in result['thresholds']:
             pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
-            lines.append(f"{tr['area_m2']:.1f} m\u00b2 ({pct:.0f}%) @ {tr['threshold']:g}%")
-        # Store cache on the room dict itself (persisted via _save_session)
+            lines.append(f"{pct:.0f}% @ {tr['threshold']:g}% DF")
         room['df_cache'] = {
             'vertices_hash':  verts_hash,
             'thresholds':     list(thresholds_key),
@@ -1106,9 +1135,21 @@ class HdrAoiEditor:
         return lines
 
     def _invalidate_room_df_cache(self, room_idx: int):
-        """Clear the DF cache for a specific room, forcing recomputation."""
+        """Clear the DF cache for a specific room, forcing recomputation.
+
+        Also invalidates the parent room's cache if the edited room is a
+        sub-room, since LIVING-type parents depend on child geometry.
+        """
         if 0 <= room_idx < len(self.rooms):
-            self.rooms[room_idx].pop('df_cache', None)
+            room = self.rooms[room_idx]
+            room.pop('df_cache', None)
+            # Invalidate parent if this is a sub-room
+            parent_name = room.get('parent')
+            if parent_name:
+                for i, r in enumerate(self.rooms):
+                    if r.get('name') == parent_name:
+                        r.pop('df_cache', None)
+                        break
 
     def _draw_all_room_polygons(self):
         """Draw all room polygons for the current view."""
@@ -1192,7 +1233,7 @@ class HdrAoiEditor:
         self.room_labels.append(label_text)
         self._room_label_cache[idx] = label_text
 
-        # DF results as smaller subtext below the room name
+        # DF results as smaller subtext below the room name (only if room type is set)
         df_lines = self._room_df_results.get(idx, [])
         if df_lines and is_current_floor:
             line_step = self._df_line_step()
@@ -1768,6 +1809,8 @@ class HdrAoiEditor:
         self.selected_room_idx = idx
         room = self.rooms[idx]
         self.name_textbox.set_val(room.get('name', ''))
+        self.room_type = room.get('room_type')
+        self._update_room_type_buttons()
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
         self._render_section()
 
@@ -1776,6 +1819,8 @@ class HdrAoiEditor:
         if self.selected_room_idx is not None:
             self.selected_room_idx = None
             self.name_textbox.set_val('')
+            self.room_type = None
+            self._update_room_type_buttons()
             self._update_status("Ready to draw", 'blue')
             self._update_room_list()
             self.fig.canvas.draw_idle()
@@ -1875,11 +1920,21 @@ class HdrAoiEditor:
             else:
                 print(f"Warning: Parent room '{self.selected_parent}' not found")
 
+        # Auto-assign types: sub-rooms default to BED, parent defaults to LIVING
+        room_type = self.room_type
+        if self.selected_parent:
+            if not room_type:
+                room_type = 'BED'
+            parent_room = self._get_parent_room(self.selected_parent)
+            if parent_room and not parent_room.get('room_type'):
+                parent_room['room_type'] = 'LIVING'
+
         room = {
-            'name':     full_name,
-            'parent':   self.selected_parent,
-            'vertices': vertices,
-            'hdr_file': self.current_hdr_name,
+            'name':      full_name,
+            'parent':    self.selected_parent,
+            'vertices':  vertices,
+            'hdr_file':  self.current_hdr_name,
+            'room_type': room_type,
         }
         self.rooms.append(room)
 
@@ -1890,6 +1945,8 @@ class HdrAoiEditor:
         # Reset drawing state
         self.current_polygon_vertices = []
         self.name_textbox.set_val('')
+        self.room_type = None
+        self._update_room_type_buttons()
         self._update_parent_options()
         self._save_session()
         self._update_room_list()
@@ -2101,6 +2158,48 @@ class HdrAoiEditor:
         self._update_status(f"Orthogonal mode: {state}", 'blue')
         self.fig.canvas.draw_idle()
 
+    def _on_room_type_bed(self, event):
+        """Toggle BED room type."""
+        self.room_type = None if self.room_type == 'BED' else 'BED'
+        self._apply_room_type_change()
+
+    def _on_room_type_living(self, event):
+        """Toggle LIVING room type (only for rooms with sub-rooms).
+
+        LIVING-type rooms have their DF results computed by subtracting
+        sub-room areas from the parent polygon.
+        """
+        if self.room_type == 'LIVING':
+            self.room_type = None
+            self._apply_room_type_change()
+            return
+        # Check the selected room has children
+        if self.selected_room_idx is not None:
+            room = self.rooms[self.selected_room_idx]
+            children = self._get_children(room.get('name', ''))
+            if children:
+                self.room_type = 'LIVING'
+                self._apply_room_type_change()
+                return
+        self._update_status("LIVING type requires a room with sub-rooms", 'orange')
+
+    def _apply_room_type_change(self):
+        """Update UI and persist room type change if a room is selected."""
+        self._update_room_type_buttons()
+        if self.selected_room_idx is not None:
+            self.rooms[self.selected_room_idx]['room_type'] = self.room_type
+            # Invalidate DF cache — threshold depends on room type
+            self._invalidate_room_df_cache(self.selected_room_idx)
+            self._save_session()
+            self._update_room_list()
+            self._render_section(force_full=True)
+        self.fig.canvas.draw_idle()
+
+    def _update_room_type_buttons(self):
+        """Style BED/LIVING buttons to reflect current room_type."""
+        self._style_toggle_button(self.btn_room_type_bed, self.room_type == 'BED')
+        self._style_toggle_button(self.btn_room_type_living, self.room_type == 'LIVING')
+
     def _enter_edit_mode_for_room(self, room_idx: int):
         """Enter edit mode for a specific room."""
         self.edit_room_idx    = room_idx
@@ -2190,16 +2289,19 @@ class HdrAoiEditor:
                                     transform=self.ax_list.transAxes, clip_on=True)
                 self.ax_list.add_patch(bg)
 
+            rtype = room.get('room_type', '')
+            type_tag = f" : {rtype}" if rtype else ""
+
             if is_subroom:
                 parent_name = room.get('parent', '')
                 short_name  = name[len(parent_name) + 1:] if name.startswith(f"{parent_name}_") else name
-                display_text = f"  \u2514 {short_name}"
+                display_text = f"  \u2514 {short_name}{type_tag}"
                 txt_color = '#0D47A1' if not is_sel else '#E65100'
                 fs, fw = 6.5, 'normal'
             else:
                 child_count  = len(children_by_parent.get(name, []))
                 suffix       = f" ({child_count})" if child_count else ""
-                display_text = f"{name}{suffix}"
+                display_text = f"{name}{suffix}{type_tag}"
                 txt_color = '#1B5E20' if not is_sel else '#E65100'
                 fs, fw = 7, 'bold'
 
@@ -2238,10 +2340,9 @@ class HdrAoiEditor:
         for (y_min, y_max, room_idx) in self._room_list_hit_boxes:
             if y_min <= y <= y_max:
                 if self.selected_room_idx == room_idx:
-                    self.selected_room_idx = None
+                    self._deselect_room()
                 else:
-                    self.selected_room_idx = room_idx
-                self._render_section()
+                    self._select_room(room_idx)
                 self._update_room_list()
                 return
 
@@ -2254,7 +2355,7 @@ class HdrAoiEditor:
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             'image_dir':      str(self.image_dir),
-            'df_thresholds':  self.df_thresholds,
+            'df_thresholds':  self.DF_THRESHOLDS,
             'rooms':          self.rooms,
         }
         with open(self.session_path, 'w') as f:
@@ -2271,9 +2372,7 @@ class HdrAoiEditor:
             with open(self.session_path, 'r') as f:
                 data = json.load(f)
             self.rooms = data.get('rooms', [])
-            saved_thresholds = data.get('df_thresholds')
-            if saved_thresholds:
-                self.df_thresholds = saved_thresholds
+            # df_thresholds from old sessions are ignored — now fixed per room type
             source = "session"
             cached = sum(1 for r in self.rooms if r.get('df_cache'))
             if cached:
@@ -2390,8 +2489,11 @@ class HdrAoiEditor:
 
                 # --- Excel report ---
                 progress['phase'] = 'excel'
+                room_type_map = {r.get('name', ''): r.get('room_type', '')
+                                 for r in self.rooms if r.get('room_type')}
                 self._hdr2wpd._generate_daylight_excel_report(
-                    df_thresholds=tuple(self.df_thresholds))
+                    df_thresholds=tuple(sorted(set(self.DF_THRESHOLDS.values()))),
+                    room_types=room_type_map)
                 progress['phase'] = 'done'
             except Exception as exc:
                 progress['error'] = exc

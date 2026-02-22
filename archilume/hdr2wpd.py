@@ -326,6 +326,75 @@ class Hdr2Wpd:
             'thresholds': threshold_results,
         }
 
+    def compute_df_for_polygon_excluding(
+        self,
+        df_image: np.ndarray,
+        pixel_vertices: List[list],
+        exclude_polygons: List[List[list]],
+        df_thresholds: tuple = (0.5, 1.0, 1.5),
+    ) -> dict:
+        """Compute DF results for a polygon with sub-room areas excluded.
+
+        Rasterises the parent polygon and all child polygons, then uses a
+        boolean mask to subtract child pixels from the parent. This gives the
+        "remaining" apartment area not covered by any sub-room.
+
+        Args:
+            df_image:         (H, W) float32 array of DF% values.
+            pixel_vertices:   Parent polygon vertices [[px, py], …].
+            exclude_polygons: List of child polygon vertex lists to subtract.
+            df_thresholds:    DF% thresholds to evaluate.
+
+        Returns:
+            Same dict format as compute_df_for_polygon.
+        """
+        h, w = df_image.shape
+        # Rasterise parent
+        xs = [int(round(v[0])) for v in pixel_vertices]
+        ys = [int(round(v[1])) for v in pixel_vertices]
+        rr, cc = polygon(ys, xs, shape=(h, w))
+
+        # Build mask for parent pixels
+        mask = np.zeros((h, w), dtype=bool)
+        mask[rr, cc] = True
+
+        # Subtract each child polygon
+        for child_verts in exclude_polygons:
+            if len(child_verts) < 3:
+                continue
+            cxs = [int(round(v[0])) for v in child_verts]
+            cys = [int(round(v[1])) for v in child_verts]
+            crr, ccc = polygon(cys, cxs, shape=(h, w))
+            mask[crr, ccc] = False
+
+        # Extract remaining pixels
+        remaining = np.argwhere(mask)
+        total_pixels = len(remaining)
+
+        threshold_results = []
+        if total_pixels > 0:
+            df_vals = df_image[remaining[:, 0], remaining[:, 1]]
+            for t in df_thresholds:
+                passing = int((df_vals >= t).sum())
+                threshold_results.append({
+                    'threshold': t,
+                    'passing_pixels': passing,
+                    'area_m2': round(passing * self.area_per_pixel, 2),
+                })
+        else:
+            for t in df_thresholds:
+                threshold_results.append({
+                    'threshold': t,
+                    'passing_pixels': 0,
+                    'area_m2': 0.0,
+                })
+
+        return {
+            'total_pixels': total_pixels,
+            'total_area_m2': round(total_pixels * self.area_per_pixel, 2),
+            'thresholds': threshold_results,
+        }
+
     def daylight_wpd_extraction(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5)) -> None:
         """Extract per-pixel daylight factor (DF%) from single-HDR-per-view renders.
 
@@ -429,7 +498,8 @@ class Hdr2Wpd:
 
                 print(f"    {aoi_file.stem}: {total_pixels} px -> {wpd_path.name}")
 
-    def _generate_daylight_excel_report(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5)) -> None:
+    def _generate_daylight_excel_report(self, df_thresholds: tuple[float, ...] = (0.5, 1.0, 1.5),
+                                        room_types: dict | None = None) -> None:
         """Generate Excel report from daylight factor .wpd summary files.
 
         Reads each compact .wpd file (key: value format with pre-computed stats)
@@ -438,7 +508,10 @@ class Hdr2Wpd:
 
         Args:
             df_thresholds: DF% compliance thresholds for summary columns.
+            room_types: Optional dict mapping room name → type string (e.g. 'BED', 'LIVING').
         """
+        if room_types is None:
+            room_types = {}
         print("\n" + "=" * 80 + "\nGENERATING DAYLIGHT EXCEL REPORT\n" + "=" * 80)
 
         wpd_files = sorted(self.wpd_dir.glob("*.wpd"))
@@ -505,16 +578,17 @@ class Hdr2Wpd:
                     continue
 
                 row = {
-                    'aoi': stem,
-                    'total_pixels': total_pixels,
-                    'area_m2': round(float(stats.get('area_m2', 0)), 4),
-                    'mean_illuminance_lux': round(float(stats.get('mean_illuminance_lux', 0)), 2),
-                    'min_illuminance_lux': round(float(stats.get('min_illuminance_lux', 0)), 2),
-                    'max_illuminance_lux': round(float(stats.get('max_illuminance_lux', 0)), 2),
-                    'mean_df_percent': round(float(stats.get('mean_df_percent', 0)), 4),
-                    'min_df_percent': round(float(stats.get('min_df_percent', 0)), 4),
-                    'max_df_percent': round(float(stats.get('max_df_percent', 0)), 4),
-                    'median_df_percent': round(float(stats.get('median_df_percent', 0)), 4),
+                    'Room': stem,
+                    'Room Type': room_types.get(stem, ''),
+                    'Total Pixels': total_pixels,
+                    'Area (m\u00b2)': round(float(stats.get('area_m2', 0)), 2),
+                    'Mean Illuminance (lux)': round(float(stats.get('mean_illuminance_lux', 0)), 2),
+                    'Min Illuminance (lux)': round(float(stats.get('min_illuminance_lux', 0)), 2),
+                    'Max Illuminance (lux)': round(float(stats.get('max_illuminance_lux', 0)), 2),
+                    'Mean DF (%)': round(float(stats.get('mean_df_percent', 0)), 4),
+                    'Min DF (%)': round(float(stats.get('min_df_percent', 0)), 4),
+                    'Max DF (%)': round(float(stats.get('max_df_percent', 0)), 4),
+                    'Median DF (%)': round(float(stats.get('median_df_percent', 0)), 4),
                 }
 
                 # Threshold compliance: rasterize polygon against DF image
@@ -532,10 +606,10 @@ class Hdr2Wpd:
                         df_vals = df_image[rr, cc]
                         for t in df_thresholds:
                             passing = int((df_vals >= t).sum())
-                            label = f"{t:g}pct"
-                            row[f'pixels_df_gte_{label}'] = passing
-                            row[f'pct_area_df_gte_{label}'] = round(passing / total_pixels * 100, 2)
-                            row[f'area_df_gte_{label}_m2'] = round(passing * self.area_per_pixel, 4)
+                            area_m2 = round(passing * self.area_per_pixel, 2)
+                            pct = round(passing / total_pixels * 100, 1) if total_pixels > 0 else 0.0
+                            row[f'Area \u2265 {t:g}% DF (m\u00b2)'] = area_m2
+                            row[f'% Area \u2265 {t:g}% DF'] = pct
 
                 summary_rows.append(row)
 
@@ -547,23 +621,24 @@ class Hdr2Wpd:
             if total_pixels == 0:
                 continue
             summary_rows.append({
-                'aoi': stem,
-                'total_pixels': total_pixels,
-                'area_m2': round(float(stats.get('area_m2', 0)), 4),
-                'mean_illuminance_lux': round(float(stats.get('mean_illuminance_lux', 0)), 2),
-                'min_illuminance_lux': round(float(stats.get('min_illuminance_lux', 0)), 2),
-                'max_illuminance_lux': round(float(stats.get('max_illuminance_lux', 0)), 2),
-                'mean_df_percent': round(float(stats.get('mean_df_percent', 0)), 4),
-                'min_df_percent': round(float(stats.get('min_df_percent', 0)), 4),
-                'max_df_percent': round(float(stats.get('max_df_percent', 0)), 4),
-                'median_df_percent': round(float(stats.get('median_df_percent', 0)), 4),
+                'Room': stem,
+                'Room Type': room_types.get(stem, ''),
+                'Total Pixels': total_pixels,
+                'Area (m\u00b2)': round(float(stats.get('area_m2', 0)), 2),
+                'Mean Illuminance (lux)': round(float(stats.get('mean_illuminance_lux', 0)), 2),
+                'Min Illuminance (lux)': round(float(stats.get('min_illuminance_lux', 0)), 2),
+                'Max Illuminance (lux)': round(float(stats.get('max_illuminance_lux', 0)), 2),
+                'Mean DF (%)': round(float(stats.get('mean_df_percent', 0)), 4),
+                'Min DF (%)': round(float(stats.get('min_df_percent', 0)), 4),
+                'Max DF (%)': round(float(stats.get('max_df_percent', 0)), 4),
+                'Median DF (%)': round(float(stats.get('median_df_percent', 0)), 4),
             })
 
         if not summary_rows:
             print("No valid data found in .wpd files.")
             return
 
-        summary_df = pd.DataFrame(summary_rows).sort_values('aoi')
+        summary_df = pd.DataFrame(summary_rows).sort_values('Room')
 
         # Write Excel file
         area_per_pixel_mm2 = self.area_per_pixel * 1_000_000
