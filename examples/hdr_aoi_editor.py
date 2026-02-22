@@ -43,7 +43,11 @@ if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
+    # FIXME: the living room type tag button does not work, implement a multi click option, to select multiple or change all types to one, then a user can just change living rooms. 
+    
     # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points.
+
+    # TODO: ensure all results are extract to excel report, every pixel inside each AOI is extracted to excel, and its illuminance and DF% results, therefore a user can calculate it themselves if they wish to validate. They would need only to calcualt the number of pixels above a certain threshodl and divide by the total number etc. 
 
     # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel.
 

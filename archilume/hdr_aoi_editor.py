@@ -147,6 +147,18 @@ class HdrAoiEditor:
         self._edit_vertex_scatter                       = None
         self._last_view_mode                            = None
         self._last_hover_check                          = 0.0
+        self._last_drag_draw:       float               = 0.0
+        # Pre-built hover arrays (rebuilt on full render)
+        self._hover_all_verts:      Optional[np.ndarray]= None
+        self._hover_vert_room_idx:  Optional[np.ndarray]= None
+        self._hover_vert_local_idx: Optional[np.ndarray]= None
+        self._hover_edge_starts:    Optional[np.ndarray]= None
+        self._hover_edge_ends:      Optional[np.ndarray]= None
+        self._hover_edge_room_idx_arr: Optional[np.ndarray]= None
+        self._hover_edge_local_idx: Optional[np.ndarray]= None
+        # Blitting state for drag operations
+        self._blit_background                           = None
+        self._blit_active:          bool                = False
         self._image_handle                              = None
         self.ax_legend                                  = None
 
@@ -163,9 +175,7 @@ class HdrAoiEditor:
         # Stored on each room dict as 'df_cache' = {'thresholds': [...], 'results': [...], 'vertices_hash': str}
         # This avoids recomputation when rooms haven't changed.
 
-    # -------------------------------------------------------------------------
-    # Layout helper — top-left coordinate system
-    # -------------------------------------------------------------------------
+    # === LAYOUT HELPERS ========================================================
 
     def _axes(self, x, y, w, h):
         """Create figure axes at (x, y) measured from top-left corner.
@@ -175,9 +185,90 @@ class HdrAoiEditor:
         """
         return self.fig.add_axes((x, 1.0 - y - h, w, h))
 
-    # -------------------------------------------------------------------------
-    # Coordinate mapping (world metres ↔ pixel)
-    # -------------------------------------------------------------------------
+    def _make_button(self, x, y, w, h, label, callback,
+                     fontsize=7, color=None, hovercolor=None):
+        """Create a styled Button widget and wire its callback."""
+        ax = self._axes(x, y, w, h)
+        btn = Button(ax, label,
+                     color=color or self._btn_color,
+                     hovercolor=hovercolor or self._btn_hover)
+        btn.label.set_fontsize(fontsize)
+        btn.on_clicked(callback)
+        return btn
+
+    def _make_label(self, x, y, w, h, text, fontsize=9, **kwargs):
+        """Create a text label on an invisible axes."""
+        ax = self._axes(x, y, w, h)
+        ax.axis('off')
+        txt = ax.text(0, 0.5, text, fontsize=fontsize, fontweight='bold',
+                      color='#404040', **kwargs)
+        return ax, txt
+
+    def _is_room_on_current_hdr(self, room: dict) -> bool:
+        """Check whether a room belongs to the currently displayed HDR file."""
+        return room.get('hdr_file') == self.current_hdr_name
+
+    def _reset_hover_state(self):
+        """Clear all hover and drag tracking variables."""
+        self.hover_room_idx      = None
+        self.hover_vertex_idx    = None
+        self.hover_edge_room_idx = None
+        self.hover_edge_idx      = None
+        self.hover_edge_point    = None
+        self.edit_room_idx       = None
+        self.edit_vertex_idx     = None
+        self.edit_edge_room_idx  = None
+        self.edit_edge_idx       = None
+        self.edit_edge_start     = None
+
+    def _start_blit_drag(self, room_idx: int):
+        """Capture background for blitting before starting a drag operation."""
+        canvas = self.fig.canvas
+        if not getattr(canvas, 'supports_blit', False):
+            return
+        patch = self._room_patch_cache.get(room_idx)
+        if patch is None:
+            return
+        # Hide the patch, draw the static background, then restore
+        patch.set_visible(False)
+        label = self._room_label_cache.get(room_idx)
+        if label is not None:
+            label.set_visible(False)
+        canvas.draw()
+        self._blit_background = canvas.copy_from_bbox(self.ax.bbox)
+        patch.set_visible(True)
+        if label is not None:
+            label.set_visible(True)
+        self._blit_active = True
+
+    def _end_blit_drag(self):
+        """Clear blitting state after a drag ends."""
+        self._blit_active = False
+        self._blit_background = None
+
+    def _update_dragged_patch(self, room_idx: int):
+        """Update a cached patch/label after vertex or edge drag. Returns True if handled.
+        Uses blitting when available for fast partial redraws.
+        Label position is deferred to drag-end (force_full render)."""
+        patch = self._room_patch_cache.get(room_idx)
+        if patch is not None:
+            patch.set_xy(self.rooms[room_idx]['vertices'])
+            # Centroid/label update deferred to button release (_render_section force_full)
+            now = time.monotonic()
+            if now - self._last_drag_draw >= 0.033:  # ~30 fps throttle
+                self._last_drag_draw = now
+                canvas = self.fig.canvas
+                if self._blit_active and self._blit_background is not None:
+                    canvas.restore_region(self._blit_background)
+                    self.ax.draw_artist(patch)
+                    canvas.blit(self.ax.bbox)
+                else:
+                    canvas.draw_idle()
+            return True
+        self._render_section(force_full=True)
+        return True
+
+    # === COORDINATE MAPPING ====================================================
 
     def _load_from_aoi_files(self, aoi_dir: Path):
         """Load room boundaries from .aoi files (pixel coordinates already included).
@@ -230,9 +321,7 @@ class HdrAoiEditor:
 
         print(f"Loaded {len(self.rooms)} rooms from {len(aoi_files)} .aoi files in {aoi_dir}")
 
-    # -------------------------------------------------------------------------
-    # Image scanning and loading
-    # -------------------------------------------------------------------------
+    # === IMAGE SCANNING & LOADING ==============================================
 
     def _scan_hdr_files(self) -> List[dict]:
         """Scan image_dir for HDR files and associated TIFFs.
@@ -349,9 +438,7 @@ class HdrAoiEditor:
                 return legend_path
         return None
 
-    # -------------------------------------------------------------------------
-    # Launch
-    # -------------------------------------------------------------------------
+    # === LAUNCH ================================================================
 
     _WINDOW_TITLE = "Archilume - HDR AOI Editor"
 
@@ -448,146 +535,117 @@ class HdrAoiEditor:
         print("===========================\n")
         plt.show()
 
-    # -------------------------------------------------------------------------
-    # UI setup
-    # -------------------------------------------------------------------------
+    # === UI SETUP ==============================================================
 
     def _setup_side_panel(self):
-        """Create the side panel with inputs, buttons, and room list.
-
-        All positions use _axes(x, y, w, h) where x/y are from the top-left
-        corner of the figure. Increasing x → right, increasing y → down.
-        """
-        pl = 0.02   # panel left (x)
-        pw = 0.28   # panel width
-
+        """Create the side panel with inputs, buttons, and room list."""
         self._btn_color    = '#E8E8E0'
         self._btn_hover    = '#D8D8D0'
-        self._btn_on_color = '#8A8A84'   # dark grey when ON (sunken)
+        self._btn_on_color = '#8A8A84'
         self._btn_on_hover = '#7A7A74'
 
-        lbl_h   = 0.016
-        input_h = 0.032
-        gap     = 0.008
-        sub_h   = 0.014
+        self._setup_instructions_panel()
+        status_y = self._setup_input_panels()
+        self._setup_action_buttons(status_y)
+        self._setup_room_list_panel()
+        self._setup_bottom_toolbar()
+        self._setup_colour_key_legend()
 
-        # ── Instructions (top-left) ────────────────────────────────────────────
-        instr_w = 0.12
-        ax_instr = self._axes(pl, 0.02, instr_w, 0.15)
-        ax_instr.axis('off')
-        ax_instr.patch.set_visible(False)
-        ax_instr.text(0, 0.95, "HDR BOUNDARY EDITOR", fontsize=9, fontweight='bold',
-                      color='#404040', transform=ax_instr.transAxes)
+    # Layout constants shared across sub-methods
+    _PL     = 0.02    # panel left
+    _PW     = 0.28    # panel width
+    _LBL_H  = 0.016
+    _INP_H  = 0.032
+    _GAP    = 0.008
+    _SUB_H  = 0.014
+    _ROW_Y  = 0.02    # top row y
+    _INSTR_W = 0.12
+    _COL2_X = _PL + _INSTR_W + 0.01
+    _PRNT_X = _COL2_X + 0.18
+    _PRNT_W = 0.150
+
+    def _setup_instructions_panel(self):
+        """Create the keyboard shortcut reference panel (top-left)."""
+        ax = self._axes(self._PL, 0.02, self._INSTR_W, 0.15)
+        ax.axis('off')
+        ax.patch.set_visible(False)
+        ax.text(0, 0.95, "HDR BOUNDARY EDITOR", fontsize=9, fontweight='bold',
+                color='#404040', transform=ax.transAxes)
         controls = [
-            ("\u2191/\u2193", "Navigate HDR files"),
-            ("t",             "Toggle image (HDR / TIFFs)"),
-            ("Left-click",    "Place vertex / drag"),
-            ("Shift+click",   "Drag edge (edit mode)"),
-            ("Right-click",   "Select existing room"),
-            ("Scroll",        "Zoom centred on cursor"),
-            ("s",             "Save room / confirm edit"),
-            ("d",             "Delete selected room"),
-            ("e",             "Toggle Edit Mode"),
-            ("ctrl+z",        "Undo last edit"),
-            ("o",             "Toggle orthogonal lines"),
-            ("r",             "Reset zoom"),
+            ("\u2191/\u2193", "Navigate HDR files"),   ("t",           "Toggle image (HDR / TIFFs)"),
+            ("Left-click",    "Place vertex / drag"),   ("Shift+click", "Drag edge (edit mode)"),
+            ("Right-click",   "Select existing room"),  ("Scroll",      "Zoom centred on cursor"),
+            ("s",             "Save room / confirm edit"), ("d",        "Delete selected room"),
+            ("e",             "Toggle Edit Mode"),      ("ctrl+z",      "Undo last edit"),
+            ("o",             "Toggle orthogonal lines"), ("r",         "Reset zoom"),
             ("q",             "Quit"),
         ]
         for i, (key, desc) in enumerate(controls):
             y = 0.87 - i * 0.08
-            ax_instr.text(0.00, y, key,  fontsize=7.5, color='#404040', fontweight='bold',
-                          transform=ax_instr.transAxes)
-            ax_instr.text(0.38, y, desc, fontsize=7.5, color='#505050',
-                          transform=ax_instr.transAxes)
+            ax.text(0.00, y, key,  fontsize=7.5, color='#404040', fontweight='bold', transform=ax.transAxes)
+            ax.text(0.38, y, desc, fontsize=7.5, color='#505050', transform=ax.transAxes)
 
-        # ── HDR FILES nav (top, right of instructions) ─────────────────────
-        col2_x  = pl + instr_w + 0.01
-        row_y   = 0.02
+    def _setup_input_panels(self) -> float:
+        """Create HDR nav, parent, name, room-type inputs. Returns status_y."""
+        col2_x, row_y = self._COL2_X, self._ROW_Y
+        lbl_h, inp_h, gap = self._LBL_H, self._INP_H, self._GAP
+        prnt_x, prnt_w = self._PRNT_X, self._PRNT_W
         arrow_w = 0.025
-        arrow_h = input_h * 2 + gap
+        arrow_h = inp_h * 2 + gap
 
-        ax_hdr_hdr = self._axes(col2_x, row_y, arrow_w * 2 + 0.004, lbl_h)
-        ax_hdr_hdr.axis('off')
-        ax_hdr_hdr.text(0, 0.5, "HDR FILES:", fontsize=9, fontweight='bold', color='#404040')
-
+        # HDR FILES label + nav arrows + list
+        self._make_label(col2_x, row_y, arrow_w * 2 + 0.004, lbl_h, "HDR FILES:")
         arrows_y = row_y + lbl_h + gap
-        ax_next_hdr = self._axes(col2_x, arrows_y, arrow_w, arrow_h)
-        self.btn_next_hdr = Button(ax_next_hdr, '\u25b2', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_next_hdr.on_clicked(self._on_next_hdr_click)
-
-        ax_prev_hdr = self._axes(col2_x + arrow_w + 0.004, arrows_y, arrow_w, arrow_h)
-        self.btn_prev_hdr = Button(ax_prev_hdr, '\u25bc', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_prev_hdr.on_clicked(self._on_prev_hdr_click)
-
+        self.btn_next_hdr = self._make_button(col2_x, arrows_y, arrow_w, arrow_h,
+                                              '\u25b2', self._on_next_hdr_click)
+        self.btn_prev_hdr = self._make_button(col2_x + arrow_w + 0.004, arrows_y, arrow_w, arrow_h,
+                                              '\u25bc', self._on_prev_hdr_click)
         hdr_list_x = col2_x + arrow_w * 2 + 0.008
         self.ax_hdr_list = self._axes(hdr_list_x, row_y, 0.060, lbl_h + gap + arrow_h)
         self.ax_hdr_list.axis('off')
 
-        # ── Parent Apartment (right of HDR files) ─────────────────────────
-        prnt_x = col2_x + 0.18
-        prnt_w = 0.150
+        # Parent Apartment
+        self._make_label(prnt_x, row_y, prnt_w, lbl_h, "Parent Apartment:")
+        self.btn_parent = self._make_button(prnt_x, row_y + lbl_h + gap, prnt_w, inp_h,
+                                            '(None)', self._on_parent_cycle, fontsize=8)
 
-        ax_parent_lbl = self._axes(prnt_x, row_y, prnt_w, lbl_h)
-        ax_parent_lbl.axis('off')
-        ax_parent_lbl.text(0, 0.5, "Parent Apartment:", fontsize=9, fontweight='bold')
-
-        ax_parent_btn = self._axes(prnt_x, row_y + lbl_h + gap, prnt_w, input_h)
-        self.btn_parent = Button(ax_parent_btn, '(None)', color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_parent.label.set_fontsize(8)
-        self.btn_parent.on_clicked(self._on_parent_cycle)
-
-        # ── Apartment Name (below parent) ──────────────────────────────────
-        name_y = row_y + lbl_h + gap + input_h + gap
-
-        ax_name_lbl = self._axes(prnt_x, name_y, prnt_w, lbl_h)
-        ax_name_lbl.axis('off')
-        self.name_label_text = ax_name_lbl.text(0, 0.5, "Apartment Name:", fontsize=9, fontweight='bold')
-
-        ax_name = self._axes(prnt_x, name_y + lbl_h + gap, prnt_w, input_h)
+        # Apartment Name
+        name_y = row_y + lbl_h + gap + inp_h + gap
+        _, self.name_label_text = self._make_label(prnt_x, name_y, prnt_w, lbl_h, "Apartment Name:")
+        ax_name = self._axes(prnt_x, name_y + lbl_h + gap, prnt_w, inp_h)
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
 
-        # ── Room Type (below name input) ──────────────────────────────────
-        rtype_y = name_y + lbl_h + gap + input_h + gap
-
-        ax_rtype_lbl = self._axes(prnt_x, rtype_y, prnt_w, lbl_h)
-        ax_rtype_lbl.axis('off')
-        ax_rtype_lbl.text(0, 0.5, "Room Type:", fontsize=9, fontweight='bold', color='#404040')
-
+        # Room Type (BED / LIVING)
+        rtype_y = name_y + lbl_h + gap + inp_h + gap
+        self._make_label(prnt_x, rtype_y, prnt_w, lbl_h, "Room Type:")
         rtype_btn_y = rtype_y + lbl_h + gap
-        n_rtype = 2
-        rtype_btn_w = (prnt_w - (n_rtype - 1) * gap) / n_rtype
+        rtype_btn_w = (prnt_w - gap) / 2
+        self.btn_room_type_bed = self._make_button(
+            prnt_x, rtype_btn_y, rtype_btn_w, inp_h, 'BED',
+            lambda e: self._on_room_type_toggle('BED'))
+        self.btn_room_type_living = self._make_button(
+            prnt_x + rtype_btn_w + gap, rtype_btn_y, rtype_btn_w, inp_h, 'LIVING',
+            lambda e: self._on_room_type_toggle('LIVING', requires_children=True))
 
-        ax_bed = self._axes(prnt_x, rtype_btn_y, rtype_btn_w, input_h)
-        self.btn_room_type_bed = Button(ax_bed, 'BED',
-                                        color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_room_type_bed.label.set_fontsize(7)
-        self.btn_room_type_bed.on_clicked(self._on_room_type_bed)
-
-        ax_living = self._axes(prnt_x + (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, input_h)
-        self.btn_room_type_living = Button(ax_living, 'LIVING',
-                                           color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_room_type_living.label.set_fontsize(7)
-        self.btn_room_type_living.on_clicked(self._on_room_type_living)
-
-        # ── Status / preview line ──────────────────────────────────────────
-        status_y = rtype_y + lbl_h + gap + input_h + gap
-
-        ax_preview = self._axes(prnt_x, status_y, prnt_w, sub_h)
+        # Status / preview
+        status_y = rtype_y + lbl_h + gap + inp_h + gap
+        ax_preview = self._axes(prnt_x, status_y, prnt_w, self._SUB_H)
         ax_preview.axis('off')
         self.name_preview_text = ax_preview.text(0, 0.5, "", fontsize=8, color='#666666', style='italic')
-
-        ax_status = self._axes(prnt_x, status_y, prnt_w, sub_h)
+        ax_status = self._axes(prnt_x, status_y, prnt_w, self._SUB_H)
         ax_status.axis('off')
         self.status_text = ax_status.text(
             0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
+        return status_y
 
-        # ── Action buttons (right of parent/name) ─────────────────────────
-        stack_x = prnt_x + prnt_w + 0.012
+    def _setup_action_buttons(self, status_y: float):
+        """Create Save / Clear / Delete button stack (right of inputs)."""
+        stack_x = self._PRNT_X + self._PRNT_W + 0.012
         stack_w = 0.090
-        total_h = status_y + sub_h - row_y
-        n_btns  = 3
+        total_h = status_y + self._SUB_H - self._ROW_Y
         btn_gap = 0.004
+        n_btns  = 3
         each_h  = (total_h - btn_gap * (n_btns - 1)) / n_btns
 
         for i, (attr, label, cb) in enumerate([
@@ -595,72 +653,51 @@ class HdrAoiEditor:
             ('btn_clear',  'Clear Current',   self._on_clear_click),
             ('btn_delete', 'Delete Selected', self._on_delete_click),
         ]):
-            btn_y  = row_y + i * (each_h + btn_gap)
-            ax_btn = self._axes(stack_x, btn_y, stack_w, each_h)
-            btn = Button(ax_btn, label, color=self._btn_color, hovercolor=self._btn_hover)
-            btn.label.set_fontsize(7)
-            btn.on_clicked(cb)
-            setattr(self, attr, btn)
+            setattr(self, attr, self._make_button(
+                stack_x, self._ROW_Y + i * (each_h + btn_gap), stack_w, each_h, label, cb))
 
-        # ── Saved rooms list ─────────────────────────────────────────────────
-        list_w    = pw / 3
+    def _setup_room_list_panel(self):
+        """Create the scrollable saved-rooms list (left side)."""
+        list_w     = self._PW / 3
         list_hdr_y = 0.22
-
-        ax_list_hdr = self._axes(pl, list_hdr_y, list_w, 0.025)
-        ax_list_hdr.axis('off')
-        ax_list_hdr.text(0, 0.5, "SAVED ROOMS:", fontsize=9, fontweight='bold')
-
+        self._make_label(self._PL, list_hdr_y, list_w, 0.025, "SAVED ROOMS:")
         list_top = list_hdr_y + 0.030
-        list_h   = 0.75
-        self.ax_list = self._axes(pl, list_top, list_w, list_h)
+        self.ax_list = self._axes(self._PL, list_top, list_w, 0.75)
         self.ax_list.set_facecolor('#FAFAF8')
         self.ax_list.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         for spine in self.ax_list.spines.values():
             spine.set_edgecolor('#CCCCCC')
             spine.set_linewidth(0.5)
 
-        # ── Bottom strip: Toggle Image | Edit Mode | Ortho | Reset Zoom | Export
-        tr_x = 0.12               # left edge (aligned with image)
-        tr_w = 0.86               # total width (same as image)
-        tr_y = 0.95               # below the main image
-        tr_h = 0.030              # button height
-        n_tr = 5
+    def _setup_bottom_toolbar(self):
+        """Create the bottom button strip and progress bar."""
+        gap  = self._GAP
+        tr_x, tr_w, tr_y, tr_h = 0.12, 0.86, 0.95, 0.030
+        n_tr     = 5
         tr_btn_w = (tr_w - (n_tr - 1) * gap) / n_tr
 
-        ax_toggle = self._axes(tr_x, tr_y, tr_btn_w, tr_h)
-        self.btn_image_toggle = Button(ax_toggle, 'Toggle Image Layers: HDR (Press T)',
-                                       color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_image_toggle.label.set_fontsize(7)
-        self.btn_image_toggle.on_clicked(self._on_image_toggle_click)
+        self.btn_image_toggle = self._make_button(
+            tr_x, tr_y, tr_btn_w, tr_h,
+            'Toggle Image Layers: HDR (Press T)', self._on_image_toggle_click)
+        self.btn_edit_mode = self._make_button(
+            tr_x + (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            'Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
 
-        ax_edit = self._axes(tr_x + (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
-        self.btn_edit_mode = Button(ax_edit, 'Edit Mode: OFF (Press E)',
-                                    color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_edit_mode.label.set_fontsize(7)
-        self.btn_edit_mode.on_clicked(self._on_edit_mode_toggle)
-
-        ax_ortho = self._axes(tr_x + 2 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
         ortho_label = 'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)'
         ortho_color = self._btn_on_color if self.ortho_mode else self._btn_color
         ortho_hover = self._btn_on_hover if self.ortho_mode else self._btn_hover
-        self.btn_ortho = Button(ax_ortho, ortho_label,
-                                color=ortho_color, hovercolor=ortho_hover)
-        self.btn_ortho.label.set_fontsize(7)
-        self.btn_ortho.on_clicked(self._on_ortho_toggle)
+        self.btn_ortho = self._make_button(
+            tr_x + 2 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            ortho_label, self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
 
-        ax_reset = self._axes(tr_x + 3 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
-        self.btn_reset_zoom = Button(ax_reset, 'Reset Zoom',
-                                     color=self._btn_color, hovercolor=self._btn_hover)
-        self.btn_reset_zoom.label.set_fontsize(7)
-        self.btn_reset_zoom.on_clicked(self._on_reset_zoom_click)
+        self.btn_reset_zoom = self._make_button(
+            tr_x + 3 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            'Reset Zoom', self._on_reset_zoom_click)
+        self.btn_export = self._make_button(
+            tr_x + 4 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            'Export Report', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
 
-        ax_export = self._axes(tr_x + 4 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h)
-        self.btn_export = Button(ax_export, 'Export Report',
-                                 color='#C8E6C9', hovercolor='#A5D6A7')
-        self.btn_export.label.set_fontsize(7)
-        self.btn_export.on_clicked(self._on_export_report)
-
-        # ── Export progress bar (below bottom buttons, hidden until export) ──
+        # Progress bar (hidden until export)
         self.ax_progress = self._axes(tr_x, tr_y + tr_h + gap, tr_w, 0.014)
         self.ax_progress.set_xlim(0, 1)
         self.ax_progress.set_ylim(0, 1)
@@ -669,31 +706,23 @@ class HdrAoiEditor:
         self._progress_bar_patch = None
         self._progress_text = None
 
-        # ── Legend (colour key) — top-right area ──────────────────────────────
-        legend_y = 0.02
-        legend_w = 0.18
-        legend_h = 0.10
-        ax_legend = self._axes(0.62, legend_y, legend_w, legend_h)
+    def _setup_colour_key_legend(self):
+        """Create the colour-key legend (top-right)."""
+        ax_legend = self._axes(0.62, 0.02, 0.18, 0.10)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
         ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
                        transform=ax_legend.transAxes)
-
-        legend_items = [
-            ('red',      0.6,  'Room (current HDR)'),
-            ('yellow',   0.5,  'Selected'),
-            ('cyan',     0.5,  'Being edited'),
-            ('magenta',  0.5,  'Hover (edit mode)'),
-            ('gray',     0.25, 'Other HDR file'),
+        items = [
+            ('red', 0.6, 'Room (current HDR)'), ('yellow', 0.5, 'Selected'),
+            ('cyan', 0.5, 'Being edited'), ('magenta', 0.5, 'Hover (edit mode)'),
+            ('gray', 0.25, 'Other HDR file'),
         ]
-        row_h  = 0.27   # vertical step between rows
-        swatch = 0.14   # swatch height
-        for i, (color, alpha, label) in enumerate(legend_items):
-            col    = i // 3
-            row    = i % 3
+        for i, (color, alpha, label) in enumerate(items):
+            col, row = i // 3, i % 3
             x_base = 0.01 + col * 0.50
-            y0     = 0.74 - row * row_h
-            rect = FancyBboxPatch((x_base, y0 - swatch / 2), 0.04, swatch,
+            y0     = 0.74 - row * 0.27
+            rect = FancyBboxPatch((x_base, y0 - 0.07), 0.04, 0.14,
                                   boxstyle='round,pad=0.01',
                                   facecolor=color, edgecolor=color, alpha=alpha,
                                   transform=ax_legend.transAxes, clip_on=False)
@@ -701,9 +730,7 @@ class HdrAoiEditor:
             ax_legend.text(x_base + 0.06, y0, label, fontsize=6, color='#404040',
                            va='center', transform=ax_legend.transAxes)
 
-    # -------------------------------------------------------------------------
-    # HDR file navigation
-    # -------------------------------------------------------------------------
+    # === HDR NAVIGATION ========================================================
 
     def _on_prev_hdr_click(self, event):
         """Navigate to the previous HDR file (lower index)."""
@@ -772,9 +799,7 @@ class HdrAoiEditor:
 
         self.fig.canvas.draw_idle()
 
-    # -------------------------------------------------------------------------
-    # Image toggle
-    # -------------------------------------------------------------------------
+    # === IMAGE TOGGLE ==========================================================
 
     def _on_image_toggle_click(self, event):
         """Cycle through image variants (HDR then associated TIFFs)."""
@@ -803,9 +828,7 @@ class HdrAoiEditor:
         self.btn_image_toggle.label.set_text(label)
         self.fig.canvas.draw_idle()
 
-    # -------------------------------------------------------------------------
-    # Parent/child relationship helpers
-    # -------------------------------------------------------------------------
+    # === ROOM DATA MANAGEMENT ==================================================
 
     def _get_apartments_for_hdr(self, hdr_name: str) -> List[str]:
         """Return names of apartment-level rooms (no parent) for the given HDR file."""
@@ -825,9 +848,7 @@ class HdrAoiEditor:
                 return r
         return None
 
-    # -------------------------------------------------------------------------
-    # Name helpers
-    # -------------------------------------------------------------------------
+    # --- Name helpers ---
 
     def _make_unique_name(self, base_name: str, exclude_idx: Optional[int] = None) -> str:
         """Ensure room name is unique by appending numeric suffix if needed."""
@@ -918,13 +939,7 @@ class HdrAoiEditor:
             self.name_preview_text.set_text(f"Will save as: {name}")
         self.fig.canvas.draw_idle()
 
-    # -------------------------------------------------------------------------
-    # DF threshold controls
-    # -------------------------------------------------------------------------
-
-    # -------------------------------------------------------------------------
-    # Rendering
-    # -------------------------------------------------------------------------
+    # === RENDERING =============================================================
 
     def _render_section(self, reset_view: bool = False, force_full: bool = False):
         """Render the current image and room overlays."""
@@ -974,7 +989,7 @@ class HdrAoiEditor:
         # Rebuild snap vertex pool from current-HDR room vertices
         all_verts = []
         for room in self.rooms:
-            if room.get('hdr_file') == self.current_hdr_name:
+            if self._is_room_on_current_hdr(room):
                 all_verts.extend(room['vertices'])
         self.current_vertices = np.array(all_verts) if all_verts else np.array([])
 
@@ -987,6 +1002,9 @@ class HdrAoiEditor:
         self.room_labels.clear()
         self._draw_all_room_polygons()
 
+        # Pre-build vectorized hover arrays for fast hit-testing
+        self._rebuild_hover_arrays()
+
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.axis('off')
 
@@ -997,28 +1015,7 @@ class HdrAoiEditor:
             self.ax.set_xlim(xlim)
             self.ax.set_ylim(ylim)
 
-        # Legend: show in dedicated axes to the left of the main image
-        if self.ax_legend is not None:
-            self.ax_legend.clear()
-            legend_path = self._get_legend_for_variant(self.current_variant_path)
-            if legend_path is not None:
-                legend_img = self._load_image(legend_path)
-                if legend_img is not None:
-                    # Rotate 90° CCW so the tall legend becomes a horizontal strip
-                    legend_img = np.rot90(legend_img, k=1)
-                    lH, lW = legend_img.shape[:2]
-                    self.ax_legend.imshow(
-                        legend_img, origin='upper',
-                        extent=[0, lW, lH, 0], aspect='equal',
-                    )
-                    self.ax_legend.set_xlim(0, lW)
-                    self.ax_legend.set_ylim(lH, 0)
-                    self.ax_legend.axis('off')
-                    self.ax_legend.set_visible(True)
-                else:
-                    self.ax_legend.set_visible(False)
-            else:
-                self.ax_legend.set_visible(False)
+        self._render_df_legend()
 
         # Title
         hdr_name = self.current_hdr_name or "(no HDR)"
@@ -1027,6 +1024,27 @@ class HdrAoiEditor:
         self.ax.set_title(f"{hdr_name}  -  {variant_label}", fontsize=11, fontweight='bold')
 
         self.fig.canvas.draw_idle()
+
+    def _render_df_legend(self):
+        """Show the DF% legend strip (rotated 90°) if a legend matches the current variant."""
+        if self.ax_legend is None:
+            return
+        self.ax_legend.clear()
+        legend_path = self._get_legend_for_variant(self.current_variant_path)
+        if legend_path is None:
+            self.ax_legend.set_visible(False)
+            return
+        legend_img = self._load_image(legend_path)
+        if legend_img is None:
+            self.ax_legend.set_visible(False)
+            return
+        legend_img = np.rot90(legend_img, k=1)
+        lH, lW = legend_img.shape[:2]
+        self.ax_legend.imshow(legend_img, origin='upper', extent=[0, lW, lH, 0], aspect='equal')
+        self.ax_legend.set_xlim(0, lW)
+        self.ax_legend.set_ylim(lH, 0)
+        self.ax_legend.axis('off')
+        self.ax_legend.set_visible(True)
 
     def _load_current_df_image(self):
         """Load the DF% image for the current HDR file (cached)."""
@@ -1074,7 +1092,7 @@ class HdrAoiEditor:
             return
         any_new = False
         for i, room in enumerate(self.rooms):
-            if room.get('hdr_file') != self.current_hdr_name:
+            if not self._is_room_on_current_hdr(room):
                 continue
             verts = room['vertices']
             if len(verts) < 3:
@@ -1154,8 +1172,7 @@ class HdrAoiEditor:
     def _draw_all_room_polygons(self):
         """Draw all room polygons for the current view."""
         for i, room in enumerate(self.rooms):
-            is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if is_current:
+            if self._is_room_on_current_hdr(room):
                 self._draw_room_polygon(room, i, is_current_floor=True)
 
     def _draw_room_polygon(self, room: dict, idx: int, is_current_floor: bool):
@@ -1183,6 +1200,7 @@ class HdrAoiEditor:
         poly = Polygon(verts, closed=True,
                        edgecolor=edge_color, facecolor='none', alpha=1.0, linewidth=lw,
                        clip_on=True)
+        poly._patch_type = 'current' if is_current_floor else 'other'
         self.ax.add_patch(poly)
         self.room_patches.append(poly)
         self._room_patch_cache[idx] = poly
@@ -1253,8 +1271,7 @@ class HdrAoiEditor:
     def _update_room_visuals(self):
         """Update room colours without a full redraw (for hover/selection changes)."""
         for i, room in enumerate(self.rooms):
-            is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if not is_current:
+            if not self._is_room_on_current_hdr(room):
                 continue
             patch = self._room_patch_cache.get(i)
             if patch is None:
@@ -1266,20 +1283,20 @@ class HdrAoiEditor:
 
             if is_editing:
                 patch.set_edgecolor('cyan');    patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(3)
+                patch._patch_type = 'special'
             elif is_selected:
                 patch.set_edgecolor('yellow');  patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(4)
+                patch._patch_type = 'special'
             elif is_hover and self.edit_mode:
                 patch.set_edgecolor('magenta'); patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(2)
-            elif is_current:
-                patch.set_edgecolor('red');     patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(self._zoom_linewidth())
+                patch._patch_type = 'special'
             else:
-                patch.set_edgecolor('gray');    patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(self._zoom_linewidth(base=1.0))
+                patch.set_edgecolor('red');     patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(self._zoom_linewidth())
+                patch._patch_type = 'current'
 
         self.fig.canvas.draw_idle()
 
-    # -------------------------------------------------------------------------
-    # Vertex snapping (snap to existing polygon vertices)
-    # -------------------------------------------------------------------------
+    # === UNDO & SNAPPING =======================================================
 
     def _push_undo(self, room_idx: int):
         """Push a snapshot of a room's vertices onto the undo stack."""
@@ -1298,11 +1315,7 @@ class HdrAoiEditor:
         room_idx, verts_snapshot = self._edit_undo_stack.pop()
         self.rooms[room_idx]['vertices'] = verts_snapshot
         self._invalidate_room_df_cache(room_idx)
-        self.edit_vertex_idx     = None
-        self.edit_room_idx       = None
-        self.edit_edge_room_idx  = None
-        self.edit_edge_idx       = None
-        self.edit_edge_start     = None
+        self._reset_hover_state()
         room_name = self.rooms[room_idx].get('name', 'unnamed')
         remaining = len(self._edit_undo_stack)
         self._update_status(
@@ -1416,9 +1429,7 @@ class HdrAoiEditor:
         """Snap coordinates to the nearest pixel centre (int + 0.5)."""
         return int(x) + 0.5, int(y) + 0.5
 
-    # -------------------------------------------------------------------------
-    # Event handlers
-    # -------------------------------------------------------------------------
+    # === EVENT HANDLERS ========================================================
 
     def _on_click_with_snap(self, event):
         """Handle mouse clicks; snap left-clicks to existing polygon vertices."""
@@ -1454,6 +1465,7 @@ class HdrAoiEditor:
                 room_name = self.rooms[self.edit_room_idx].get('name', 'unnamed')
                 self._update_status(f"Dragging vertex in '{room_name}'", 'cyan')
                 self._render_section(force_full=True)
+                self._start_blit_drag(self.edit_room_idx)
                 return
 
             if self.hover_edge_room_idx is not None and self.hover_edge_idx is not None and self.hover_edge_point is not None:
@@ -1465,6 +1477,7 @@ class HdrAoiEditor:
                     self.edit_edge_start    = (event.xdata, event.ydata)
                     room_name = self.rooms[self.edit_edge_room_idx].get('name', 'unnamed')
                     self._update_status(f"Dragging edge in '{room_name}'", 'cyan')
+                    self._start_blit_drag(self.edit_edge_room_idx)
                     return
                 # Click: insert new vertex on edge
                 self._push_undo(self.hover_edge_room_idx)
@@ -1514,6 +1527,7 @@ class HdrAoiEditor:
                 self.selector._draw_polygon()
 
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
+            self._end_blit_drag()
             room = self.rooms[self.edit_room_idx]
             current_pos = room['vertices'][self.edit_vertex_idx]
             # Snap to pixel centre, then to existing vertex if close
@@ -1528,6 +1542,7 @@ class HdrAoiEditor:
             self._create_polygon_selector()
 
         if self.edit_edge_room_idx is not None and self.edit_edge_idx is not None:
+            self._end_blit_drag()
             room = self.rooms[self.edit_edge_room_idx]
             j  = self.edit_edge_idx
             j2 = (j + 1) % len(room['vertices'])
@@ -1545,143 +1560,134 @@ class HdrAoiEditor:
             self._create_polygon_selector()
 
     def _on_mouse_motion(self, event):
-        """Handle mouse movement for hover detection and vertex dragging."""
+        """Handle mouse movement — dispatches to drag or hover handlers."""
         if event.inaxes != self.ax:
             return
         x, y = event.xdata, event.ydata
         if x is None or y is None:
             return
 
-        # Vertex dragging — update polygon in-place without full re-render
+        # Active drag operations (vertex or edge)
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             self.rooms[self.edit_room_idx]['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
-            patch = self._room_patch_cache.get(self.edit_room_idx)
-            if patch is not None:
-                patch.set_xy(self.rooms[self.edit_room_idx]['vertices'])
-                label = self._room_label_cache.get(self.edit_room_idx)
-                if label is not None:
-                    centroid = self._polygon_label_point(self.rooms[self.edit_room_idx]['vertices'])
-                    label.set_position((centroid[0], centroid[1]))
-                self.fig.canvas.draw_idle()
-            else:
-                self._render_section(force_full=True)
+            self._update_dragged_patch(self.edit_room_idx)
             return
-
-        # Edge dragging — move both endpoints by the same delta
         if self.edit_edge_room_idx is not None and self.edit_edge_idx is not None:
-            dx = x - self.edit_edge_start[0]
-            dy = y - self.edit_edge_start[1]
-            room = self.rooms[self.edit_edge_room_idx]
-            j  = self.edit_edge_idx
-            j2 = (j + 1) % len(room['vertices'])
-            room['vertices'][j][0]  += dx
-            room['vertices'][j][1]  += dy
-            room['vertices'][j2][0] += dx
-            room['vertices'][j2][1] += dy
-            self.edit_edge_start = (x, y)
-            patch = self._room_patch_cache.get(self.edit_edge_room_idx)
-            if patch is not None:
-                patch.set_xy(room['vertices'])
-                label = self._room_label_cache.get(self.edit_edge_room_idx)
-                if label is not None:
-                    centroid = self._polygon_label_point(room['vertices'])
-                    label.set_position((centroid[0], centroid[1]))
-                self.fig.canvas.draw_idle()
-            else:
-                self._render_section(force_full=True)
+            self._handle_edge_drag(x, y)
             return
-
         if not self.edit_mode:
             return
 
-        # Throttle hover detection
+        # Throttle hover detection (~15 fps)
         now = time.monotonic()
         if now - self._last_hover_check < 0.067:
             return
         self._last_hover_check = now
+        self._handle_hover_detection(x, y)
 
-        # Dynamic hover threshold: 1% of the larger image dimension, min 5px
+    def _handle_edge_drag(self, x: float, y: float):
+        """Move both endpoints of the hovered edge by the cursor delta."""
+        dx = x - self.edit_edge_start[0]
+        dy = y - self.edit_edge_start[1]
+        room = self.rooms[self.edit_edge_room_idx]
+        j  = self.edit_edge_idx
+        j2 = (j + 1) % len(room['vertices'])
+        room['vertices'][j][0]  += dx;  room['vertices'][j][1]  += dy
+        room['vertices'][j2][0] += dx;  room['vertices'][j2][1] += dy
+        self.edit_edge_start = (x, y)
+        self._update_dragged_patch(self.edit_edge_room_idx)
+
+    def _rebuild_hover_arrays(self):
+        """Pre-build combined numpy arrays for vectorized hover hit-testing."""
+        all_verts, vert_room, vert_local = [], [], []
+        edge_starts, edge_ends, edge_room, edge_local = [], [], [], []
+        for i, room in enumerate(self.rooms):
+            if not self._is_room_on_current_hdr(room):
+                continue
+            verts = room['vertices']
+            n = len(verts)
+            for vi, v in enumerate(verts):
+                all_verts.append(v)
+                vert_room.append(i)
+                vert_local.append(vi)
+            for j in range(n):
+                edge_starts.append(verts[j])
+                edge_ends.append(verts[(j + 1) % n])
+                edge_room.append(i)
+                edge_local.append(j)
+        self._hover_all_verts       = np.array(all_verts, dtype=float) if all_verts else None
+        self._hover_vert_room_idx   = np.array(vert_room, dtype=int) if vert_room else None
+        self._hover_vert_local_idx  = np.array(vert_local, dtype=int) if vert_local else None
+        self._hover_edge_starts     = np.array(edge_starts, dtype=float) if edge_starts else None
+        self._hover_edge_ends       = np.array(edge_ends, dtype=float) if edge_ends else None
+        self._hover_edge_room_idx_arr = np.array(edge_room, dtype=int) if edge_room else None
+        self._hover_edge_local_idx  = np.array(edge_local, dtype=int) if edge_local else None
+
+    def _handle_hover_detection(self, x: float, y: float):
+        """Detect vertex or edge hover using pre-built vectorized arrays."""
         hover_threshold = max(5.0, max(self._image_width, self._image_height) * 0.01)
 
-        # Vertex hover
-        closest_vertex     = None
-        closest_dist       = float('inf')
-        closest_room_idx   = None
-        closest_vertex_idx = None
-
-        for i, room in enumerate(self.rooms):
-            is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if not is_current:
-                continue
-            verts = np.array(room['vertices'])
-            distances = np.hypot(verts[:, 0] - x, verts[:, 1] - y)
-            min_idx   = int(np.argmin(distances))
-            min_dist  = distances[min_idx]
-            if min_dist < closest_dist:
-                closest_dist       = min_dist
-                closest_vertex_idx = min_idx
-                closest_room_idx   = i
+        # --- Vertex hover (single vectorized distance computation) ---
+        closest_dist, closest_room, closest_vidx = float('inf'), None, None
+        if self._hover_all_verts is not None and len(self._hover_all_verts) > 0:
+            dists = np.hypot(self._hover_all_verts[:, 0] - x, self._hover_all_verts[:, 1] - y)
+            min_idx = int(np.argmin(dists))
+            closest_dist = dists[min_idx]
+            closest_room = int(self._hover_vert_room_idx[min_idx])
+            closest_vidx = int(self._hover_vert_local_idx[min_idx])
 
         if closest_dist < hover_threshold:
-            changed = (self.hover_room_idx != closest_room_idx or
-                       self.hover_vertex_idx != closest_vertex_idx)
+            if self.hover_room_idx != closest_room or self.hover_vertex_idx != closest_vidx:
+                self.hover_room_idx   = closest_room
+                self.hover_vertex_idx = closest_vidx
+                self.hover_edge_room_idx = self.hover_edge_idx = self.hover_edge_point = None
+                name = self.rooms[closest_room].get('name', 'unnamed')
+                self._update_status(f"Vertex in '{name}' - drag or right-click to remove", 'cyan')
+                self._render_section()
+            return
+
+        # Clear stale vertex hover
+        vertex_was_hovered = self.hover_vertex_idx is not None or self.hover_room_idx is not None
+        if vertex_was_hovered:
+            self.hover_vertex_idx = self.hover_room_idx = None
+
+        # --- Edge hover (vectorized point-to-segment distance) ---
+        edge_threshold = hover_threshold * 1.3
+        best_dist, best_room, best_edge, best_pt = float('inf'), None, None, None
+        if self._hover_edge_starts is not None and len(self._hover_edge_starts) > 0:
+            A = self._hover_edge_starts
+            B = self._hover_edge_ends
+            AB = B - A
+            P = np.array([[x, y]])
+            AP = P - A
+            seg_len_sq = np.sum(AB * AB, axis=1)
+            # Avoid division by zero for degenerate edges
+            safe_len = np.where(seg_len_sq == 0, 1.0, seg_len_sq)
+            t = np.clip(np.sum(AP * AB, axis=1) / safe_len, 0.0, 1.0)
+            # For zero-length edges, t=0 projects to A
+            t = np.where(seg_len_sq == 0, 0.0, t)
+            proj = A + t[:, None] * AB
+            edge_dists = np.hypot(x - proj[:, 0], y - proj[:, 1])
+            min_edge_idx = int(np.argmin(edge_dists))
+            best_dist = edge_dists[min_edge_idx]
+            best_room = int(self._hover_edge_room_idx_arr[min_edge_idx])
+            best_edge = int(self._hover_edge_local_idx[min_edge_idx])
+            best_pt   = (float(proj[min_edge_idx, 0]), float(proj[min_edge_idx, 1]))
+
+        if best_dist < edge_threshold:
+            changed = (self.hover_edge_room_idx != best_room or self.hover_edge_idx != best_edge)
+            self.hover_edge_room_idx = best_room
+            self.hover_edge_idx      = best_edge
+            self.hover_edge_point    = best_pt
             if changed:
-                self.hover_room_idx   = closest_room_idx
-                self.hover_vertex_idx = int(closest_vertex_idx) if closest_vertex_idx is not None else None
-                self.hover_edge_room_idx = None
-                self.hover_edge_idx      = None
-                self.hover_edge_point    = None
-                room_name = self.rooms[closest_room_idx].get('name', 'unnamed')
-                self._update_status(f"Vertex in '{room_name}' - drag or right-click to remove", 'cyan')
+                self._update_status("Click to insert vertex, Shift+click to drag edge", 'blue')
                 self._render_section()
         else:
-            vertex_state_changed = self.hover_vertex_idx is not None or self.hover_room_idx is not None
-            if vertex_state_changed:
-                self.hover_vertex_idx = None
-                self.hover_room_idx   = None
-
-            # Edge hover for vertex insertion
-            edge_threshold = hover_threshold * 1.3
-            best_edge_dist  = float('inf')
-            best_edge_room  = None
-            best_edge_idx   = None
-            best_edge_point = None
-
-            for i, room in enumerate(self.rooms):
-                is_current = (room.get('hdr_file') == self.current_hdr_name)
-                if not is_current:
-                    continue
-                verts = room['vertices']
-                n     = len(verts)
-                for j in range(n):
-                    ax_, ay_ = verts[j]
-                    bx_, by_ = verts[(j + 1) % n]
-                    dist, proj_x, proj_y = self._point_to_segment_dist(x, y, ax_, ay_, bx_, by_)
-                    if dist < best_edge_dist:
-                        best_edge_dist  = dist
-                        best_edge_room  = i
-                        best_edge_idx   = j
-                        best_edge_point = (proj_x, proj_y)
-
-            if best_edge_dist < edge_threshold:
-                changed = (self.hover_edge_room_idx != best_edge_room or
-                           self.hover_edge_idx != best_edge_idx)
-                self.hover_edge_room_idx = best_edge_room
-                self.hover_edge_idx      = best_edge_idx
-                self.hover_edge_point    = best_edge_point
-                if changed:
-                    self._update_status("Click to insert vertex, Shift+click to drag edge", 'blue')
-                    self._render_section()
-            else:
-                if self.hover_edge_room_idx is not None:
-                    self.hover_edge_room_idx = None
-                    self.hover_edge_idx      = None
-                    self.hover_edge_point    = None
-                    self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                    self._render_section()
-                elif vertex_state_changed:
-                    self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
-                    self._render_section()
+            need_redraw = self.hover_edge_room_idx is not None or vertex_was_hovered
+            self.hover_edge_room_idx = self.hover_edge_idx = self.hover_edge_point = None
+            if need_redraw:
+                self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
+                self._render_section()
 
     def _on_key_press(self, event):
         """Handle keyboard shortcuts."""
@@ -1754,6 +1760,7 @@ class HdrAoiEditor:
 
     def _on_resize(self, event):
         """Handle window resize events."""
+        self._blit_background = None
         if not getattr(self, '_launch_complete', False):
             return
         if event.width > 0 and event.height > 0:
@@ -1777,9 +1784,7 @@ class HdrAoiEditor:
         except Exception:
             pass
 
-    # -------------------------------------------------------------------------
-    # Room selection
-    # -------------------------------------------------------------------------
+    # === ROOM SELECTION ========================================================
 
     def _select_room_at(self, x, y):
         """Select the room polygon at the given point."""
@@ -1787,18 +1792,10 @@ class HdrAoiEditor:
             self._deselect_room()
             return
         for i, room in enumerate(self.rooms):
-            is_current = (room.get('hdr_file') == self.current_hdr_name)
-            if not is_current:
+            if not self._is_room_on_current_hdr(room):
                 continue
             verts = np.array(room['vertices'])
             if MplPath(verts).contains_point((x, y)):
-                # If room belongs to a different HDR file, navigate to it
-                if not is_current:
-                    hdr_name = room.get('hdr_file', '')
-                    for idx, entry in enumerate(self.hdr_files):
-                        if entry['name'] == hdr_name:
-                            self._jump_to_hdr(idx)
-                            break
                 self._select_room(i)
                 return
         self._deselect_room()
@@ -1825,9 +1822,7 @@ class HdrAoiEditor:
             self._update_room_list()
             self.fig.canvas.draw_idle()
 
-    # -------------------------------------------------------------------------
-    # Polygon selector
-    # -------------------------------------------------------------------------
+    # === POLYGON SELECTOR ======================================================
 
     def _create_polygon_selector(self):
         """Create or recreate the polygon selector."""
@@ -1853,9 +1848,7 @@ class HdrAoiEditor:
         )
         self._update_status(f"Polygon ready: {len(vertices)} pts, {area:.0f} px2", 'green')
 
-    # -------------------------------------------------------------------------
-    # Button callbacks
-    # -------------------------------------------------------------------------
+    # === ROOM OPERATIONS =======================================================
 
     def _on_save_click(self, event):
         """Save room, update selected room, or save edited boundary."""
@@ -1990,6 +1983,8 @@ class HdrAoiEditor:
         print(f"Deleted room '{name}'")
         self._save_session()
 
+    # === ZOOM & DISPLAY ========================================================
+
     def _view_ratio(self) -> float:
         """Return view_w / image_width. 1.0 = fully zoomed out, <1 = zoomed in."""
         if self._image_width <= 1:
@@ -2060,17 +2055,14 @@ class HdrAoiEditor:
 
     def _apply_zoom_linewidths(self):
         """Reapply zoom-dependent linewidths to all cached room patches."""
-        for i, room in enumerate(self.rooms):
-            patch = self._room_patch_cache.get(i)
-            if patch is None:
-                continue
-            ec = patch.get_edgecolor()
-            r, g, b = ec[0], ec[1], ec[2]
-            # Only scale red and gray patches; leave cyan/yellow/magenta fixed
-            if np.allclose([r, g, b], [1, 0, 0]):
-                patch.set_linewidth(self._zoom_linewidth())
-            elif np.allclose([r, g, b], [0.5, 0.5, 0.5], atol=0.1):
-                patch.set_linewidth(self._zoom_linewidth(base=1.0))
+        lw_current = self._zoom_linewidth()
+        lw_other = self._zoom_linewidth(base=1.0)
+        for patch in self._room_patch_cache.values():
+            ptype = getattr(patch, '_patch_type', None)
+            if ptype == 'current':
+                patch.set_linewidth(lw_current)
+            elif ptype == 'other':
+                patch.set_linewidth(lw_other)
 
 
     def _on_reset_zoom_click(self, event):
@@ -2080,6 +2072,8 @@ class HdrAoiEditor:
         self._apply_zoom_linewidths()
         self._apply_zoom_fontsizes()
         self.fig.canvas.draw_idle()
+
+    # === TOGGLE BUTTONS & ROOM TYPE ============================================
 
     def _style_toggle_button(self, btn, is_on: bool):
         """Apply pressed/depressed bevel styling to a toggle button.
@@ -2134,13 +2128,7 @@ class HdrAoiEditor:
                 self.selector.set_active(False)
             self._update_status("Edit Mode: Hover over any vertex to drag (all rooms editable)", 'cyan')
         else:
-            self.edit_room_idx       = None
-            self.edit_vertex_idx     = None
-            self.hover_room_idx      = None
-            self.hover_vertex_idx    = None
-            self.hover_edge_room_idx = None
-            self.hover_edge_idx      = None
-            self.hover_edge_point    = None
+            self._reset_hover_state()
             self._edit_undo_stack.clear()
             self._save_session()
             self._create_polygon_selector()
@@ -2158,30 +2146,19 @@ class HdrAoiEditor:
         self._update_status(f"Orthogonal mode: {state}", 'blue')
         self.fig.canvas.draw_idle()
 
-    def _on_room_type_bed(self, event):
-        """Toggle BED room type."""
-        self.room_type = None if self.room_type == 'BED' else 'BED'
-        self._apply_room_type_change()
-
-    def _on_room_type_living(self, event):
-        """Toggle LIVING room type (only for rooms with sub-rooms).
-
-        LIVING-type rooms have their DF results computed by subtracting
-        sub-room areas from the parent polygon.
-        """
-        if self.room_type == 'LIVING':
+    def _on_room_type_toggle(self, room_type: str, requires_children: bool = False):
+        """Toggle a room type on/off. LIVING requires the room to have sub-rooms."""
+        if self.room_type == room_type:
             self.room_type = None
             self._apply_room_type_change()
             return
-        # Check the selected room has children
-        if self.selected_room_idx is not None:
+        if requires_children and self.selected_room_idx is not None:
             room = self.rooms[self.selected_room_idx]
-            children = self._get_children(room.get('name', ''))
-            if children:
-                self.room_type = 'LIVING'
-                self._apply_room_type_change()
+            if not self._get_children(room.get('name', '')):
+                self._update_status(f"{room_type} type requires a room with sub-rooms", 'orange')
                 return
-        self._update_status("LIVING type requires a room with sub-rooms", 'orange')
+        self.room_type = room_type
+        self._apply_room_type_change()
 
     def _apply_room_type_change(self):
         """Update UI and persist room type change if a room is selected."""
@@ -2210,9 +2187,7 @@ class HdrAoiEditor:
         self._create_polygon_selector()
 
 
-    # -------------------------------------------------------------------------
-    # Status and room list display
-    # -------------------------------------------------------------------------
+    # === STATUS & ROOM LIST ====================================================
 
     def _update_status(self, message: str, color: str = 'blue'):
         """Update the status text in the side panel."""
@@ -2228,15 +2203,10 @@ class HdrAoiEditor:
         self.ax_list.set_xlim(0, 1)
         self.ax_list.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         for spine in self.ax_list.spines.values():
-            spine.set_edgecolor('#CCCCCC')
-            spine.set_linewidth(0.5)
-
+            spine.set_edgecolor('#CCCCCC'); spine.set_linewidth(0.5)
         self._room_list_hit_boxes = []
 
-        # Filter rooms to current HDR
-        hdr_rooms = [(i, r) for i, r in enumerate(self.rooms)
-                     if r.get('hdr_file') == self.current_hdr_name]
-
+        hdr_rooms = [(i, r) for i, r in enumerate(self.rooms) if self._is_room_on_current_hdr(r)]
         if not hdr_rooms:
             self.ax_list.set_ylim(0, 1)
             self.ax_list.text(0.05, 0.5, "(no rooms on this HDR)", fontsize=7,
@@ -2244,91 +2214,82 @@ class HdrAoiEditor:
             self.fig.canvas.draw_idle()
             return
 
-        # Build flat list: apartments → children
-        flat_items           = []
-        apartments           = [(i, r) for i, r in hdr_rooms if r.get('parent') is None]
-        children_by_parent   = {}
+        flat_items, children_by_parent = self._build_room_tree(hdr_rooms)
+        self._render_room_list_rows(flat_items, children_by_parent)
+        self.fig.canvas.draw_idle()
+
+    def _build_room_tree(self, hdr_rooms):
+        """Build a flat parent→children tree for the room list. Returns (items, children_map)."""
+        apartments         = [(i, r) for i, r in hdr_rooms if r.get('parent') is None]
+        children_by_parent = {}
         for i, room in hdr_rooms:
             parent = room.get('parent')
             if parent is not None:
                 children_by_parent.setdefault(parent, []).append((i, room))
-
+        flat_items = []
         for apt_idx, apt in apartments:
             flat_items.append((apt_idx, 0))
             for child_idx, _ in children_by_parent.get(apt.get('name', ''), []):
                 flat_items.append((child_idx, 1))
+        return flat_items, children_by_parent
 
-        total_items  = len(flat_items)
+    def _render_room_list_rows(self, flat_items, children_by_parent):
+        """Render visible rows and scrollbar into ax_list."""
         visible_rows = 22
-        pad_top      = 0.01
-        pad_bot      = 0.03
-        content_h    = 1.0 - pad_top - pad_bot
-        row_h        = content_h / visible_rows
-
-        max_offset = max(0, total_items - visible_rows)
+        pad_top, row_h = 0.01, (1.0 - 0.01 - 0.03) / 22
+        total = len(flat_items)
+        max_offset = max(0, total - visible_rows)
         self.room_list_scroll_offset = max(0, min(self.room_list_scroll_offset, max_offset))
         self.ax_list.set_ylim(0, 1)
 
-        visible_slice = flat_items[self.room_list_scroll_offset:
-                                   self.room_list_scroll_offset + visible_rows]
-
-        for row_i, (room_idx, indent) in enumerate(visible_slice):
-            room    = self.rooms[room_idx]
-            name    = room.get('name', 'unnamed')
-            is_sel  = (room_idx == self.selected_room_idx)
-            is_subroom = indent > 0
-
+        for row_i, (room_idx, indent) in enumerate(
+                flat_items[self.room_list_scroll_offset:self.room_list_scroll_offset + visible_rows]):
+            room   = self.rooms[room_idx]
+            name   = room.get('name', 'unnamed')
+            is_sel = (room_idx == self.selected_room_idx)
             row_top = (1.0 - pad_top) - row_i * row_h
             row_bot = row_top - row_h
             row_mid = (row_top + row_bot) / 2
 
             if is_sel:
-                bg = FancyBboxPatch((0.01, row_bot + 0.002), 0.98, row_h - 0.004,
-                                    boxstyle='round,pad=0.01',
-                                    facecolor='#FFE082', edgecolor='orange', linewidth=1.0,
-                                    transform=self.ax_list.transAxes, clip_on=True)
-                self.ax_list.add_patch(bg)
+                self.ax_list.add_patch(FancyBboxPatch(
+                    (0.01, row_bot + 0.002), 0.98, row_h - 0.004,
+                    boxstyle='round,pad=0.01', facecolor='#FFE082', edgecolor='orange',
+                    linewidth=1.0, transform=self.ax_list.transAxes, clip_on=True))
 
-            rtype = room.get('room_type', '')
+            rtype    = room.get('room_type', '')
             type_tag = f" : {rtype}" if rtype else ""
-
-            if is_subroom:
+            if indent > 0:
                 parent_name = room.get('parent', '')
-                short_name  = name[len(parent_name) + 1:] if name.startswith(f"{parent_name}_") else name
-                display_text = f"  \u2514 {short_name}{type_tag}"
-                txt_color = '#0D47A1' if not is_sel else '#E65100'
-                fs, fw = 6.5, 'normal'
+                short = name[len(parent_name) + 1:] if name.startswith(f"{parent_name}_") else name
+                text  = f"  \u2514 {short}{type_tag}"
+                color, fs, fw = ('#E65100' if is_sel else '#0D47A1'), 6.5, 'normal'
             else:
-                child_count  = len(children_by_parent.get(name, []))
-                suffix       = f" ({child_count})" if child_count else ""
-                display_text = f"{name}{suffix}{type_tag}"
-                txt_color = '#1B5E20' if not is_sel else '#E65100'
-                fs, fw = 7, 'bold'
+                n_kids = len(children_by_parent.get(name, []))
+                suffix = f" ({n_kids})" if n_kids else ""
+                text   = f"{name}{suffix}{type_tag}"
+                color, fs, fw = ('#E65100' if is_sel else '#1B5E20'), 7, 'bold'
 
-            self.ax_list.text(
-                0.03 + indent * 0.04, row_mid, display_text,
-                fontsize=fs, fontweight=fw, color=txt_color,
-                va='center', transform=self.ax_list.transAxes, clip_on=True,
-            )
+            self.ax_list.text(0.03 + indent * 0.04, row_mid, text, fontsize=fs,
+                              fontweight=fw, color=color, va='center',
+                              transform=self.ax_list.transAxes, clip_on=True)
             self._room_list_hit_boxes.append((row_bot, row_top, room_idx))
 
-        if total_items > visible_rows:
-            scroll_pct  = self.room_list_scroll_offset / max(1, max_offset)
-            indicator_h = visible_rows / total_items
-            indicator_y = (1.0 - indicator_h) * (1.0 - scroll_pct)
-            scrollbar = FancyBboxPatch((0.965, indicator_y), 0.025, indicator_h,
-                                       boxstyle='round,pad=0.005',
-                                       facecolor='#AAAAAA', edgecolor='none',
-                                       transform=self.ax_list.transAxes, clip_on=True)
-            self.ax_list.add_patch(scrollbar)
-            self.ax_list.text(0.5, 0.01,
-                              f"\u2191\u2193 scroll  ({self.room_list_scroll_offset + 1}"
-                              f"-{min(self.room_list_scroll_offset + visible_rows, total_items)}"
-                              f" of {total_items})",
-                              fontsize=6, color='#888888', ha='center', va='bottom',
-                              transform=self.ax_list.transAxes)
-
-        self.fig.canvas.draw_idle()
+        # Scrollbar
+        if total > visible_rows:
+            pct = self.room_list_scroll_offset / max(1, max_offset)
+            ind_h = visible_rows / total
+            ind_y = (1.0 - ind_h) * (1.0 - pct)
+            self.ax_list.add_patch(FancyBboxPatch(
+                (0.965, ind_y), 0.025, ind_h, boxstyle='round,pad=0.005',
+                facecolor='#AAAAAA', edgecolor='none',
+                transform=self.ax_list.transAxes, clip_on=True))
+            self.ax_list.text(
+                0.5, 0.01,
+                f"\u2191\u2193 scroll  ({self.room_list_scroll_offset + 1}"
+                f"-{min(self.room_list_scroll_offset + visible_rows, total)} of {total})",
+                fontsize=6, color='#888888', ha='center', va='bottom',
+                transform=self.ax_list.transAxes)
 
     def _on_list_click(self, event):
         """Handle clicks on the saved rooms list to select a room."""
@@ -2346,9 +2307,7 @@ class HdrAoiEditor:
                 self._update_room_list()
                 return
 
-    # -------------------------------------------------------------------------
-    # Session persistence
-    # -------------------------------------------------------------------------
+    # === SESSION PERSISTENCE ===================================================
 
     def _save_session(self):
         """Save all room boundaries and DF cache to JSON."""
@@ -2394,9 +2353,7 @@ class HdrAoiEditor:
         print(f"Loaded {len(self.rooms)} rooms from {source}")
 
 
-    # -------------------------------------------------------------------------
-    # Export
-    # -------------------------------------------------------------------------
+    # === EXPORT ================================================================
 
     def _show_progress(self, fraction: float, label: str = ""):
         """Update the export progress bar (0.0–1.0) and optional label."""
@@ -2465,77 +2422,63 @@ class HdrAoiEditor:
         self._show_progress(0.0, f"0 / {n_aoi} rooms")
         self.fig.canvas.draw_idle()
 
-        # Shared progress state updated by background thread
         progress = {'done': 0, 'total': n_aoi, 'phase': 'wpd', 'error': None}
-
-        def _run():
-            try:
-                # --- WPD generation (per-room progress) ---
-                hdr_files, aoi_files = self._hdr2wpd._scan_directories()
-                if hdr_files and aoi_files:
-                    view_groups = self._hdr2wpd._group_aoi_by_view(aoi_files, hdr_files)
-                    # Count total AOIs across all groups
-                    total_aois = sum(len(g['aoi_files']) for g in view_groups.values())
-                    progress['total'] = max(total_aois, 1)
-                    processed = 0
-                    for view_name, group in view_groups.items():
-                        aoi_list, hdr_list = group['aoi_files'], group['hdr_files']
-                        if not aoi_list or not hdr_list:
-                            continue
-                        # Process this view group (creates .wpd files)
-                        self._hdr2wpd._process_daylight_view_groups({view_name: group})
-                        processed += len(aoi_list)
-                        progress['done'] = processed
-
-                # --- Excel report ---
-                progress['phase'] = 'excel'
-                room_type_map = {r.get('name', ''): r.get('room_type', '')
-                                 for r in self.rooms if r.get('room_type')}
-                self._hdr2wpd._generate_daylight_excel_report(
-                    df_thresholds=tuple(sorted(set(self.DF_THRESHOLDS.values()))),
-                    room_types=room_type_map)
-                progress['phase'] = 'done'
-            except Exception as exc:
-                progress['error'] = exc
-
-        self._export_thread = threading.Thread(target=_run, daemon=True)
+        self._export_thread = threading.Thread(
+            target=self._export_worker, args=(progress,), daemon=True)
         self._export_thread.start()
+        self._start_export_progress_poll(progress, n_aoi)
 
-        # Poll every 300 ms — update progress bar on the main thread
-        def _check_progress():
-            total = max(progress['total'], 1)
-            done  = progress['done']
-            phase = progress['phase']
+    def _export_worker(self, progress: dict):
+        """Background thread: generate .wpd files and Excel report."""
+        try:
+            hdr_files, aoi_files = self._hdr2wpd._scan_directories()
+            if hdr_files and aoi_files:
+                view_groups = self._hdr2wpd._group_aoi_by_view(aoi_files, hdr_files)
+                progress['total'] = max(sum(len(g['aoi_files']) for g in view_groups.values()), 1)
+                processed = 0
+                for view_name, group in view_groups.items():
+                    if not group['aoi_files'] or not group['hdr_files']:
+                        continue
+                    self._hdr2wpd._process_daylight_view_groups({view_name: group})
+                    processed += len(group['aoi_files'])
+                    progress['done'] = processed
+            progress['phase'] = 'excel'
+            room_type_map = {r.get('name', ''): r.get('room_type', '')
+                             for r in self.rooms if r.get('room_type')}
+            self._hdr2wpd._generate_daylight_excel_report(
+                df_thresholds=tuple(sorted(set(self.DF_THRESHOLDS.values()))),
+                room_types=room_type_map)
+            progress['phase'] = 'done'
+        except Exception as exc:
+            progress['error'] = exc
 
+    def _start_export_progress_poll(self, progress: dict, n_aoi: int):
+        """Poll the background export thread and update the progress bar."""
+        def _check():
             if self._export_thread.is_alive():
-                if phase == 'excel':
+                if progress['phase'] == 'excel':
                     self._show_progress(0.95, "Generating Excel report...")
                 else:
-                    frac = done / total * 0.9  # reserve last 10% for Excel
-                    self._show_progress(frac, f"{done} / {total} rooms")
+                    frac = progress['done'] / max(progress['total'], 1) * 0.9
+                    self._show_progress(frac, f"{progress['done']} / {progress['total']} rooms")
                 self.fig.canvas.draw_idle()
-                return  # timer fires again
-
-            # Thread finished
+                return
             self._export_poll_timer.stop()
             if progress['error']:
                 self._update_status(f"Export failed: {progress['error']}", 'red')
-                print(f"Export error: {progress['error']}")
                 self._show_progress(1.0, "Export failed")
             else:
                 self._update_status(f"Export complete - {n_aoi} rooms -> Excel report", 'green')
                 self._show_progress(1.0, "Export complete")
             self.btn_export.label.set_text('Export Report')
             self.fig.canvas.draw_idle()
-
-            # Auto-hide progress bar after 4 seconds
-            hide_timer = self.fig.canvas.new_timer(interval=4000)
-            hide_timer.single_shot = True
-            hide_timer.add_callback(lambda: (self._hide_progress(), self.fig.canvas.draw_idle()))
-            hide_timer.start()
+            hide = self.fig.canvas.new_timer(interval=4000)
+            hide.single_shot = True
+            hide.add_callback(lambda: (self._hide_progress(), self.fig.canvas.draw_idle()))
+            hide.start()
 
         self._export_poll_timer = self.fig.canvas.new_timer(interval=300)
-        self._export_poll_timer.add_callback(_check_progress)
+        self._export_poll_timer.add_callback(_check)
         self._export_poll_timer.start()
 
     def _export_rooms_as_aoi_files(self) -> int:

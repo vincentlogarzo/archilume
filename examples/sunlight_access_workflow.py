@@ -129,7 +129,7 @@ def sunlight_access_workflow():
 
 
     with timer("Phase 6: Package Final Results and Simulation Summary..."):
-        """TODO: create .zip for issue"""
+        """TODO: create .zip for issue use shutil.make_archive() to create a zip file of the outputs, and include a summary report in the zip file that includes key results and metadata about the simulation."""
 
 
     timer.print_report(output_dir=config.OUTPUTS_DIR)
