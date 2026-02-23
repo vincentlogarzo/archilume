@@ -48,6 +48,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import PolygonSelector, TextBox, Button
 from matplotlib.patches import Polygon, FancyBboxPatch
 from matplotlib.path import Path as MplPath
+import matplotlib.patheffects as patheffects
 import numpy as np
 
 # Archilume imports
@@ -164,6 +165,7 @@ class HdrAoiEditor:
 
         # Room type tagging (BED / LIVING — LIVING requires sub-rooms)
         self.room_type:             Optional[str]       = None
+        self.multi_selected_room_idxs: set              = set()   # Ctrl+click multi-select
 
         # Daylight factor analysis — thresholds are fixed per room type
         self.DF_THRESHOLDS          = {'BED': 0.5, 'LIVING': 1.0}
@@ -578,6 +580,7 @@ class HdrAoiEditor:
             ("s",             "Save room / confirm edit"), ("d",        "Delete selected room"),
             ("e",             "Toggle Edit Mode"),      ("ctrl+z",      "Undo last edit"),
             ("o",             "Toggle orthogonal lines"), ("r",         "Reset zoom"),
+            ("Ctrl+click",    "Multi-select rooms"),     ("ctrl+a",    "Select all rooms"),
             ("q",             "Quit"),
         ]
         for i, (key, desc) in enumerate(controls):
@@ -1126,11 +1129,19 @@ class HdrAoiEditor:
             child_hashes = tuple(self._vertices_hash(cv) for cv in child_verts_list)
             verts_hash = hash((verts_hash, child_hashes))
 
+        _DF_DISPLAY_FMT = 2  # bump to invalidate cached display_lines
         cache = room.get('df_cache')
         if (cache
                 and cache.get('vertices_hash') == verts_hash
                 and tuple(cache.get('thresholds', [])) == thresholds_key):
-            return cache['display_lines']
+            if cache.get('display_fmt') == _DF_DISPLAY_FMT:
+                return cache['display_lines']
+            # Geometry unchanged — regenerate display lines from cached raw_result
+            if cache.get('raw_result'):
+                lines = self._format_df_lines(cache['raw_result'])
+                cache['display_lines'] = lines
+                cache['display_fmt'] = _DF_DISPLAY_FMT
+                return lines
 
         # Cache miss — recompute
         if is_apartment and child_verts_list:
@@ -1139,17 +1150,25 @@ class HdrAoiEditor:
         else:
             result = self._hdr2wpd.compute_df_for_polygon(
                 self._df_image, verts, thresholds_key)
+        lines = self._format_df_lines(result)
+        room['df_cache'] = {
+            'vertices_hash':  verts_hash,
+            'thresholds':     list(thresholds_key),
+            'display_fmt':    _DF_DISPLAY_FMT,
+            'display_lines':  lines,
+            'raw_result':     result,
+        }
+        return lines
+
+    @staticmethod
+    def _format_df_lines(result: dict) -> list:
+        """Format DF results as display lines: area (%) then threshold."""
         total_area = result['total_area_m2']
         lines = []
         for tr in result['thresholds']:
             pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
-            lines.append(f"{pct:.0f}% @ {tr['threshold']:g}% DF")
-        room['df_cache'] = {
-            'vertices_hash':  verts_hash,
-            'thresholds':     list(thresholds_key),
-            'display_lines':  lines,
-            'raw_result':     result,
-        }
+            lines.append(f"{tr['area_m2']:.1f} m\u00b2 ({pct:.0f}%)")
+            lines.append(f"@ {tr['threshold']:g}% DF")
         return lines
 
     def _invalidate_room_df_cache(self, room_idx: int):
@@ -1181,7 +1200,7 @@ class HdrAoiEditor:
         if len(verts) < 3:
             return
 
-        is_selected = (idx == self.selected_room_idx)
+        is_selected = (idx == self.selected_room_idx or idx in self.multi_selected_room_idxs)
         is_hover    = (idx == self.hover_room_idx)
         is_editing  = (idx == self.edit_room_idx and self.edit_mode)
         is_subroom  = room.get('parent') is not None
@@ -1242,10 +1261,12 @@ class HdrAoiEditor:
             hf = room.get('hdr_file', '')
             label += f"\n({hf})"
 
+        fs_name = self._zoom_fontsize()
         label_text = self.ax.text(
             centroid[0], centroid[1], label,
-            color='red', fontsize=self._zoom_fontsize(),
+            color='red', fontsize=fs_name,
             ha='center', va='center', clip_on=True,
+            path_effects=[patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')],
         )
         label_text.set_clip_path(self.ax.patch)
         self.room_labels.append(label_text)
@@ -1256,11 +1277,13 @@ class HdrAoiEditor:
         if df_lines and is_current_floor:
             line_step = self._df_line_step()
             for line_i, line in enumerate(df_lines):
-                dy = (line_i + 0.5) * line_step
+                dy = 1.2 * line_step + line_i * line_step * 0.7
+                fs_df = self._zoom_fontsize(base=6.5)
                 df_text = self.ax.text(
                     centroid[0], centroid[1] + dy, line,
-                    color='red', fontsize=self._zoom_fontsize(base=6.5),
+                    color='red', fontsize=fs_df,
                     ha='center', va='center', clip_on=True, alpha=0.85,
+                    path_effects=[patheffects.withStroke(linewidth=fs_df * 0.12, foreground='black')],
                 )
                 df_text.set_clip_path(self.ax.patch)
                 # Store centroid + line index for zoom repositioning
@@ -1276,7 +1299,7 @@ class HdrAoiEditor:
             patch = self._room_patch_cache.get(i)
             if patch is None:
                 continue
-            is_selected = (i == self.selected_room_idx)
+            is_selected = (i == self.selected_room_idx or i in self.multi_selected_room_idxs)
             is_hover    = (i == self.hover_room_idx)
             is_editing  = (i == self.edit_room_idx and self.edit_mode)
             is_subroom  = room.get('parent') is not None
@@ -1586,15 +1609,33 @@ class HdrAoiEditor:
         self._handle_hover_detection(x, y)
 
     def _handle_edge_drag(self, x: float, y: float):
-        """Move both endpoints of the hovered edge by the cursor delta."""
+        """Move both endpoints of the hovered edge perpendicular to it.
+
+        The drag is constrained to the direction orthogonal to the edge,
+        so horizontal edges move only vertically and vice-versa.
+        """
         dx = x - self.edit_edge_start[0]
         dy = y - self.edit_edge_start[1]
         room = self.rooms[self.edit_edge_room_idx]
         j  = self.edit_edge_idx
         j2 = (j + 1) % len(room['vertices'])
+
+        # Edge direction vector
+        ex = room['vertices'][j2][0] - room['vertices'][j][0]
+        ey = room['vertices'][j2][1] - room['vertices'][j][1]
+        edge_len_sq = ex * ex + ey * ey
+
+        if edge_len_sq > 0:
+            # Normal (perpendicular) to the edge: (-ey, ex)
+            nx, ny = -ey, ex
+            # Project the drag delta onto the normal direction
+            proj = (dx * nx + dy * ny) / edge_len_sq
+            dx = proj * nx
+            dy = proj * ny
+
         room['vertices'][j][0]  += dx;  room['vertices'][j][1]  += dy
         room['vertices'][j2][0] += dx;  room['vertices'][j2][1] += dy
-        self.edit_edge_start = (x, y)
+        self.edit_edge_start = (self.edit_edge_start[0] + dx, self.edit_edge_start[1] + dy)
         self._update_dragged_patch(self.edit_edge_room_idx)
 
     def _rebuild_hover_arrays(self):
@@ -1717,6 +1758,8 @@ class HdrAoiEditor:
             self._on_ortho_toggle(None)
         elif event.key == 'ctrl+z':
             self._undo_edit()
+        elif event.key == 'ctrl+a':
+            self._select_all_rooms()
 
     def _on_scroll(self, event):
         """Handle scroll wheel for zooming or room list scrolling."""
@@ -1801,26 +1844,53 @@ class HdrAoiEditor:
         self._deselect_room()
 
     def _select_room(self, idx: int):
-        """Select a room by index and populate the name textbox."""
+        """Select a room by index and populate the name textbox and parent."""
         self._deselect_room()
         self.selected_room_idx = idx
         room = self.rooms[idx]
         self.name_textbox.set_val(room.get('name', ''))
         self.room_type = room.get('room_type')
         self._update_room_type_buttons()
+
+        # Auto-populate parent apartment selector
+        parent = room.get('parent')
+        if parent:
+            # Sub-room: show its parent
+            self.selected_parent = parent
+            self.btn_parent.label.set_text(parent)
+            self.name_label_text.set_text("Room Name:")
+        else:
+            # This IS a parent apartment — set it as the active parent
+            self.selected_parent = room.get('name', '')
+            self.btn_parent.label.set_text(self.selected_parent)
+            self.name_label_text.set_text("Room Name:")
+
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
         self._render_section()
 
     def _deselect_room(self):
-        """Deselect any selected room."""
+        """Deselect any selected room and clear multi-selection."""
+        changed = self.selected_room_idx is not None or self.multi_selected_room_idxs
+        self.multi_selected_room_idxs.clear()
         if self.selected_room_idx is not None:
             self.selected_room_idx = None
             self.name_textbox.set_val('')
             self.room_type = None
             self._update_room_type_buttons()
+        if changed:
             self._update_status("Ready to draw", 'blue')
             self._update_room_list()
             self.fig.canvas.draw_idle()
+
+    def _select_all_rooms(self):
+        """Select all rooms on the current HDR (Ctrl+A)."""
+        self.multi_selected_room_idxs = {
+            i for i, r in enumerate(self.rooms) if self._is_room_on_current_hdr(r)
+        }
+        n = len(self.multi_selected_room_idxs)
+        self._update_status(f"Multi-select: {n} room(s) on current HDR", 'blue')
+        self._update_room_list()
+        self.fig.canvas.draw_idle()
 
     # === POLYGON SELECTOR ======================================================
 
@@ -2016,28 +2086,32 @@ class HdrAoiEditor:
         view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
         fs = self._zoom_fontsize(base=6.5)          # actual DF font size (pts)
         ref_fs = 6.5                                  # font size at default zoom
-        ref_step = self._reference_view_w * 0.015     # spacing at default zoom
+        ref_step = self._reference_view_w * 0.009     # spacing at default zoom
         if ref_fs <= 0 or self._reference_view_w <= 1:
-            return view_w * 0.015
+            return view_w * 0.009
         # Scale the default-zoom spacing by (current font / default font)
         # and by (current view / default view) to stay in data coords
         return ref_step * (fs / ref_fs) * (view_w / self._reference_view_w)
 
     def _apply_zoom_fontsizes(self):
-        """Reapply zoom-dependent font sizes to all cached room labels and DF text."""
+        """Reapply zoom-dependent font sizes and stroke widths to all cached text."""
         fs = self._zoom_fontsize()
+        stroke_name = [patheffects.withStroke(linewidth=fs * 0.12, foreground='black')]
         for label in self._room_label_cache.values():
             if label is not None:
                 label.set_fontsize(fs)
+                label.set_path_effects(stroke_name)
         fs_df = self._zoom_fontsize(base=6.5)
+        stroke_df = [patheffects.withStroke(linewidth=fs_df * 0.12, foreground='black')]
         line_step = self._df_line_step()
         for dt in self._df_text_cache:
             dt.set_fontsize(fs_df)
+            dt.set_path_effects(stroke_df)
             # Reposition based on current zoom-aware line step
             centroid = getattr(dt, '_df_centroid', None)
             line_i   = getattr(dt, '_df_line_i', None)
             if centroid is not None and line_i is not None:
-                dt.set_position((centroid[0], centroid[1] + (line_i + 0.5) * line_step))
+                dt.set_position((centroid[0], centroid[1] + 1.2 * line_step + line_i * line_step * 0.7))
 
     def _zoom_linewidth(self, base: float = 1.5) -> float:
         """Return linewidth that stays visually constant regardless of zoom.
@@ -2146,30 +2220,59 @@ class HdrAoiEditor:
         self._update_status(f"Orthogonal mode: {state}", 'blue')
         self.fig.canvas.draw_idle()
 
-    def _on_room_type_toggle(self, room_type: str, requires_children: bool = False):
-        """Toggle a room type on/off. LIVING requires the room to have sub-rooms."""
+    def _on_room_type_toggle(self, room_type: str, **_kw):
+        """Toggle a room type on/off.  Supports bulk tagging when multi-selected."""
+        # In multi-select mode: always set (no toggle-off), apply to all
+        if self.multi_selected_room_idxs:
+            self.room_type = room_type
+            self._apply_room_type_change()
+            return
+
+        # Single-select: toggle behaviour
         if self.room_type == room_type:
             self.room_type = None
             self._apply_room_type_change()
             return
-        if requires_children and self.selected_room_idx is not None:
-            room = self.rooms[self.selected_room_idx]
-            if not self._get_children(room.get('name', '')):
-                self._update_status(f"{room_type} type requires a room with sub-rooms", 'orange')
-                return
         self.room_type = room_type
         self._apply_room_type_change()
 
     def _apply_room_type_change(self):
-        """Update UI and persist room type change if a room is selected."""
+        """Update UI and persist room type change.
+
+        When ``multi_selected_room_idxs`` is non-empty the change is applied
+        to every room in the set.
+        """
         self._update_room_type_buttons()
-        if self.selected_room_idx is not None:
-            self.rooms[self.selected_room_idx]['room_type'] = self.room_type
-            # Invalidate DF cache — threshold depends on room type
-            self._invalidate_room_df_cache(self.selected_room_idx)
-            self._save_session()
-            self._update_room_list()
-            self._render_section(force_full=True)
+
+        # Collect target indices (multi-select takes priority)
+        if self.multi_selected_room_idxs:
+            target_idxs = list(self.multi_selected_room_idxs)
+        elif self.selected_room_idx is not None:
+            target_idxs = [self.selected_room_idx]
+        else:
+            target_idxs = []
+
+        if not target_idxs:
+            self.fig.canvas.draw_idle()
+            return
+
+        for idx in target_idxs:
+            self.rooms[idx]['room_type'] = self.room_type
+            self._invalidate_room_df_cache(idx)
+
+        self._save_session()
+        self._update_room_list()
+        self._render_section(force_full=True)
+
+        # Status feedback
+        tag = self.room_type or 'None'
+        applied = len(target_idxs)
+        if applied > 1:
+            self._update_status(f"Set {applied} rooms to {tag}", 'green')
+        elif applied == 1:
+            name = self.rooms[target_idxs[0]].get('name', '')
+            self._update_status(f"{name} → {tag}", 'green')
+
         self.fig.canvas.draw_idle()
 
     def _update_room_type_buttons(self):
@@ -2235,8 +2338,8 @@ class HdrAoiEditor:
 
     def _render_room_list_rows(self, flat_items, children_by_parent):
         """Render visible rows and scrollbar into ax_list."""
-        visible_rows = 22
-        pad_top, row_h = 0.01, (1.0 - 0.01 - 0.03) / 22
+        visible_rows = 32
+        pad_top, row_h = 0.01, (1.0 - 0.01 - 0.03) / visible_rows
         total = len(flat_items)
         max_offset = max(0, total - visible_rows)
         self.room_list_scroll_offset = max(0, min(self.room_list_scroll_offset, max_offset))
@@ -2246,7 +2349,8 @@ class HdrAoiEditor:
                 flat_items[self.room_list_scroll_offset:self.room_list_scroll_offset + visible_rows]):
             room   = self.rooms[room_idx]
             name   = room.get('name', 'unnamed')
-            is_sel = (room_idx == self.selected_room_idx)
+            is_sel   = (room_idx == self.selected_room_idx)
+            is_multi = (room_idx in self.multi_selected_room_idxs)
             row_top = (1.0 - pad_top) - row_i * row_h
             row_bot = row_top - row_h
             row_mid = (row_top + row_bot) / 2
@@ -2256,6 +2360,11 @@ class HdrAoiEditor:
                     (0.01, row_bot + 0.002), 0.98, row_h - 0.004,
                     boxstyle='round,pad=0.01', facecolor='#FFE082', edgecolor='orange',
                     linewidth=1.0, transform=self.ax_list.transAxes, clip_on=True))
+            elif is_multi:
+                self.ax_list.add_patch(FancyBboxPatch(
+                    (0.01, row_bot + 0.002), 0.98, row_h - 0.004,
+                    boxstyle='round,pad=0.01', facecolor='#BBDEFB', edgecolor='#42A5F5',
+                    linewidth=0.8, transform=self.ax_list.transAxes, clip_on=True))
 
             rtype    = room.get('room_type', '')
             type_tag = f" : {rtype}" if rtype else ""
@@ -2292,18 +2401,38 @@ class HdrAoiEditor:
                 transform=self.ax_list.transAxes)
 
     def _on_list_click(self, event):
-        """Handle clicks on the saved rooms list to select a room."""
+        """Handle clicks on the saved rooms list to select a room.
+
+        Ctrl+click toggles rooms in/out of the multi-selection set,
+        allowing bulk room-type tagging.  Plain click reverts to
+        single-select behaviour.
+        """
         if event.inaxes != self.ax_list:
             return
         if event.xdata is None or event.ydata is None:
             return
         y = event.ydata
+        ctrl = event.key == 'control'
         for (y_min, y_max, room_idx) in self._room_list_hit_boxes:
             if y_min <= y <= y_max:
-                if self.selected_room_idx == room_idx:
-                    self._deselect_room()
+                if ctrl:
+                    # Ctrl+click: toggle room in multi-selection
+                    if room_idx in self.multi_selected_room_idxs:
+                        self.multi_selected_room_idxs.discard(room_idx)
+                    else:
+                        self.multi_selected_room_idxs.add(room_idx)
+                    # Also add current primary selection to multi-set
+                    if self.selected_room_idx is not None:
+                        self.multi_selected_room_idxs.add(self.selected_room_idx)
+                    n = len(self.multi_selected_room_idxs)
+                    self._update_status(f"Multi-select: {n} room(s)", 'blue')
                 else:
-                    self._select_room(room_idx)
+                    # Plain click: clear multi-selection, single-select
+                    self.multi_selected_room_idxs.clear()
+                    if self.selected_room_idx == room_idx:
+                        self._deselect_room()
+                    else:
+                        self._select_room(room_idx)
                 self._update_room_list()
                 return
 
@@ -2390,11 +2519,11 @@ class HdrAoiEditor:
             self.ax_progress.set_visible(False)
 
     def _on_export_report(self, event):
-        """Export .aoi files for all rooms, generate .wpd files, and produce Excel report.
+        """Export per-pixel illuminance and DF data for every room to Excel.
 
-        The heavy work (pvalue, rasterisation, Excel) runs in a background
-        thread so the UI stays responsive.  A matplotlib timer polls for
-        completion and updates the progress bar.
+        The heavy work (HDR loading, rasterisation, Excel writing) runs in a
+        background thread so the UI stays responsive.  A matplotlib timer
+        polls for completion and updates the progress bar.
         """
         if self._hdr2wpd is None:
             self._update_status("Export unavailable - DF analysis not initialised", 'red')
@@ -2406,58 +2535,98 @@ class HdrAoiEditor:
             self._update_status("Export already in progress...", 'orange')
             return
 
-        # Phase 1 (fast, main thread): write .aoi files and clear stale .wpd
-        try:
-            n_aoi = self._export_rooms_as_aoi_files()
-            wpd_dir = config.WPD_DIR
-            if wpd_dir.exists():
-                for wpd_file in wpd_dir.glob('*.wpd'):
-                    wpd_file.unlink()
-        except Exception as exc:
-            self._update_status(f"Export failed writing .aoi: {exc}", 'red')
-            return
-
-        self._update_status(f"Exporting {n_aoi} rooms...", 'orange')
+        n_rooms = len(self.rooms)
+        self._update_status(f"Exporting {n_rooms} rooms...", 'orange')
         self.btn_export.label.set_text('Exporting...')
-        self._show_progress(0.0, f"0 / {n_aoi} rooms")
+        self._show_progress(0.0, f"0 / {n_rooms} rooms")
         self.fig.canvas.draw_idle()
 
-        progress = {'done': 0, 'total': n_aoi, 'phase': 'wpd', 'error': None}
+        progress = {'done': 0, 'total': n_rooms, 'phase': 'pixels', 'error': None}
         self._export_thread = threading.Thread(
             target=self._export_worker, args=(progress,), daemon=True)
         self._export_thread.start()
-        self._start_export_progress_poll(progress, n_aoi)
+        self._start_export_progress_poll(progress, n_rooms)
 
     def _export_worker(self, progress: dict):
-        """Background thread: generate .wpd files and Excel report."""
+        """Background thread: extract per-pixel data for every room and write Excel."""
+        from skimage.draw import polygon as skimage_polygon
+        from openpyxl import Workbook
+
         try:
-            hdr_files, aoi_files = self._hdr2wpd._scan_directories()
-            if hdr_files and aoi_files:
-                view_groups = self._hdr2wpd._group_aoi_by_view(aoi_files, hdr_files)
-                progress['total'] = max(sum(len(g['aoi_files']) for g in view_groups.values()), 1)
-                processed = 0
-                for view_name, group in view_groups.items():
-                    if not group['aoi_files'] or not group['hdr_files']:
-                        continue
-                    self._hdr2wpd._process_daylight_view_groups({view_name: group})
-                    processed += len(group['aoi_files'])
-                    progress['done'] = processed
-            progress['phase'] = 'excel'
-            room_type_map = {r.get('name', ''): r.get('room_type', '')
-                             for r in self.rooms if r.get('room_type')}
-            self._hdr2wpd._generate_daylight_excel_report(
-                df_thresholds=tuple(sorted(set(self.DF_THRESHOLDS.values()))),
-                room_types=room_type_map)
+            # Build HDR name → path lookup
+            hdr_lookup = {entry['name']: entry['hdr_path'] for entry in self.hdr_files}
+            df_cache = {}  # hdr_name → df_image array
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = 'Pixel Data'
+            ws.append(['Parent', 'Room', 'Room Type', 'Pixel_x', 'Pixel_y',
+                       'Illuminance (Lux)', 'Daylight Factor (%)'])
+
+            for i, room in enumerate(self.rooms):
+                name      = room.get('name', 'unnamed')
+                parent    = room.get('parent', '')
+                room_type = self._effective_room_type(room) or ''
+                verts     = room.get('vertices', [])
+                hdr_name  = room.get('hdr_file', '')
+
+                if len(verts) < 3 or hdr_name not in hdr_lookup:
+                    progress['done'] = i + 1
+                    continue
+
+                # Load / cache DF image for this HDR
+                if hdr_name not in df_cache:
+                    df_img = Hdr2Wpd.load_df_image(hdr_lookup[hdr_name])
+                    df_cache[hdr_name] = df_img
+                df_img = df_cache[hdr_name]
+
+                if df_img is None:
+                    progress['done'] = i + 1
+                    continue
+
+                # Rasterise polygon
+                xs = [int(round(v[0])) for v in verts]
+                ys = [int(round(v[1])) for v in verts]
+                rr, cc = skimage_polygon(ys, xs, shape=df_img.shape)
+
+                # Extract values: DF% and illuminance (lux = DF% × 100)
+                df_vals  = df_img[rr, cc]
+                lux_vals = df_vals * 100.0
+
+                for j in range(len(rr)):
+                    ws.append([
+                        parent,
+                        name,
+                        room_type,
+                        int(cc[j]),
+                        int(rr[j]),
+                        round(float(lux_vals[j]), 2),
+                        round(float(df_vals[j]), 4),
+                    ])
+
+                progress['done'] = i + 1
+
+            progress['phase'] = 'writing'
+            output_dir = config.WPD_DIR
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / 'aoi_pixels_export_daylight.xlsx'
+            wb.save(output_path)
+            print(f"Pixel export saved to {output_path}")
+
+            progress['phase'] = 'overlays'
+            self._export_overlay_images(progress)
             progress['phase'] = 'done'
         except Exception as exc:
             progress['error'] = exc
 
-    def _start_export_progress_poll(self, progress: dict, n_aoi: int):
+    def _start_export_progress_poll(self, progress: dict, n_rooms: int):
         """Poll the background export thread and update the progress bar."""
         def _check():
             if self._export_thread.is_alive():
-                if progress['phase'] == 'excel':
-                    self._show_progress(0.95, "Generating Excel report...")
+                if progress['phase'] == 'overlays':
+                    self._show_progress(0.97, "Rendering overlay images...")
+                elif progress['phase'] == 'writing':
+                    self._show_progress(0.95, "Writing Excel file...")
                 else:
                     frac = progress['done'] / max(progress['total'], 1) * 0.9
                     self._show_progress(frac, f"{progress['done']} / {progress['total']} rooms")
@@ -2468,7 +2637,7 @@ class HdrAoiEditor:
                 self._update_status(f"Export failed: {progress['error']}", 'red')
                 self._show_progress(1.0, "Export failed")
             else:
-                self._update_status(f"Export complete - {n_aoi} rooms -> Excel report", 'green')
+                self._update_status("Export complete → Excel + overlay images", 'green')
                 self._show_progress(1.0, "Export complete")
             self.btn_export.label.set_text('Export Report')
             self.fig.canvas.draw_idle()
@@ -2480,6 +2649,79 @@ class HdrAoiEditor:
         self._export_poll_timer = self.fig.canvas.new_timer(interval=300)
         self._export_poll_timer.add_callback(_check)
         self._export_poll_timer.start()
+
+    def _export_overlay_images(self, progress: dict):
+        """Render room boundary overlays onto each TIFF and save as new TIFFs."""
+        from PIL import Image, ImageDraw, ImageFont
+
+        output_dir = self.image_dir
+
+        for entry in self.hdr_files:
+            hdr_name = entry['name']
+            rooms_on_hdr = [(i, r) for i, r in enumerate(self.rooms)
+                            if r.get('hdr_file') == hdr_name and len(r.get('vertices', [])) >= 3]
+            if not rooms_on_hdr:
+                continue
+
+            for tiff_path in entry.get('tiff_paths', []):
+                if not tiff_path.exists():
+                    continue
+                img = Image.open(tiff_path).convert('RGB')
+                draw = ImageDraw.Draw(img)
+
+                # Scale font to ~1.2% of image height (readable but not huge)
+                font_size = max(12, int(img.height * 0.012))
+                font_size_small = max(10, int(font_size * 0.8))
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+                    font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size_small)
+                except (OSError, IOError):
+                    font = ImageFont.load_default()
+                    font_sm = font
+
+                red = (255, 0, 0)
+                black = (0, 0, 0)
+                outline_w = max(1, font_size // 12)  # thin outline
+                line_w = max(2, int(img.width * 0.002))
+
+                def _outlined_text(x, y, text, fnt):
+                    """Draw text with a thin black outline then red fill."""
+                    for ox in range(-outline_w, outline_w + 1):
+                        for oy in range(-outline_w, outline_w + 1):
+                            if ox or oy:
+                                draw.text((x + ox, y + oy), text, fill=black, font=fnt)
+                    draw.text((x, y), text, fill=red, font=fnt)
+
+                for room_idx, room in rooms_on_hdr:
+                    verts = room['vertices']
+                    # Draw polygon outline
+                    pts = [(int(round(v[0])), int(round(v[1]))) for v in verts]
+                    pts.append(pts[0])  # close polygon
+                    draw.line(pts, fill=red, width=line_w)
+
+                    # Label at centroid
+                    centroid = self._polygon_label_point(verts)
+                    cx, cy = int(round(centroid[0])), int(round(centroid[1]))
+                    name = room.get('name', '')
+
+                    # Room name
+                    bbox = draw.textbbox((0, 0), name, font=font)
+                    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                    _outlined_text(cx - tw // 2, cy - th // 2, name, font)
+
+                    # DF result lines below the name
+                    df_lines = room.get('df_cache', {}).get('display_lines', [])
+                    y_offset = cy + th
+                    for line in df_lines:
+                        bbox_s = draw.textbbox((0, 0), line, font=font_sm)
+                        tw_s = bbox_s[2] - bbox_s[0]
+                        th_s = bbox_s[3] - bbox_s[1]
+                        _outlined_text(cx - tw_s // 2, y_offset, line, font_sm)
+                        y_offset += th_s + 2
+
+                out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.tiff"
+                img.save(out_path)
+                print(f"Overlay saved: {out_path}")
 
     def _export_rooms_as_aoi_files(self) -> int:
         """Write editor rooms as .aoi files compatible with Hdr2Wpd.

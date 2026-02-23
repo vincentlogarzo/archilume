@@ -12,7 +12,7 @@ Naming convention:
     U101_BED1     sub-room (auto-prefixed when parent is selected)
 
 Controls:
-    ↑/↓           Navigate HDR files
+    Up/Dowb       Navigate HDR files
     t             Toggle image variant (HDR / TIFFs)
     Left-click    Place vertex (draw) or drag vertex (edit mode)
     Shift+click   Drag entire edge in edit mode (moves both endpoints together)
@@ -21,6 +21,10 @@ Controls:
     s             Save room / confirm edit
     d             Delete selected room
     e             Toggle Edit Mode
+    Ctrl+Z        Undo last vertex edit (edit mode)
+    o             Toggle orthogonal lines (H/V snap)
+    Ctrl+click    Multi-select rooms in list (bulk type tagging)
+    Ctrl+A        Select all rooms on current HDR
     r             Reset zoom
     q             Quit
 
@@ -43,13 +47,16 @@ if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
-    # FIXME: the living room type tag button does not work, implement a multi click option, to select multiple or change all types to one, then a user can just change living rooms. 
-    
+
+     #TODO: there should be building level results shown in th editor that confirm to the BESS daylight factor requirments. 
+
+     #TODO: deal with outline text thickness, make it thinner. 
+
+    #TODO: i;d like the lines when drawn to be forced into ortho, currenly only after you click place point the ortho is applied from its original point. It would be better if the line was ortho as you drew it, and then when you place the point it is placed in the ortho position.
+
     # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points.
 
-    # TODO: ensure all results are extract to excel report, every pixel inside each AOI is extracted to excel, and its illuminance and DF% results, therefore a user can calculate it themselves if they wish to validate. They would need only to calcualt the number of pixels above a certain threshodl and divide by the total number etc. 
-
-    # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel.
+    # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel using shutil
 
     # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this.
 
