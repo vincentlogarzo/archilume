@@ -2551,15 +2551,60 @@ class HdrAoiEditor:
         self._export_thread.start()
         self._start_export_progress_poll(progress, n_rooms)
 
-    def _export_worker(self, progress: dict):
-        """Background thread: extract per-pixel data for every room and write Excel."""
+    @staticmethod
+    def _extract_pixels_for_hdr(hdr_name, hdr_path, rooms_for_hdr):
+        """Load one HDR's DF image and rasterise all its rooms.
+
+        Designed to run in a ThreadPoolExecutor — the heavy work is the
+        subprocess call to `pvalue` (I/O-bound, releases the GIL) and numpy
+        array operations (also release the GIL).
+
+        Returns:
+            list of (parent, name, room_type, cc_array, rr_array, lux_array, df_array)
+        """
         from skimage.draw import polygon as skimage_polygon
+
+        df_img = Hdr2Wpd.load_df_image(hdr_path)
+        if df_img is None:
+            return []
+
+        results = []
+        for parent, name, room_type, verts in rooms_for_hdr:
+            xs = [int(round(v[0])) for v in verts]
+            ys = [int(round(v[1])) for v in verts]
+            rr, cc = skimage_polygon(ys, xs, shape=df_img.shape)
+
+            df_vals  = df_img[rr, cc]
+            lux_vals = df_vals * 100.0
+            results.append((parent, name, room_type, cc, rr, lux_vals, df_vals))
+        return results
+
+    def _export_worker(self, progress: dict):
+        """Background thread: extract per-pixel data for every room and write Excel.
+
+        Groups rooms by HDR file and uses ThreadPoolExecutor to parallelise
+        DF image loading (subprocess I/O) and rasterisation (numpy, GIL-free)
+        across HDR files concurrently.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from openpyxl import Workbook
 
         try:
             # Build HDR name → path lookup
             hdr_lookup = {entry['name']: entry['hdr_path'] for entry in self.hdr_files}
-            df_cache = {}  # hdr_name → df_image array
+
+            # Group rooms by HDR file for parallel processing
+            hdr_room_groups = {}  # hdr_name → list of (parent, name, room_type, verts)
+            for room in self.rooms:
+                verts    = room.get('vertices', [])
+                hdr_name = room.get('hdr_file', '')
+                if len(verts) < 3 or hdr_name not in hdr_lookup:
+                    continue
+                parent    = room.get('parent', '')
+                name      = room.get('name', 'unnamed')
+                room_type = self._effective_room_type(room) or ''
+                hdr_room_groups.setdefault(hdr_name, []).append(
+                    (parent, name, room_type, verts))
 
             wb = Workbook()
             ws = wb.active
@@ -2567,48 +2612,32 @@ class HdrAoiEditor:
             ws.append(['Parent', 'Room', 'Room Type', 'Pixel_x', 'Pixel_y',
                        'Illuminance (Lux)', 'Daylight Factor (%)'])
 
-            for i, room in enumerate(self.rooms):
-                name      = room.get('name', 'unnamed')
-                parent    = room.get('parent', '')
-                room_type = self._effective_room_type(room) or ''
-                verts     = room.get('vertices', [])
-                hdr_name  = room.get('hdr_file', '')
-
-                if len(verts) < 3 or hdr_name not in hdr_lookup:
-                    progress['done'] = i + 1
-                    continue
-
-                # Load / cache DF image for this HDR
-                if hdr_name not in df_cache:
-                    df_img = Hdr2Wpd.load_df_image(hdr_lookup[hdr_name])
-                    df_cache[hdr_name] = df_img
-                df_img = df_cache[hdr_name]
-
-                if df_img is None:
-                    progress['done'] = i + 1
-                    continue
-
-                # Rasterise polygon
-                xs = [int(round(v[0])) for v in verts]
-                ys = [int(round(v[1])) for v in verts]
-                rr, cc = skimage_polygon(ys, xs, shape=df_img.shape)
-
-                # Extract values: DF% and illuminance (lux = DF% × 100)
-                df_vals  = df_img[rr, cc]
-                lux_vals = df_vals * 100.0
-
-                for j in range(len(rr)):
-                    ws.append([
-                        parent,
-                        name,
-                        room_type,
-                        int(cc[j]),
-                        int(rr[j]),
-                        round(float(lux_vals[j]), 2),
-                        round(float(df_vals[j]), 4),
-                    ])
-
-                progress['done'] = i + 1
+            # Process each HDR group in parallel threads
+            max_workers = min(len(hdr_room_groups), 4) if hdr_room_groups else 1
+            completed_rooms = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(
+                        self._extract_pixels_for_hdr,
+                        hdr_name, hdr_lookup[hdr_name], rooms_list
+                    ): rooms_list
+                    for hdr_name, rooms_list in hdr_room_groups.items()
+                }
+                for future in as_completed(futures):
+                    rooms_list = futures[future]
+                    for parent, name, room_type, cc, rr, lux_vals, df_vals in future.result():
+                        for j in range(len(rr)):
+                            ws.append([
+                                parent,
+                                name,
+                                room_type,
+                                int(cc[j]),
+                                int(rr[j]),
+                                round(float(lux_vals[j]), 2),
+                                round(float(df_vals[j]), 4),
+                            ])
+                        completed_rooms += 1
+                        progress['done'] = completed_rooms
 
             progress['phase'] = 'writing'
             output_dir = config.WPD_DIR
@@ -2654,80 +2683,96 @@ class HdrAoiEditor:
         self._export_poll_timer.add_callback(_check)
         self._export_poll_timer.start()
 
-    def _export_overlay_images(self, progress: dict):
-        """Render room boundary overlays onto each TIFF and save as new TIFFs."""
+    @staticmethod
+    def _render_single_overlay(tiff_path, rooms_data, output_dir):
+        """Render room boundary overlays onto a single TIFF and save.
+
+        Designed to run in a ThreadPoolExecutor (I/O + PIL drawing).
+
+        Args:
+            tiff_path: Path to source TIFF image.
+            rooms_data: list of (name, vertices, df_display_lines) tuples.
+            output_dir: directory to save the overlay TIFF.
+        """
         from PIL import Image, ImageDraw, ImageFont
+
+        if not tiff_path.exists():
+            return
+        img = Image.open(tiff_path).convert('RGB')
+        draw = ImageDraw.Draw(img)
+
+        font_size = max(12, int(img.height * 0.012))
+        font_size_small = max(10, int(font_size * 0.8))
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+            font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size_small)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+            font_sm = font
+
+        red = (255, 0, 0)
+        black = (0, 0, 0)
+        outline_w = max(1, font_size // 12)
+
+        def _outlined_text(x, y, text, fnt):
+            for ox in range(-outline_w, outline_w + 1):
+                for oy in range(-outline_w, outline_w + 1):
+                    if ox or oy:
+                        draw.text((x + ox, y + oy), text, fill=black, font=fnt)
+            draw.text((x, y), text, fill=red, font=fnt)
+
+        for name, verts, df_lines in rooms_data:
+            pts = [(int(round(v[0])), int(round(v[1]))) for v in verts]
+            pts.append(pts[0])
+            draw.line(pts, fill=red, width=1)
+
+            centroid = HdrAoiEditor._polygon_label_point(verts)
+            cx, cy = int(round(centroid[0])), int(round(centroid[1]))
+
+            bbox = draw.textbbox((0, 0), name, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            _outlined_text(cx - tw // 2, cy - th // 2, name, font)
+
+            y_offset = cy + th
+            for line in df_lines:
+                bbox_s = draw.textbbox((0, 0), line, font=font_sm)
+                tw_s = bbox_s[2] - bbox_s[0]
+                th_s = bbox_s[3] - bbox_s[1]
+                _outlined_text(cx - tw_s // 2, y_offset, line, font_sm)
+                y_offset += th_s + 2
+
+        out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.tiff"
+        if out_path.exists():
+            out_path.unlink()
+        img.save(out_path)
+        print(f"Overlay saved: {out_path}")
+
+    def _export_overlay_images(self, progress: dict):
+        """Render room boundary overlays onto each TIFF using ThreadPoolExecutor."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         output_dir = self.image_dir
 
+        # Collect all (tiff_path, rooms_data) jobs
+        jobs = []
         for entry in self.hdr_files:
             hdr_name = entry['name']
-            rooms_on_hdr = [(i, r) for i, r in enumerate(self.rooms)
-                            if r.get('hdr_file') == hdr_name and len(r.get('vertices', [])) >= 3]
+            rooms_on_hdr = [
+                (r.get('name', ''), r['vertices'],
+                 r.get('df_cache', {}).get('display_lines', []))
+                for r in self.rooms
+                if r.get('hdr_file') == hdr_name and len(r.get('vertices', [])) >= 3
+            ]
             if not rooms_on_hdr:
                 continue
-
             for tiff_path in entry.get('tiff_paths', []):
-                if not tiff_path.exists():
-                    continue
-                img = Image.open(tiff_path).convert('RGB')
-                draw = ImageDraw.Draw(img)
+                jobs.append((tiff_path, rooms_on_hdr, output_dir))
 
-                # Scale font to ~1.2% of image height (readable but not huge)
-                font_size = max(12, int(img.height * 0.012))
-                font_size_small = max(10, int(font_size * 0.8))
-                try:
-                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-                    font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size_small)
-                except (OSError, IOError):
-                    font = ImageFont.load_default()
-                    font_sm = font
-
-                red = (255, 0, 0)
-                black = (0, 0, 0)
-                outline_w = max(1, font_size // 12)  # thin outline
-                line_w = 1
-
-                def _outlined_text(x, y, text, fnt):
-                    """Draw text with a thin black outline then red fill."""
-                    for ox in range(-outline_w, outline_w + 1):
-                        for oy in range(-outline_w, outline_w + 1):
-                            if ox or oy:
-                                draw.text((x + ox, y + oy), text, fill=black, font=fnt)
-                    draw.text((x, y), text, fill=red, font=fnt)
-
-                for room_idx, room in rooms_on_hdr:
-                    verts = room['vertices']
-                    # Draw polygon outline
-                    pts = [(int(round(v[0])), int(round(v[1]))) for v in verts]
-                    pts.append(pts[0])  # close polygon
-                    draw.line(pts, fill=red, width=line_w)
-
-                    # Label at centroid
-                    centroid = self._polygon_label_point(verts)
-                    cx, cy = int(round(centroid[0])), int(round(centroid[1]))
-                    name = room.get('name', '')
-
-                    # Room name
-                    bbox = draw.textbbox((0, 0), name, font=font)
-                    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                    _outlined_text(cx - tw // 2, cy - th // 2, name, font)
-
-                    # DF result lines below the name
-                    df_lines = room.get('df_cache', {}).get('display_lines', [])
-                    y_offset = cy + th
-                    for line in df_lines:
-                        bbox_s = draw.textbbox((0, 0), line, font=font_sm)
-                        tw_s = bbox_s[2] - bbox_s[0]
-                        th_s = bbox_s[3] - bbox_s[1]
-                        _outlined_text(cx - tw_s // 2, y_offset, line, font_sm)
-                        y_offset += th_s + 2
-
-                out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.tiff"
-                if out_path.exists():
-                    out_path.unlink()
-                img.save(out_path)
-                print(f"Overlay saved: {out_path}")
+        max_workers = min(len(jobs), 4) if jobs else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(self._render_single_overlay, *job) for job in jobs]
+            for future in as_completed(futures):
+                future.result()  # propagate exceptions
 
     def _export_rooms_as_aoi_files(self) -> int:
         """Write editor rooms as .aoi files compatible with Hdr2Wpd.
