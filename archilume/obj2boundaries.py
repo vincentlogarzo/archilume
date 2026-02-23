@@ -132,7 +132,7 @@ def generate_room_boundaries(
     room_type: str = "FLOOR",
     level_prefix: str = "L",
     coordinate_scale: float = 1000.0,
-) -> list:
+    ) -> list:
     """
     Generate room boundaries CSV file from bounding box.
 
@@ -208,7 +208,7 @@ def main(
     room_type: str = "FLOOR",
     level_prefix: str = "L",
     coordinate_scale: float = 1000.0,
-):
+    ):
     """
     Main function to parse OBJ and generate room boundaries CSV.
 

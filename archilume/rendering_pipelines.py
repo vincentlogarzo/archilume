@@ -150,7 +150,7 @@ class DaylightRenderer:
             rf"pfilt -e 0.5 {hdr_path} > {dimmed}",
 
             # Contour overlay: composite contour over dimmed background → tiff
-            rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' {dimmed} {contour} | ra_tiff - {d / f'{stem}_df_cntr_overlay.tiff'}",
+            rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' {dimmed} {contour} | ra_tiff - {d / f'{stem}_df_cntr.tiff'}",
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)

@@ -50,6 +50,8 @@ if __name__ == "__main__":
 
      #TODO: there should be building level results shown in th editor that confirm to the BESS daylight factor requirments. 
 
+     #TODO: implement multiprocessing of the hdr data into results. Use multiprocessing in any other areas that are computationally expensive, such as the drawing of the lines and text on the images.
+
      #TODO: deal with outline text thickness, make it thinner. 
 
     #TODO: i;d like the lines when drawn to be forced into ortho, currenly only after you click place point the ortho is applied from its original point. It would be better if the line was ortho as you drew it, and then when you place the point it is placed in the ortho position.

@@ -340,9 +340,10 @@ class HdrAoiEditor:
         for hdr_path in hdr_paths:
             stem = hdr_path.stem
             # Associated TIFFs: any .tiff in same dir whose stem starts with stem + '_'
+            # Exclude previously-exported aoi_overlay files to avoid re-processing them
             tiff_paths = sorted(
                 p for p in self.image_dir.glob("*.tiff")
-                if p.stem.startswith(stem + "_")
+                if p.stem.startswith(stem + "_") and not p.stem.endswith("_aoi_overlay")
             )
             result.append({
                 'hdr_path': hdr_path,
@@ -1018,6 +1019,9 @@ class HdrAoiEditor:
             self.ax.set_xlim(xlim)
             self.ax.set_ylim(ylim)
 
+        # Reapply zoom-aware font sizes now that limits are restored
+        self._apply_zoom_fontsizes()
+
         self._render_df_legend()
 
         # Title
@@ -1266,7 +1270,7 @@ class HdrAoiEditor:
             centroid[0], centroid[1], label,
             color='red', fontsize=fs_name,
             ha='center', va='center', clip_on=True,
-            path_effects=[patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')],
+            path_effects=[patheffects.withStroke(linewidth=fs_name * 0.06, foreground='black')],
         )
         label_text.set_clip_path(self.ax.patch)
         self.room_labels.append(label_text)
@@ -1283,7 +1287,7 @@ class HdrAoiEditor:
                     centroid[0], centroid[1] + dy, line,
                     color='red', fontsize=fs_df,
                     ha='center', va='center', clip_on=True, alpha=0.85,
-                    path_effects=[patheffects.withStroke(linewidth=fs_df * 0.12, foreground='black')],
+                    path_effects=[patheffects.withStroke(linewidth=fs_df * 0.06, foreground='black')],
                 )
                 df_text.set_clip_path(self.ax.patch)
                 # Store centroid + line index for zoom repositioning
@@ -2096,13 +2100,13 @@ class HdrAoiEditor:
     def _apply_zoom_fontsizes(self):
         """Reapply zoom-dependent font sizes and stroke widths to all cached text."""
         fs = self._zoom_fontsize()
-        stroke_name = [patheffects.withStroke(linewidth=fs * 0.12, foreground='black')]
+        stroke_name = [patheffects.withStroke(linewidth=fs * 0.06, foreground='black')]
         for label in self._room_label_cache.values():
             if label is not None:
                 label.set_fontsize(fs)
                 label.set_path_effects(stroke_name)
         fs_df = self._zoom_fontsize(base=6.5)
-        stroke_df = [patheffects.withStroke(linewidth=fs_df * 0.12, foreground='black')]
+        stroke_df = [patheffects.withStroke(linewidth=fs_df * 0.06, foreground='black')]
         line_step = self._df_line_step()
         for dt in self._df_text_cache:
             dt.set_fontsize(fs_df)
@@ -2682,7 +2686,7 @@ class HdrAoiEditor:
                 red = (255, 0, 0)
                 black = (0, 0, 0)
                 outline_w = max(1, font_size // 12)  # thin outline
-                line_w = max(2, int(img.width * 0.002))
+                line_w = 1
 
                 def _outlined_text(x, y, text, fnt):
                     """Draw text with a thin black outline then red fill."""
@@ -2720,6 +2724,8 @@ class HdrAoiEditor:
                         y_offset += th_s + 2
 
                 out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.tiff"
+                if out_path.exists():
+                    out_path.unlink()
                 img.save(out_path)
                 print(f"Overlay saved: {out_path}")
 
