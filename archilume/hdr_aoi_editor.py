@@ -16,9 +16,8 @@ Controls:
     Right-click   Select existing room
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
-    d             Delete selected room
     e             Toggle Edit Mode
-    Ctrl+Z        Undo last vertex edit (edit mode)
+    Ctrl+Z        Undo last edit / undo delete
     o             Toggle orthogonal lines (H/V snap)
     r             Reset zoom
     q             Quit
@@ -140,6 +139,10 @@ class HdrAoiEditor:
         self._edit_undo_stack:      List[Tuple]         = []
         self._edit_undo_max:        int                 = 50
 
+        # Undo stack for deleted rooms
+        # Each entry: (insertion_index, room_dict)
+        self._deleted_rooms_stack:  List[Tuple]         = []
+
         # Image cache: path → numpy array (avoids reloading from disk)
         self._image_cache:          dict                = {}
 
@@ -190,12 +193,74 @@ class HdrAoiEditor:
 
     def _make_button(self, x, y, w, h, label, callback,
                      fontsize=7, color=None, hovercolor=None):
-        """Create a styled Button widget and wire its callback."""
+        """Create a styled Button with rounded corners, shadow, and hover effect."""
         ax = self._axes(x, y, w, h)
-        btn = Button(ax, label,
-                     color=color or self._btn_color,
-                     hovercolor=hovercolor or self._btn_hover)
-        btn.label.set_fontsize(fontsize)
+        base_color  = color or self._btn_color
+        hover_color = hovercolor or self._btn_hover
+
+        # Hide default axes chrome
+        ax.set_facecolor('none')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_navigate(False)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
+        # Drop shadow
+        shadow = FancyBboxPatch(
+            (0.03, 0.03), 0.94, 0.86,
+            boxstyle='round,pad=0.04', facecolor='#00000015', edgecolor='none',
+            transform=ax.transAxes, clip_on=False, zorder=1)
+        ax.add_patch(shadow)
+
+        # Main button body
+        body = FancyBboxPatch(
+            (0.02, 0.08), 0.96, 0.86,
+            boxstyle='round,pad=0.04', facecolor=base_color,
+            edgecolor='#B0B0A8', linewidth=0.8,
+            transform=ax.transAxes, clip_on=False, zorder=2)
+        ax.add_patch(body)
+
+        # Highlight strip (subtle top gradient effect)
+        highlight = FancyBboxPatch(
+            (0.05, 0.55), 0.90, 0.34,
+            boxstyle='round,pad=0.03', facecolor='#FFFFFF30', edgecolor='none',
+            transform=ax.transAxes, clip_on=False, zorder=3)
+        ax.add_patch(highlight)
+
+        # Label
+        txt = ax.text(0.5, 0.48, label, fontsize=fontsize,
+                      fontweight='medium', color='#333333',
+                      ha='center', va='center',
+                      transform=ax.transAxes, zorder=4)
+
+        # Build a button-like object to stay compatible with existing code
+        btn = Button(ax, '', color='none', hovercolor='none')
+        btn.label = txt
+        btn.color = base_color
+        btn.hovercolor = hover_color
+        btn._body = body
+        btn._shadow = shadow
+        btn._highlight = highlight
+
+        # Hover enter/leave callbacks
+        def _on_enter(event):
+            if event.inaxes == ax:
+                body.set_facecolor(hover_color)
+                body.set_edgecolor('#909088')
+                shadow.set_facecolor('#00000025')
+                ax.figure.canvas.draw_idle()
+
+        def _on_leave(event):
+            body.set_facecolor(btn.color)
+            body.set_edgecolor('#B0B0A8')
+            shadow.set_facecolor('#00000018')
+            ax.figure.canvas.draw_idle()
+
+        ax.figure.canvas.mpl_connect('axes_enter_event', _on_enter)
+        ax.figure.canvas.mpl_connect('axes_leave_event', _on_leave)
+
         btn.on_clicked(callback)
         return btn
 
@@ -520,7 +585,7 @@ class HdrAoiEditor:
                 pass
 
         # Main plot area — maximised to fill available space
-        self.ax = self._axes(0.02, 0.21, 0.96, 0.73)
+        self.ax = self._axes(0.02, 0.21, 0.96, 0.69)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
@@ -608,8 +673,8 @@ class HdrAoiEditor:
             ("\u2191/\u2193", "Navigate HDR files"),   ("t",           "Toggle image (HDR / TIFFs)"),
             ("Left-click",    "Place vertex / drag"),   ("Shift+click", "Drag edge (edit mode)"),
             ("Right-click",   "Select existing room"),  ("Scroll",      "Zoom centred on cursor"),
-            ("s",             "Save room / confirm edit"), ("d",        "Delete selected room"),
-            ("e",             "Toggle Edit Mode"),      ("ctrl+z",      "Undo last edit"),
+            ("s",             "Save room / confirm edit"),
+            ("e",             "Toggle Edit Mode"),      ("ctrl+z",      "Undo edit / delete"),
             ("o",             "Toggle orthogonal lines"), ("r",         "Reset zoom"),
             ("Ctrl+click",    "Multi-select rooms"),     ("ctrl+a",    "Select all rooms"),
             ("q",             "Quit"),
@@ -701,7 +766,7 @@ class HdrAoiEditor:
         """Create the scrollable saved-rooms list (right of input column)."""
         gap     = self._GAP
         list_x  = self._PRNT_X + self._PRNT_W + gap
-        list_w  = 0.130
+        list_w  = 0.270
         list_y  = self._ROW_Y
         label_h = 0.020
         self._make_label(list_x, list_y, list_w, label_h, "SAVED ROOMS:")
@@ -715,45 +780,56 @@ class HdrAoiEditor:
             spine.set_linewidth(0.5)
 
     def _setup_bottom_toolbar(self):
-        """Create the bottom button strip and progress bar."""
-        gap  = self._GAP
-        tr_x, tr_w, tr_y, tr_h = 0.12, 0.86, 0.95, 0.030
-        n_tr     = 7
-        tr_btn_w = (tr_w - (n_tr - 1) * gap) / n_tr
+        """Create the two-row bottom toolbar with DF legend filling the right."""
+        gap   = self._GAP
+        tr_x  = 0.02                     # push buttons to far left
+        tr_h  = 0.025                     # single row height
+        row1_y = 0.91                     # top row
+        row2_y = row1_y + tr_h + gap * 2    # bottom row (extra spacing for button shadows)
 
+        # Button width: 4 buttons across on top row
+        n_cols   = 4
+        btn_w    = 0.130
+        btn_step = btn_w + gap
+
+        # Row 1: Toggle, Edit, Ortho, Reset Zoom
         self.btn_image_toggle = self._make_button(
-            tr_x, tr_y, tr_btn_w, tr_h,
+            tr_x, row1_y, btn_w, tr_h,
             'Toggle Image Layers: HDR (Press T)', self._on_image_toggle_click)
         self.btn_edit_mode = self._make_button(
-            tr_x + (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            tr_x + btn_step, row1_y, btn_w, tr_h,
             'Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
 
         ortho_label = 'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)'
         ortho_color = self._btn_on_color if self.ortho_mode else self._btn_color
         ortho_hover = self._btn_on_hover if self.ortho_mode else self._btn_hover
         self.btn_ortho = self._make_button(
-            tr_x + 2 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
             ortho_label, self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
 
         self.btn_reset_zoom = self._make_button(
-            tr_x + 3 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
             'Reset Zoom', self._on_reset_zoom_click)
+
+        # Row 2: Export & Archive, Extract Archive
         self.btn_export = self._make_button(
-            tr_x + 4 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            tr_x, row2_y, btn_w, tr_h,
             'Export & Archive', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
         self.btn_extract = self._make_button(
-            tr_x + 5 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            tr_x + btn_step, row2_y, btn_w, tr_h,
             'Extract Archive', self._on_extract_click)
 
-        # DF% legend strip — fills remaining toolbar space to the right
-        legend_x = tr_x + 6 * (tr_btn_w + gap)
-        legend_w = tr_w - 6 * (tr_btn_w + gap) + gap
-        self.ax_legend = self._axes(legend_x, tr_y, legend_w, tr_h)
+        # DF% legend — starts after all top-row buttons, no overlap
+        legend_x = tr_x + n_cols * btn_step
+        legend_w = 0.98 - legend_x
+        legend_h = 0.99 - row1_y
+        self.ax_legend = self._axes(legend_x, row1_y, legend_w, legend_h)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(False)
 
         # Progress bar (hidden until export)
-        self.ax_progress = self._axes(tr_x, tr_y + tr_h + gap, tr_w, 0.014)
+        prog_y = row2_y + tr_h + gap * 0.5
+        self.ax_progress = self._axes(tr_x, prog_y, 0.96, 0.010)
         self.ax_progress.set_xlim(0, 1)
         self.ax_progress.set_ylim(0, 1)
         self.ax_progress.axis('off')
@@ -762,26 +838,27 @@ class HdrAoiEditor:
         self._progress_text = None
 
     def _setup_colour_key_legend(self):
-        """Create the colour-key legend (top-right)."""
-        ax_legend = self._axes(0.81, 0.02, 0.18, 0.10)
+        """Create the colour-key legend (far right, vertical stack)."""
+        ax_legend = self._axes(0.88, 0.02, 0.11, 0.14)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
-        ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
-                       transform=ax_legend.transAxes)
+        ax_legend.text(0.05, 0.95, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
+                       va='top', transform=ax_legend.transAxes)
         items = [
-            ('red', 0.6, 'Room boundary'), ('yellow', 0.5, 'Selected'),
-            ('cyan', 0.5, 'Being edited'), ('magenta', 0.5, 'Hover (edit mode)'),
+            ('red',     0.6, 'Room boundary'),
+            ('yellow',  0.5, 'Selected'),
+            ('cyan',    0.5, 'Being edited'),
+            ('magenta', 0.5, 'Hover (edit mode)'),
         ]
+        n = len(items)
         for i, (color, alpha, label) in enumerate(items):
-            col, row = i // 3, i % 3
-            x_base = 0.01 + col * 0.50
-            y0     = 0.74 - row * 0.27
-            rect = FancyBboxPatch((x_base, y0 - 0.07), 0.04, 0.14,
+            y0 = 0.78 - i * (0.75 / max(n - 1, 1))
+            rect = FancyBboxPatch((0.05, y0 - 0.04), 0.08, 0.08,
                                   boxstyle='round,pad=0.01',
                                   facecolor=color, edgecolor=color, alpha=alpha,
                                   transform=ax_legend.transAxes, clip_on=False)
             ax_legend.add_patch(rect)
-            ax_legend.text(x_base + 0.06, y0, label, fontsize=6, color='#404040',
+            ax_legend.text(0.18, y0, label, fontsize=6, color='#404040',
                            va='center', transform=ax_legend.transAxes)
 
     # === HDR NAVIGATION ========================================================
@@ -1114,9 +1191,12 @@ class HdrAoiEditor:
             return
         legend_img = np.rot90(legend_img, k=1)
         lH, lW = legend_img.shape[:2]
-        self.ax_legend.imshow(legend_img, origin='upper', extent=[0, lW, lH, 0], aspect='equal')
-        self.ax_legend.set_xlim(0, lW)
-        self.ax_legend.set_ylim(lH, 0)
+        # Scale up 30% while preserving aspect ratio
+        scale = 1.3
+        sW, sH = lW * scale, lH * scale
+        self.ax_legend.imshow(legend_img, origin='upper', extent=[0, sW, sH, 0], aspect='equal')
+        self.ax_legend.set_xlim(0, sW)
+        self.ax_legend.set_ylim(sH, 0)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(True)
 
@@ -1413,6 +1493,23 @@ class HdrAoiEditor:
             f"Undid change to '{room_name}' ({remaining} undo{'s' if remaining != 1 else ''} left)", 'blue')
         self._save_session()
         self._render_section(force_full=True)
+
+    def _undo_delete(self):
+        """Restore the last deleted room (Ctrl+Z in draw mode)."""
+        if not self._deleted_rooms_stack:
+            self._update_status("Nothing to undo", 'orange')
+            return
+        idx, room = self._deleted_rooms_stack.pop()
+        # Re-insert at original position (clamped to current list length)
+        idx = min(idx, len(self.rooms))
+        self.rooms.insert(idx, room)
+        name = room.get('name', 'unnamed')
+        self._save_session()
+        self._update_status(f"Restored '{name}'", 'blue')
+        self._update_room_list()
+        self._update_hdr_list()
+        self._render_section(force_full=True)
+        print(f"Restored deleted room '{name}'")
 
     def _snap_to_vertex(self, x: float, y: float) -> tuple:
         """Snap to nearest existing polygon vertex within snap_distance_px pixels."""
@@ -1878,8 +1975,6 @@ class HdrAoiEditor:
             self._on_save_click(None)
         elif event.key == 'S':
             self._save_session()
-        elif event.key == 'd':
-            self._on_delete_click(None)
         elif event.key == 'r':
             self._on_reset_zoom_click(None)
         elif event.key == 'q':
@@ -1895,7 +1990,10 @@ class HdrAoiEditor:
         elif event.key == 'o':
             self._on_ortho_toggle(None)
         elif event.key == 'ctrl+z':
-            self._undo_edit()
+            if self.edit_mode:
+                self._undo_edit()
+            else:
+                self._undo_delete()
         elif event.key == 'ctrl+a':
             self._select_all_rooms()
 
@@ -2210,16 +2308,17 @@ class HdrAoiEditor:
         self._update_status("Cleared - ready to draw", 'blue')
 
     def _on_delete_click(self, event):
-        """Delete the selected room."""
+        """Delete the selected room (Ctrl+Z to undo)."""
         if self.selected_room_idx is None:
             self._update_status("No room selected to delete", 'red')
             return
         idx  = self.selected_room_idx
-        name = self.rooms[idx].get('name', 'unnamed')
-        self.rooms.pop(idx)
+        room = self.rooms.pop(idx)
+        name = room.get('name', 'unnamed')
+        self._deleted_rooms_stack.append((idx, room))
         self.selected_room_idx = None
         self.current_polygon_vertices = []
-        self._update_status(f"Deleted '{name}'", 'green')
+        self._update_status(f"Deleted '{name}' (Ctrl+Z to undo)", 'green')
         self._update_room_list()
         self._update_hdr_list()
         self._render_section(force_full=True)
@@ -2324,44 +2423,33 @@ class HdrAoiEditor:
     # === TOGGLE BUTTONS & ROOM TYPE ============================================
 
     def _style_toggle_button(self, btn, is_on: bool):
-        """Apply pressed/depressed bevel styling to a toggle button.
+        """Apply pressed/depressed styling to a toggle button.
 
-        ON  = sunken look: darker background, inset border via dark edges.
-        OFF = raised look: lighter background, default flat appearance.
+        ON  = sunken look: darker background, bold white text.
+        OFF = raised look: lighter background, normal dark text.
         """
-        ax = btn.ax
+        body = getattr(btn, '_body', None)
+        highlight = getattr(btn, '_highlight', None)
         if is_on:
             btn.color      = self._btn_on_color
             btn.hovercolor = self._btn_on_hover
-            ax.set_facecolor(self._btn_on_color)
-            # Inset bevel: dark top-left edges, light bottom-right
-            for spine, color, lw in [
-                ('top',    '#555555', 1.8),
-                ('left',   '#555555', 1.8),
-                ('bottom', '#AAAAAA', 1.2),
-                ('right',  '#AAAAAA', 1.2),
-            ]:
-                ax.spines[spine].set_color(color)
-                ax.spines[spine].set_linewidth(lw)
-                ax.spines[spine].set_visible(True)
+            if body:
+                body.set_facecolor(self._btn_on_color)
+                body.set_edgecolor('#606058')
+            if highlight:
+                highlight.set_facecolor('#FFFFFF15')
             btn.label.set_fontweight('bold')
             btn.label.set_color('#FFFFFF')
         else:
             btn.color      = self._btn_color
             btn.hovercolor = self._btn_hover
-            ax.set_facecolor(self._btn_color)
-            # Raised bevel: light top-left, dark bottom-right
-            for spine, color, lw in [
-                ('top',    '#FFFFFF', 1.2),
-                ('left',   '#FFFFFF', 1.2),
-                ('bottom', '#999999', 1.5),
-                ('right',  '#999999', 1.5),
-            ]:
-                ax.spines[spine].set_color(color)
-                ax.spines[spine].set_linewidth(lw)
-                ax.spines[spine].set_visible(True)
-            btn.label.set_fontweight('normal')
-            btn.label.set_color('#000000')
+            if body:
+                body.set_facecolor(self._btn_color)
+                body.set_edgecolor('#B0B0A8')
+            if highlight:
+                highlight.set_facecolor('#FFFFFF30')
+            btn.label.set_fontweight('medium')
+            btn.label.set_color('#333333')
 
     def _on_edit_mode_toggle(self, event):
         """Toggle edit mode for modifying existing room boundaries."""
@@ -2509,7 +2597,7 @@ class HdrAoiEditor:
         return flat_items, children_by_parent
 
     def _render_room_list_rows(self, flat_items, children_by_parent):
-        """Render visible rows and scrollbar into ax_list."""
+        """Render visible rows in two columns with scrollbar into ax_list."""
         # Row heights: parents get 1.0 unit, children get 0.5 unit
         pad_top, pad_bot = 0.01, 0.03
         usable = 1.0 - pad_top - pad_bot
@@ -2517,86 +2605,107 @@ class HdrAoiEditor:
 
         # Compute total weight for scroll capacity (parents=1, children=0.5)
         weights = [0.5 if indent > 0 else 1.0 for (_, indent, _) in flat_items]
-        total_weight = sum(weights)
 
-        # Determine how many items fit in the visible area
-        # Use a reference: 12 parent-sized rows worth of space
+        # Determine how many items fit in ONE column
         unit_h = usable / 12.0
         cumulative = 0.0
-        visible_count = 0
-        for w in weights[self.room_list_scroll_offset:]:
+        col_capacity = 0
+        for w in weights:
             cumulative += w
             if cumulative * unit_h > usable:
                 break
-            visible_count += 1
-        visible_count = max(1, visible_count)
+            col_capacity += 1
+        col_capacity = max(1, col_capacity)
 
+        # Two columns = 2x capacity
+        visible_count = min(total, col_capacity * 2)
+
+        # Scroll offset
         max_offset = max(0, total - visible_count)
         self.room_list_scroll_offset = max(0, min(self.room_list_scroll_offset, max_offset))
         self.ax_list.set_ylim(0, 1)
 
-        # Layout: compute y positions for visible rows
+        # Column layout constants
+        col_w     = 0.48          # each column width in axes fraction
+        col_x     = [0.01, 0.51]  # left edges for col 0 and col 1
+        divider_x = 0.50          # vertical divider between columns
+
+        # Split visible items into two columns
         visible_slice = flat_items[self.room_list_scroll_offset:self.room_list_scroll_offset + visible_count]
-        y_cursor = 1.0 - pad_top
-        for row_i, (room_idx, indent, is_last_child) in enumerate(visible_slice):
-            room   = self.rooms[room_idx]
-            name   = room.get('name', 'unnamed')
-            is_sel   = (room_idx == self.selected_room_idx)
-            is_multi = (room_idx in self.multi_selected_room_idxs)
-            row_h   = unit_h * (0.5 if indent > 0 else 1.0)
-            row_top = y_cursor
-            row_bot = y_cursor - row_h
-            row_mid = (row_top + row_bot) / 2
-            y_cursor = row_bot
+        col0_items = visible_slice[:col_capacity]
+        col1_items = visible_slice[col_capacity:]
 
-            box_pad = 0.005 if indent > 0 else 0.01
-            box_inset = 0.001 if indent > 0 else 0.002
-            if is_sel:
-                self.ax_list.add_patch(FancyBboxPatch(
-                    (0.01, row_bot + box_inset), 0.98, row_h - box_inset * 2,
-                    boxstyle=f'round,pad={box_pad}', facecolor='#FFE082', edgecolor='orange',
-                    linewidth=1.0, transform=self.ax_list.transAxes, clip_on=True))
-            elif is_multi:
-                self.ax_list.add_patch(FancyBboxPatch(
-                    (0.01, row_bot + box_inset), 0.98, row_h - box_inset * 2,
-                    boxstyle=f'round,pad={box_pad}', facecolor='#BBDEFB', edgecolor='#42A5F5',
-                    linewidth=0.8, transform=self.ax_list.transAxes, clip_on=True))
+        # Draw vertical divider between columns (if there are items in col 1)
+        if col1_items:
+            self.ax_list.plot(
+                [divider_x, divider_x], [pad_bot, 1.0 - pad_top],
+                color='#DDDDDD', linewidth=0.5,
+                transform=self.ax_list.transAxes, clip_on=True)
 
-            rtype    = room.get('room_type', '')
-            type_tag = f" : {rtype}" if rtype else ""
-            if indent > 0:
-                parent_name = room.get('parent', '')
-                short = name[len(parent_name) + 1:] if name.startswith(f"{parent_name}_") else name
-                text   = f"{short}{type_tag}"
-                color, fs, fw = ('#E65100' if is_sel else '#0D47A1'), 6.5, 'normal'
+        # Render each column
+        for col_idx, col_items in enumerate([col0_items, col1_items]):
+            cx = col_x[col_idx]
+            y_cursor = 1.0 - pad_top
 
-                # Draw vertical connector line from this row up to the previous row
-                line_x = 0.03 + 0.02
-                line_bot = row_mid
-                line_top = row_top + row_h * 0.5  # midpoint of the row above
-                self.ax_list.plot(
-                    [line_x, line_x], [line_bot, line_top],
-                    color='#90A4AE', linewidth=0.7, solid_capstyle='round',
-                    transform=self.ax_list.transAxes, clip_on=True)
-                # Horizontal tick from vertical line to the label
-                tick_end = line_x + 0.02
-                self.ax_list.plot(
-                    [line_x, tick_end], [row_mid, row_mid],
-                    color='#90A4AE', linewidth=0.7, solid_capstyle='round',
-                    transform=self.ax_list.transAxes, clip_on=True)
+            for row_i, (room_idx, indent, is_last_child) in enumerate(col_items):
+                room   = self.rooms[room_idx]
+                name   = room.get('name', 'unnamed')
+                is_sel   = (room_idx == self.selected_room_idx)
+                is_multi = (room_idx in self.multi_selected_room_idxs)
+                row_h   = unit_h * (0.5 if indent > 0 else 1.0)
+                row_top = y_cursor
+                row_bot = y_cursor - row_h
+                row_mid = (row_top + row_bot) / 2
+                y_cursor = row_bot
 
-                text_x = tick_end + 0.01
-            else:
-                n_kids = len(children_by_parent.get(name, []))
-                suffix = f" ({n_kids})" if n_kids else ""
-                text   = f"{name}{suffix}{type_tag}"
-                color, fs, fw = ('#E65100' if is_sel else '#1B5E20'), 7, 'bold'
-                text_x = 0.03
+                box_pad = 0.005 if indent > 0 else 0.01
+                box_inset = 0.001 if indent > 0 else 0.002
+                if is_sel:
+                    self.ax_list.add_patch(FancyBboxPatch(
+                        (cx, row_bot + box_inset), col_w, row_h - box_inset * 2,
+                        boxstyle=f'round,pad={box_pad}', facecolor='#FFE082', edgecolor='orange',
+                        linewidth=1.0, transform=self.ax_list.transAxes, clip_on=True))
+                elif is_multi:
+                    self.ax_list.add_patch(FancyBboxPatch(
+                        (cx, row_bot + box_inset), col_w, row_h - box_inset * 2,
+                        boxstyle=f'round,pad={box_pad}', facecolor='#BBDEFB', edgecolor='#42A5F5',
+                        linewidth=0.8, transform=self.ax_list.transAxes, clip_on=True))
 
-            self.ax_list.text(text_x, row_mid, text, fontsize=fs,
-                              fontweight=fw, color=color, va='center',
-                              transform=self.ax_list.transAxes, clip_on=True)
-            self._room_list_hit_boxes.append((row_bot, row_top, room_idx))
+                rtype    = room.get('room_type', '')
+                type_tag = f" : {rtype}" if rtype else ""
+                if indent > 0:
+                    parent_name = room.get('parent', '')
+                    short = name[len(parent_name) + 1:] if name.startswith(f"{parent_name}_") else name
+                    text   = f"{short}{type_tag}"
+                    color, fs, fw = ('#E65100' if is_sel else '#0D47A1'), 6.5, 'normal'
+
+                    # Draw vertical connector line from this row up to the previous row
+                    line_x = cx + 0.02 + 0.02
+                    line_bot = row_mid
+                    line_top = row_top + row_h * 0.5
+                    self.ax_list.plot(
+                        [line_x, line_x], [line_bot, line_top],
+                        color='#90A4AE', linewidth=0.7, solid_capstyle='round',
+                        transform=self.ax_list.transAxes, clip_on=True)
+                    # Horizontal tick from vertical line to the label
+                    tick_end = line_x + 0.02
+                    self.ax_list.plot(
+                        [line_x, tick_end], [row_mid, row_mid],
+                        color='#90A4AE', linewidth=0.7, solid_capstyle='round',
+                        transform=self.ax_list.transAxes, clip_on=True)
+
+                    text_x = tick_end + 0.01
+                else:
+                    n_kids = len(children_by_parent.get(name, []))
+                    suffix = f" ({n_kids})" if n_kids else ""
+                    text   = f"{name}{suffix}{type_tag}"
+                    color, fs, fw = ('#E65100' if is_sel else '#1B5E20'), 7, 'bold'
+                    text_x = cx + 0.02
+
+                self.ax_list.text(text_x, row_mid, text, fontsize=fs,
+                                  fontweight=fw, color=color, va='center',
+                                  transform=self.ax_list.transAxes, clip_on=True)
+                self._room_list_hit_boxes.append((row_bot, row_top, cx, cx + col_w, room_idx))
 
         # Scrollbar
         if total > visible_count:
@@ -2625,10 +2734,16 @@ class HdrAoiEditor:
             return
         if event.xdata is None or event.ydata is None:
             return
+        x = event.xdata
         y = event.ydata
         ctrl = event.key == 'control'
-        for (y_min, y_max, room_idx) in self._room_list_hit_boxes:
-            if y_min <= y <= y_max:
+        for hit in self._room_list_hit_boxes:
+            if len(hit) == 5:
+                y_min, y_max, x_min, x_max, room_idx = hit
+            else:
+                y_min, y_max, room_idx = hit
+                x_min, x_max = 0, 1
+            if y_min <= y <= y_max and x_min <= x <= x_max:
                 if ctrl:
                     # Ctrl+click: toggle room in multi-selection
                     if room_idx in self.multi_selected_room_idxs:
