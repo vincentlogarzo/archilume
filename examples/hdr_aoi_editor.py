@@ -48,15 +48,17 @@ if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
-    # TODO: there should be building level and floor plate on screen level  results shown in th editor that confirm to the BESS daylight factor requirments. 
+    # TODO: there should be building level and floor plate on screen level results shown in th editor that confirm to the BESS daylight factor requirments
 
-    # FIXME, when i right click a room to select it in the image, it does not highlight the corresponding room in the list to theleft, this also means that im unableto reassign its room type. 
+    #TODO: add a room divsior tool, to split room boundaries with ortho lines only. room divsions must become sub-room of the parent room without a room type label.
 
     # TODO: allow deletion of a room boundaries in the UI, it should then wipe this from the JSON, and then upon reopn of the UI it should reinstate from the original aoi file. Or this feature should be a buttin hte ui to reinstant an AOI from its source or a group of selected AOIs. 
 
-    # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points.
+    #TODO: adjust room nme and results placement on screen to be at least a certain distance from the aoi boundary. The centroid is working in most cases, but in some cases the centroid is outside of the room boundary, and then the name and results are not visible.
 
-    # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot, or packaging of results into zip file with excel using shutil
+    # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points. ortho point movement should be retained unless it is turned off.
+
+    # TODO: and allow for Green dot red dot viewer based on results after markup, allow another toggle, and then allow export of the green dot
 
     # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this.
 

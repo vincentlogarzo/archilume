@@ -38,8 +38,10 @@ Workflow:
 import csv
 import json
 import re
+import shutil
 import threading
 import time
+import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -518,14 +520,13 @@ class HdrAoiEditor:
                 pass
 
         # Main plot area — maximised to fill available space
-        self.ax = self._axes(0.12, 0.28, 0.86, 0.66)
+        self.ax = self._axes(0.02, 0.21, 0.96, 0.73)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
         # DF% legend axes: top-right, just above the main image (rotated 90°)
-        self.ax_legend = self._axes(0.62, 0.19, 0.36, 0.08)
-        self.ax_legend.axis('off')
-        self.ax_legend.set_visible(False)
+        # DF legend — positioned in _setup_bottom_toolbar after buttons are laid out
+        self.ax_legend = None
 
         # Setup side panel
         self._setup_side_panel()
@@ -577,8 +578,8 @@ class HdrAoiEditor:
 
         self._setup_instructions_panel()
         status_y = self._setup_input_panels()
-        self._setup_action_buttons(status_y)
-        self._setup_room_list_panel()
+        action_bot_y = self._setup_action_buttons(status_y)
+        self._setup_room_list_panel(action_bot_y)
         self._setup_bottom_toolbar()
         self._setup_colour_key_legend()
 
@@ -592,8 +593,9 @@ class HdrAoiEditor:
     _ROW_Y  = 0.02    # top row y
     _INSTR_W = 0.12
     _COL2_X = _PL + _INSTR_W + 0.01
-    _PRNT_X = _COL2_X + 0.18
-    _PRNT_W = 0.150
+    _PRNT_X   = _COL2_X + 0.18
+    _FIELD_W  = 0.150 * 0.75            # single field width (Parent / Name)
+    _PRNT_W   = _FIELD_W * 2 + _GAP     # full row width (spans both fields)
 
     def _setup_instructions_panel(self):
         """Create the keyboard shortcut reference panel (top-left)."""
@@ -636,29 +638,34 @@ class HdrAoiEditor:
         self.ax_hdr_list = self._axes(hdr_list_x, row_y, 0.060, lbl_h + gap + arrow_h)
         self.ax_hdr_list.axis('off')
 
-        # Parent Apartment
-        self._make_label(prnt_x, row_y, prnt_w, lbl_h, "Parent Apartment:")
-        self.btn_parent = self._make_button(prnt_x, row_y + lbl_h + gap, prnt_w, inp_h,
+        # Parent Apartment + Apartment Name (side by side)
+        field_w = self._FIELD_W
+        name_x  = prnt_x + field_w + gap
+
+        self._make_label(prnt_x, row_y, field_w, lbl_h, "Parent Apartment:")
+        self.btn_parent = self._make_button(prnt_x, row_y + lbl_h + gap, field_w, inp_h,
                                             '(None)', self._on_parent_cycle, fontsize=8)
 
-        # Apartment Name
-        name_y = row_y + lbl_h + gap + inp_h + gap
-        _, self.name_label_text = self._make_label(prnt_x, name_y, prnt_w, lbl_h, "Apartment Name:")
-        ax_name = self._axes(prnt_x, name_y + lbl_h + gap, prnt_w, inp_h)
+        _, self.name_label_text = self._make_label(name_x, row_y, field_w, lbl_h, "Apartment Name:")
+        ax_name = self._axes(name_x, row_y + lbl_h + gap, field_w, inp_h)
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
 
-        # Room Type (BED / LIVING)
-        rtype_y = name_y + lbl_h + gap + inp_h + gap
+        # Room Type (BED / LIVING / CIRC)
+        rtype_y = row_y + lbl_h + gap + inp_h + gap
         self._make_label(prnt_x, rtype_y, prnt_w, lbl_h, "Room Type:")
         rtype_btn_y = rtype_y + lbl_h + gap
-        rtype_btn_w = (prnt_w - gap) / 2
+        n_type_btns = 3
+        rtype_btn_w = (prnt_w - gap * (n_type_btns - 1)) / n_type_btns
         self.btn_room_type_bed = self._make_button(
             prnt_x, rtype_btn_y, rtype_btn_w, inp_h, 'BED',
             lambda e: self._on_room_type_toggle('BED'))
         self.btn_room_type_living = self._make_button(
-            prnt_x + rtype_btn_w + gap, rtype_btn_y, rtype_btn_w, inp_h, 'LIVING',
+            prnt_x + (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'LIVING',
             lambda e: self._on_room_type_toggle('LIVING', requires_children=True))
+        self.btn_room_type_circ = self._make_button(
+            prnt_x + 2 * (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'CIRC',
+            lambda e: self._on_room_type_toggle('CIRCULATION'))
 
         # Status / preview
         status_y = rtype_y + lbl_h + gap + inp_h + gap
@@ -671,30 +678,36 @@ class HdrAoiEditor:
             0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
         return status_y
 
-    def _setup_action_buttons(self, status_y: float):
-        """Create Save / Clear / Delete button stack (right of inputs)."""
-        stack_x = self._PRNT_X + self._PRNT_W + 0.012
-        stack_w = 0.090
-        total_h = status_y + self._SUB_H - self._ROW_Y
-        btn_gap = 0.004
-        n_btns  = 3
-        each_h  = (total_h - btn_gap * (n_btns - 1)) / n_btns
+    def _setup_action_buttons(self, status_y: float) -> float:
+        """Create Save / Clear / Delete button row below status. Returns bottom y."""
+        gap    = self._GAP
+        prnt_x = self._PRNT_X
+        prnt_w = self._PRNT_W
+        btn_y  = status_y + self._SUB_H + gap
+        btn_h  = self._INP_H
+        n_btns = 3
+        btn_w  = (prnt_w - gap * (n_btns - 1)) / n_btns
 
         for i, (attr, label, cb) in enumerate([
-            ('btn_save',   'Save Room',       self._on_save_click),
-            ('btn_clear',  'Clear Current',   self._on_clear_click),
-            ('btn_delete', 'Delete Selected', self._on_delete_click),
+            ('btn_save',   'Save',   self._on_save_click),
+            ('btn_clear',  'Clear',  self._on_clear_click),
+            ('btn_delete', 'Delete', self._on_delete_click),
         ]):
             setattr(self, attr, self._make_button(
-                stack_x, self._ROW_Y + i * (each_h + btn_gap), stack_w, each_h, label, cb))
+                prnt_x + i * (btn_w + gap), btn_y, btn_w, btn_h, label, cb))
+        return btn_y + btn_h
 
-    def _setup_room_list_panel(self):
-        """Create the scrollable saved-rooms list (left side)."""
-        list_w     = self._PW / 3
-        list_hdr_y = 0.22
-        self._make_label(self._PL, list_hdr_y, list_w, 0.025, "SAVED ROOMS:")
-        list_top = list_hdr_y + 0.030
-        self.ax_list = self._axes(self._PL, list_top, list_w, 0.75)
+    def _setup_room_list_panel(self, action_bot_y: float):
+        """Create the scrollable saved-rooms list (right of input column)."""
+        gap     = self._GAP
+        list_x  = self._PRNT_X + self._PRNT_W + gap
+        list_w  = 0.130
+        list_y  = self._ROW_Y
+        label_h = 0.020
+        self._make_label(list_x, list_y, list_w, label_h, "SAVED ROOMS:")
+        list_top = list_y + label_h + gap * 0.5
+        list_h   = action_bot_y - list_top
+        self.ax_list = self._axes(list_x, list_top, list_w, list_h)
         self.ax_list.set_facecolor('#FAFAF8')
         self.ax_list.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         for spine in self.ax_list.spines.values():
@@ -727,7 +740,17 @@ class HdrAoiEditor:
             'Reset Zoom', self._on_reset_zoom_click)
         self.btn_export = self._make_button(
             tr_x + 4 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
-            'Export Report', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
+            'Export & Archive', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
+        self.btn_extract = self._make_button(
+            tr_x + 5 * (tr_btn_w + gap), tr_y, tr_btn_w, tr_h,
+            'Extract Archive', self._on_extract_click)
+
+        # DF% legend strip — fills remaining toolbar space to the right
+        legend_x = tr_x + 6 * (tr_btn_w + gap)
+        legend_w = tr_w - 6 * (tr_btn_w + gap) + gap
+        self.ax_legend = self._axes(legend_x, tr_y, legend_w, tr_h)
+        self.ax_legend.axis('off')
+        self.ax_legend.set_visible(False)
 
         # Progress bar (hidden until export)
         self.ax_progress = self._axes(tr_x, tr_y + tr_h + gap, tr_w, 0.014)
@@ -740,7 +763,7 @@ class HdrAoiEditor:
 
     def _setup_colour_key_legend(self):
         """Create the colour-key legend (top-right)."""
-        ax_legend = self._axes(0.62, 0.02, 0.18, 0.10)
+        ax_legend = self._axes(0.81, 0.02, 0.18, 0.10)
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
         ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
@@ -989,6 +1012,11 @@ class HdrAoiEditor:
 
     def _do_full_render(self, xlim, ylim, reset_view: bool):
         """Complete redraw of image and room polygons."""
+        # Disconnect old selector BEFORE ax.clear() destroys its artists,
+        # so it can't respond to events in a broken state.
+        if hasattr(self, 'selector') and self.selector is not None:
+            self.selector.disconnect_events()
+            self.selector = None
         self.ax.clear()
         self._room_patch_cache.clear()
         self._room_label_cache.clear()
@@ -1063,12 +1091,16 @@ class HdrAoiEditor:
         hdr_name = self.current_hdr_name or "(no HDR)"
         variant  = self.current_variant_path
         variant_label = variant.stem if variant else ""
-        self.ax.set_title(f"{hdr_name}  -  {variant_label}", fontsize=11, fontweight='bold')
+        # Title removed to maximise image area
+
+        # Always recreate the polygon selector after ax.clear() destroyed the old one
+        if not self.edit_mode:
+            self._create_polygon_selector()
 
         self.fig.canvas.draw_idle()
 
     def _render_df_legend(self):
-        """Show the DF% legend strip (rotated 90°) if a legend matches the current variant."""
+        """Show the DF% legend strip in the bottom toolbar."""
         if self.ax_legend is None:
             return
         self.ax_legend.clear()
@@ -1155,12 +1187,11 @@ class HdrAoiEditor:
     def _compute_room_df(self, room: dict, verts: list, thresholds_key: tuple) -> list:
         """Compute DF results for a single room, using its cached df_cache if valid.
 
-        For LIVING rooms, sub-room areas are subtracted so the result
-        represents only the remaining (non-sub-room) area of the apartment.
+        For parent rooms with children, sub-room areas are subtracted so the
+        result represents only the remaining (non-sub-room) area.
         """
-        # Build hash including child vertices for LIVING rooms
-        is_apartment = room.get('room_type') == 'LIVING'
-        children = self._get_children(room.get('name', '')) if is_apartment else []
+        # Build hash including child vertices for parent rooms
+        children = self._get_children(room.get('name', ''))
         child_verts_list = [c['vertices'] for c in children if len(c.get('vertices', [])) >= 3]
 
         verts_hash = self._vertices_hash(verts)
@@ -1183,7 +1214,7 @@ class HdrAoiEditor:
                 return lines
 
         # Cache miss — recompute
-        if is_apartment and child_verts_list:
+        if child_verts_list:
             result = self._hdr2wpd.compute_df_for_polygon_excluding(
                 self._df_image, verts, child_verts_list, thresholds_key)
         else:
@@ -1586,7 +1617,7 @@ class HdrAoiEditor:
             x, y = event.xdata, event.ydata
 
             # Orthogonal constraint: lock to horizontal or vertical from last vertex
-            if self.ortho_mode and hasattr(self, 'selector') and self.selector.verts:
+            if self.ortho_mode and hasattr(self, 'selector') and self.selector is not None and self.selector.verts:
                 last_x, last_y = self.selector.verts[-1]
                 dx, dy = abs(x - last_x), abs(y - last_y)
                 if dx >= dy:
@@ -1603,7 +1634,7 @@ class HdrAoiEditor:
 
             # Auto-detect parent room on first point of a new polygon
             if (not self.selected_parent
-                    and hasattr(self, 'selector')
+                    and hasattr(self, 'selector') and self.selector is not None
                     and not self.selector.verts):
                 for room in self.rooms:
                     if (room.get('parent') is None
@@ -1634,7 +1665,7 @@ class HdrAoiEditor:
             sx, sy = self._pending_snap
             self._pending_snap = None
             # _xys[-1] is the cursor tracking point; the just-added vertex is [-2]
-            if len(self.selector._xys) >= 2 and not self.selector._selection_completed:
+            if self.selector is not None and len(self.selector._xys) >= 2 and not self.selector._selection_completed:
                 self.selector._xys[-2] = (sx, sy)
                 self.selector._draw_polygon()
 
@@ -2005,10 +2036,7 @@ class HdrAoiEditor:
     def _create_polygon_selector(self):
         """Create or recreate the polygon selector."""
         if hasattr(self, 'selector') and self.selector is not None:
-            self.selector.clear()
             self.selector.disconnect_events()
-            self.selector.set_visible(False)
-            self.selector = None
         self.selector = PolygonSelector(
             self.ax,
             self._on_polygon_select,
@@ -2090,6 +2118,13 @@ class HdrAoiEditor:
 
     def _save_current_room(self):
         """Save the currently drawn polygon as a new room."""
+        # Auto-close: if polygon isn't completed but has 3+ vertices, grab them
+        if (len(self.current_polygon_vertices) < 3
+                and hasattr(self, 'selector') and self.selector is not None
+                and not self.selector._selection_completed
+                and len(self.selector.verts) >= 3):
+            self.current_polygon_vertices = list(self.selector.verts)
+
         if len(self.current_polygon_vertices) < 3:
             self._update_status("No polygon to save - draw one first", 'red')
             return
@@ -2170,7 +2205,8 @@ class HdrAoiEditor:
         """Clear the current polygon drawing."""
         self._deselect_room()
         self.current_polygon_vertices = []
-        self.selector.clear()
+        if self.selector is not None:
+            self.selector.clear()
         self._update_status("Cleared - ready to draw", 'blue')
 
     def _on_delete_click(self, event):
@@ -2336,7 +2372,7 @@ class HdrAoiEditor:
 
         if self.edit_mode:
             self._edit_undo_stack.clear()
-            if hasattr(self, 'selector'):
+            if hasattr(self, 'selector') and self.selector is not None:
                 self.selector.set_active(False)
             self._update_status("Edit Mode: Hover over any vertex to drag (all rooms editable)", 'cyan')
         else:
@@ -2414,9 +2450,10 @@ class HdrAoiEditor:
         self.fig.canvas.draw_idle()
 
     def _update_room_type_buttons(self):
-        """Style BED/LIVING buttons to reflect current room_type."""
+        """Style BED/LIVING/CIRC buttons to reflect current room_type."""
         self._style_toggle_button(self.btn_room_type_bed, self.room_type == 'BED')
         self._style_toggle_button(self.btn_room_type_living, self.room_type == 'LIVING')
+        self._style_toggle_button(self.btn_room_type_circ, self.room_type == 'CIRCULATION')
 
     # === STATUS & ROOM LIST ====================================================
 
@@ -2454,7 +2491,8 @@ class HdrAoiEditor:
         self.fig.canvas.draw_idle()
 
     def _build_room_tree(self, hdr_rooms):
-        """Build a flat parent→children tree for the room list. Returns (items, children_map)."""
+        """Build a flat parent→children tree for the room list. Returns (items, children_map).
+        Each item is (room_idx, indent, is_last_child)."""
         apartments         = [(i, r) for i, r in hdr_rooms if r.get('parent') is None]
         children_by_parent = {}
         for i, room in hdr_rooms:
@@ -2463,39 +2501,65 @@ class HdrAoiEditor:
                 children_by_parent.setdefault(parent, []).append((i, room))
         flat_items = []
         for apt_idx, apt in apartments:
-            flat_items.append((apt_idx, 0))
-            for child_idx, _ in children_by_parent.get(apt.get('name', ''), []):
-                flat_items.append((child_idx, 1))
+            flat_items.append((apt_idx, 0, False))
+            kids = children_by_parent.get(apt.get('name', ''), [])
+            for ki, (child_idx, _) in enumerate(kids):
+                is_last = (ki == len(kids) - 1)
+                flat_items.append((child_idx, 1, is_last))
         return flat_items, children_by_parent
 
     def _render_room_list_rows(self, flat_items, children_by_parent):
         """Render visible rows and scrollbar into ax_list."""
-        visible_rows = 32
-        pad_top, row_h = 0.01, (1.0 - 0.01 - 0.03) / visible_rows
+        # Row heights: parents get 1.0 unit, children get 0.5 unit
+        pad_top, pad_bot = 0.01, 0.03
+        usable = 1.0 - pad_top - pad_bot
         total = len(flat_items)
-        max_offset = max(0, total - visible_rows)
+
+        # Compute total weight for scroll capacity (parents=1, children=0.5)
+        weights = [0.5 if indent > 0 else 1.0 for (_, indent, _) in flat_items]
+        total_weight = sum(weights)
+
+        # Determine how many items fit in the visible area
+        # Use a reference: 12 parent-sized rows worth of space
+        unit_h = usable / 12.0
+        cumulative = 0.0
+        visible_count = 0
+        for w in weights[self.room_list_scroll_offset:]:
+            cumulative += w
+            if cumulative * unit_h > usable:
+                break
+            visible_count += 1
+        visible_count = max(1, visible_count)
+
+        max_offset = max(0, total - visible_count)
         self.room_list_scroll_offset = max(0, min(self.room_list_scroll_offset, max_offset))
         self.ax_list.set_ylim(0, 1)
 
-        for row_i, (room_idx, indent) in enumerate(
-                flat_items[self.room_list_scroll_offset:self.room_list_scroll_offset + visible_rows]):
+        # Layout: compute y positions for visible rows
+        visible_slice = flat_items[self.room_list_scroll_offset:self.room_list_scroll_offset + visible_count]
+        y_cursor = 1.0 - pad_top
+        for row_i, (room_idx, indent, is_last_child) in enumerate(visible_slice):
             room   = self.rooms[room_idx]
             name   = room.get('name', 'unnamed')
             is_sel   = (room_idx == self.selected_room_idx)
             is_multi = (room_idx in self.multi_selected_room_idxs)
-            row_top = (1.0 - pad_top) - row_i * row_h
-            row_bot = row_top - row_h
+            row_h   = unit_h * (0.5 if indent > 0 else 1.0)
+            row_top = y_cursor
+            row_bot = y_cursor - row_h
             row_mid = (row_top + row_bot) / 2
+            y_cursor = row_bot
 
+            box_pad = 0.005 if indent > 0 else 0.01
+            box_inset = 0.001 if indent > 0 else 0.002
             if is_sel:
                 self.ax_list.add_patch(FancyBboxPatch(
-                    (0.01, row_bot + 0.002), 0.98, row_h - 0.004,
-                    boxstyle='round,pad=0.01', facecolor='#FFE082', edgecolor='orange',
+                    (0.01, row_bot + box_inset), 0.98, row_h - box_inset * 2,
+                    boxstyle=f'round,pad={box_pad}', facecolor='#FFE082', edgecolor='orange',
                     linewidth=1.0, transform=self.ax_list.transAxes, clip_on=True))
             elif is_multi:
                 self.ax_list.add_patch(FancyBboxPatch(
-                    (0.01, row_bot + 0.002), 0.98, row_h - 0.004,
-                    boxstyle='round,pad=0.01', facecolor='#BBDEFB', edgecolor='#42A5F5',
+                    (0.01, row_bot + box_inset), 0.98, row_h - box_inset * 2,
+                    boxstyle=f'round,pad={box_pad}', facecolor='#BBDEFB', edgecolor='#42A5F5',
                     linewidth=0.8, transform=self.ax_list.transAxes, clip_on=True))
 
             rtype    = room.get('room_type', '')
@@ -2503,23 +2567,41 @@ class HdrAoiEditor:
             if indent > 0:
                 parent_name = room.get('parent', '')
                 short = name[len(parent_name) + 1:] if name.startswith(f"{parent_name}_") else name
-                text  = f"  \u2514 {short}{type_tag}"
+                text   = f"{short}{type_tag}"
                 color, fs, fw = ('#E65100' if is_sel else '#0D47A1'), 6.5, 'normal'
+
+                # Draw vertical connector line from this row up to the previous row
+                line_x = 0.03 + 0.02
+                line_bot = row_mid
+                line_top = row_top + row_h * 0.5  # midpoint of the row above
+                self.ax_list.plot(
+                    [line_x, line_x], [line_bot, line_top],
+                    color='#90A4AE', linewidth=0.7, solid_capstyle='round',
+                    transform=self.ax_list.transAxes, clip_on=True)
+                # Horizontal tick from vertical line to the label
+                tick_end = line_x + 0.02
+                self.ax_list.plot(
+                    [line_x, tick_end], [row_mid, row_mid],
+                    color='#90A4AE', linewidth=0.7, solid_capstyle='round',
+                    transform=self.ax_list.transAxes, clip_on=True)
+
+                text_x = tick_end + 0.01
             else:
                 n_kids = len(children_by_parent.get(name, []))
                 suffix = f" ({n_kids})" if n_kids else ""
                 text   = f"{name}{suffix}{type_tag}"
                 color, fs, fw = ('#E65100' if is_sel else '#1B5E20'), 7, 'bold'
+                text_x = 0.03
 
-            self.ax_list.text(0.03 + indent * 0.04, row_mid, text, fontsize=fs,
+            self.ax_list.text(text_x, row_mid, text, fontsize=fs,
                               fontweight=fw, color=color, va='center',
                               transform=self.ax_list.transAxes, clip_on=True)
             self._room_list_hit_boxes.append((row_bot, row_top, room_idx))
 
         # Scrollbar
-        if total > visible_rows:
+        if total > visible_count:
             pct = self.room_list_scroll_offset / max(1, max_offset)
-            ind_h = visible_rows / total
+            ind_h = visible_count / total
             ind_y = (1.0 - ind_h) * (1.0 - pct)
             self.ax_list.add_patch(FancyBboxPatch(
                 (0.965, ind_y), 0.025, ind_h, boxstyle='round,pad=0.005',
@@ -2528,7 +2610,7 @@ class HdrAoiEditor:
             self.ax_list.text(
                 0.5, 0.01,
                 f"\u2191\u2193 scroll  ({self.room_list_scroll_offset + 1}"
-                f"-{min(self.room_list_scroll_offset + visible_rows, total)} of {total})",
+                f"-{min(self.room_list_scroll_offset + visible_count, total)} of {total})",
                 fontsize=6, color='#888888', ha='center', va='bottom',
                 transform=self.ax_list.transAxes)
 
@@ -2892,9 +2974,15 @@ class HdrAoiEditor:
                 self._update_status(f"Export failed: {progress['error']}", 'red')
                 self._show_progress(1.0, "Export failed")
             else:
-                self._update_status("Export complete → aoi_report_daylight.xlsx + per-room CSVs + overlays", 'green')
-                self._show_progress(1.0, "Export complete")
-            self.btn_export.label.set_text('Export Report')
+                self._show_progress(0.98, "Archiving outputs...")
+                self.fig.canvas.draw_idle()
+                archive_path = self._run_archive()
+                if archive_path:
+                    self._update_status(f"Export & archive complete → {archive_path.name}", 'green')
+                else:
+                    self._update_status("Export complete (archive failed)", 'orange')
+                self._show_progress(1.0, "Complete")
+            self.btn_export.label.set_text('Export & Archive')
             self.fig.canvas.draw_idle()
             hide = self.fig.canvas.new_timer(interval=4000)
             hide.single_shot = True
@@ -2904,6 +2992,56 @@ class HdrAoiEditor:
         self._export_poll_timer = self.fig.canvas.new_timer(interval=300)
         self._export_poll_timer.add_callback(_check)
         self._export_poll_timer.start()
+
+    # === ARCHIVE / EXTRACT =====================================================
+
+    def _run_archive(self) -> Optional[Path]:
+        """Zip the outputs directory into the archive folder. Returns the zip path or None."""
+        from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
+        try:
+            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            zip_name  = f"archilume_export_{timestamp}"
+            zip_path  = ARCHIVE_DIR / f"{zip_name}.zip"
+            shutil.make_archive(str(ARCHIVE_DIR / zip_name), 'zip', str(OUTPUTS_DIR))
+            print(f"Archive created: {zip_path}")
+            return zip_path
+        except Exception as e:
+            print(f"Archive failed: {e}")
+            return None
+
+    def _on_extract_click(self, event):
+        """Open a file picker to select a zip archive, then extract it to outputs."""
+        from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
+        from tkinter import Tk, filedialog
+        root = Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        initial_dir = str(ARCHIVE_DIR) if ARCHIVE_DIR.exists() else str(Path.cwd())
+        zip_path = filedialog.askopenfilename(
+            title="Select archive to extract",
+            initialdir=initial_dir,
+            filetypes=[("Zip files", "*.zip"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if not zip_path:
+            return
+        zip_path = Path(zip_path)
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(str(OUTPUTS_DIR))
+            self._update_status(f"Extracted: {zip_path.name} → outputs/", 'green')
+            print(f"Extracted archive: {zip_path} → {OUTPUTS_DIR}")
+            # Reload session if an aoi_session.json was in the archive
+            session_file = OUTPUTS_DIR / 'aoi' / 'aoi_session.json'
+            if session_file.exists():
+                self._load_session()
+                self._render_section(force_full=True)
+                self._update_room_list()
+        except Exception as e:
+            self._update_status(f"Extract failed: {e}", 'red')
+            print(f"Extract failed: {e}")
+        self.fig.canvas.draw_idle()
 
     @staticmethod
     def _render_single_overlay(tiff_path, rooms_data, output_dir):
