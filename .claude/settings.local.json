@@ -10,7 +10,8 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nImprove boundary editor UI and add CSV import support\n\n- Move legend to left panel below snap slider\n- Move action buttons \\(Save/Clear/Delete\\) between snap slider and name input\n- Move SAVED ROOMS list to right column next to Parent Apartment\n- Add initial_csv_path parameter to load pre-existing room boundaries\n- Enforce room name uniqueness with numeric suffixes \\(BED -> BED1 -> BED2\\)\n- Filter room list to show only rooms on current floor level\n- Tighten room list spacing and improve scroll performance with throttling\n- Fix CSV import to correctly identify apartments vs sub-rooms\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git mv:*)",
       "Bash(ls:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   }

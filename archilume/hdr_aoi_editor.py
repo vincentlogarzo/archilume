@@ -41,7 +41,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 # Third-party imports
 import matplotlib.pyplot as plt
@@ -92,8 +92,6 @@ class HdrAoiEditor:
 
         # Room storage
         self.rooms:                 List[dict]          = []
-        self.room_patches:          List[Polygon]       = []
-        self.room_labels:           List                = []
         self.current_polygon_vertices                   = []
         self.selected_room_idx:     Optional[int]       = None
 
@@ -146,7 +144,6 @@ class HdrAoiEditor:
         self._room_label_cache                          = {}
         self._df_text_cache:        list                = []
         self._edit_vertex_scatter                       = None
-        self._last_view_mode                            = None
         self._last_hover_check                          = 0.0
         self._last_drag_draw:       float               = 0.0
         # Pre-built hover arrays (rebuilt on full render)
@@ -928,7 +925,7 @@ class HdrAoiEditor:
         self._update_name_preview()
         self.fig.canvas.draw_idle()
 
-    def _on_name_changed(self, text):
+    def _on_name_changed(self, _text):
         """Update name preview when name textbox changes."""
         self._update_name_preview()
 
@@ -1002,8 +999,6 @@ class HdrAoiEditor:
         self._compute_all_room_df_results()
 
         # Draw room polygons
-        self.room_patches.clear()
-        self.room_labels.clear()
         self._draw_all_room_polygons()
 
         # Pre-build vectorized hover arrays for fast hit-testing
@@ -1225,7 +1220,6 @@ class HdrAoiEditor:
                        clip_on=True)
         poly._patch_type = 'current' if is_current_floor else 'other'
         self.ax.add_patch(poly)
-        self.room_patches.append(poly)
         self._room_patch_cache[idx] = poly
 
         # Edit mode: draw vertex handles
@@ -1273,7 +1267,6 @@ class HdrAoiEditor:
             path_effects=[patheffects.withStroke(linewidth=fs_name * 0.06, foreground='black')],
         )
         label_text.set_clip_path(self.ax.patch)
-        self.room_labels.append(label_text)
         self._room_label_cache[idx] = label_text
 
         # DF results as smaller subtext below the room name (only if room type is set)
@@ -2284,16 +2277,6 @@ class HdrAoiEditor:
         self._style_toggle_button(self.btn_room_type_bed, self.room_type == 'BED')
         self._style_toggle_button(self.btn_room_type_living, self.room_type == 'LIVING')
 
-    def _enter_edit_mode_for_room(self, room_idx: int):
-        """Enter edit mode for a specific room."""
-        self.edit_room_idx    = room_idx
-        self.hover_vertex_idx = None
-        room = self.rooms[room_idx]
-        self._update_status(f"Editing: {room.get('name', 'unnamed')} - drag vertices to modify", 'cyan')
-        self._render_section(force_full=True)
-        self._create_polygon_selector()
-
-
     # === STATUS & ROOM LIST ====================================================
 
     def _update_status(self, message: str, color: str = 'blue'):
@@ -2552,15 +2535,21 @@ class HdrAoiEditor:
         self._start_export_progress_poll(progress, n_rooms)
 
     @staticmethod
-    def _extract_pixels_for_hdr(hdr_name, hdr_path, rooms_for_hdr):
-        """Load one HDR's DF image and rasterise all its rooms.
+    def _compute_summary_for_hdr(hdr_name, hdr_path, rooms_for_hdr):
+        """Load one HDR's DF image and compute per-room summary statistics.
 
         Designed to run in a ThreadPoolExecutor — the heavy work is the
         subprocess call to `pvalue` (I/O-bound, releases the GIL) and numpy
         array operations (also release the GIL).
 
+        Args:
+            rooms_for_hdr: list of (parent, name, room_type, verts, threshold_or_None)
+                           threshold is the single DF% value for the room's type,
+                           or None if the room has no type assignment.
+
         Returns:
-            list of (parent, name, room_type, cc_array, rr_array, lux_array, df_array)
+            list of dicts, one per room, with summary stats columns.
+            Threshold columns are None for untyped rooms (rendered as blank in Excel).
         """
         from skimage.draw import polygon as skimage_polygon
 
@@ -2568,33 +2557,59 @@ class HdrAoiEditor:
         if df_img is None:
             return []
 
-        results = []
-        for parent, name, room_type, verts in rooms_for_hdr:
+        summary_rows = []
+        pixel_chunks = []   # list of (room_name, lux_array, df_pct_array)
+        for parent, name, room_type, verts, threshold in rooms_for_hdr:
             xs = [int(round(v[0])) for v in verts]
             ys = [int(round(v[1])) for v in verts]
             rr, cc = skimage_polygon(ys, xs, shape=df_img.shape)
+            n = len(rr)
+            if n == 0:
+                continue
+            df_vals  = df_img[rr, cc]          # already DF% (e.g. 0.98 = 0.98%)
+            lux_vals = df_vals * 100.0          # DF% → lux  (df% = lux/10000*100 → lux = df%*100)
 
-            df_vals  = df_img[rr, cc]
-            lux_vals = df_vals * 100.0
-            results.append((parent, name, room_type, cc, rr, lux_vals, df_vals))
-        return results
+            if threshold is not None:
+                passing     = int((df_vals >= threshold).sum())
+                passing_pct = round(passing / n * 100, 1)
+            else:
+                passing     = None
+                passing_pct = None
+
+            summary_rows.append({
+                'HDR File':            hdr_name,
+                'Parent':              parent,
+                'Room':                name,
+                'Room Type':           room_type or '',
+                'Total Pixels':        n,
+                'DF Threshold (%)':    threshold,
+                'Pixels >= Threshold': passing,
+                '% Area >= Threshold': passing_pct,
+            })
+            pixel_chunks.append((name, np.round(lux_vals, 2), np.round(df_vals, 4)))
+
+        return summary_rows, pixel_chunks
 
     def _export_worker(self, progress: dict):
-        """Background thread: extract per-pixel data for every room and write Excel.
+        """Background thread: compute per-room DF summary stats and write outputs.
 
         Groups rooms by HDR file and uses ThreadPoolExecutor to parallelise
-        DF image loading (subprocess I/O) and rasterisation (numpy, GIL-free)
-        across HDR files concurrently.
+        DF image loading (subprocess I/O) and rasterisation (numpy, GIL-free).
+
+        Outputs written to WPD_DIR:
+          - aoi_report_daylight.xlsx  — one summary row per room
+          - <room_name>_pixels.csv    — one file per room with per-pixel lux + DF%
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from openpyxl import Workbook
+        import pandas as pd
+        import csv as csv_mod
 
         try:
             # Build HDR name → path lookup
             hdr_lookup = {entry['name']: entry['hdr_path'] for entry in self.hdr_files}
 
-            # Group rooms by HDR file for parallel processing
-            hdr_room_groups = {}  # hdr_name → list of (parent, name, room_type, verts)
+            # Group rooms by HDR file; carry the per-room threshold (or None)
+            hdr_room_groups = {}  # hdr_name → list of (parent, name, room_type, verts, threshold)
             for room in self.rooms:
                 verts    = room.get('vertices', [])
                 hdr_name = room.get('hdr_file', '')
@@ -2602,49 +2617,73 @@ class HdrAoiEditor:
                     continue
                 parent    = room.get('parent', '')
                 name      = room.get('name', 'unnamed')
-                room_type = self._effective_room_type(room) or ''
+                room_type = self._effective_room_type(room)
+                threshold = self._threshold_for_type(room_type)   # None if untyped
                 hdr_room_groups.setdefault(hdr_name, []).append(
-                    (parent, name, room_type, verts))
+                    (parent, name, room_type or '', verts, threshold))
 
-            wb = Workbook()
-            ws = wb.active
-            ws.title = 'Pixel Data'
-            ws.append(['Parent', 'Room', 'Room Type', 'Pixel_x', 'Pixel_y',
-                       'Illuminance (Lux)', 'Daylight Factor (%)'])
-
-            # Process each HDR group in parallel threads
+            # Phase 1: Parallel extraction (pvalue + numpy are GIL-free)
+            all_summary_rows = []
+            all_pixel_chunks = []   # list of (room_name, lux_array, df_pct_array)
             max_workers = min(len(hdr_room_groups), 4) if hdr_room_groups else 1
             completed_rooms = 0
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
                     pool.submit(
-                        self._extract_pixels_for_hdr,
+                        self._compute_summary_for_hdr,
                         hdr_name, hdr_lookup[hdr_name], rooms_list
                     ): rooms_list
                     for hdr_name, rooms_list in hdr_room_groups.items()
                 }
                 for future in as_completed(futures):
-                    rooms_list = futures[future]
-                    for parent, name, room_type, cc, rr, lux_vals, df_vals in future.result():
-                        for j in range(len(rr)):
-                            ws.append([
-                                parent,
-                                name,
-                                room_type,
-                                int(cc[j]),
-                                int(rr[j]),
-                                round(float(lux_vals[j]), 2),
-                                round(float(df_vals[j]), 4),
-                            ])
-                        completed_rooms += 1
-                        progress['done'] = completed_rooms
+                    summary_rows, pixel_chunks = future.result()
+                    all_summary_rows.extend(summary_rows)
+                    all_pixel_chunks.extend(pixel_chunks)
+                    completed_rooms += len(futures[future])
+                    progress['done'] = completed_rooms
 
+            # Phase 2: Write outputs
             progress['phase'] = 'writing'
             output_dir = config.WPD_DIR
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / 'aoi_pixels_export_daylight.xlsx'
+
+            # Excel summary (one row per room)
+            from openpyxl import load_workbook
+            from openpyxl.utils import get_column_letter
+            from openpyxl.worksheet.table import Table, TableStyleInfo
+            df = pd.DataFrame(all_summary_rows) if all_summary_rows else pd.DataFrame()
+            output_path = output_dir / 'aoi_report_daylight.xlsx'
+            df.to_excel(output_path, sheet_name='Room Summary', index=False)
+            wb = load_workbook(output_path)
+            ws = wb.active
+            # Auto-fit column widths
+            for col in ws.columns:
+                max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col)
+                ws.column_dimensions[col[0].column_letter].width = max_len + 4
+            # Convert to a structured Excel table with filters
+            if ws.max_row > 1:
+                last_col = get_column_letter(ws.max_column)
+                table_ref = f"A1:{last_col}{ws.max_row}"
+                table = Table(displayName="RoomSummary", ref=table_ref)
+                table.tableStyleInfo = TableStyleInfo(
+                    name="TableStyleMedium9", showFirstColumn=False,
+                    showLastColumn=False, showRowStripes=True, showColumnStripes=False)
+                ws.add_table(table)
             wb.save(output_path)
-            print(f"Pixel export saved to {output_path}")
+            print(f"Report saved to {output_path}")
+
+            # Per-room CSVs (one file per AOI, all pixel values)
+            csv_subdir = output_dir / 'aoi_pixel_data'
+            csv_subdir.mkdir(parents=True, exist_ok=True)
+            for room_name, lux_vals, df_pct_vals in all_pixel_chunks:
+                safe_name = room_name.replace('/', '_').replace('\\', '_')
+                csv_path = csv_subdir / f"{safe_name}_pixels.csv"
+                with open(csv_path, 'w', newline='') as f:
+                    writer = csv_mod.writer(f)
+                    writer.writerow(['Room', 'Illuminance (Lux)', 'Daylight Factor (%)'])
+                    for lux, df_pct in zip(lux_vals, df_pct_vals):
+                        writer.writerow([room_name, lux, df_pct])
+            print(f"Per-room CSVs saved to {csv_subdir}")
 
             progress['phase'] = 'overlays'
             self._export_overlay_images(progress)
@@ -2670,7 +2709,7 @@ class HdrAoiEditor:
                 self._update_status(f"Export failed: {progress['error']}", 'red')
                 self._show_progress(1.0, "Export failed")
             else:
-                self._update_status("Export complete → Excel + overlay images", 'green')
+                self._update_status("Export complete → aoi_report_daylight.xlsx + per-room CSVs + overlays", 'green')
                 self._show_progress(1.0, "Export complete")
             self.btn_export.label.set_text('Export Report')
             self.fig.canvas.draw_idle()

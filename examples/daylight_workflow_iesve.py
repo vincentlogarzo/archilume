@@ -65,10 +65,9 @@ def iesve_daylight_parallel_images():
     with timer("Phase 0: User input 3D Scene file + Rendering parameter (.rdp) and aoi (.aoi)..."):
         image_resolution    = 2048                            
         ffl_offset          = 0.00
-        octree_path         = config.INPUTS_DIR / "model.oct" # Must use a 10K Lux CIE Overcast sky
+        octree_path         = config.INPUTS_DIR / "527DP_model_wSite.oct" # Must use a 10K Lux CIE Overcast sky
         rendering_params    = config.INPUTS_DIR / "high.rdp"
         iesve_room_data     = config.INPUTS_DIR / "aoi" / "iesve_room_data.csv"
-        df_thresholds       = (0.5, 1.0, 1.5) # % of floor area meeting daylight factor threshold
 
         # TODO: implement inputs validations checks alike to sunlight access workflow.
 
@@ -76,10 +75,12 @@ def iesve_daylight_parallel_images():
 
         smart_cleanup(
             timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-            resolution_changed          = False,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
+            resolution_changed          = True,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
             rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
             rendering_quality_changed   = False  # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
             )
+
+        #FIXME: AOI dir isnt properly cleaned when the smart clean up is True. 
 
     with timer("Phase 1: Prepare Camera Views..."):
         room_boundaries_csv = utils.iesve_aoi_to_room_boundaries_csv(
@@ -103,7 +104,7 @@ def iesve_daylight_parallel_images():
             )
         renderer.daylight_rendering_pipeline()
 
-    #FIXME: move image post processing steps from this Renderer, and move them to stage 3c after the pixel to world coordinate map generation.
+    #FIXME: move image post processing steps from this Renderer into the aoi editor, that way a user can update the values as they see fit before export of results. It would also mean that only one input id needed the .hdr files. Some meta data could be shown regarding image on the aoi editor so that i user can see what parameters were run, and a button to launch the accelerat_RT programm on the model the simulation was run on. 
 
     with timer("Phase 3: Post-processing and Stamping of Results..."):
         with timer("  3a: Generate .aoi files..."):

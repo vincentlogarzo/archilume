@@ -99,6 +99,7 @@ FUTURE implementaiton A of RenderingPipelines
     
 --- 7. ---
 AcceleradRT 
+to be run on windows only, not in linux environment. 
 
     $VIEW="C:\Projects\archilume\outputs\view\plan_ffl_096590.vp"
     .\.devcontainer\accelerad_07_beta_Windows\bin\AcceleradRT.exe -x 900 -y 900

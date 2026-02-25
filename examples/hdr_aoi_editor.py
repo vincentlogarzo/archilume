@@ -47,12 +47,19 @@ if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
+    # TODO: add to the report export spreadsheet the oriignal file name of the .hdr file in which the results was extracted. This will make it easier to track back to the original file and check the results.
 
-     #TODO: there should be building level results shown in th editor that confirm to the BESS daylight factor requirments. 
+    #FIXME: the export button exports all pixels within aoi, but when rooms have parent rooms there is no mutual exclusisivty of these .aoi, the subrooms are within the aoi, this means that results that will come out into the spreadsheet will contain overalpping datapoints in the parent room. Bsically, the parent rooms must have its child rooms pixels subtracted from its results to produce the same results as seen on the aoi editor. 
 
-     # DONE: find better parallel prcoessing methods for the export of results. it takes too long. 
+    # TODO: when a user clicks up and down the levels, the toggle image layer should remain the same, currenrly it resets to the default layer when you change levels, it would be better if it remembered the last layer you were on.
+
+    # TODO: add an archive folder ot the directory, that will save .json files with time stamps on every change, that way a user can revert back if they accidentally run a new simulation and the smart cleanup function deletes the  .json.
+
+    # TODO: there should be building level results shown in th editor that confirm to the BESS daylight factor requirments. 
 
     # TODO: i'd like the lines when drawn to be forced into ortho, currenly only after you click place point the ortho is applied from its original point. It would be better if the line was ortho as you drew it, and then when you place the point it is placed in the ortho position.
+
+    # FIXME, when i right click a room to select it in the image, it does nothighlight the corresponding room in the list to theleft, this also means that im unableto reassign its room type. 
 
     # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points.
 

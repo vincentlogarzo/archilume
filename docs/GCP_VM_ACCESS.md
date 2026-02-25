@@ -32,10 +32,6 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/google_cloud_vm_key -C "your.email@company.c
 
 Send your **public key** to the project administrator:
 
-```bash
-# Display your public key
-cat ~/.ssh/google_cloud_vm_key.pub
-```
 
 **Option A: Admin adds via GCP Console**
 1. Admin goes to GCP Console → Compute Engine → VM instances
@@ -110,7 +106,7 @@ sudo blkid /dev/nvme0n1
 
 # Add entry to /etc/fstab for automatic mounting
 # Replace UUID_VALUE with the actual UUID from the blkid command
-echo "UUID=0466be6c-2217-42fb-9d0c-9587ce84812d /mnt/disks/localssd ext4 discard,nofail 0 2" | sudo tee -a /etc/fstab
+echo "UUID=fe4758a7-d478-4b23-9ae8-2bb5541564e6 /mnt/disks/localssd ext4 discard,nofail 0 2" | sudo tee -a /etc/fstab
 
 # Verify fstab entry is correct (this will fail safely if there's an error)
 sudo mount -a
@@ -202,6 +198,11 @@ This method:
 - Each team member should have their own SSH key pair
 - Rotate keys periodically
 - Remove SSH keys for team members who leave the project
+- 
+```bash
+# put into powershell to collect ssh key to connect to VM
+cd ~/.ssh
+```
 
 ## Support
 
