@@ -95,9 +95,11 @@ class HdrAoiEditor:
         self.current_polygon_vertices                   = []
         self.selected_room_idx:     Optional[int]       = None
 
-        # Zoom state
+        # Zoom / pan state
         self.original_xlim                              = None
         self.original_ylim                              = None
+        self._pan_active:           bool                = False
+        self._pan_start:            Optional[tuple]     = None  # (x_event, y_event) in pixels
 
         # Image dimensions (set on first render)
         self._image_width:          int                 = 1
@@ -361,14 +363,37 @@ class HdrAoiEditor:
         return result
 
     def _rebuild_image_variants(self):
-        """Rebuild the image_variants list for the current HDR index."""
+        """Rebuild the image_variants list for the current HDR index.
+
+        Preserves the active layer type across HDR navigation by matching the
+        suffix of the current variant (e.g. '_df_false') against the new HDR's
+        variants. Falls back to index 0 (the HDR itself) if no match is found.
+        """
         if not self.hdr_files:
             self.image_variants = []
             self.current_variant_idx = 0
             return
 
+        # Remember which layer suffix is currently active before rebuilding
+        active_suffix = None
+        if self.image_variants and 0 < self.current_variant_idx < len(self.image_variants):
+            old_path = self.image_variants[self.current_variant_idx]
+            if old_path.suffix.lower() != '.hdr':
+                # Extract the part after the old HDR stem, e.g. '_df_false'
+                old_hdr_stem = self.hdr_files[self.current_hdr_idx]['name']
+                active_suffix = old_path.stem[len(old_hdr_stem):]
+
         entry = self.hdr_files[self.current_hdr_idx]
         self.image_variants = [entry['hdr_path']] + list(entry['tiff_paths'])
+
+        # Try to restore the same layer type in the new HDR's variants
+        if active_suffix:
+            new_hdr_stem = entry['name']
+            for i, path in enumerate(self.image_variants):
+                if path.suffix.lower() != '.hdr' and path.stem[len(new_hdr_stem):] == active_suffix:
+                    self.current_variant_idx = i
+                    return
+
         self.current_variant_idx = 0
 
     @property
@@ -479,6 +504,11 @@ class HdrAoiEditor:
                 manager.window.attributes('-zoomed', True)
             self.fig.canvas.mpl_connect('resize_event', self._on_resize)
             self.fig.canvas.get_tk_widget().after(100, self._force_resize_update)
+            # Intercept the OS window-close (X button) on TkAgg so _on_close runs
+            # before the window is destroyed (close_event alone does not fire for X).
+            manager.window.protocol(
+                'WM_DELETE_WINDOW',
+                lambda: (self._on_close(None), plt.close(self.fig)))
         except AttributeError:
             try:
                 manager = plt.get_current_fig_manager()
@@ -522,6 +552,7 @@ class HdrAoiEditor:
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_mouse_motion)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
+        self.fig.canvas.mpl_connect('close_event', self._on_close)
 
         # Load existing session
         self._load_session()
@@ -674,7 +705,7 @@ class HdrAoiEditor:
         """Create the bottom button strip and progress bar."""
         gap  = self._GAP
         tr_x, tr_w, tr_y, tr_h = 0.12, 0.86, 0.95, 0.030
-        n_tr     = 5
+        n_tr     = 7
         tr_btn_w = (tr_w - (n_tr - 1) * gap) / n_tr
 
         self.btn_image_toggle = self._make_button(
@@ -715,9 +746,8 @@ class HdrAoiEditor:
         ax_legend.text(0.01, 0.93, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
                        transform=ax_legend.transAxes)
         items = [
-            ('red', 0.6, 'Room (current HDR)'), ('yellow', 0.5, 'Selected'),
+            ('red', 0.6, 'Room boundary'), ('yellow', 0.5, 'Selected'),
             ('cyan', 0.5, 'Being edited'), ('magenta', 0.5, 'Hover (edit mode)'),
-            ('gray', 0.25, 'Other HDR file'),
         ]
         for i, (color, alpha, label) in enumerate(items):
             col, row = i // 3, i % 3
@@ -930,14 +960,17 @@ class HdrAoiEditor:
         self._update_name_preview()
 
     def _update_name_preview(self):
-        """Update the name preview text."""
+        """Update the name preview text, hiding status while preview is shown."""
         name = self.name_textbox.text.strip().upper()
         if not name:
             self.name_preview_text.set_text("")
+            self.status_text.set_visible(True)
         elif self.selected_parent:
             self.name_preview_text.set_text(f"Will save as: {self.selected_parent}_{name}")
+            self.status_text.set_visible(False)
         else:
             self.name_preview_text.set_text(f"Will save as: {name}")
+            self.status_text.set_visible(False)
         self.fig.canvas.draw_idle()
 
     # === RENDERING =============================================================
@@ -987,12 +1020,19 @@ class HdrAoiEditor:
             self.ax.set_xlim(0, 1000)
             self.ax.set_ylim(1000, 0)
 
-        # Rebuild snap vertex pool from current-HDR room vertices
-        all_verts = []
+        # Rebuild snap vertex + edge pools from current-HDR room vertices
+        all_verts, edge_starts, edge_ends = [], [], []
         for room in self.rooms:
             if self._is_room_on_current_hdr(room):
-                all_verts.extend(room['vertices'])
+                verts = room['vertices']
+                all_verts.extend(verts)
+                n = len(verts)
+                for j in range(n):
+                    edge_starts.append(verts[j])
+                    edge_ends.append(verts[(j + 1) % n])
         self.current_vertices = np.array(all_verts) if all_verts else np.array([])
+        self._snap_edge_starts = np.array(edge_starts, dtype=float) if edge_starts else None
+        self._snap_edge_ends = np.array(edge_ends, dtype=float) if edge_ends else None
 
         # Load DF image for current HDR (cached)
         self._load_current_df_image()
@@ -1354,6 +1394,25 @@ class HdrAoiEditor:
             return float(self.current_vertices[min_idx, 0]), float(self.current_vertices[min_idx, 1])
         return x, y
 
+    def _snap_to_edge(self, x: float, y: float) -> tuple:
+        """Snap to nearest existing polygon edge within snap_distance_px pixels."""
+        if self._snap_edge_starts is None or self._snap_edge_ends is None:
+            return x, y
+        A = self._snap_edge_starts
+        B = self._snap_edge_ends
+        AB = B - A
+        AP = np.array([[x, y]]) - A
+        seg_len_sq = np.sum(AB * AB, axis=1)
+        safe_len = np.where(seg_len_sq == 0, 1.0, seg_len_sq)
+        t = np.clip(np.sum(AP * AB, axis=1) / safe_len, 0.0, 1.0)
+        t = np.where(seg_len_sq == 0, 0.0, t)
+        proj = A + t[:, None] * AB
+        dists = np.hypot(x - proj[:, 0], y - proj[:, 1])
+        min_idx = int(np.argmin(dists))
+        if dists[min_idx] <= self._snap_distance_px:
+            return float(proj[min_idx, 0]), float(proj[min_idx, 1])
+        return x, y
+
     def _point_to_segment_dist(self, px, py, ax, ay, bx, by):
         """Return (distance, proj_x, proj_y) from point P to segment A→B."""
         dx, dy    = bx - ax, by - ay
@@ -1456,6 +1515,14 @@ class HdrAoiEditor:
         if event.inaxes != self.ax:
             return
 
+        # Middle-click: start pan
+        if event.button == 2:
+            self._pan_active = True
+            self._pan_start = (event.x, event.y)
+            self._pan_xlim = self.ax.get_xlim()
+            self._pan_ylim = self.ax.get_ylim()
+            return
+
         # Right-click in edit mode: delete hovered vertex; otherwise select room
         if event.button == 3:
             if self.edit_mode and self.hover_vertex_idx is not None and self.hover_room_idx is not None:
@@ -1529,10 +1596,35 @@ class HdrAoiEditor:
 
             x, y = self._snap_to_pixel(x, y)
             snapped_x, snapped_y = self._snap_to_vertex(x, y)
+            # If vertex snap didn't fire, try edge snap
+            if snapped_x == x and snapped_y == y:
+                snapped_x, snapped_y = self._snap_to_edge(x, y)
             self._pending_snap = (snapped_x, snapped_y)
 
+            # Auto-detect parent room on first point of a new polygon
+            if (not self.selected_parent
+                    and hasattr(self, 'selector')
+                    and not self.selector.verts):
+                for room in self.rooms:
+                    if (room.get('parent') is None
+                            and self._is_room_on_current_hdr(room)
+                            and len(room['vertices']) >= 3):
+                        path = MplPath(np.array(room['vertices']))
+                        if path.contains_point((snapped_x, snapped_y)):
+                            self.selected_parent = room['name']
+                            self.btn_parent.label.set_text(room['name'])
+                            self._update_status(
+                                f"Auto-detected parent: {room['name']}", 'blue')
+                            break
+
     def _on_button_release(self, event):
-        """Handle mouse button release (end of drag, or snap correction)."""
+        """Handle mouse button release (end of drag, pan, or snap correction)."""
+        # End pan (check before inaxes guard — mouse may have left the axes)
+        if event.button == 2 and self._pan_active:
+            self._pan_active = False
+            self._pan_start = None
+            return
+
         if event.inaxes != self.ax:
             return
 
@@ -1580,7 +1672,25 @@ class HdrAoiEditor:
             self._create_polygon_selector()
 
     def _on_mouse_motion(self, event):
-        """Handle mouse movement — dispatches to drag or hover handlers."""
+        """Handle mouse movement — dispatches to drag, pan, or hover handlers."""
+        # Pan: use raw pixel coords so it works even when inaxes changes during drag
+        if self._pan_active and self._pan_start is not None:
+            dx_px = event.x - self._pan_start[0]
+            dy_px = event.y - self._pan_start[1]
+            # Convert pixel delta to data-coordinate delta
+            fig_w, fig_h = self.fig.get_size_inches() * self.fig.dpi
+            bbox = self.ax.get_position()
+            ax_w_px = bbox.width * fig_w
+            ax_h_px = bbox.height * fig_h
+            xlim = self._pan_xlim
+            ylim = self._pan_ylim
+            dx_data = (xlim[1] - xlim[0]) * dx_px / ax_w_px
+            dy_data = (ylim[1] - ylim[0]) * dy_px / ax_h_px
+            self.ax.set_xlim(xlim[0] - dx_data, xlim[1] - dx_data)
+            self.ax.set_ylim(ylim[0] - dy_data, ylim[1] - dy_data)
+            self.fig.canvas.draw_idle()
+            return
+
         if event.inaxes != self.ax:
             return
         x, y = event.xdata, event.ydata
@@ -1863,6 +1973,7 @@ class HdrAoiEditor:
             self.name_label_text.set_text("Room Name:")
 
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
+        self._update_room_list()
         self._render_section()
 
     def _deselect_room(self):
@@ -1893,6 +2004,11 @@ class HdrAoiEditor:
 
     def _create_polygon_selector(self):
         """Create or recreate the polygon selector."""
+        if hasattr(self, 'selector') and self.selector is not None:
+            self.selector.clear()
+            self.selector.disconnect_events()
+            self.selector.set_visible(False)
+            self.selector = None
         self.selector = PolygonSelector(
             self.ax,
             self._on_polygon_select,
@@ -1901,6 +2017,29 @@ class HdrAoiEditor:
             handle_props=dict(markersize=8, markerfacecolor='lime',
                               markeredgecolor='darkgreen', markeredgewidth=1.5),
         )
+        # Monkey-patch _onmove to apply ortho constraint to the rubber-band
+        # line in real time, so the preview matches the final placement.
+        _orig_onmove = self.selector._onmove
+        editor = self
+
+        def _ortho_onmove(event):
+            _orig_onmove(event)
+            sel = editor.selector
+            if (editor.ortho_mode
+                    and not sel._selection_completed
+                    and len(sel._xys) >= 2):
+                # _xys[-1] is the cursor tracking point; previous vertex is [-2]
+                last_x, last_y = sel._xys[-2]
+                cx, cy = sel._xys[-1]
+                dx, dy = abs(cx - last_x), abs(cy - last_y)
+                if dx >= dy:
+                    cy = last_y   # horizontal
+                else:
+                    cx = last_x   # vertical
+                sel._xys[-1] = (cx, cy)
+                sel._draw_polygon()
+
+        self.selector._onmove = _ortho_onmove
 
     def _on_polygon_select(self, vertices):
         """Callback when a polygon drawing is completed."""
@@ -2043,10 +2182,12 @@ class HdrAoiEditor:
         name = self.rooms[idx].get('name', 'unnamed')
         self.rooms.pop(idx)
         self.selected_room_idx = None
+        self.current_polygon_vertices = []
         self._update_status(f"Deleted '{name}'", 'green')
         self._update_room_list()
         self._update_hdr_list()
         self._render_section(force_full=True)
+        self._create_polygon_selector()
         print(f"Deleted room '{name}'")
         self._save_session()
 
@@ -2284,6 +2425,10 @@ class HdrAoiEditor:
         if hasattr(self, 'status_text') and self.status_text is not None:
             self.status_text.set_text(f"Status: {message}")
             self.status_text.set_color(color)
+            self.status_text.set_visible(True)
+            # Clear the name preview so they don't overlap
+            if hasattr(self, 'name_preview_text') and self.name_preview_text is not None:
+                self.name_preview_text.set_text("")
             self.fig.canvas.draw_idle()
 
     def _update_room_list(self):
@@ -2469,6 +2614,12 @@ class HdrAoiEditor:
         print(f"Loaded {len(self.rooms)} rooms from {source}")
 
 
+    # === ARCHIVE ===============================================================
+
+    def _on_close(self, event):
+        """Handle editor window close."""
+        pass
+
     # === EXPORT ================================================================
 
     def _show_progress(self, fraction: float, label: str = ""):
@@ -2543,31 +2694,53 @@ class HdrAoiEditor:
         array operations (also release the GIL).
 
         Args:
-            rooms_for_hdr: list of (parent, name, room_type, verts, threshold_or_None)
-                           threshold is the single DF% value for the room's type,
-                           or None if the room has no type assignment.
+            rooms_for_hdr: list of (parent, name, room_type, verts, threshold_or_None,
+                           child_verts_list).
+                           child_verts_list is a list of vertex lists for sub-rooms to
+                           exclude from this room's pixel set (mirrors the UI behaviour).
+                           Pass an empty list for rooms that have no children.
 
         Returns:
-            list of dicts, one per room, with summary stats columns.
-            Threshold columns are None for untyped rooms (rendered as blank in Excel).
+            (summary_rows, pixel_chunks) where summary_rows is a list of dicts
+            (one per room) and pixel_chunks is a list of
+            (room_name, lux_array, df_pct_array).
+            Child polygon pixels are excluded from parent room results in both outputs,
+            so no pixel appears in both a parent room and its sub-rooms.
         """
         from skimage.draw import polygon as skimage_polygon
 
         df_img = Hdr2Wpd.load_df_image(hdr_path)
         if df_img is None:
-            return []
+            return [], []
 
+        h, w = df_img.shape
         summary_rows = []
         pixel_chunks = []   # list of (room_name, lux_array, df_pct_array)
-        for parent, name, room_type, verts, threshold in rooms_for_hdr:
+        for parent, name, room_type, verts, threshold, child_verts_list in rooms_for_hdr:
             xs = [int(round(v[0])) for v in verts]
             ys = [int(round(v[1])) for v in verts]
-            rr, cc = skimage_polygon(ys, xs, shape=df_img.shape)
+            rr, cc = skimage_polygon(ys, xs, shape=(h, w))
+            if len(rr) == 0:
+                continue
+
+            if child_verts_list:
+                # Build a boolean mask for the parent polygon then punch out each child,
+                # so child pixels are never counted in the parent's results.
+                mask = np.zeros((h, w), dtype=bool)
+                mask[rr, cc] = True
+                for child_verts in child_verts_list:
+                    cxs = [int(round(v[0])) for v in child_verts]
+                    cys = [int(round(v[1])) for v in child_verts]
+                    crr, ccc = skimage_polygon(cys, cxs, shape=(h, w))
+                    mask[crr, ccc] = False
+                rr, cc = np.where(mask)
+
             n = len(rr)
             if n == 0:
                 continue
-            df_vals  = df_img[rr, cc]          # already DF% (e.g. 0.98 = 0.98%)
-            lux_vals = df_vals * 100.0          # DF% → lux  (df% = lux/10000*100 → lux = df%*100)
+
+            df_vals  = df_img[rr, cc]   # already DF% (e.g. 0.98 = 0.98%)
+            lux_vals = df_vals * 100.0  # DF% → lux  (df% = lux/10000*100 → lux = df%*100)
 
             if threshold is not None:
                 passing     = int((df_vals >= threshold).sum())
@@ -2608,8 +2781,16 @@ class HdrAoiEditor:
             # Build HDR name → path lookup
             hdr_lookup = {entry['name']: entry['hdr_path'] for entry in self.hdr_files}
 
-            # Group rooms by HDR file; carry the per-room threshold (or None)
-            hdr_room_groups = {}  # hdr_name → list of (parent, name, room_type, verts, threshold)
+            # Build a lookup of room name → child vertex lists for exclusion.
+            # Only rooms with children (i.e. LIVING/parent rooms) will have entries.
+            children_verts_by_name = {}  # room_name → [child_verts, ...]
+            for room in self.rooms:
+                p = room.get('parent', '')
+                if p and len(room.get('vertices', [])) >= 3:
+                    children_verts_by_name.setdefault(p, []).append(room['vertices'])
+
+            # Group rooms by HDR file; carry per-room threshold and child verts for exclusion
+            hdr_room_groups = {}  # hdr_name → list of (parent, name, room_type, verts, threshold, child_verts_list)
             for room in self.rooms:
                 verts    = room.get('vertices', [])
                 hdr_name = room.get('hdr_file', '')
@@ -2619,8 +2800,10 @@ class HdrAoiEditor:
                 name      = room.get('name', 'unnamed')
                 room_type = self._effective_room_type(room)
                 threshold = self._threshold_for_type(room_type)   # None if untyped
+                # Child verts to subtract: only applicable to parent rooms
+                child_verts_list = children_verts_by_name.get(name, [])
                 hdr_room_groups.setdefault(hdr_name, []).append(
-                    (parent, name, room_type or '', verts, threshold))
+                    (parent, name, room_type or '', verts, threshold, child_verts_list))
 
             # Phase 1: Parallel extraction (pvalue + numpy are GIL-free)
             all_summary_rows = []

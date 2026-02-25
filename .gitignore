@@ -19,7 +19,10 @@ outputs/*
 outputs/*/*
 !outputs/*/.gitkeep
 
-# Ignore test/scratch files
+# Ignore archive contents but preserve the directory via .gitkeep
+archive/*
+!archive/.gitkeep
+!archive/.gitignore
 
 # SSH configuration (contains private keys - keep these secret!)
 .ssh/

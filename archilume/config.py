@@ -23,6 +23,7 @@ PROJECT_ROOT        = Path(__file__).parent.parent
 INPUTS_DIR          = PROJECT_ROOT / "inputs"
 OUTPUTS_DIR         = PROJECT_ROOT / "outputs"
 EXAMPLES_DIR        = PROJECT_ROOT / "examples"
+ARCHIVE_DIR         = PROJECT_ROOT / "archive"
 
 # Output subdirectories
 IMAGE_DIR           = OUTPUTS_DIR / "image"

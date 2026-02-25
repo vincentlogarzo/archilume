@@ -34,6 +34,7 @@ Workflow:
     3. Select "U101" as parent
     4. Draw sub-rooms (e.g. "BED1" to auto-saved as "U101_BED1")
     5. Repeat for each HDR file / floor
+    6. Export and archive results as CSV for analysis and reporting
 """
 
 # fmt: off
@@ -47,19 +48,11 @@ if __name__ == "__main__":
     editor = HdrAoiEditor()
     editor.launch()
 
-    # TODO: add to the report export spreadsheet the oriignal file name of the .hdr file in which the results was extracted. This will make it easier to track back to the original file and check the results.
+    # TODO: there should be building level and floor plate on screen level  results shown in th editor that confirm to the BESS daylight factor requirments. 
 
-    #FIXME: the export button exports all pixels within aoi, but when rooms have parent rooms there is no mutual exclusisivty of these .aoi, the subrooms are within the aoi, this means that results that will come out into the spreadsheet will contain overalpping datapoints in the parent room. Bsically, the parent rooms must have its child rooms pixels subtracted from its results to produce the same results as seen on the aoi editor. 
+    # FIXME, when i right click a room to select it in the image, it does not highlight the corresponding room in the list to theleft, this also means that im unableto reassign its room type. 
 
-    # TODO: when a user clicks up and down the levels, the toggle image layer should remain the same, currenrly it resets to the default layer when you change levels, it would be better if it remembered the last layer you were on.
-
-    # TODO: add an archive folder ot the directory, that will save .json files with time stamps on every change, that way a user can revert back if they accidentally run a new simulation and the smart cleanup function deletes the  .json.
-
-    # TODO: there should be building level results shown in th editor that confirm to the BESS daylight factor requirments. 
-
-    # TODO: i'd like the lines when drawn to be forced into ortho, currenly only after you click place point the ortho is applied from its original point. It would be better if the line was ortho as you drew it, and then when you place the point it is placed in the ortho position.
-
-    # FIXME, when i right click a room to select it in the image, it does nothighlight the corresponding room in the list to theleft, this also means that im unableto reassign its room type. 
+    # TODO: allow deletion of a room boundaries in the UI, it should then wipe this from the JSON, and then upon reopn of the UI it should reinstate from the original aoi file. Or this feature should be a buttin hte ui to reinstant an AOI from its source or a group of selected AOIs. 
 
     # TODO: add functionality to add points to the polygon, when adding a new point, two should be added side by side, as the user likely needs at least two if adding points.
 
@@ -67,6 +60,7 @@ if __name__ == "__main__":
 
     # TODO: add in functionality to pull back the compliant area a distance from the polygon lines in to represetn wall thickness if a user wishes to do this.
 
-    # TODO: when drawing a subroom, better functionaly to detect parent room so that you dont have to click none placeholder in the parent room input box, and better functionality to snap a point to an existing vertex edge, subrooms are really only a divide or break down of the main apartment.
+    #TODO: enforce a restriction on the sub-rooms, there should only be one partent room, there should never be a parent room of a parent room. Only a 2 tier heirarchy. 
+
 
     # TODO: Add grouping functionality if a user wishes to see the worst apartments overall contributing to non-comliance of the development. That way these apartments can be considered as a whole. or individual results can be considered. Grouping should occur by multiple clicks of rooms and then click the button called group. 
