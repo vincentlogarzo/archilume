@@ -17,8 +17,10 @@ Controls:
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
     e             Toggle Edit Mode
+    d             Room divider — multi-segment ortho split (edit mode)
     Ctrl+Z        Undo last edit / undo delete
     o             Toggle orthogonal lines (H/V snap)
+    f             Fit zoom to selected room
     r             Reset zoom
     q             Quit
 
@@ -125,6 +127,7 @@ class HdrAoiEditor:
         self.edit_edge_room_idx:    Optional[int]       = None
         self.edit_edge_idx:         Optional[int]       = None
         self.edit_edge_start:       Optional[tuple]     = None
+        self._edit_drag_origin:     Optional[tuple]     = None  # vertex pos at drag start (for ortho)
 
         # Parent apartment selection
         self.selected_parent:       Optional[str]       = None
@@ -180,6 +183,14 @@ class HdrAoiEditor:
         # Persistent DF cache: keyed by (hdr_file, vertices_tuple, thresholds_tuple)
         # Stored on each room dict as 'df_cache' = {'thresholds': [...], 'results': [...], 'vertices_hash': str}
         # This avoids recomputation when rooms haven't changed.
+
+        # Room divider mode (sub-state of edit mode)
+        self.divider_mode:          bool                = False
+        self._divider_room_idx:     Optional[int]       = None   # room being divided
+        self._divider_points:       list                = []     # placed (x,y) tuples
+        self._divider_markers:      list                = []     # scatter artists per point
+        self._divider_segments:     list                = []     # solid Line2D per segment
+        self._divider_preview_line                      = None   # dashed Line2D to cursor
 
     # === LAYOUT HELPERS ========================================================
 
@@ -288,6 +299,7 @@ class HdrAoiEditor:
         self.edit_edge_room_idx  = None
         self.edit_edge_idx       = None
         self.edit_edge_start     = None
+        self._edit_drag_origin   = None
 
     def _start_blit_drag(self, room_idx: int):
         """Capture background for blitting before starting a drag operation."""
@@ -674,8 +686,10 @@ class HdrAoiEditor:
             ("Left-click",    "Place vertex / drag"),   ("Shift+click", "Drag edge (edit mode)"),
             ("Right-click",   "Select existing room"),  ("Scroll",      "Zoom centred on cursor"),
             ("s",             "Save room / confirm edit"),
-            ("e",             "Toggle Edit Mode"),      ("ctrl+z",      "Undo edit / delete"),
-            ("o",             "Toggle orthogonal lines"), ("r",         "Reset zoom"),
+            ("e",             "Toggle Edit Mode"),      ("d",           "Room divider (edit mode)"),
+            ("ctrl+z",        "Undo edit / delete"),
+            ("o",             "Toggle orthogonal lines"), ("f",         "Fit zoom to selected room"),
+            ("r",             "Reset zoom"),
             ("Ctrl+click",    "Multi-select rooms"),     ("ctrl+a",    "Select all rooms"),
             ("q",             "Quit"),
         ]
@@ -885,6 +899,8 @@ class HdrAoiEditor:
 
     def _jump_to_hdr(self, hdr_idx: int):
         """Switch to the given HDR file index."""
+        if self.divider_mode:
+            self._exit_divider_mode(cancelled=True)
         if not (0 <= hdr_idx < len(self.hdr_files)):
             return
         self.current_hdr_idx = hdr_idx
@@ -1483,7 +1499,20 @@ class HdrAoiEditor:
         if not self._edit_undo_stack:
             self._update_status("Nothing to undo", 'orange')
             return
-        room_idx, verts_snapshot = self._edit_undo_stack.pop()
+        entry = self._edit_undo_stack.pop()
+
+        # Divider undo: full rooms-list snapshot
+        if isinstance(entry, tuple) and len(entry) == 2 and entry[0] == 'divider':
+            self.rooms = entry[1]
+            self._reset_hover_state()
+            self._update_status("Undid room division", 'blue')
+            self._save_session()
+            self._update_room_list()
+            self._update_hdr_list()
+            self._render_section(force_full=True)
+            return
+
+        room_idx, verts_snapshot = entry
         self.rooms[room_idx]['vertices'] = verts_snapshot
         self._invalidate_room_df_cache(room_idx)
         self._reset_hover_state()
@@ -1651,6 +1680,11 @@ class HdrAoiEditor:
             self._pan_ylim = self.ax.get_ylim()
             return
 
+        # Right-click in divider mode: undo last placed point
+        if event.button == 3 and self.divider_mode:
+            self._divider_undo_last_point()
+            return
+
         # Right-click in edit mode: delete hovered vertex; otherwise select room
         if event.button == 3:
             if self.edit_mode and self.hover_vertex_idx is not None and self.hover_room_idx is not None:
@@ -1670,6 +1704,11 @@ class HdrAoiEditor:
             self._select_room_at(event.xdata, event.ydata)
             return
 
+        # Left-click in divider mode: place division line endpoints
+        if event.button == 1 and self.divider_mode and event.xdata is not None and event.ydata is not None:
+            self._on_divider_click(event.xdata, event.ydata)
+            return
+
         # Left-click in edit mode: drag vertex or insert vertex on edge
         if event.button == 1 and self.edit_mode and event.xdata is not None and event.ydata is not None:
             if self.hover_vertex_idx is not None and self.hover_room_idx is not None:
@@ -1677,6 +1716,8 @@ class HdrAoiEditor:
                 self._push_undo(self.hover_room_idx)
                 self.edit_room_idx   = self.hover_room_idx
                 self.edit_vertex_idx = self.hover_vertex_idx
+                v = self.rooms[self.hover_room_idx]['vertices'][self.hover_vertex_idx]
+                self._edit_drag_origin = (float(v[0]), float(v[1]))
                 room_name = self.rooms[self.edit_room_idx].get('name', 'unnamed')
                 self._update_status(f"Dragging vertex in '{room_name}'", 'cyan')
                 self._render_section(force_full=True)
@@ -1694,17 +1735,36 @@ class HdrAoiEditor:
                     self._update_status(f"Dragging edge in '{room_name}'", 'cyan')
                     self._start_blit_drag(self.edit_edge_room_idx)
                     return
-                # Click: insert new vertex on edge
+                # Click: insert two vertices on edge (straddling the click point)
                 self._push_undo(self.hover_edge_room_idx)
                 room  = self.rooms[self.hover_edge_room_idx]
                 j     = self.hover_edge_idx
-                room['vertices'].insert(j + 1, list(self.hover_edge_point))
+                verts = room['vertices']
+                ax_, ay_ = verts[j]
+                bx_, by_ = verts[(j + 1) % len(verts)]
+                cx, cy = self.hover_edge_point
+
+                # Place two points offset along the edge from the click point
+                edge_dx, edge_dy = bx_ - ax_, by_ - ay_
+                edge_len = (edge_dx ** 2 + edge_dy ** 2) ** 0.5
+                offset = min(15.0, edge_len * 0.15)  # 15 px or 15% of edge
+                if edge_len > 0:
+                    ux, uy = edge_dx / edge_len, edge_dy / edge_len
+                else:
+                    ux, uy = 1.0, 0.0
+                p1 = [float(cx - ux * offset), float(cy - uy * offset)]
+                p2 = [float(cx + ux * offset), float(cy + uy * offset)]
+
+                room['vertices'].insert(j + 1, p1)
+                room['vertices'].insert(j + 2, p2)
+                # Start dragging the second vertex (closer to b) for immediate repositioning
                 self.edit_room_idx   = self.hover_edge_room_idx
-                self.edit_vertex_idx = j + 1
+                self.edit_vertex_idx = j + 2
+                self._edit_drag_origin = (float(p2[0]), float(p2[1]))
                 self.hover_edge_room_idx = None
                 self.hover_edge_idx      = None
                 self.hover_edge_point    = None
-                self._update_status("Inserted vertex - drag to reposition", 'cyan')
+                self._update_status("Inserted 2 vertices — drag to reposition, right-click to remove", 'cyan')
                 self._render_section(force_full=True)
                 return
             return  # click on empty space in edit mode
@@ -1775,6 +1835,7 @@ class HdrAoiEditor:
             sx, sy = self._snap_to_vertex(px, py)
             room['vertices'][self.edit_vertex_idx] = [float(sx), float(sy)]
             self.edit_vertex_idx = None
+            self._edit_drag_origin = None
             self._save_session()
             room_name = room.get('name', 'unnamed')
             self._update_status(f"Moved vertex in '{room_name}'", 'green')
@@ -1827,12 +1888,28 @@ class HdrAoiEditor:
 
         # Active drag operations (vertex or edge)
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
+            # Ortho constraint: lock to H or V from drag origin
+            if self.ortho_mode and self._edit_drag_origin is not None:
+                ox, oy = self._edit_drag_origin
+                dx, dy = abs(x - ox), abs(y - oy)
+                if dx >= dy:
+                    y = oy   # horizontal movement
+                else:
+                    x = ox   # vertical movement
             self.rooms[self.edit_room_idx]['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
             self._update_dragged_patch(self.edit_room_idx)
             return
         if self.edit_edge_room_idx is not None and self.edit_edge_idx is not None:
             self._handle_edge_drag(x, y)
             return
+
+        # Divider mode: update preview line
+        if self.divider_mode and self._divider_points:
+            self._update_divider_preview(x, y)
+            return
+        if self.divider_mode:
+            return  # no first point yet, nothing to preview
+
         if not self.edit_mode:
             return
 
@@ -1969,10 +2046,21 @@ class HdrAoiEditor:
         """Handle keyboard shortcuts."""
         if event.key in ('backspace', 'delete', 'escape'):
             if event.key == 'escape':
-                self._deselect_room()
+                if self.divider_mode:
+                    self._exit_divider_mode(cancelled=True)
+                else:
+                    self._deselect_room()
             return
         if event.key == 's':
-            self._on_save_click(None)
+            if self.divider_mode:
+                if len(self._divider_points) >= 2:
+                    self._finalize_division()
+                else:
+                    self._update_status(
+                        "Need at least 2 points to finalize divider — keep clicking or Esc to cancel",
+                        'orange')
+            else:
+                self._on_save_click(None)
         elif event.key == 'S':
             self._save_session()
         elif event.key == 'r':
@@ -1989,6 +2077,14 @@ class HdrAoiEditor:
             self._on_edit_mode_toggle(None)
         elif event.key == 'o':
             self._on_ortho_toggle(None)
+        elif event.key == 'd':
+            if self.edit_mode:
+                if self.divider_mode:
+                    self._exit_divider_mode(cancelled=True)
+                else:
+                    self._enter_divider_mode()
+        elif event.key == 'f':
+            self._fit_to_selected_room()
         elif event.key == 'ctrl+z':
             if self.edit_mode:
                 self._undo_edit()
@@ -2184,6 +2280,9 @@ class HdrAoiEditor:
 
     def _on_save_click(self, event):
         """Save room, update selected room, or save edited boundary."""
+        if self.divider_mode:
+            self._update_status("Complete or cancel divider mode first (Esc to cancel)", 'orange')
+            return
         if self.edit_mode and self.edit_room_idx is not None:
             self._save_edited_room()
         elif self.selected_room_idx is not None:
@@ -2420,6 +2519,33 @@ class HdrAoiEditor:
         self._apply_zoom_fontsizes()
         self.fig.canvas.draw_idle()
 
+    def _fit_to_selected_room(self):
+        """Zoom to fit the selected room boundary on screen (press f)."""
+        if self.selected_room_idx is None:
+            self._update_status("Select a room first, then press 'f' to fit", 'red')
+            return
+        room = self.rooms[self.selected_room_idx]
+        verts = room['vertices']
+        if len(verts) < 3:
+            return
+
+        xs = [v[0] for v in verts]
+        ys = [v[1] for v in verts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+
+        # Add 10% padding around the bounding box
+        pad_x = max((max_x - min_x) * 0.10, 20)
+        pad_y = max((max_y - min_y) * 0.10, 20)
+        self.ax.set_xlim(min_x - pad_x, max_x + pad_x)
+        self.ax.set_ylim(max_y + pad_y, min_y - pad_y)  # y-axis is inverted (origin='upper')
+
+        self._apply_zoom_linewidths()
+        self._apply_zoom_fontsizes()
+        room_name = room.get('name', 'unnamed')
+        self._update_status(f"Fit to '{room_name}' (r to reset zoom)", 'blue')
+        self.fig.canvas.draw_idle()
+
     # === TOGGLE BUTTONS & ROOM TYPE ============================================
 
     def _style_toggle_button(self, btn, is_on: bool):
@@ -2453,6 +2579,9 @@ class HdrAoiEditor:
 
     def _on_edit_mode_toggle(self, event):
         """Toggle edit mode for modifying existing room boundaries."""
+        if self.divider_mode:
+            self._exit_divider_mode(cancelled=True)
+
         self.edit_mode = not self.edit_mode
         self.btn_edit_mode.label.set_text(
             'Edit Mode: ON (Press E)' if self.edit_mode else 'Edit Mode: OFF (Press E)')
@@ -2542,6 +2671,599 @@ class HdrAoiEditor:
         self._style_toggle_button(self.btn_room_type_bed, self.room_type == 'BED')
         self._style_toggle_button(self.btn_room_type_living, self.room_type == 'LIVING')
         self._style_toggle_button(self.btn_room_type_circ, self.room_type == 'CIRCULATION')
+
+    # === ROOM DIVIDER ==========================================================
+
+    @staticmethod
+    def _points_close(a, b, tol=1.0) -> bool:
+        """Return True if two points are within *tol* pixels of each other."""
+        return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
+
+    @staticmethod
+    def _point_on_segment(pt, a, b, tol=2.0) -> bool:
+        """Return True if *pt* lies on segment a→b within pixel tolerance."""
+        px, py = float(pt[0]), float(pt[1])
+        ax_, ay_ = float(a[0]), float(a[1])
+        bx_, by_ = float(b[0]), float(b[1])
+        # Collinearity via cross product
+        cross = abs((bx_ - ax_) * (py - ay_) - (by_ - ay_) * (px - ax_))
+        seg_len = ((bx_ - ax_) ** 2 + (by_ - ay_) ** 2) ** 0.5
+        if seg_len > 0 and cross / seg_len > tol:
+            return False
+        # Bounding box check
+        min_x, max_x = min(ax_, bx_) - tol, max(ax_, bx_) + tol
+        min_y, max_y = min(ay_, by_) - tol, max(ay_, by_) + tol
+        return min_x <= px <= max_x and min_y <= py <= max_y
+
+    @staticmethod
+    def _line_polygon_intersections(line_start, line_end, polygon_verts):
+        """Find all points where an infinite line (through *line_start* and
+        *line_end*) intersects the edges of *polygon_verts*.
+
+        Returns a list of (x, y) tuples sorted by distance from *line_start*.
+        Near-duplicate points (within 1 px) are filtered out.
+        """
+        intersections = []
+        sx, sy = float(line_start[0]), float(line_start[1])
+        ex, ey = float(line_end[0]),   float(line_end[1])
+        dx, dy = ex - sx, ey - sy
+
+        n = len(polygon_verts)
+        for i in range(n):
+            ax_, ay_ = float(polygon_verts[i][0]),           float(polygon_verts[i][1])
+            bx_, by_ = float(polygon_verts[(i + 1) % n][0]), float(polygon_verts[(i + 1) % n][1])
+            edge_dx, edge_dy = bx_ - ax_, by_ - ay_
+            denom = dx * edge_dy - dy * edge_dx
+            if abs(denom) < 1e-10:
+                continue  # parallel / collinear
+            u = ((ax_ - sx) * dy - (ay_ - sy) * dx) / denom
+            if -1e-10 <= u <= 1.0 + 1e-10:
+                ix = ax_ + u * edge_dx
+                iy = ay_ + u * edge_dy
+                intersections.append((float(ix), float(iy)))
+
+        # Deduplicate (adjacent edges sharing a vertex produce two hits)
+        if len(intersections) > 1:
+            unique = [intersections[0]]
+            for pt in intersections[1:]:
+                if not any(abs(pt[0] - up[0]) < 1.0 and abs(pt[1] - up[1]) < 1.0 for up in unique):
+                    unique.append(pt)
+            intersections = unique
+
+        intersections.sort(key=lambda p: (p[0] - sx) ** 2 + (p[1] - sy) ** 2)
+        return intersections
+
+    def _split_polygon_by_line(self, verts, p1, p2):
+        """Split a closed polygon into two sub-polygons along segment p1→p2.
+
+        *p1* and *p2* must lie on the polygon boundary.
+        Returns ``(poly_a, poly_b)`` as lists of ``[x, y]``, or
+        ``(None, None)`` on failure.
+        """
+        n = len(verts)
+        augmented = []
+        p1_idx = None
+        p2_idx = None
+
+        for i in range(n):
+            a = verts[i]
+            b = verts[(i + 1) % n]
+            augmented.append(list(a))
+            cur = len(augmented) - 1
+
+            # Check if p1 lies on edge a→b
+            if p1_idx is None and self._point_on_segment(p1, a, b):
+                if self._points_close(p1, a):
+                    p1_idx = cur
+                elif self._points_close(p1, b):
+                    pass  # will be picked up when b is appended
+                else:
+                    augmented.append([float(p1[0]), float(p1[1])])
+                    p1_idx = len(augmented) - 1
+
+            # Check if p2 lies on edge a→b
+            if p2_idx is None and self._point_on_segment(p2, a, b):
+                if self._points_close(p2, a):
+                    p2_idx = cur
+                elif self._points_close(p2, b):
+                    pass  # will be picked up when b is appended
+                else:
+                    augmented.append([float(p2[0]), float(p2[1])])
+                    p2_idx = len(augmented) - 1
+
+        # Handle the deferred "close to b" cases
+        if p1_idx is None:
+            for i, v in enumerate(augmented):
+                if self._points_close(p1, v):
+                    p1_idx = i
+                    break
+        if p2_idx is None:
+            for i, v in enumerate(augmented):
+                if self._points_close(p2, v):
+                    p2_idx = i
+                    break
+
+        if p1_idx is None or p2_idx is None:
+            return None, None
+
+        # Walk forward from p1→p2 to collect poly_a
+        m = len(augmented)
+        poly_a = []
+        idx = p1_idx
+        while True:
+            poly_a.append(augmented[idx])
+            if idx == p2_idx and len(poly_a) > 1:
+                break
+            idx = (idx + 1) % m
+
+        # Walk forward from p2→p1 to collect poly_b
+        poly_b = []
+        idx = p2_idx
+        while True:
+            poly_b.append(augmented[idx])
+            if idx == p1_idx and len(poly_b) > 1:
+                break
+            idx = (idx + 1) % m
+
+        if len(poly_a) < 3 or len(poly_b) < 3:
+            return None, None
+        return poly_a, poly_b
+
+    # --- divider mode lifecycle ------------------------------------------------
+
+    def _enter_divider_mode(self):
+        """Enter divider mode: draw an ortho polyline to split the selected room."""
+        if not self.edit_mode:
+            self._update_status("Must be in edit mode to use divider", 'red')
+            return
+        if self.selected_room_idx is None:
+            self._update_status("Select a room first (right-click), then press 'd'", 'red')
+            return
+
+        room = self.rooms[self.selected_room_idx]
+        if len(room['vertices']) < 3:
+            self._update_status("Selected room has too few vertices to divide", 'red')
+            return
+
+        self.divider_mode          = True
+        self._divider_room_idx     = self.selected_room_idx
+        self._divider_points       = []
+        self._divider_markers      = []
+        self._divider_segments     = []
+        self._divider_preview_line = None
+
+        self._reset_hover_state()
+
+        room_name = room.get('name', 'unnamed')
+        self._update_status(
+            f"DIVIDER: Click points to build ortho path on '{room_name}' "
+            f"(s=finish, right-click=undo, Esc=cancel)", 'magenta')
+        self.fig.canvas.draw_idle()
+
+    def _exit_divider_mode(self, cancelled: bool = False):
+        """Exit divider mode, cleaning up all preview artists."""
+        self.divider_mode      = False
+        self._divider_room_idx = None
+        self._divider_points   = []
+
+        for artist in self._divider_markers:
+            if artist is not None:
+                try: artist.remove()
+                except ValueError: pass
+        self._divider_markers = []
+
+        for artist in self._divider_segments:
+            if artist is not None:
+                try: artist.remove()
+                except ValueError: pass
+        self._divider_segments = []
+
+        if self._divider_preview_line is not None:
+            try: self._divider_preview_line.remove()
+            except ValueError: pass
+            self._divider_preview_line = None
+
+        if cancelled:
+            self._update_status("Divider mode cancelled", 'blue')
+        self._render_section(force_full=True)
+
+    # --- divider click / preview / undo ----------------------------------------
+
+    def _on_divider_click(self, x: float, y: float):
+        """Handle a left-click during divider mode — accumulate polyline points."""
+        if self._divider_room_idx is None:
+            return
+
+        x, y = self._snap_to_pixel(x, y)
+        x, y = self._snap_to_vertex(x, y)
+
+        # Ortho constraint from last placed point
+        if self._divider_points:
+            lx, ly = self._divider_points[-1]
+            dx, dy = abs(x - lx), abs(y - ly)
+            if dx >= dy:
+                y = ly   # horizontal
+            else:
+                x = lx   # vertical
+
+        # Reject zero-length segment
+        if self._divider_points:
+            lx, ly = self._divider_points[-1]
+            if abs(x - lx) < 0.5 and abs(y - ly) < 0.5:
+                return
+
+        self._divider_points.append((x, y))
+
+        # Draw marker dot
+        marker = self.ax.plot(
+            x, y, 'o', color='magenta', markersize=8,
+            markeredgecolor='white', markeredgewidth=1.5, zorder=200)[0]
+        self._divider_markers.append(marker)
+
+        # Draw solid segment from previous point
+        if len(self._divider_points) >= 2:
+            px, py = self._divider_points[-2]
+            seg, = self.ax.plot(
+                [px, x], [py, y],
+                '-', color='magenta', linewidth=2, alpha=0.9, zorder=195)
+            self._divider_segments.append(seg)
+
+        # Clear old preview line (becomes solid segment)
+        if self._divider_preview_line is not None:
+            try: self._divider_preview_line.remove()
+            except ValueError: pass
+            self._divider_preview_line = None
+
+        n = len(self._divider_points)
+        self._update_status(
+            f"DIVIDER: {n} pt{'s' if n != 1 else ''} — "
+            f"click=add, s=finish, right-click=undo last, Esc=cancel", 'magenta')
+        self.fig.canvas.draw_idle()
+
+    def _divider_undo_last_point(self):
+        """Remove the last placed divider point (right-click during divider mode)."""
+        if not self._divider_points:
+            self._update_status("No points to undo — Esc to cancel divider", 'orange')
+            return
+
+        self._divider_points.pop()
+
+        if self._divider_markers:
+            artist = self._divider_markers.pop()
+            if artist is not None:
+                try: artist.remove()
+                except ValueError: pass
+
+        if self._divider_segments:
+            artist = self._divider_segments.pop()
+            if artist is not None:
+                try: artist.remove()
+                except ValueError: pass
+
+        if self._divider_preview_line is not None:
+            try: self._divider_preview_line.remove()
+            except ValueError: pass
+            self._divider_preview_line = None
+
+        n = len(self._divider_points)
+        if n == 0:
+            self._update_status(
+                "DIVIDER: All points removed — click to start again, Esc to cancel", 'magenta')
+        else:
+            self._update_status(
+                f"DIVIDER: Undid last point, {n} remaining", 'magenta')
+        self.fig.canvas.draw_idle()
+
+    def _update_divider_preview(self, x: float, y: float):
+        """Draw / update dashed preview from last placed point to cursor."""
+        if not self._divider_points:
+            return
+
+        lx, ly = self._divider_points[-1]
+
+        # Ortho constraint
+        dx, dy = abs(x - lx), abs(y - ly)
+        if dx >= dy:
+            y = ly
+        else:
+            x = lx
+
+        if self._divider_preview_line is not None:
+            self._divider_preview_line.set_data([lx, x], [ly, y])
+        else:
+            line, = self.ax.plot(
+                [lx, x], [ly, y],
+                '--', color='magenta', linewidth=2, alpha=0.8, zorder=150)
+            self._divider_preview_line = line
+
+        now = time.monotonic()
+        if now - self._last_drag_draw >= 0.033:
+            self._last_drag_draw = now
+            self.fig.canvas.draw_idle()
+
+    # --- ray intersection helper -----------------------------------------------
+
+    @staticmethod
+    def _ray_polygon_intersection(origin, direction, polygon_verts):
+        """Find the first intersection of a ray with the polygon boundary.
+
+        The ray starts at *origin* and extends in *direction*.
+        Returns ``(x, y)`` of the nearest hit, or ``None``.
+        """
+        ox, oy   = float(origin[0]),    float(origin[1])
+        rdx, rdy = float(direction[0]), float(direction[1])
+        if abs(rdx) < 1e-12 and abs(rdy) < 1e-12:
+            return None
+
+        best_t  = float('inf')
+        best_pt = None
+
+        n = len(polygon_verts)
+        for i in range(n):
+            ax_, ay_ = float(polygon_verts[i][0]),           float(polygon_verts[i][1])
+            bx_, by_ = float(polygon_verts[(i + 1) % n][0]), float(polygon_verts[(i + 1) % n][1])
+            edge_dx, edge_dy = bx_ - ax_, by_ - ay_
+            denom = rdx * edge_dy - rdy * edge_dx
+            if abs(denom) < 1e-10:
+                continue
+            t = ((ax_ - ox) * edge_dy - (ay_ - oy) * edge_dx) / denom
+            u = ((ax_ - ox) * rdy   - (ay_ - oy) * rdx)       / denom
+            if t > 1e-6 and -1e-10 <= u <= 1.0 + 1e-10:
+                if t < best_t:
+                    best_t  = t
+                    best_pt = (float(ax_ + u * edge_dx), float(ay_ + u * edge_dy))
+
+        return best_pt
+
+    # --- finalize & split along polyline ---------------------------------------
+
+    def _finalize_division(self):
+        """Finalize the multi-segment divider: find boundary intersections
+        for the first and last segments, then split the room polygon."""
+        if self._divider_room_idx is None:
+            return
+        if len(self._divider_points) < 2:
+            self._update_status("Need at least 2 points to finalize — keep clicking", 'orange')
+            return
+
+        room  = self.rooms[self._divider_room_idx]
+        verts = room['vertices']
+        pts   = list(self._divider_points)
+
+        # --- boundary intersection for FIRST segment (extend pts[0] outward) ---
+        boundary_start = self._find_boundary_hit(
+            pts[0], pts[1], verts, outward=True)
+
+        # --- boundary intersection for LAST segment (extend pts[-1] outward) ---
+        boundary_end = self._find_boundary_hit(
+            pts[-1], pts[-2], verts, outward=True)
+
+        if boundary_start is None:
+            self._update_status("Could not find boundary intersection for first segment", 'red')
+            return
+        if boundary_end is None:
+            self._update_status("Could not find boundary intersection for last segment", 'red')
+            return
+
+        # Build full polyline: boundary_start → user pts → boundary_end
+        polyline = list(pts)
+        if self._points_close(boundary_start, polyline[0], tol=2.0):
+            polyline[0] = boundary_start
+        else:
+            polyline.insert(0, boundary_start)
+
+        if self._points_close(boundary_end, polyline[-1], tol=2.0):
+            polyline[-1] = boundary_end
+        else:
+            polyline.append(boundary_end)
+
+        polyline = [(float(p[0]), float(p[1])) for p in polyline]
+        if len(polyline) < 2:
+            self._update_status("Divider polyline too short", 'red')
+            return
+
+        poly_a, poly_b = self._split_polygon_by_polyline(verts, polyline)
+        if poly_a is None or poly_b is None:
+            self._update_status("Division failed — could not split polygon along polyline", 'red')
+            return
+
+        self._apply_division_with_polys(self._divider_room_idx, poly_a, poly_b)
+
+    def _find_boundary_hit(self, tip, anchor, polygon_verts, outward=True):
+        """Find where the segment anchor→tip (extended) crosses the polygon boundary.
+
+        First checks if *tip* is already on the boundary.  If not, casts a ray
+        from *tip* outward (direction tip−anchor) and returns the first hit.
+        Falls back to the reverse direction if the outward ray misses.
+        """
+        # Check if tip is already on boundary
+        n = len(polygon_verts)
+        for i in range(n):
+            a = polygon_verts[i]
+            b = polygon_verts[(i + 1) % n]
+            if self._point_on_segment(tip, a, b, tol=3.0):
+                return (float(tip[0]), float(tip[1]))
+
+        # Ray outward from tip (direction = tip − anchor)
+        direction = (float(tip[0]) - float(anchor[0]),
+                     float(tip[1]) - float(anchor[1]))
+        hit = self._ray_polygon_intersection(tip, direction, polygon_verts)
+        if hit is not None:
+            return hit
+
+        # Fallback: try inward direction (point may be outside the room)
+        inward = (-direction[0], -direction[1])
+        hit = self._ray_polygon_intersection(tip, inward, polygon_verts)
+        return hit
+
+    def _split_polygon_by_polyline(self, verts, polyline):
+        """Split a closed polygon along a multi-segment polyline.
+
+        *polyline[0]* and *polyline[-1]* must lie on the polygon boundary.
+        Interior points may be inside the polygon.
+
+        Returns ``(poly_a, poly_b)`` or ``(None, None)`` on failure.
+        """
+        p_entry  = polyline[0]
+        p_exit   = polyline[-1]
+        interior = polyline[1:-1]
+
+        n = len(verts)
+        augmented = []
+        entry_idx = None
+        exit_idx  = None
+
+        for i in range(n):
+            a = verts[i]
+            b = verts[(i + 1) % n]
+            augmented.append(list(a))
+            cur = len(augmented) - 1
+
+            if entry_idx is None and self._point_on_segment(p_entry, a, b):
+                if self._points_close(p_entry, a):
+                    entry_idx = cur
+                elif self._points_close(p_entry, b):
+                    pass
+                else:
+                    augmented.append([float(p_entry[0]), float(p_entry[1])])
+                    entry_idx = len(augmented) - 1
+
+            if exit_idx is None and self._point_on_segment(p_exit, a, b):
+                if self._points_close(p_exit, a):
+                    exit_idx = cur
+                elif self._points_close(p_exit, b):
+                    pass
+                else:
+                    augmented.append([float(p_exit[0]), float(p_exit[1])])
+                    exit_idx = len(augmented) - 1
+
+        # Deferred "close to b" resolution
+        if entry_idx is None:
+            for i, v in enumerate(augmented):
+                if self._points_close(p_entry, v):
+                    entry_idx = i
+                    break
+        if exit_idx is None:
+            for i, v in enumerate(augmented):
+                if self._points_close(p_exit, v):
+                    exit_idx = i
+                    break
+
+        if entry_idx is None or exit_idx is None:
+            return None, None
+
+        m = len(augmented)
+
+        # Walk boundary entry → exit
+        bnd_a = []
+        idx = entry_idx
+        while True:
+            bnd_a.append(augmented[idx])
+            if idx == exit_idx and len(bnd_a) > 1:
+                break
+            idx = (idx + 1) % m
+
+        # Walk boundary exit → entry
+        bnd_b = []
+        idx = exit_idx
+        while True:
+            bnd_b.append(augmented[idx])
+            if idx == entry_idx and len(bnd_b) > 1:
+                break
+            idx = (idx + 1) % m
+
+        interior_fwd = [[float(p[0]), float(p[1])] for p in interior]
+        interior_rev = list(reversed(interior_fwd))
+
+        # poly_a: boundary entry→exit, then interior reversed (exit→entry)
+        poly_a = bnd_a + interior_rev
+        # poly_b: boundary exit→entry, then interior forward (entry→exit)
+        poly_b = bnd_b + interior_fwd
+
+        if len(poly_a) < 3 or len(poly_b) < 3:
+            return None, None
+        return poly_a, poly_b
+
+    # --- apply division --------------------------------------------------------
+
+    def _apply_division_with_polys(self, room_idx: int, poly_a: list, poly_b: list):
+        """Apply a division using pre-computed sub-polygons.
+
+        Keeps the larger polygon as the original room (resized) and creates
+        only the smaller polygon as a new DIV sub-room.
+        Exits divider mode **and** edit mode, then saves the session.
+        """
+        room            = self.rooms[room_idx]
+        original_name   = room.get('name', 'unnamed')
+        original_parent = room.get('parent')
+        hdr_file        = room.get('hdr_file', self.current_hdr_name)
+
+        if original_parent is None:
+            division_parent = original_name
+        else:
+            division_parent = original_parent
+
+        # Snapshot entire rooms list for undo
+        rooms_snapshot = [dict(r, vertices=[list(v) for v in r['vertices']]) for r in self.rooms]
+        self._edit_undo_stack.append(('divider', rooms_snapshot))
+        if len(self._edit_undo_stack) > self._edit_undo_max:
+            self._edit_undo_stack.pop(0)
+
+        # Determine which polygon is smaller (the cut-off piece)
+        def _shoelace(poly):
+            n = len(poly)
+            if n < 3:
+                return 0.0
+            s = 0.0
+            for i in range(n):
+                x0, y0 = poly[i]
+                x1, y1 = poly[(i + 1) % n]
+                s += float(x0) * float(y1) - float(x1) * float(y0)
+            return abs(s) / 2.0
+        area_a = _shoelace(poly_a)
+        area_b = _shoelace(poly_b)
+
+        if area_a <= area_b:
+            small_poly, large_poly = poly_a, poly_b
+        else:
+            small_poly, large_poly = poly_b, poly_a
+
+        # Create only the smaller piece as a new DIV sub-room
+        base_name = f"{division_parent}_DIV"
+        div_name = self._make_unique_name(f"{base_name}1")
+
+        div_room = {
+            'name':      div_name,
+            'parent':    division_parent,
+            'vertices':  [[float(x), float(y)] for x, y in small_poly],
+            'hdr_file':  hdr_file,
+            'room_type': None,
+        }
+
+        # Resize the original room to the larger polygon
+        room['vertices'] = [[float(x), float(y)] for x, y in large_poly]
+
+        # Insert the new DIV sub-room after the original
+        self.rooms.insert(room_idx + 1, div_room)
+
+        self.selected_room_idx = None
+        self._exit_divider_mode(cancelled=False)
+
+        # Exit edit mode and save (per requirement)
+        self.edit_mode = False
+        self.btn_edit_mode.label.set_text('Edit Mode: OFF (Press E)')
+        self._style_toggle_button(self.btn_edit_mode, False)
+        self._reset_hover_state()
+        self._create_polygon_selector()
+
+        self._save_session()
+        self._update_room_list()
+        self._update_hdr_list()
+        self._render_section(force_full=True)
+
+        self._update_status(
+            f"Divided '{original_name}' → '{div_name}' (smaller piece)", 'green')
+        print(f"Room divider: '{original_name}' -> kept larger side, created '{div_name}'")
 
     # === STATUS & ROOM LIST ====================================================
 

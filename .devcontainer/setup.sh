@@ -94,6 +94,10 @@ fi
 # Sync Python dependencies
 echo "📦 Syncing Python dependencies with uv..."
 cd "$WORKSPACE_PATH"
+
+# Ensure .venv directory exists before syncing
+mkdir -p .venv
+
 uv sync --link-mode=copy
 
 # Verify Radiance installation
@@ -122,6 +126,15 @@ if command -v rcontrib &> /dev/null; then
     fi
 else
     echo "⚠️  Accelerad commands not found - may not be properly installed"
+fi
+
+# Verify Python venv is set up correctly
+echo "✅ Verifying Python environment..."
+if [ -f "$WORKSPACE_PATH/.venv/bin/python" ]; then
+    echo "✅ Python venv found at .venv/bin/python"
+    "$WORKSPACE_PATH/.venv/bin/python" --version
+else
+    echo "⚠️  Warning: Python venv not found at expected location"
 fi
 
 echo "🎉 Setup complete! Archilume development environment is ready."
