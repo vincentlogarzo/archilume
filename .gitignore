@@ -7,22 +7,16 @@ __pycache__/
 .env.local
 *.key
 
-# Ignore all content in these directories except .gitkeep files
-inputs/*
+# Ignore all content in inputs/, outputs/, archive/ but preserve directory structure
+inputs/**
 !inputs/.gitkeep
 
-# For outputs: ignore contents but preserve directory structure with .gitkeep
-# The order matters: negations must come AFTER the ignore patterns
-outputs/*
-!outputs/.gitkeep
-!outputs/*/
-outputs/*/*
-!outputs/*/.gitkeep
+outputs/**
+!outputs/**/
+!outputs/**/.gitkeep
 
-# Ignore archive contents but preserve the directory via .gitkeep
-archive/*
+archive/**
 !archive/.gitkeep
-!archive/.gitignore
 
 # SSH configuration (contains private keys - keep these secret!)
 .ssh/

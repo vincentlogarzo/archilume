@@ -1,35 +1,112 @@
 """
-Interactive Room Boundary Editor for HDR/TIFF rendered floor plan images.
+Archilume: Interactive Room Boundary Editor for HDR/TIFF Floor Plan Images
 
-Draws apartment and sub-room boundaries on top of HDR or associated TIFF images.
-JSON and CSV are saved automatically alongside the image_dir on every save/delete.
+NOTE: daylight_workflow_iesve.py must be run before use of this editor.
+The workflow generates the HDR/TIFF images and .aoi boundaries this
+editor depends on.
+
+Draw apartment and sub-room boundaries on top of HDR or associated TIFF
+rendered floor plan images. JSON and CSV are saved automatically to the
+image_dir on every save/delete.
 
 Naming convention:
     U101          apartment boundary
     U101_BED1     sub-room (auto-prefixed when parent is selected)
+    U101_DIV1     division sub-room (created by the room divider tool)
 
 Controls:
-    ↑/↓           Navigate HDR files
+    Up/Down       Navigate HDR files
     t             Toggle image variant (HDR / TIFFs)
-    Left-click    Place vertex (draw) or drag vertex (edit mode)
+    Left-click    Select room (default) / place vertex (draw mode) / drag vertex (edit mode)
     Shift+click   Drag entire edge in edit mode (moves both endpoints together)
-    Right-click   Select existing room
+    Right-click   Delete hovered vertex (edit mode) / undo divider point (divider mode)
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
     e             Toggle Edit Mode
-    d             Room divider — multi-segment ortho split (edit mode)
-    Ctrl+Z        Undo last edit / undo delete
+    d             Toggle Draw Mode (default) / room divider — multi-segment ortho split (edit mode)
+    Esc           Exit draw mode / exit divider mode / deselect room
+    Ctrl+Z        Undo — edit: vertex/edge/division; draw: delete/type/rename/create
     o             Toggle orthogonal lines (H/V snap)
+    Ctrl+click    Multi-select rooms in list (bulk type tagging)
+    Ctrl+A        Select all rooms on current HDR
     f             Fit zoom to selected room
     r             Reset zoom
     q             Quit
 
 Workflow:
-    1. Navigate to the desired HDR file with ↑/↓
-    2. Draw apartment boundary → name "U101" → Save
+    1. Navigate to the desired HDR file with Up/Down
+    2. Draw apartment boundary, name "U101", press s to save
     3. Select "U101" as parent
-    4. Draw sub-rooms (e.g. "BED1" → auto-saved as "U101_BED1")
+    4. Draw sub-rooms (e.g. "BED1" auto-saved as "U101_BED1")
     5. Repeat for each HDR file / floor
+    6. Export and archive results as CSV for analysis and reporting
+
+Functionality:
+
+    Room Divider:
+        Splits a room into two sub-rooms along a multi-segment ortho
+        polyline. Enter edit mode (e), select a room, press d, then click
+        to place points (each segment H or V). Press s to finalize. Lines
+        auto-extend to the boundary when points are placed outside the
+        room. Right-click undoes the last point. Ctrl+Z undoes the split.
+
+    Edit Mode:
+        Toggle with e. All rooms on the current HDR become editable
+        simultaneously. Available actions while in edit mode:
+        - Drag a vertex to reposition it (ortho-constrained when o is on)
+        - Shift+drag an edge to move both its endpoints together
+        - Click on an edge to insert two new vertices straddling the
+          click point (edit mode only)
+        - Right-click a vertex to delete it
+        - Press d to enter room divider mode (edit mode only)
+        - Press f to fit-zoom to the selected room boundary
+        - Ctrl+Z undoes vertex edits (up to 50 levels)
+        Press s or toggle e off to save and exit edit mode.
+
+    Ortho Mode:
+        Toggle with o. Constrains drawn lines to horizontal or vertical
+        only. The live preview snaps to the nearest axis in real time.
+        Useful for architectural floor plans with axis-aligned walls.
+
+    Vertex & Edge Snapping:
+        Automatically snaps new vertices to nearby existing vertices or
+        edges within 10 pixels. Always active during drawing. Helps
+        align room boundaries precisely without manual pixel placement.
+
+    Parent Auto-Detection:
+        When the first vertex of a new polygon falls inside an existing
+        parent room, that parent is auto-selected. Sub-rooms are then
+        auto-prefixed (e.g. drawing "BED1" inside U101 saves as
+        U101_BED1). Boundary containment is checked on save.
+
+    Room Type Tagging:
+        Assign BED, LIVING, or CIRCULATION types via buttons. Sub-rooms
+        default to BED; parents default to LIVING when children exist.
+        Ctrl+click rooms for multi-select, then tag in bulk. Types
+        drive daylight factor threshold evaluation.
+
+    Export & Archive:
+        Exports an Excel summary, per-room pixel CSVs, and overlay TIFFs
+        with room boundaries rendered. Everything is zipped into a
+        timestamped archive. Use "Extract Archive" to restore a previous
+        export. Runs in a background thread with progress bar.
+
+    Image Variant Toggle:
+        Press t to cycle between the HDR and associated TIFF images for
+        the current floor. Useful for comparing raw HDR data against
+        processed TIFF renderings side by side.
+
+    Multi-Select:
+        Ctrl+click rooms in the list to toggle multi-selection. Ctrl+A
+        selects all rooms on the current HDR. Enables bulk room type
+        tagging across multiple rooms at once.
+
+    Undo:
+        Ctrl+Z in edit mode undoes vertex/edge edits and room divisions
+        (50 levels). In draw mode, Ctrl+Z undoes room deletion, room
+        type changes, room renames, and new room creation (including
+        any auto-assigned parent type). Both stacks hold up to 50
+        entries.
 """
 
 # fmt: off
@@ -115,6 +192,9 @@ class HdrAoiEditor:
         self.ortho_mode:            bool                = True
         self._pending_snap:         Optional[tuple]     = None
 
+        # Draw mode (polygon drawing; toggled with 'd' when not in edit mode)
+        self.draw_mode:             bool                = False
+
         # Vertex editing mode
         self.edit_mode:             bool                = False
         self.edit_room_idx:         Optional[int]       = None
@@ -142,9 +222,14 @@ class HdrAoiEditor:
         self._edit_undo_stack:      List[Tuple]         = []
         self._edit_undo_max:        int                 = 50
 
-        # Undo stack for deleted rooms
-        # Each entry: (insertion_index, room_dict)
-        self._deleted_rooms_stack:  List[Tuple]         = []
+        # General-purpose undo stack for draw-mode operations
+        # Each entry: (tag, ...data) where tag is one of:
+        #   ('delete',    insertion_index, room_dict)
+        #   ('type',      [(idx, old_type), ...])
+        #   ('rename',    room_idx, old_name)
+        #   ('create',    room_idx)
+        self._draw_undo_stack:      List[Tuple]         = []
+        self._draw_undo_max:        int                 = 50
 
         # Image cache: path → numpy array (avoids reloading from disk)
         self._image_cache:          dict                = {}
@@ -191,6 +276,8 @@ class HdrAoiEditor:
         self._divider_markers:      list                = []     # scatter artists per point
         self._divider_segments:     list                = []     # solid Line2D per segment
         self._divider_preview_line                      = None   # dashed Line2D to cursor
+        self._divider_snap_pt:      Optional[tuple]     = None   # snapped vertex (x, y) or None
+        self._divider_snap_marker                       = None   # highlight ring artist
 
     # === LAYOUT HELPERS ========================================================
 
@@ -568,6 +655,8 @@ class HdrAoiEditor:
 
         # Setup matplotlib figure — wide to match ~2.6:1 floor plan aspect ratio
         plt.rcParams['savefig.directory'] = str(self.image_dir)
+        plt.rcParams['keymap.save']       = []  # disable 's' / 'ctrl+s' save-figure hotkey
+        plt.rcParams['keymap.fullscreen'] = []  # disable 'f' fullscreen hotkey
         self.fig = plt.figure(figsize=(20, 8), facecolor='#F5F5F0')
         self.fig._archilume_editor = True
         self.fig.canvas.manager.set_window_title(self._WINDOW_TITLE)
@@ -620,7 +709,7 @@ class HdrAoiEditor:
         self.original_xlim = self.ax.get_xlim()
         self.original_ylim = self.ax.get_ylim()
 
-        # Polygon selector for drawing
+        # Polygon selector for drawing — created inactive; 'd' activates draw mode
         self._create_polygon_selector()
 
         # Event handlers
@@ -687,7 +776,7 @@ class HdrAoiEditor:
             ("Right-click",   "Select existing room"),  ("Scroll",      "Zoom centred on cursor"),
             ("s",             "Save room / confirm edit"),
             ("e",             "Toggle Edit Mode"),      ("d",           "Room divider (edit mode)"),
-            ("ctrl+z",        "Undo edit / delete"),
+            ("ctrl+z",        "Undo (edit/type/name/create/del)"),
             ("o",             "Toggle orthogonal lines"), ("f",         "Fit zoom to selected room"),
             ("r",             "Reset zoom"),
             ("Ctrl+click",    "Multi-select rooms"),     ("ctrl+a",    "Select all rooms"),
@@ -806,32 +895,34 @@ class HdrAoiEditor:
         btn_w    = 0.130
         btn_step = btn_w + gap
 
-        # Row 1: Toggle, Edit, Ortho, Reset Zoom
+        # Row 1: Toggle, Edit, Draw, Ortho
         self.btn_image_toggle = self._make_button(
             tr_x, row1_y, btn_w, tr_h,
             'Toggle Image Layers: HDR (Press T)', self._on_image_toggle_click)
         self.btn_edit_mode = self._make_button(
             tr_x + btn_step, row1_y, btn_w, tr_h,
             'Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
+        self.btn_draw_mode = self._make_button(
+            tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
+            'Draw Mode: OFF (Press D)', self._on_draw_mode_toggle)
 
         ortho_label = 'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)'
         ortho_color = self._btn_on_color if self.ortho_mode else self._btn_color
         ortho_hover = self._btn_on_hover if self.ortho_mode else self._btn_hover
         self.btn_ortho = self._make_button(
-            tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
+            tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
             ortho_label, self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
 
-        self.btn_reset_zoom = self._make_button(
-            tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
-            'Reset Zoom', self._on_reset_zoom_click)
-
-        # Row 2: Export & Archive, Extract Archive
+        # Row 2: Export & Archive, Extract Archive, Reset Zoom
         self.btn_export = self._make_button(
             tr_x, row2_y, btn_w, tr_h,
             'Export & Archive', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
         self.btn_extract = self._make_button(
             tr_x + btn_step, row2_y, btn_w, tr_h,
             'Extract Archive', self._on_extract_click)
+        self.btn_reset_zoom = self._make_button(
+            tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
+            'Reset Zoom', self._on_reset_zoom_click)
 
         # DF% legend — starts after all top-row buttons, no overlap
         legend_x = tr_x + n_cols * btn_step
@@ -1370,21 +1461,24 @@ class HdrAoiEditor:
         is_hover    = (idx == self.hover_room_idx)
         is_editing  = (idx == self.edit_room_idx and self.edit_mode)
         is_subroom  = room.get('parent') is not None
+        is_div      = '_DIV' in room.get('name', '')
 
         if is_editing:
-            edge_color, lw = 'cyan',    3
+            edge_color, lw, linestyle, alpha = 'cyan',    3, '-',  1.0
         elif is_selected:
-            edge_color, lw = 'yellow',  4
+            edge_color, lw, linestyle, alpha = 'yellow',  4, '-',  1.0
         elif is_hover and self.edit_mode:
-            edge_color, lw = 'magenta', 2
+            edge_color, lw, linestyle, alpha = 'magenta', 2, '-',  1.0
+        elif is_div and is_current_floor:
+            edge_color, lw, linestyle, alpha = 'red',     self._zoom_linewidth(), '--', 0.6
         elif is_current_floor:
-            edge_color, lw = 'red',     self._zoom_linewidth()
+            edge_color, lw, linestyle, alpha = 'red',     self._zoom_linewidth(), '-',  1.0
         else:
-            edge_color, lw = 'gray',    self._zoom_linewidth(base=1.0)
+            edge_color, lw, linestyle, alpha = 'gray',    self._zoom_linewidth(base=1.0), '-', 1.0
 
         poly = Polygon(verts, closed=True,
-                       edgecolor=edge_color, facecolor='none', alpha=1.0, linewidth=lw,
-                       clip_on=True)
+                       edgecolor=edge_color, facecolor='none', alpha=alpha, linewidth=lw,
+                       linestyle=linestyle, clip_on=True)
         poly._patch_type = 'current' if is_current_floor else 'other'
         self.ax.add_patch(poly)
         self._room_patch_cache[idx] = poly
@@ -1523,22 +1617,65 @@ class HdrAoiEditor:
         self._save_session()
         self._render_section(force_full=True)
 
-    def _undo_delete(self):
-        """Restore the last deleted room (Ctrl+Z in draw mode)."""
-        if not self._deleted_rooms_stack:
+    def _push_draw_undo(self, entry: tuple):
+        """Push an entry onto the draw-mode undo stack."""
+        self._draw_undo_stack.append(entry)
+        if len(self._draw_undo_stack) > self._draw_undo_max:
+            self._draw_undo_stack.pop(0)
+
+    def _undo_draw(self):
+        """Undo the last draw-mode operation (Ctrl+Z outside edit mode)."""
+        if not self._draw_undo_stack:
             self._update_status("Nothing to undo", 'orange')
             return
-        idx, room = self._deleted_rooms_stack.pop()
-        # Re-insert at original position (clamped to current list length)
-        idx = min(idx, len(self.rooms))
-        self.rooms.insert(idx, room)
-        name = room.get('name', 'unnamed')
+        entry = self._draw_undo_stack.pop()
+        tag   = entry[0]
+
+        if tag == 'delete':
+            _, idx, room = entry
+            idx = min(idx, len(self.rooms))
+            self.rooms.insert(idx, room)
+            name = room.get('name', 'unnamed')
+            self._update_status(f"Restored '{name}'", 'blue')
+            print(f"Restored deleted room '{name}'")
+
+        elif tag == 'type':
+            _, old_types = entry
+            for idx, old_type in old_types:
+                if idx < len(self.rooms):
+                    self.rooms[idx]['room_type'] = old_type
+                    self._invalidate_room_df_cache(idx)
+            count = len(old_types)
+            self._update_status(f"Undid type change ({count} room{'s' if count != 1 else ''})", 'blue')
+
+        elif tag == 'rename':
+            _, idx, old_name = entry
+            if idx < len(self.rooms):
+                self.rooms[idx]['name'] = old_name
+                self._update_status(f"Undid rename → '{old_name}'", 'blue')
+
+        elif tag == 'create':
+            _, idx, parent_type_changed = entry
+            if idx < len(self.rooms):
+                name = self.rooms[idx].get('name', 'unnamed')
+                self.rooms.pop(idx)
+                self.selected_room_idx = None
+                # Revert auto-assigned parent type if applicable
+                if parent_type_changed is not None:
+                    p_idx, p_old_type = parent_type_changed
+                    if p_idx < len(self.rooms):
+                        self.rooms[p_idx]['room_type'] = p_old_type
+                        self._invalidate_room_df_cache(p_idx)
+                self._update_status(f"Undid creation of '{name}'", 'blue')
+
+        else:
+            self._update_status("Unknown undo entry", 'red')
+            return
+
         self._save_session()
-        self._update_status(f"Restored '{name}'", 'blue')
         self._update_room_list()
         self._update_hdr_list()
         self._render_section(force_full=True)
-        print(f"Restored deleted room '{name}'")
 
     def _snap_to_vertex(self, x: float, y: float) -> tuple:
         """Snap to nearest existing polygon vertex within snap_distance_px pixels."""
@@ -1685,9 +1822,9 @@ class HdrAoiEditor:
             self._divider_undo_last_point()
             return
 
-        # Right-click in edit mode: delete hovered vertex; otherwise select room
-        if event.button == 3:
-            if self.edit_mode and self.hover_vertex_idx is not None and self.hover_room_idx is not None:
+        # Right-click in edit mode: delete hovered vertex
+        if event.button == 3 and self.edit_mode:
+            if self.hover_vertex_idx is not None and self.hover_room_idx is not None:
                 room = self.rooms[self.hover_room_idx]
                 if len(room['vertices']) > 3:
                     self._push_undo(self.hover_room_idx)
@@ -1700,13 +1837,16 @@ class HdrAoiEditor:
                     self._render_section(force_full=True)
                 else:
                     self._update_status("Cannot remove - polygon must have at least 3 vertices", 'red')
-                return
-            self._select_room_at(event.xdata, event.ydata)
             return
 
         # Left-click in divider mode: place division line endpoints
         if event.button == 1 and self.divider_mode and event.xdata is not None and event.ydata is not None:
             self._on_divider_click(event.xdata, event.ydata)
+            return
+
+        # Left-click in default mode (not draw, not edit): select room
+        if event.button == 1 and not self.draw_mode and not self.edit_mode:
+            self._select_room_at(event.xdata, event.ydata)
             return
 
         # Left-click in edit mode: drag vertex or insert vertex on edge
@@ -1903,12 +2043,10 @@ class HdrAoiEditor:
             self._handle_edge_drag(x, y)
             return
 
-        # Divider mode: update preview line
-        if self.divider_mode and self._divider_points:
+        # Divider mode: update preview line and vertex snap highlight
+        if self.divider_mode:
             self._update_divider_preview(x, y)
             return
-        if self.divider_mode:
-            return  # no first point yet, nothing to preview
 
         if not self.edit_mode:
             return
@@ -2034,12 +2172,14 @@ class HdrAoiEditor:
             self.hover_edge_point    = best_pt
             if changed:
                 self._update_status("Click to insert vertex, Shift+click to drag edge", 'blue')
+                self._update_cursor()
                 self._render_section()
         else:
             need_redraw = self.hover_edge_room_idx is not None or vertex_was_hovered
             self.hover_edge_room_idx = self.hover_edge_idx = self.hover_edge_point = None
             if need_redraw:
                 self._update_status("Edit Mode: Hover over any vertex to drag", 'blue')
+                self._update_cursor()
                 self._render_section()
 
     def _on_key_press(self, event):
@@ -2048,6 +2188,19 @@ class HdrAoiEditor:
             if event.key == 'escape':
                 if self.divider_mode:
                     self._exit_divider_mode(cancelled=True)
+                elif self.draw_mode:
+                    self._exit_draw_mode()
+                elif self.edit_mode:
+                    # Exit edit mode without saving
+                    self.edit_mode = False
+                    self.btn_edit_mode.label.set_text('Edit Mode: OFF (Press E)')
+                    self._style_toggle_button(self.btn_edit_mode, False)
+                    self._reset_hover_state()
+                    self._edit_undo_stack.clear()
+                    self._create_polygon_selector()
+                    self._update_cursor()
+                    self._update_status("Edit Mode cancelled (no save)", 'orange')
+                    self._render_section(force_full=True)
                 else:
                     self._deselect_room()
             return
@@ -2083,13 +2236,18 @@ class HdrAoiEditor:
                     self._exit_divider_mode(cancelled=True)
                 else:
                     self._enter_divider_mode()
+            else:
+                if self.draw_mode:
+                    self._exit_draw_mode()
+                else:
+                    self._enter_draw_mode()
         elif event.key == 'f':
             self._fit_to_selected_room()
         elif event.key == 'ctrl+z':
             if self.edit_mode:
                 self._undo_edit()
             else:
-                self._undo_delete()
+                self._undo_draw()
         elif event.key == 'ctrl+a':
             self._select_all_rooms()
 
@@ -2262,6 +2420,8 @@ class HdrAoiEditor:
                 sel._draw_polygon()
 
         self.selector._onmove = _ortho_onmove
+        # Honour draw_mode: selector is inactive by default until 'd' is pressed
+        self.selector.set_active(getattr(self, 'draw_mode', False))
 
     def _on_polygon_select(self, vertices):
         """Callback when a polygon drawing is completed."""
@@ -2299,7 +2459,9 @@ class HdrAoiEditor:
         # Apply name from textbox if provided
         typed_name = self.name_textbox.text.strip().upper()
         if typed_name and typed_name != room.get('name', ''):
+            old_name = room['name']
             new_name = self._make_unique_name(typed_name, exclude_idx=self.edit_room_idx)
+            self._push_draw_undo(('rename', self.edit_room_idx, old_name))
             room['name'] = new_name
 
         name = room.get('name', 'unnamed')
@@ -2353,11 +2515,14 @@ class HdrAoiEditor:
 
         # Auto-assign types: sub-rooms default to BED, parent defaults to LIVING
         room_type = self.room_type
+        parent_type_changed = None          # (parent_idx, old_type) for undo
         if self.selected_parent:
             if not room_type:
                 room_type = 'BED'
             parent_room = self._get_parent_room(self.selected_parent)
             if parent_room and not parent_room.get('room_type'):
+                parent_idx = self.rooms.index(parent_room)
+                parent_type_changed = (parent_idx, parent_room.get('room_type'))
                 parent_room['room_type'] = 'LIVING'
 
         room = {
@@ -2368,6 +2533,8 @@ class HdrAoiEditor:
             'room_type': room_type,
         }
         self.rooms.append(room)
+        new_idx = len(self.rooms) - 1
+        self._push_draw_undo(('create', new_idx, parent_type_changed))
 
         status_color = 'orange' if is_outside_parent else 'green'
         self._update_status(f"Saved '{full_name}'{warning_msg}", status_color)
@@ -2390,10 +2557,14 @@ class HdrAoiEditor:
         if self.selected_room_idx is None:
             return
         idx      = self.selected_room_idx
-        new_name = self.name_textbox.text.strip().upper() or self.rooms[idx]['name']
+        old_name = self.rooms[idx]['name']
+        new_name = self.name_textbox.text.strip().upper() or old_name
         new_name = self._make_unique_name(new_name, exclude_idx=idx)
+        if new_name == old_name:
+            return
+        self._push_draw_undo(('rename', idx, old_name))
         self.rooms[idx]['name'] = new_name
-        self._update_status(f"Updated '{new_name}'", 'green')
+        self._update_status(f"Renamed '{old_name}' → '{new_name}'", 'green')
         self._update_room_list()
         self._render_section(force_full=True)
         self._save_session()
@@ -2414,7 +2585,7 @@ class HdrAoiEditor:
         idx  = self.selected_room_idx
         room = self.rooms.pop(idx)
         name = room.get('name', 'unnamed')
-        self._deleted_rooms_stack.append((idx, room))
+        self._push_draw_undo(('delete', idx, room))
         self.selected_room_idx = None
         self.current_polygon_vertices = []
         self._update_status(f"Deleted '{name}' (Ctrl+Z to undo)", 'green')
@@ -2548,6 +2719,33 @@ class HdrAoiEditor:
 
     # === TOGGLE BUTTONS & ROOM TYPE ============================================
 
+    def _update_cursor(self):
+        """Set the canvas cursor based on the active editing mode.
+
+        Matplotlib's TkAgg backend overrides the cursor on every mouse-move
+        via its own set_cursor(). We patch that method on the canvas instance
+        so our custom cursor is not stomped, then restore normal behaviour
+        when no custom cursor is needed.
+        """
+        try:
+            canvas = self.fig.canvas
+            tkcanvas = canvas._tkcanvas
+        except Exception:
+            return
+
+        if self.divider_mode:
+            tkcanvas.configure(cursor='crosshair')
+            canvas.set_cursor = lambda cursor: None          # suppress mpl overrides
+        elif self.edit_mode and self.hover_edge_room_idx is not None:
+            tkcanvas.configure(cursor='plus')
+            canvas.set_cursor = lambda cursor: None          # suppress mpl overrides
+        else:
+            # Restore matplotlib's own set_cursor before resetting
+            import types
+            from matplotlib.backends._backend_tk import FigureCanvasTk
+            canvas.set_cursor = types.MethodType(FigureCanvasTk.set_cursor, canvas)
+            tkcanvas.configure(cursor='arrow')
+
     def _style_toggle_button(self, btn, is_on: bool):
         """Apply pressed/depressed styling to a toggle button.
 
@@ -2581,6 +2779,8 @@ class HdrAoiEditor:
         """Toggle edit mode for modifying existing room boundaries."""
         if self.divider_mode:
             self._exit_divider_mode(cancelled=True)
+        if self.draw_mode:
+            self._exit_draw_mode()
 
         self.edit_mode = not self.edit_mode
         self.btn_edit_mode.label.set_text(
@@ -2596,10 +2796,20 @@ class HdrAoiEditor:
             self._reset_hover_state()
             self._edit_undo_stack.clear()
             self._save_session()
-            self._create_polygon_selector()
-            self._update_status("Edit Mode OFF - Draw mode enabled", 'blue')
+            self._create_polygon_selector()   # set_active(False) applied inside via draw_mode=False
+            self._update_status("Edit Mode OFF — press 'd' to draw, left-click to select", 'blue')
+            self._update_cursor()
 
         self._render_section(force_full=True)
+
+    def _on_draw_mode_toggle(self, event):
+        """Toggle draw mode via the UI button."""
+        if self.edit_mode:
+            return   # draw mode not available in edit mode
+        if self.draw_mode:
+            self._exit_draw_mode()
+        else:
+            self._enter_draw_mode()
 
     def _on_ortho_toggle(self, event):
         """Toggle orthogonal lines mode."""
@@ -2646,6 +2856,10 @@ class HdrAoiEditor:
         if not target_idxs:
             self.fig.canvas.draw_idle()
             return
+
+        # Snapshot old types for undo
+        old_types = [(idx, self.rooms[idx].get('room_type')) for idx in target_idxs]
+        self._push_draw_undo(('type', old_types))
 
         for idx in target_idxs:
             self.rooms[idx]['room_type'] = self.room_type
@@ -2809,6 +3023,33 @@ class HdrAoiEditor:
             return None, None
         return poly_a, poly_b
 
+    # --- draw mode lifecycle ---------------------------------------------------
+
+    def _enter_draw_mode(self):
+        """Activate polygon drawing mode."""
+        self.draw_mode = True
+        if hasattr(self, 'selector') and self.selector is not None:
+            self.selector.set_active(True)
+        if hasattr(self, 'btn_draw_mode'):
+            self.btn_draw_mode.label.set_text('Draw Mode: ON (Press D)')
+            self._style_toggle_button(self.btn_draw_mode, True)
+        self._update_status("Draw Mode: left-click to place vertices, s=save, Esc=exit", 'cyan')
+        self.fig.canvas.draw_idle()
+
+    def _exit_draw_mode(self):
+        """Deactivate polygon drawing mode and clear any in-progress polygon."""
+        self.draw_mode = False
+        if hasattr(self, 'selector') and self.selector is not None:
+            self.selector.set_active(False)
+            self.selector.clear()
+        self.current_polygon_vertices = []
+        self._pending_snap = None
+        if hasattr(self, 'btn_draw_mode'):
+            self.btn_draw_mode.label.set_text('Draw Mode: OFF (Press D)')
+            self._style_toggle_button(self.btn_draw_mode, False)
+        self._update_status("Draw Mode OFF — press 'd' to draw, left-click to select", 'blue')
+        self.fig.canvas.draw_idle()
+
     # --- divider mode lifecycle ------------------------------------------------
 
     def _enter_divider_mode(self):
@@ -2833,6 +3074,7 @@ class HdrAoiEditor:
         self._divider_preview_line = None
 
         self._reset_hover_state()
+        self._update_cursor()
 
         room_name = room.get('name', 'unnamed')
         self._update_status(
@@ -2845,6 +3087,7 @@ class HdrAoiEditor:
         self.divider_mode      = False
         self._divider_room_idx = None
         self._divider_points   = []
+        self._update_cursor()
 
         for artist in self._divider_markers:
             if artist is not None:
@@ -2863,6 +3106,12 @@ class HdrAoiEditor:
             except ValueError: pass
             self._divider_preview_line = None
 
+        if self._divider_snap_marker is not None:
+            try: self._divider_snap_marker.remove()
+            except ValueError: pass
+            self._divider_snap_marker = None
+        self._divider_snap_pt = None
+
         if cancelled:
             self._update_status("Divider mode cancelled", 'blue')
         self._render_section(force_full=True)
@@ -2874,8 +3123,12 @@ class HdrAoiEditor:
         if self._divider_room_idx is None:
             return
 
-        x, y = self._snap_to_pixel(x, y)
-        x, y = self._snap_to_vertex(x, y)
+        # Use highlighted snap vertex if one is active, else normal snap pipeline
+        if self._divider_snap_pt is not None:
+            x, y = self._divider_snap_pt
+        else:
+            x, y = self._snap_to_pixel(x, y)
+            x, y = self._snap_to_vertex(x, y)
 
         # Ortho constraint from last placed point
         if self._divider_points:
@@ -2955,24 +3208,53 @@ class HdrAoiEditor:
         self.fig.canvas.draw_idle()
 
     def _update_divider_preview(self, x: float, y: float):
-        """Draw / update dashed preview from last placed point to cursor."""
+        """Draw / update dashed preview from last placed point to cursor.
+
+        Also detects nearby vertices from any room and shows a highlight ring
+        so the user can snap the next divider point to an existing vertex.
+        """
+        # --- Vertex snap detection (active regardless of whether first point is placed) ---
+        snap_x, snap_y = self._snap_to_vertex(x, y)
+        snapped = (snap_x != x or snap_y != y)
+        self._divider_snap_pt = (snap_x, snap_y) if snapped else None
+
+        if snapped:
+            if self._divider_snap_marker is None:
+                self._divider_snap_marker, = self.ax.plot(
+                    snap_x, snap_y, 'o',
+                    color='none', markersize=14,
+                    markeredgecolor='yellow', markeredgewidth=2.5,
+                    zorder=300)
+            else:
+                self._divider_snap_marker.set_data([snap_x], [snap_y])
+                self._divider_snap_marker.set_visible(True)
+        else:
+            if self._divider_snap_marker is not None:
+                self._divider_snap_marker.set_visible(False)
+
+        # --- Preview line (only once at least one point is placed) ---
         if not self._divider_points:
+            now = time.monotonic()
+            if now - self._last_drag_draw >= 0.033:
+                self._last_drag_draw = now
+                self.fig.canvas.draw_idle()
             return
 
         lx, ly = self._divider_points[-1]
 
-        # Ortho constraint
-        dx, dy = abs(x - lx), abs(y - ly)
+        # Ortho constraint applied to the (possibly snapped) target
+        tx, ty = (snap_x, snap_y) if snapped else (x, y)
+        dx, dy = abs(tx - lx), abs(ty - ly)
         if dx >= dy:
-            y = ly
+            ty = ly
         else:
-            x = lx
+            tx = lx
 
         if self._divider_preview_line is not None:
-            self._divider_preview_line.set_data([lx, x], [ly, y])
+            self._divider_preview_line.set_data([lx, tx], [ly, ty])
         else:
             line, = self.ax.plot(
-                [lx, x], [ly, y],
+                [lx, tx], [ly, ty],
                 '--', color='magenta', linewidth=2, alpha=0.8, zorder=150)
             self._divider_preview_line = line
 
@@ -3848,9 +4130,9 @@ class HdrAoiEditor:
             return None
 
     def _on_extract_click(self, event):
-        """Open a file picker to select a zip archive, then extract it to outputs."""
+        """Open a file picker to select a zip archive, extract it to outputs, and reload."""
         from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
-        from tkinter import Tk, filedialog
+        from tkinter import Tk, filedialog, messagebox
         root = Tk()
         root.withdraw()
         root.attributes('-topmost', True)
@@ -3860,21 +4142,45 @@ class HdrAoiEditor:
             initialdir=initial_dir,
             filetypes=[("Zip files", "*.zip"), ("All files", "*.*")],
         )
-        root.destroy()
         if not zip_path:
+            root.destroy()
+            return
+        confirmed = messagebox.askyesno(
+            title="Overwrite outputs?",
+            message=(
+                f"Extract '{Path(zip_path).name}' and overwrite all files in:\n\n"
+                f"{OUTPUTS_DIR}\n\n"
+                "This will replace all current output data. Continue?"
+            ),
+            parent=root,
+        )
+        root.destroy()
+        if not confirmed:
             return
         zip_path = Path(zip_path)
         try:
+            # Clear outputs directory (the zip contains an outputs/ prefix so we
+            # extract into the parent; wipe first to avoid stale files)
+            if OUTPUTS_DIR.exists():
+                shutil.rmtree(OUTPUTS_DIR)
+
+            # Extract into parent — zip root is outputs/ so it lands at the right place
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(str(OUTPUTS_DIR))
-            self._update_status(f"Extracted: {zip_path.name} → outputs/", 'green')
+                zf.extractall(str(OUTPUTS_DIR.parent))
             print(f"Extracted archive: {zip_path} → {OUTPUTS_DIR}")
-            # Reload session if an aoi_session.json was in the archive
-            session_file = OUTPUTS_DIR / 'aoi' / 'aoi_session.json'
-            if session_file.exists():
-                self._load_session()
-                self._render_section(force_full=True)
-                self._update_room_list()
+
+            # Full editor reload
+            self.rooms = []
+            self.hdr_files        = self._scan_hdr_files()
+            self.current_hdr_idx  = 0
+            self._rebuild_image_variants()
+            self._load_session()
+            self._reset_hover_state()
+            self._update_hdr_list()
+            self._update_room_list()
+            self._render_section(reset_view=True, force_full=True)
+            self._create_polygon_selector()
+            self._update_status(f"Extracted and reloaded: {zip_path.name}", 'green')
         except Exception as e:
             self._update_status(f"Extract failed: {e}", 'red')
             print(f"Extract failed: {e}")

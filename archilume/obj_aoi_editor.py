@@ -189,9 +189,10 @@ class MeshSlicer:
             z_height: The Z coordinate of the slicing plane (meters).
 
         Returns:
-            Tuple of (segments, vertices):
+            Tuple of (segments, vertices, segment_material_ids):
             - segments: List of line segments as [(x1, y1, x2, y2), ...] in world coordinates
             - vertices: numpy array of unique vertices (N, 2) from the slice
+            - segment_material_ids: int32 array, one MaterialId per segment (-1 if unavailable)
         """
         # Round to avoid floating point cache misses
         z_rounded = round(z_height, 1)
@@ -220,16 +221,25 @@ class MeshSlicer:
             z_height: The Z coordinate of the slicing plane (meters).
 
         Returns:
-            Tuple of (segments, vertices)
+            Tuple of (segments, vertices, segment_material_ids):
+            - segments: List of (x1, y1, x2, y2) line segments
+            - vertices: numpy array of unique (x, y) snap vertices
+            - segment_material_ids: int array, one MaterialId per segment (-1 if unavailable)
         """
         section = self.mesh.slice(normal='z', origin=(0, 0, z_height))
 
         if section.n_points == 0:
-            return [], np.array([])
+            return [], np.array([]), np.array([], dtype=np.int32)
 
         points = section.points  # (N, 3) array
         segments = []
+        segment_material_ids = []
         unique_vertices = set()
+
+        # Per-point material IDs interpolated by VTK through the slice plane
+        mat_ids_per_point = None
+        if 'MaterialIds' in section.point_data:
+            mat_ids_per_point = np.round(section.point_data['MaterialIds']).astype(np.int32)
 
         # Extract line segments from the PolyData lines connectivity
         if section.lines is not None and len(section.lines) > 0:
@@ -238,17 +248,25 @@ class MeshSlicer:
             while i < len(lines):
                 n_pts = lines[i]
                 for j in range(n_pts - 1):
-                    p1 = points[lines[i + 1 + j]]
-                    p2 = points[lines[i + 2 + j]]
+                    idx1 = lines[i + 1 + j]
+                    idx2 = lines[i + 2 + j]
+                    p1 = points[idx1]
+                    p2 = points[idx2]
                     segments.append((p1[0], p1[1], p2[0], p2[1]))
                     unique_vertices.add((p1[0], p1[1]))
                     unique_vertices.add((p2[0], p2[1]))
+                    # Use material of first endpoint; fall back to -1
+                    if mat_ids_per_point is not None:
+                        segment_material_ids.append(int(mat_ids_per_point[idx1]))
+                    else:
+                        segment_material_ids.append(-1)
                 i += n_pts + 1
 
         # Convert to numpy array
         vertices_array = np.array(list(unique_vertices)) if unique_vertices else np.array([])
+        mat_ids_array = np.array(segment_material_ids, dtype=np.int32)
 
-        return segments, vertices_array
+        return segments, vertices_array, mat_ids_array
 
     def slice_elevation_x(self, x_position: float) -> tuple:
         """Compute elevation slice perpendicular to X-axis (YZ plane).
@@ -443,6 +461,13 @@ class ObjAoiEditor:
         self._last_view_mode = None        # Track view mode changes for full redraws
         self._last_hover_check = 0.0       # Throttle hover detection
 
+        # Material highlighting state
+        self.material_names: List[str] = []          # Ordered list from mesh field_data
+        self.material_colors: dict = {}               # material_name -> hex color string
+        self.highlighted_material: Optional[str] = None  # Currently selected material (None = all grey)
+        self._material_list_scroll: int = 0          # Scroll offset for material list
+        self._material_list_hit_boxes: List[Tuple] = []  # [(y_min, y_max, mat_name), ...]
+
     def launch(self):
         """Load the mesh and open the interactive editor window."""
         # Check for cached floor levels in session to skip expensive detection on repeat runs
@@ -464,6 +489,9 @@ class ObjAoiEditor:
             self.slicer.floor_levels = cached_floor_levels
             print(f"Floor levels loaded from session cache ({len(cached_floor_levels)} floors, detection skipped)")
         print(f"Mesh loaded: {self.slicer.mesh.n_cells:,} cells, Z range [{self.slicer.z_min:.2f}, {self.slicer.z_max:.2f}]m")
+
+        # Load material names from mesh field data (populated by PyVista/VTK from MTL)
+        self._load_material_info()
 
         # Pre-cache floor level slices for instant navigation
         if self.slicer.floor_levels:
@@ -528,15 +556,18 @@ class ObjAoiEditor:
         # Event handlers (snap handler must come first to intercept before selector)
         self.fig.canvas.mpl_connect('button_press_event', self._on_click_with_snap)
         self.fig.canvas.mpl_connect('button_press_event', self._on_list_click)
+        self.fig.canvas.mpl_connect('button_press_event', self._on_material_list_click)
         self.fig.canvas.mpl_connect('button_release_event', self._on_button_release)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_mouse_motion)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
+        self.fig.canvas.mpl_connect('scroll_event', self._on_material_list_scroll)
 
         # Load existing session if available
         self._load_session()
         self._update_room_list()
         self._update_floor_level_list()
+        self._update_material_list()
 
         print("\n=== Boundary Editor ===")
         print("Draw room boundary polygons on the floor plan section.")
@@ -548,6 +579,60 @@ class ObjAoiEditor:
         print("Up/Down: next/prev floor | r: reset zoom | S: save session")
         print("========================\n")
         plt.show()
+
+    # -------------------------------------------------------------------------
+    # Material helpers
+    # -------------------------------------------------------------------------
+
+    def _load_material_info(self):
+        """Read material names from the loaded mesh and assign display colours.
+
+        PyVista/VTK preserves MTL data in:
+          mesh.field_data['MaterialNames'] – ordered string array of material names
+          mesh.cell_data['MaterialIds']    – per-cell index into MaterialNames
+
+        A distinct colour is assigned to each material using a qualitative palette
+        that cycles for large material counts.
+        """
+        mesh = self.slicer.mesh
+        if 'MaterialNames' not in mesh.field_data:
+            print("No material data found in mesh (no MTL file or not an OBJ with materials).")
+            self.material_names = []
+            self.material_colors = {}
+            return
+
+        # field_data returns a numpy array of strings
+        raw = mesh.field_data['MaterialNames']
+        self.material_names = [str(n) for n in raw]
+
+        # Qualitative colour palette (cycles if > len(palette) materials)
+        palette = [
+            '#E53935', '#8E24AA', '#1E88E5', '#00897B', '#43A047',
+            '#F4511E', '#FB8C00', '#FDD835', '#6D4C41', '#546E7A',
+            '#D81B60', '#5E35B1', '#039BE5', '#00ACC1', '#7CB342',
+            '#C0CA33', '#FFB300', '#F4511E', '#6D4C41', '#26A69A',
+            '#EC407A', '#7E57C2', '#29B6F6', '#26C6DA', '#9CCC65',
+            '#D4E157', '#FFCA28', '#FFA726', '#8D6E63', '#78909C',
+        ]
+        self.material_colors = {
+            name: palette[i % len(palette)]
+            for i, name in enumerate(self.material_names)
+        }
+        print(f"Loaded {len(self.material_names)} materials: {self.material_names[:5]}{'...' if len(self.material_names) > 5 else ''}")
+
+    def _get_segment_color(self, mat_id: int) -> str:
+        """Return hex colour for a segment given its MaterialId integer.
+
+        Args:
+            mat_id: Index into self.material_names (-1 = unknown)
+
+        Returns:
+            Hex colour string
+        """
+        if not self.material_names or mat_id < 0 or mat_id >= len(self.material_names):
+            return '#303030'
+        name = self.material_names[mat_id]
+        return self.material_colors.get(name, '#303030')
 
     # -------------------------------------------------------------------------
     # UI setup
@@ -827,6 +912,26 @@ class ObjAoiEditor:
             ax_legend.text(x_base + 0.06, y0, label, fontsize=6, color='#404040',
                            va='center', transform=ax_legend.transAxes)
 
+        # ── MATERIAL LIST (below legend) ─────────────────────────────────────
+        mat_panel_top = legend_bottom - 0.005
+        mat_panel_h = mat_panel_top - (bottom_btn_y + bottom_btn_h + 0.005)
+        if mat_panel_h > 0.02:
+            ax_mat_hdr = self.fig.add_axes([pl, mat_panel_top - 0.022, pw, 0.020])
+            ax_mat_hdr.axis('off')
+            ax_mat_hdr.text(0, 0.5, "MATERIALS  (click to highlight / click again to clear)",
+                            fontsize=7, fontweight='bold', color='#404040')
+
+            mat_list_h = mat_panel_h - 0.025
+            self.ax_mat_list = self.fig.add_axes([pl, mat_panel_top - 0.025 - mat_list_h, pw, mat_list_h])
+            self.ax_mat_list.set_facecolor('#FAFAF8')
+            self.ax_mat_list.tick_params(left=False, bottom=False,
+                                         labelleft=False, labelbottom=False)
+            for spine in self.ax_mat_list.spines.values():
+                spine.set_edgecolor('#CCCCCC')
+                spine.set_linewidth(0.5)
+        else:
+            self.ax_mat_list = None
+
     # -------------------------------------------------------------------------
     # Parent/Child relationship helpers (hierarchical support)
     # -------------------------------------------------------------------------
@@ -1033,13 +1138,15 @@ class ObjAoiEditor:
 
         # Get slice based on view mode
         if self.view_mode == 'plan':
-            segments, vertices = self.slicer.slice_at_z(self.current_z)
+            segments, vertices, seg_mat_ids = self.slicer.slice_at_z(self.current_z)
         elif self.view_mode == 'elevation_x':
             segments, vertices = self.slicer.slice_elevation_x(self.elevation_position)
+            seg_mat_ids = np.full(len(segments), -1, dtype=np.int32)
         elif self.view_mode == 'elevation_y':
             segments, vertices = self.slicer.slice_elevation_y(self.elevation_position)
+            seg_mat_ids = np.full(len(segments), -1, dtype=np.int32)
         else:
-            segments, vertices = [], np.array([])
+            segments, vertices, seg_mat_ids = [], np.array([]), np.array([], dtype=np.int32)
 
         self.current_vertices = vertices
 
@@ -1048,7 +1155,31 @@ class ObjAoiEditor:
 
         if segments:
             line_data = [[(s[0], s[1]), (s[2], s[3])] for s in segments]
-            self._mesh_line_collection = LineCollection(line_data, colors='black', linewidths=0.5)
+
+            if self.material_names and len(seg_mat_ids) == len(segments):
+                # Colour each segment by its material; dim non-highlighted materials when one is active
+                if self.highlighted_material is not None:
+                    hi_idx = (self.material_names.index(self.highlighted_material)
+                              if self.highlighted_material in self.material_names else -1)
+                    colors = []
+                    linewidths = []
+                    for mid in seg_mat_ids:
+                        if mid == hi_idx:
+                            colors.append(self.material_colors.get(self.highlighted_material, '#E53935'))
+                            linewidths.append(1.5)
+                        else:
+                            colors.append('#D0D0D0')
+                            linewidths.append(0.3)
+                    self._mesh_line_collection = LineCollection(line_data, colors=colors, linewidths=linewidths)
+                else:
+                    # No highlight — colour all segments by material at reduced opacity
+                    colors = [self._get_segment_color(int(mid)) for mid in seg_mat_ids]
+                    self._mesh_line_collection = LineCollection(line_data, colors=colors,
+                                                               linewidths=0.5, alpha=0.7)
+            else:
+                # No material data — fall back to uniform black
+                self._mesh_line_collection = LineCollection(line_data, colors='black', linewidths=0.5)
+
             self.ax.add_collection(self._mesh_line_collection)
 
         # Draw vertices as points if snap is enabled (with downsampling for performance)
@@ -2424,6 +2555,119 @@ class ObjAoiEditor:
                                        fontsize=7, style='italic')
 
         self.fig.canvas.draw_idle()
+
+    def _update_material_list(self):
+        """Refresh the material list panel in the side panel."""
+        if self.ax_mat_list is None:
+            return
+
+        self.ax_mat_list.clear()
+        self.ax_mat_list.set_facecolor('#FAFAF8')
+        self.ax_mat_list.tick_params(left=False, bottom=False,
+                                     labelleft=False, labelbottom=False)
+        self._material_list_hit_boxes = []
+
+        self.ax_mat_list.set_xlim(0, 1)
+        self.ax_mat_list.set_ylim(0, 1)
+
+        if not self.material_names:
+            self.ax_mat_list.text(0.02, 0.5, "(no material data in mesh)",
+                                  fontsize=7, style='italic', color='gray',
+                                  transform=self.ax_mat_list.transAxes)
+            self.fig.canvas.draw_idle()
+            return
+
+        # Determine how many rows fit; each row is ~0.13 axes-height units
+        row_h = 0.13
+        max_visible = max(1, int(1.0 / row_h))
+        total = len(self.material_names)
+        # Clamp scroll offset
+        self._material_list_scroll = max(0, min(self._material_list_scroll, total - max_visible))
+
+        visible = self.material_names[self._material_list_scroll:self._material_list_scroll + max_visible]
+
+        for display_idx, name in enumerate(visible):
+            mat_idx = self._material_list_scroll + display_idx
+            y_top = 1.0 - display_idx * row_h
+            y_center = y_top - row_h / 2
+
+            is_highlighted = (name == self.highlighted_material)
+            bg_color = self.material_colors.get(name, '#303030')
+            text_color = 'white'
+            bg_alpha = 0.85 if is_highlighted else 0.35
+
+            # Colour swatch
+            swatch = FancyBboxPatch((0.01, y_top - row_h + 0.01), 0.06, row_h - 0.02,
+                                    boxstyle='round,pad=0.005',
+                                    facecolor=bg_color, edgecolor=bg_color,
+                                    alpha=bg_alpha, transform=self.ax_mat_list.transAxes,
+                                    clip_on=True)
+            self.ax_mat_list.add_patch(swatch)
+
+            # Name label — truncate long names
+            display_name = name if len(name) <= 22 else name[:20] + '…'
+            fw = 'bold' if is_highlighted else 'normal'
+            self.ax_mat_list.text(
+                0.10, y_center, display_name,
+                fontsize=6.5, color='#202020', fontweight=fw,
+                va='center', transform=self.ax_mat_list.transAxes,
+            )
+
+            # Highlighted indicator star
+            if is_highlighted:
+                self.ax_mat_list.text(
+                    0.92, y_center, '★', fontsize=7, color=bg_color,
+                    va='center', ha='center', transform=self.ax_mat_list.transAxes,
+                )
+
+            # Store hit box in axes-fraction coords for click detection
+            self._material_list_hit_boxes.append((y_top - row_h, y_top, name))
+
+        # Scroll hint
+        if total > max_visible:
+            self.ax_mat_list.text(
+                0.5, 0.005,
+                f"{self._material_list_scroll + 1}–{min(self._material_list_scroll + max_visible, total)} / {total}  (scroll)",
+                fontsize=5.5, color='gray', ha='center', va='bottom',
+                transform=self.ax_mat_list.transAxes,
+            )
+
+        self.fig.canvas.draw_idle()
+
+    def _on_material_list_scroll(self, event):
+        """Handle scroll wheel over the material list."""
+        if self.ax_mat_list is None or event.inaxes != self.ax_mat_list:
+            return
+        if event.button == 'up':
+            self._material_list_scroll = max(0, self._material_list_scroll - 1)
+        elif event.button == 'down':
+            self._material_list_scroll = min(
+                max(0, len(self.material_names) - 1),
+                self._material_list_scroll + 1,
+            )
+        self._update_material_list()
+
+    def _on_material_list_click(self, event):
+        """Handle click on the material list to select/deselect a material."""
+        if self.ax_mat_list is None or event.inaxes != self.ax_mat_list:
+            return
+        if event.button != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        # ydata is in axes-fraction coords (ylim=(0,1) for these off-axis panels)
+        y = event.ydata
+        for (y_min, y_max, name) in self._material_list_hit_boxes:
+            if y_min <= y <= y_max:
+                if self.highlighted_material == name:
+                    self.highlighted_material = None  # deselect
+                else:
+                    self.highlighted_material = name
+                self._update_material_list()
+                # Trigger mesh redraw to apply new highlight colours
+                self._do_full_render(self.ax.get_xlim(), self.ax.get_ylim(), reset_view=False)
+                return
 
     # -------------------------------------------------------------------------
     # Export functions
