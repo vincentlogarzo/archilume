@@ -101,12 +101,10 @@ FUTURE implementaiton A of RenderingPipelines
 AcceleradRT 
 to be run on windows only, not in linux environment. 
 
-    $VIEW="C:\Projects\archilume\outputs\view\plan_ffl_096590.vp"
-    .\.devcontainer\accelerad_07_beta_Windows\bin\AcceleradRT.exe -x 900 -y 900
-    .\.devcontainer\accelerad_07_beta_Windows\bin\AcceleradRT.exe -x 1200 -y 1200
-
- 
-    falsecolor -i outputs\image\exterior_and_site.hdr -s 10000 -l lux -pal hot -n 10 -lw 0 | ra_tiff - outputs\image\exterior_and_site.tiff
+    Win64
+        .\.devcontainer\accelerad_07_beta_Windows\bin\AcceleradRT.exe -x 900 -y 900
+    Linux
+        does not work on linux untill the drivers are installed with the dev container for linus and a wsl pathrogh is provided is running wsl on win64 in a dev container. 
 
 
 

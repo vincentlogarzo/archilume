@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "${containerWorkspaceFolder}/archilume/.venv/bin/python",
+    "python.defaultInterpreterPath": "/workspaces/archilume/.venv/bin/python",
     "python.analysis.extraPaths": [
         "./archilume"
     ],

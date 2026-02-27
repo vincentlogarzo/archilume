@@ -42,7 +42,8 @@
     "PATH": "${containerEnv:PATH}:/usr/local/radiance/bin:${containerEnv:HOME}/.local/bin",
     "RAYPATH": "/usr/local/radiance/lib",
     "UV_LINK_MODE": "copy",
-    "CLAUDE_API_KEY": "${localEnv:CLAUDE_API_KEY}"
+    "CLAUDE_API_KEY": "${localEnv:CLAUDE_API_KEY}",
+    "TZ": "${localEnv:TZ}"
   },
 
   "mounts": [

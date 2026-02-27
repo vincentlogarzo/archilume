@@ -65,11 +65,13 @@ def iesve_daylight_parallel_images():
     with timer("Phase 0: User input 3D Scene file + Rendering parameter (.rdp) and aoi (.aoi)..."):
         image_resolution    = 2048                            
         ffl_offset          = 0.00
-        octree_path         = config.INPUTS_DIR / "527DP_model_wSite.oct" # Must use a 10K Lux CIE Overcast sky
-        rendering_params    = config.INPUTS_DIR / "high.rdp"
+        octree_path         = config.INPUTS_DIR / "527DP.oct" # Must use a 10K Lux CIE Overcast sky
+        rendering_params    = config.INPUTS_DIR / "preview.rdp"
         iesve_room_data     = config.INPUTS_DIR / "aoi" / "iesve_room_data.csv"
 
-        # TODO: implement inputs validations checks alike to sunlight access workflow.
+        # TODO: implement scenario grid, and file naming convention changes to match the variant grid. Simulation should run in a specific order to allow for the fastest outcome. Once this is done, the smart_cleanup function will not be needed at all. The files are unique to the scenario grid, and the same ambient file will be used across all resolution ranges, but a new abmient file for all other permutations. 
+        
+        # TODO: implement raw file compile into octree using the scenario grid. as .map files must be modified based on the scenario grid. 
 
         # TODO: allowance for gpu rendering mode if a user wishes to have this. This would mean this could run on windows machine alike to the sunlight rendering workflow.
 
@@ -104,7 +106,9 @@ def iesve_daylight_parallel_images():
             )
         renderer.daylight_rendering_pipeline()
 
-    #FIXME: move image post processing steps from this Renderer into the aoi editor, that way a user can update the values as they see fit before export of results. It would also mean that only one input id needed the .hdr files. Some meta data could be shown regarding image on the aoi editor so that i user can see what parameters were run, and a button to launch the accelerat_RT programm on the model the simulation was run on. 
+    #FIXME: move image post processing steps from this Renderer into the aoi editor, that way a user can update the values as they see fit before export of results. It would also mean that only one input id needed the .hdr files. Some meta data could be shown regarding image on the aoi editor so that i user can see what parameters were run, and a button to launch the accelerat_RT programm on the model the simulation was run on.
+
+    #TODO: convert outputs to png instead of .tiff, they are much more compact at the same quality. 
 
     with timer("Phase 3: Post-processing and Stamping of Results..."):
         with timer("  3a: Generate .aoi files..."):
@@ -133,3 +137,4 @@ if __name__ == "__main__":
 #   the ambient file by comparing .hdr headers to current parameters.
 #   Skip commands whose output files already match (same view, same
 #   params; resolution changes are allowed).
+# TODO: implement inputs validations checks alike to sunlight access workflow.

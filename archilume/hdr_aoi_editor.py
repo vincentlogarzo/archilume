@@ -115,6 +115,7 @@ Functionality:
 # Standard library imports
 import csv
 import json
+import os
 import re
 import shutil
 import threading
@@ -252,8 +253,14 @@ class HdrAoiEditor:
         # Blitting state for drag operations
         self._blit_background                           = None
         self._blit_active:          bool                = False
+        # Blitting state for DF cursor readout
+        self._df_cursor_bg                              = None
         self._image_handle                              = None
         self.ax_legend                                  = None
+        # Stamped DF readings: hdr_name → list of (x, y, df_val, px, py)
+        self._df_stamps:            dict                = {}
+        # Placement mode: when True, left-click stamps DF%; when False, click only selects rooms
+        self.placement_mode:        bool                = True
 
         # Room type tagging (BED / LIVING — LIVING requires sub-rooms)
         self.room_type:             Optional[str]       = None
@@ -690,6 +697,13 @@ class HdrAoiEditor:
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
+        # DF% cursor readout — bottom-left corner of the main axes
+        self._df_cursor_text = self.ax.text(
+            0, 0, '', transform=self.ax.transData,
+            fontsize=8, color='white', va='bottom', ha='left',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.55, edgecolor='none'),
+            zorder=300, visible=False, animated=True)
+
         # DF% legend axes: top-right, just above the main image (rotated 90°)
         # DF legend — positioned in _setup_bottom_toolbar after buttons are laid out
         self.ax_legend = None
@@ -700,6 +714,7 @@ class HdrAoiEditor:
         # Apply initial bevel styling to toggle buttons
         self._style_toggle_button(self.btn_edit_mode, self.edit_mode)
         self._style_toggle_button(self.btn_ortho, self.ortho_mode)
+        self._style_toggle_button(self.btn_placement, self.placement_mode)
         self._update_room_type_buttons()
 
         # Initial render
@@ -778,7 +793,7 @@ class HdrAoiEditor:
             ("e",             "Toggle Edit Mode"),      ("d",           "Room divider (edit mode)"),
             ("ctrl+z",        "Undo (edit/type/name/create/del)"),
             ("o",             "Toggle orthogonal lines"), ("f",         "Fit zoom to selected room"),
-            ("r",             "Reset zoom"),
+            ("r",             "Reset zoom"),              ("p",         "Toggle DF% stamp on/off"),
             ("Ctrl+click",    "Multi-select rooms"),     ("ctrl+a",    "Select all rooms"),
             ("q",             "Quit"),
         ]
@@ -833,7 +848,7 @@ class HdrAoiEditor:
             lambda e: self._on_room_type_toggle('LIVING', requires_children=True))
         self.btn_room_type_circ = self._make_button(
             prnt_x + 2 * (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'CIRC',
-            lambda e: self._on_room_type_toggle('CIRCULATION'))
+            lambda e: self._on_room_type_toggle('CIRC'))
 
         # Status / preview
         status_y = rtype_y + lbl_h + gap + inp_h + gap
@@ -924,9 +939,16 @@ class HdrAoiEditor:
             tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
             'Reset Zoom', self._on_reset_zoom_click)
 
-        # DF% legend — starts after all top-row buttons, no overlap
+        place_label = 'Place DF%: ON (Press P)' if self.placement_mode else 'Place DF%: OFF (Press P)'
+        place_color = self._btn_on_color if self.placement_mode else self._btn_color
+        place_hover = self._btn_on_hover if self.placement_mode else self._btn_hover
+        self.btn_placement = self._make_button(
+            tr_x + 3 * btn_step, row2_y, btn_w, tr_h,
+            place_label, self._on_placement_toggle, color=place_color, hovercolor=place_hover)
+
+        # DF% legend — right of buttons, constrained within toolbar
         legend_x = tr_x + n_cols * btn_step
-        legend_w = 0.98 - legend_x
+        legend_w = min(0.98 - legend_x, 0.18)
         legend_h = 0.99 - row1_y
         self.ax_legend = self._axes(legend_x, row1_y, legend_w, legend_h)
         self.ax_legend.axis('off')
@@ -1207,6 +1229,7 @@ class HdrAoiEditor:
         self._df_text_cache.clear()
         self._edit_vertex_scatter = None
         self._image_handle = None
+        self._df_cursor_bg = None  # invalidate blit background after ax.clear()
 
         # Load and display current image
         path = self.current_variant_path
@@ -1277,9 +1300,20 @@ class HdrAoiEditor:
         variant_label = variant.stem if variant else ""
         # Title removed to maximise image area
 
+        # Draw any stamped DF readings for the current HDR
+        self._draw_df_stamps()
+
         # Always recreate the polygon selector after ax.clear() destroyed the old one
         if not self.edit_mode:
             self._create_polygon_selector()
+
+        # Recreate DF cursor readout (destroyed by ax.clear())
+        self._df_cursor_text = self.ax.text(
+            0, 0, '', transform=self.ax.transData,
+            fontsize=8, color='white', va='bottom', ha='left',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.55, edgecolor='none'),
+            zorder=300, visible=False, animated=True)
+        self._df_cursor_bg = None  # will be captured after first draw
 
         self.fig.canvas.draw_idle()
 
@@ -1298,12 +1332,9 @@ class HdrAoiEditor:
             return
         legend_img = np.rot90(legend_img, k=1)
         lH, lW = legend_img.shape[:2]
-        # Scale up 30% while preserving aspect ratio
-        scale = 1.3
-        sW, sH = lW * scale, lH * scale
-        self.ax_legend.imshow(legend_img, origin='upper', extent=[0, sW, sH, 0], aspect='equal')
-        self.ax_legend.set_xlim(0, sW)
-        self.ax_legend.set_ylim(sH, 0)
+        self.ax_legend.imshow(legend_img, origin='upper', extent=[0, lW, lH, 0], aspect='auto')
+        self.ax_legend.set_xlim(0, lW)
+        self.ax_legend.set_ylim(lH, 0)
         self.ax_legend.axis('off')
         self.ax_legend.set_visible(True)
 
@@ -1513,26 +1544,30 @@ class HdrAoiEditor:
                                  markersize=8, color='lime', markeredgecolor='darkgreen',
                                  markeredgewidth=1.5, zorder=101, alpha=0.9)
 
-        # Label — use true centroid (centre of mass), guaranteed inside polygon
-        centroid = self._polygon_label_point(verts)
-        label    = room.get('name', '')
-        if not is_current_floor:
-            hf = room.get('hdr_file', '')
-            label += f"\n({hf})"
+        # Label and DF results — suppressed for CIRC rooms (which includes all
+        # DIV sub-rooms, auto-typed as CIRC on creation) to reduce visual clutter.
+        is_circ = room.get('room_type', '') == 'CIRC'
+        if not is_circ:
+            centroid = self._polygon_label_point(verts)
+            label    = room.get('name', '')
+            if not is_current_floor:
+                hf = room.get('hdr_file', '')
+                label += f"\n({hf})"
 
-        fs_name = self._zoom_fontsize()
-        label_text = self.ax.text(
-            centroid[0], centroid[1], label,
-            color='red', fontsize=fs_name,
-            ha='center', va='center', clip_on=True,
-            path_effects=[patheffects.withStroke(linewidth=fs_name * 0.06, foreground='black')],
-        )
-        label_text.set_clip_path(self.ax.patch)
-        self._room_label_cache[idx] = label_text
+            fs_name = self._zoom_fontsize()
+            label_text = self.ax.text(
+                centroid[0], centroid[1], label,
+                color='red', fontsize=fs_name,
+                ha='center', va='center', clip_on=True,
+                path_effects=[patheffects.withStroke(linewidth=fs_name * 0.06, foreground='black')],
+            )
+            label_text.set_clip_path(self.ax.patch)
+            self._room_label_cache[idx] = label_text
 
-        # DF results as smaller subtext below the room name (only if room type is set)
+        # DF results as smaller subtext below the room name (only if room type is set,
+        # and not suppressed for CIRC rooms)
         df_lines = self._room_df_results.get(idx, [])
-        if df_lines and is_current_floor:
+        if df_lines and is_current_floor and not is_circ:
             line_step = self._df_line_step()
             for line_i, line in enumerate(df_lines):
                 dy = 1.2 * line_step + line_i * line_step * 0.7
@@ -1572,7 +1607,9 @@ class HdrAoiEditor:
                 patch.set_edgecolor('magenta'); patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(2)
                 patch._patch_type = 'special'
             else:
-                patch.set_edgecolor('red');     patch.set_facecolor('none'); patch.set_alpha(1.0); patch.set_linewidth(self._zoom_linewidth())
+                is_div = '_DIV' in room.get('name', '')
+                patch.set_edgecolor('red');     patch.set_facecolor('none'); patch.set_alpha(1.0 if not is_div else 0.6); patch.set_linewidth(self._zoom_linewidth())
+                patch.set_linestyle('--' if is_div else '-')
                 patch._patch_type = 'current'
 
         self.fig.canvas.draw_idle()
@@ -1839,14 +1876,36 @@ class HdrAoiEditor:
                     self._update_status("Cannot remove - polygon must have at least 3 vertices", 'red')
             return
 
+        # Right-click in default mode (not edit, not divider): remove nearest DF stamp
+        if event.button == 3 and not self.edit_mode and not self.divider_mode:
+            if event.xdata is not None and event.ydata is not None:
+                self._remove_df_stamp(event.xdata, event.ydata)
+            return
+
         # Left-click in divider mode: place division line endpoints
         if event.button == 1 and self.divider_mode and event.xdata is not None and event.ydata is not None:
             self._on_divider_click(event.xdata, event.ydata)
             return
 
-        # Left-click in default mode (not draw, not edit): select room
+        # Left-click in default mode (not draw, not edit): stamp DF (if placement on) then select room
         if event.button == 1 and not self.draw_mode and not self.edit_mode:
-            self._select_room_at(event.xdata, event.ydata)
+            stamped = False
+            if self.placement_mode and event.xdata is not None and event.ydata is not None and self._df_image is not None:
+                px, py = int(event.xdata), int(event.ydata)
+                h, w = self._df_image.shape[:2]
+                if 0 <= py < h and 0 <= px < w:
+                    df_val = self._df_image[py, px]
+                    hdr = self.current_hdr_name
+                    if hdr not in self._df_stamps:
+                        self._df_stamps[hdr] = []
+                    self._df_stamps[hdr].append((float(event.xdata), float(event.ydata), float(df_val), px, py))
+                    self._df_cursor_bg = None
+                    stamped = True
+            self._select_room_at(event.xdata, event.ydata, ctrl=event.key == 'control')
+            if stamped:
+                self._save_session()
+                # force full render so the new stamp is drawn (select_room_at may not have)
+                self._render_section(force_full=True)
             return
 
         # Left-click in edit mode: drag vertex or insert vertex on edge
@@ -2017,14 +2076,58 @@ class HdrAoiEditor:
             dy_data = (ylim[1] - ylim[0]) * dy_px / ax_h_px
             self.ax.set_xlim(xlim[0] - dx_data, xlim[1] - dx_data)
             self.ax.set_ylim(ylim[0] - dy_data, ylim[1] - dy_data)
+            self._df_cursor_bg = None  # invalidate stale blit background after pan
             self.fig.canvas.draw_idle()
             return
 
         if event.inaxes != self.ax:
+            if self._df_cursor_text.get_visible():
+                self._df_cursor_text.set_visible(False)
+                self.fig.canvas.draw_idle()
             return
         x, y = event.xdata, event.ydata
         if x is None or y is None:
+            if self._df_cursor_text.get_visible():
+                self._df_cursor_text.set_visible(False)
+                self.fig.canvas.draw_idle()
             return
+
+        # DF% cursor readout — blit only the text for lag-free updates
+        canvas = self.fig.canvas
+        supports_blit = getattr(canvas, 'supports_blit', False)
+        if self._df_image is not None:
+            px, py = int(x), int(y)
+            h, w = self._df_image.shape[:2]
+            if 0 <= py < h and 0 <= px < w:
+                df_val = self._df_image[py, px]
+                self._df_cursor_text.set_text(f"DF: {df_val:.2f}%")
+                # Fixed 14-pixel offset in display space → convert to data coords
+                disp_x, disp_y = self.ax.transData.transform((x, y))
+                data_x, data_y = self.ax.transData.inverted().transform(
+                    (disp_x + 14, disp_y - 14))
+                self._df_cursor_text.set_position((data_x, data_y))
+                self._df_cursor_text.set_visible(True)
+            else:
+                self._df_cursor_text.set_visible(False)
+        else:
+            self._df_cursor_text.set_visible(False)
+
+        if supports_blit:
+            try:
+                if self._df_cursor_bg is None:
+                    canvas.draw()
+                    self._df_cursor_bg = canvas.copy_from_bbox(self.ax.bbox)
+                canvas.restore_region(self._df_cursor_bg)
+                self.ax.draw_artist(self._df_cursor_text)
+                canvas.blit(self.ax.bbox)
+            except (AttributeError, RuntimeError):
+                # Figure or renderer not yet ready (e.g. during ax.clear() / HDR
+                # switch / window close). Invalidate the cached background so it
+                # is rebuilt on the next motion event and fall back to draw_idle.
+                self._df_cursor_bg = None
+                canvas.draw_idle()
+        else:
+            canvas.draw_idle()
 
         # Active drag operations (vertex or edge)
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
@@ -2250,6 +2353,8 @@ class HdrAoiEditor:
                 self._undo_draw()
         elif event.key == 'ctrl+a':
             self._select_all_rooms()
+        elif event.key == 'p':
+            self._on_placement_toggle(None)
 
     def _on_scroll(self, event):
         """Handle scroll wheel for zooming or room list scrolling."""
@@ -2278,6 +2383,7 @@ class HdrAoiEditor:
         self.ax.set_ylim([ydata - new_h * rely,   ydata + new_h * (1 - rely)])
         self._apply_zoom_linewidths()
         self._apply_zoom_fontsizes()
+        self._df_cursor_bg = None  # invalidate stale blit background after zoom change
 
         now = time.monotonic()
         if now - getattr(self, '_last_scroll_draw', 0.0) >= 0.033:
@@ -2319,19 +2425,35 @@ class HdrAoiEditor:
 
     # === ROOM SELECTION ========================================================
 
-    def _select_room_at(self, x, y):
+    def _select_room_at(self, x, y, ctrl=False):
         """Select the room polygon at the given point."""
         if x is None or y is None:
-            self._deselect_room()
+            if not ctrl:
+                self._deselect_room()
             return
         for i, room in enumerate(self.rooms):
             if not self._is_room_on_current_hdr(room):
                 continue
             verts = np.array(room['vertices'])
             if MplPath(verts).contains_point((x, y)):
-                self._select_room(i)
+                if ctrl:
+                    # Ctrl+click on screen: toggle room in multi-selection
+                    if i in self.multi_selected_room_idxs:
+                        self.multi_selected_room_idxs.discard(i)
+                    else:
+                        self.multi_selected_room_idxs.add(i)
+                        # Also fold the current primary selection into the multi-set
+                        if self.selected_room_idx is not None:
+                            self.multi_selected_room_idxs.add(self.selected_room_idx)
+                    n = len(self.multi_selected_room_idxs)
+                    self._update_status(f"Multi-select: {n} room(s)", 'blue')
+                    self._update_room_list()
+                    self._render_section()
+                else:
+                    self._select_room(i)
                 return
-        self._deselect_room()
+        if not ctrl:
+            self._deselect_room()
 
     def _select_room(self, idx: int):
         """Select a room by index and populate the name textbox and parent."""
@@ -2382,6 +2504,47 @@ class HdrAoiEditor:
         self._update_status(f"Multi-select: {n} room(s) on current HDR", 'blue')
         self._update_room_list()
         self.fig.canvas.draw_idle()
+
+    # === DF STAMPS =============================================================
+
+    def _remove_df_stamp(self, x: float, y: float):
+        """Remove the nearest DF stamp within 40 pixels of (x, y)."""
+        hdr = self.current_hdr_name
+        stamps = self._df_stamps.get(hdr, [])
+        if not stamps:
+            return
+        # Convert click to display coords for pixel-accurate distance
+        disp_click = self.ax.transData.transform((x, y))
+        best_idx, best_dist = None, float('inf')
+        for i, stamp in enumerate(stamps):
+            sx, sy = stamp[0], stamp[1]
+            disp_s = self.ax.transData.transform((sx, sy))
+            dist = np.hypot(disp_click[0] - disp_s[0], disp_click[1] - disp_s[1])
+            if dist < best_dist:
+                best_dist, best_idx = dist, i
+        if best_idx is not None and best_dist <= 40:
+            stamps.pop(best_idx)
+            self._df_cursor_bg = None
+            self._save_session()
+            self._render_section(force_full=True)
+
+    def _draw_df_stamps(self):
+        """Draw all stamped DF readings for the current HDR."""
+        hdr = self.current_hdr_name
+        stamps = self._df_stamps.get(hdr, [])
+        for stamp in stamps:
+            x, y, df_val = stamp[0], stamp[1], stamp[2]
+            # px, py added in later sessions; fall back to rounded data coords for old stamps
+            px = stamp[3] if len(stamp) > 3 else int(round(x))
+            py = stamp[4] if len(stamp) > 4 else int(round(y))
+            self.ax.text(
+                x, y, f"DF: {df_val:.2f}%\npx({px},{py})",
+                fontsize=7, color='white', va='bottom', ha='left',
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='#222222', alpha=0.8, edgecolor='none'),
+                zorder=310,
+            )
+            # Small dot at the stamped pixel
+            self.ax.plot(x, y, 'o', color='cyan', markersize=4, zorder=311)
 
     # === POLYGON SELECTOR ======================================================
 
@@ -2620,21 +2783,24 @@ class HdrAoiEditor:
     def _df_line_step(self) -> float:
         """Return zoom-aware vertical spacing (in data coords) between DF result lines.
 
-        The spacing must stay proportional to the rendered font height.
-        Because _zoom_fontsize clamps at 4 pt, a pure view_w fraction
-        would shrink below the text height when zoomed in. Instead we
-        derive spacing from the actual DF font size converted back to
-        data coordinates, guaranteeing no overlap at any zoom level.
+        Converts the actual DF font size from points to data-space units via
+        the axes transform. This is correct at any zoom level — including
+        fit-to-room — because it tracks the real rendered text height rather
+        than a view-ratio approximation that breaks when _zoom_fontsize clamps.
         """
-        view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
-        fs = self._zoom_fontsize(base=6.5)          # actual DF font size (pts)
-        ref_fs = 6.5                                  # font size at default zoom
-        ref_step = self._reference_view_w * 0.009     # spacing at default zoom
-        if ref_fs <= 0 or self._reference_view_w <= 1:
-            return view_w * 0.009
-        # Scale the default-zoom spacing by (current font / default font)
-        # and by (current view / default view) to stay in data coords
-        return ref_step * (fs / ref_fs) * (view_w / self._reference_view_w)
+        fs_pt = self._zoom_fontsize(base=6.5)   # font size in points
+        # 1 point = 1/72 inch. Convert to display pixels, then to data units.
+        dpi = self.fig.dpi
+        px_per_pt = dpi / 72.0
+        fs_px = fs_pt * px_per_pt              # font height in display pixels
+        # Map a vertical span of fs_px display pixels to data coordinates.
+        # transData maps data → display; its inverse maps display → data.
+        inv = self.ax.transData.inverted()
+        # Use a fixed display reference point; only the delta matters.
+        _, y0_data = inv.transform((0, 0))
+        _, y1_data = inv.transform((0, fs_px))
+        fs_data = abs(y1_data - y0_data)       # font height in data units
+        return fs_data * 1.6                   # 1.6× line height for comfortable spacing
 
     def _apply_zoom_fontsizes(self):
         """Reapply zoom-dependent font sizes and stroke widths to all cached text."""
@@ -2688,6 +2854,7 @@ class HdrAoiEditor:
         self.ax.set_ylim(self._image_height, 0)
         self._apply_zoom_linewidths()
         self._apply_zoom_fontsizes()
+        self._df_cursor_bg = None  # invalidate stale blit background after zoom change
         self.fig.canvas.draw_idle()
 
     def _fit_to_selected_room(self):
@@ -2713,6 +2880,7 @@ class HdrAoiEditor:
 
         self._apply_zoom_linewidths()
         self._apply_zoom_fontsizes()
+        self._df_cursor_bg = None  # invalidate stale blit background after zoom change
         room_name = room.get('name', 'unnamed')
         self._update_status(f"Fit to '{room_name}' (r to reset zoom)", 'blue')
         self.fig.canvas.draw_idle()
@@ -2821,6 +2989,21 @@ class HdrAoiEditor:
         self._update_status(f"Orthogonal mode: {state}", 'blue')
         self.fig.canvas.draw_idle()
 
+    def _on_placement_toggle(self, event):
+        """Toggle DF% stamping on screen on/off (press P).
+
+        When ON:  left-clicking the floor plan stamps a DF% reading at that point.
+        When OFF: left-clicking only selects rooms; no new DF% stamps are placed.
+        Existing stamps remain visible regardless of this toggle.
+        """
+        self.placement_mode = not self.placement_mode
+        self.btn_placement.label.set_text(
+            'Place DF%: ON (Press P)' if self.placement_mode else 'Place DF%: OFF (Press P)')
+        self._style_toggle_button(self.btn_placement, self.placement_mode)
+        state = "ON" if self.placement_mode else "OFF"
+        self._update_status(f"DF% placement mode: {state}", 'blue')
+        self.fig.canvas.draw_idle()
+
     def _on_room_type_toggle(self, room_type: str, **_kw):
         """Toggle a room type on/off.  Supports bulk tagging when multi-selected."""
         # In multi-select mode: always set (no toggle-off), apply to all
@@ -2884,7 +3067,7 @@ class HdrAoiEditor:
         """Style BED/LIVING/CIRC buttons to reflect current room_type."""
         self._style_toggle_button(self.btn_room_type_bed, self.room_type == 'BED')
         self._style_toggle_button(self.btn_room_type_living, self.room_type == 'LIVING')
-        self._style_toggle_button(self.btn_room_type_circ, self.room_type == 'CIRCULATION')
+        self._style_toggle_button(self.btn_room_type_circ, self.room_type == 'CIRC')
 
     # === ROOM DIVIDER ==========================================================
 
@@ -3471,8 +3654,10 @@ class HdrAoiEditor:
     def _apply_division_with_polys(self, room_idx: int, poly_a: list, poly_b: list):
         """Apply a division using pre-computed sub-polygons.
 
-        Keeps the larger polygon as the original room (resized) and creates
-        only the smaller polygon as a new DIV sub-room.
+        The parent room boundary is left completely unchanged. The smaller of
+        the two split polygons is created as a new DIV sub-room drawn *within*
+        the parent boundary. Deleting the child later therefore leaves the
+        parent untouched.
         Exits divider mode **and** edit mode, then saves the session.
         """
         room            = self.rooms[room_idx]
@@ -3491,7 +3676,7 @@ class HdrAoiEditor:
         if len(self._edit_undo_stack) > self._edit_undo_max:
             self._edit_undo_stack.pop(0)
 
-        # Determine which polygon is smaller (the cut-off piece)
+        # Use the smaller polygon as the new sub-room drawn inside the parent
         def _shoelace(poly):
             n = len(poly)
             if n < 3:
@@ -3502,15 +3687,10 @@ class HdrAoiEditor:
                 x1, y1 = poly[(i + 1) % n]
                 s += float(x0) * float(y1) - float(x1) * float(y0)
             return abs(s) / 2.0
-        area_a = _shoelace(poly_a)
-        area_b = _shoelace(poly_b)
 
-        if area_a <= area_b:
-            small_poly, large_poly = poly_a, poly_b
-        else:
-            small_poly, large_poly = poly_b, poly_a
+        small_poly = poly_a if _shoelace(poly_a) <= _shoelace(poly_b) else poly_b
 
-        # Create only the smaller piece as a new DIV sub-room
+        # Create the smaller piece as a new DIV sub-room
         base_name = f"{division_parent}_DIV"
         div_name = self._make_unique_name(f"{base_name}1")
 
@@ -3519,11 +3699,10 @@ class HdrAoiEditor:
             'parent':    division_parent,
             'vertices':  [[float(x), float(y)] for x, y in small_poly],
             'hdr_file':  hdr_file,
-            'room_type': None,
+            'room_type': 'CIRC',
         }
 
-        # Resize the original room to the larger polygon
-        room['vertices'] = [[float(x), float(y)] for x, y in large_poly]
+        # Parent room vertices are intentionally left unchanged
 
         # Insert the new DIV sub-room after the original
         self.rooms.insert(room_idx + 1, div_room)
@@ -3544,8 +3723,8 @@ class HdrAoiEditor:
         self._render_section(force_full=True)
 
         self._update_status(
-            f"Divided '{original_name}' → '{div_name}' (smaller piece)", 'green')
-        print(f"Room divider: '{original_name}' -> kept larger side, created '{div_name}'")
+            f"Divided '{original_name}' → '{div_name}' (sub-room inside parent)", 'green')
+        print(f"Room divider: '{original_name}' -> parent unchanged, created '{div_name}'")
 
     # === STATUS & ROOM LIST ====================================================
 
@@ -3607,11 +3786,11 @@ class HdrAoiEditor:
         usable = 1.0 - pad_top - pad_bot
         total = len(flat_items)
 
-        # Compute total weight for scroll capacity (parents=1, children=0.5)
-        weights = [0.5 if indent > 0 else 1.0 for (_, indent, _) in flat_items]
+        # Compute total weight for scroll capacity (parents=1, children=0.7)
+        weights = [0.7 if indent > 0 else 1.0 for (_, indent, _) in flat_items]
 
         # Determine how many items fit in ONE column
-        unit_h = usable / 12.0
+        unit_h = usable / 9.0
         cumulative = 0.0
         col_capacity = 0
         for w in weights:
@@ -3656,7 +3835,7 @@ class HdrAoiEditor:
                 name   = room.get('name', 'unnamed')
                 is_sel   = (room_idx == self.selected_room_idx)
                 is_multi = (room_idx in self.multi_selected_room_idxs)
-                row_h   = unit_h * (0.5 if indent > 0 else 1.0)
+                row_h   = unit_h * (0.7 if indent > 0 else 1.0)
                 row_top = y_cursor
                 row_bot = y_cursor - row_h
                 row_mid = (row_top + row_bot) / 2
@@ -3772,15 +3951,24 @@ class HdrAoiEditor:
     # === SESSION PERSISTENCE ===================================================
 
     def _save_session(self):
-        """Save all room boundaries and DF cache to JSON."""
+        """Save all room boundaries, DF stamps, and DF cache to JSON."""
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
+        # Convert stamp tuples to lists for JSON serialisation
+        stamps_json = {hdr: [list(s) for s in stamps]
+                       for hdr, stamps in self._df_stamps.items() if stamps}
         data = {
             'image_dir':      str(self.image_dir),
             'df_thresholds':  self.DF_THRESHOLDS,
             'rooms':          self.rooms,
+            'df_stamps':      stamps_json,
         }
-        with open(self.session_path, 'w') as f:
+        # Write to a temp file alongside the target, then atomically rename it
+        # over the real path. This guarantees the session is never left in a
+        # partially-written (corrupt) state if the process is interrupted mid-save.
+        tmp_path = self.session_path.with_suffix('.json.tmp')
+        with open(tmp_path, 'w') as f:
             json.dump(data, f, indent=2)
+        os.replace(tmp_path, self.session_path)
         print(f"Session saved to {self.session_path}")
         # Remove stale CSV so the JSON is the single source of truth
         if self.csv_path.exists():
@@ -3788,11 +3976,17 @@ class HdrAoiEditor:
             print(f"Removed stale CSV: {self.csv_path}")
 
     def _load_session(self):
-        """Load room boundaries and cached DF results from JSON session or AOI files."""
+        """Load room boundaries, DF stamps, and cached DF results from JSON session or AOI files."""
         if self.session_path.exists():
             with open(self.session_path, 'r') as f:
                 data = json.load(f)
             self.rooms = data.get('rooms', [])
+            # Restore stamped DF readings (lists back to tuples).
+            # Old sessions have 3-element stamps (x, y, df_val); new ones have 5
+            # (x, y, df_val, px, py). Both are handled transparently by _draw_df_stamps.
+            stamps_raw = data.get('df_stamps', {})
+            self._df_stamps = {hdr: [tuple(s) for s in stamps]
+                               for hdr, stamps in stamps_raw.items()}
             # df_thresholds from old sessions are ignored — now fixed per room type
             source = "session"
             cached = sum(1 for r in self.rooms if r.get('df_cache'))
