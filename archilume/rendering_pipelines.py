@@ -55,6 +55,8 @@ class DaylightRenderer:
         view_files: Single .vp Path or list of .vp Paths to render
         y_res: Vertical image resolution (defaults to x_res)
         image_dir: Output directory for rendered images
+        scenario_suffix: Suffix appended to HDR/TIFF filenames (e.g. "High-r2048")
+        amb_suffix: Suffix appended to .amb filenames only (e.g. "High"); shared across resolutions
     """
 
     # Required
@@ -66,6 +68,8 @@ class DaylightRenderer:
     # Optional with defaults
     y_res: Optional[int]        = field(default=None)
     image_dir: Path             = field(default_factory=lambda: config.IMAGE_DIR)
+    scenario_suffix: str        = field(default="")
+    amb_suffix: str             = field(default="")
 
     def __post_init__(self):
         # Normalise view_files to a sorted list of Paths
@@ -104,10 +108,12 @@ class DaylightRenderer:
 
         # Step 1: Render each view sequentially, all cores per view
         octree_base_name = self.octree_path.stem
+        hdr_suffix = f"-{self.scenario_suffix}" if self.scenario_suffix else ""
+        _amb_suffix = f"-{self.amb_suffix}" if self.amb_suffix else ""
         for view_file in self.view_files:
             view_name = view_file.stem
-            hdr_path = self.image_dir / f"{octree_base_name}_{view_name}.hdr"
-            amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
+            hdr_path = self.image_dir / f"{octree_base_name}_{view_name}{hdr_suffix}.hdr"
+            amb_path = self.image_dir / f"{octree_base_name}_{view_name}{_amb_suffix}.amb"
 
             if IS_LINUX:
                 cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {hdr_path}"
