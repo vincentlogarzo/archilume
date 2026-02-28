@@ -131,14 +131,27 @@ if __name__ == "__main__":
 #TODO: check that this code can split simulation sand multiprocess each in groupd of 64 cpus, therefore baed on the number of vcpus on a vm it would be that nmuber / 64 equalt the nmuber of permutations that can be run concurrently. Move the scenarios loops into the daylight renderer to keep the example simple. Therefore when one scenario is pass it should also run all plan_view on this single scenario combination. 
 
 #FIXME: AOI dir isnt properly cleaned when the smart clean up is True. Smart cleanup could be really simple, True or false, clear outputs or not. new octree or not true or false, and it will determine whether the octrees need to be recompiled based on the existing outputs, use run_new_radiance_commands()
-# FIXME, check that the room boundaties created from the aoi files enforces consistent width, height and centre points coordinate for each plan view. This is important to ensure that the same pixel in each view corresponds to the same world coordinate, which is critical for post processing and analysis of results. views are consistent from level to level.
-# FIXME: move image post processing steps from this Renderer into the aoi editor, that way a user can update the values as they see fit before export of results. It would also mean that only one input id needed the .hdr files. Some meta data could be shown regarding image on the aoi editor so that i user can see what parameters were run, and a button to launch the accelerat_RT programm on the model the simulation was run on.
-# TODO: convert outputs to png instead of .tiff, they are much more compact at the same quality. 
+# FIXME, check that the room boundaties created from the aoi files 
+#   enforces consistent width, height and centre points coordinate 
+#   for each plan view. This is important to ensure that the same 
+#   pixel in each view corresponds to the same world coordinate, 
+#   which is critical for post processing and analysis of results. 
+#   views are consistent from level to level.
+# FIXME: move image post processing steps from this Renderer into the 
+#   aoi editor, that way a user can update the values as they see fit 
+#   before export of results. It would also mean that only one input id 
+#   needed the .hdr files. Some meta data could be shown regarding image 
+#   on the aoi editor so that i user can see what parameters were run, 
+#   and a button to launch the accelerat_RT programm on the model the 
+#   simulation was run on.
+# TODO: convert outputs to png instead of .tiff, they are much more compact 
+#   at the same quality. 
 # TODO: Parametric materials – use model.rad + swappable .mtl files to vary
 #   glass VLT, wall/ceiling LRV, etc. Support multiple .rdp/.rdv per run.
 # TODO: Parametric params – accept multiple parameter input files (or
 #   low/high param sets) for incremental refinement of AOI checks.
-# TODO: Grid-based resolution – replace image resolution with grid_res (mm). this brings consistency to any image produced across any model no matter how large the building. 
+# TODO: Grid-based resolution – replace image resolution with grid_res (mm).
+#  this brings consistency to any image produced across any model no matter how large the building. 
 
 #   Dynamically size images so pixel density is consistent across views.
 #   Run at half grid_res first for quick AOI review, full res second.
