@@ -9,6 +9,7 @@ SSH key is stored at ~/.ssh/google_cloud_vm_key.
 import json
 import subprocess
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -19,7 +20,9 @@ SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 SSH_HOST_ALIAS = "gcp-vm"
 REMOTE_WORKSPACE = "/mnt/disks/localssd/workspace/archilume"
 VM_NAME_PREFIX = "archilume-vm"
-MACHINE_TYPE = "c4d-standard-64-lssd"
+MIN_VCPUS = 64
+# GCP Compute Engine billing service ID (stable)
+_GCP_BILLING_SERVICE = "6F81-5844-456A"
 
 
 class GCPVMManager:
@@ -79,15 +82,16 @@ class GCPVMManager:
         self._save_config()
 
     def _pick_best_zone(self) -> str:
-        """Query available zones for MACHINE_TYPE.
+        """Query available zones for the c4d machine family.
 
         Prefer US zones (cheapest). If no US zone is available, fall back to
         the lowest-latency zone among remaining options.
         """
-        print(f"  Finding best zone for {MACHINE_TYPE}...")
+        reference_type = MACHINE_TYPES[0][0]
+        print(f"  Finding best zone for {reference_type}...")
         out, code = self._gcloud_capture([
             "compute", "machine-types", "list",
-            f"--filter=name={MACHINE_TYPE}",
+            f"--filter=name={reference_type}",
             "--format=value(zone)",
             f"--project={self.project}",
         ])
@@ -288,6 +292,7 @@ class GCPVMManager:
 
     def _wait_for_ssh(self, vm_name: str, max_attempts: int = 20, interval: int = 10):
         print("  Waiting for SSH to become available", end="", flush=True)
+        time.sleep(10)
         for _ in range(max_attempts):
             if self._ssh(vm_name, "echo ok") == 0:
                 print(" OK")
@@ -319,9 +324,26 @@ class GCPVMManager:
     # Public actions
     # ------------------------------------------------------------------
 
+    def _pick_machine_type(self) -> str:
+        print("\n  Select machine type:")
+        print(f"\n  {'#':<4} {'Machine Type':<30} {'vCPU':>6} {'RAM (GB)':>10} {'$/hr':>8} {'AUD/hr':>8} {'AUD/vCPU/hr':>12} {'$/min':>8}")
+        print(f"  {'-'*4} {'-'*30} {'-'*6} {'-'*10} {'-'*8} {'-'*8} {'-'*12} {'-'*8}")
+        for i, (name, vcpus, mem_gb, usd_hr) in enumerate(MACHINE_TYPES, 1):
+            aud_hr = usd_hr * USD_TO_AUD
+            aud_per_vcpu = aud_hr / vcpus
+            usd_min = usd_hr / 60
+            print(f"  {i:<4} {name:<30} {vcpus:>6} {mem_gb:>10} {usd_hr:>8.2f} {aud_hr:>8.2f} {aud_per_vcpu:>12.4f} {usd_min:>8.4f}")
+        try:
+            idx = int(input("\n  Select option: ").strip()) - 1
+            return MACHINE_TYPES[idx][0]
+        except (ValueError, IndexError):
+            print("  Invalid selection, defaulting to option 1.")
+            return MACHINE_TYPES[0][0]
+
     def setup(self):
         """Create and fully configure a new VM."""
         self.prompt_config()
+        machine_type = self._pick_machine_type()
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         vm_name = f"{VM_NAME_PREFIX}-{ts}"
 
@@ -332,11 +354,11 @@ class GCPVMManager:
         username = self._gcloud_username()
         ssh_key_metadata = f"{username}:{self._read_pubkey()}"
 
-        print(f"\n[2/6] Creating VM ({MACHINE_TYPE})...")
+        print(f"\n[2/6] Creating VM ({machine_type})...")
         self._gcloud([
             "compute", "instances", "create", vm_name,
             f"--project={self.project}", f"--zone={self.zone}",
-            f"--machine-type={MACHINE_TYPE}",
+            f"--machine-type={machine_type}",
             "--image-family=debian-12", "--image-project=debian-cloud",
             f"--metadata=ssh-keys={ssh_key_metadata}",
         ])
@@ -376,8 +398,7 @@ class GCPVMManager:
                 vm_name,
                 "cd /mnt/disks/localssd/workspace && "
                 "git clone https://github.com/vincentlogarzo/archilume.git && "
-                "cd archilume && "
-                "bash .devcontainer/setup.sh && "
+                "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
                 "source ~/.bashrc"
             )
 
@@ -469,7 +490,7 @@ class GCPVMManager:
 
     def run(self):
         """Show the main menu and dispatch the selected action."""
-        print("\n=== Archilume GCP VM Manager ===")
+        print("\n============= Archilume GCP VM Manager =============")
         if self.cfg:
             print(f"  Config: project={self.cfg.get('project', '?')}  zone={self.cfg.get('zone', '?')}")
 
