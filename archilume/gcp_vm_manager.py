@@ -87,8 +87,8 @@ class GCPVMManager:
         Prefer US zones (cheapest). If no US zone is available, fall back to
         the lowest-latency zone among remaining options.
         """
-        reference_type = MACHINE_TYPES[0][0]
-        print(f"  Finding best zone for {reference_type}...")
+        reference_type = "c4d-standard-64-lssd"
+        print(f"  Finding best zone for lssd machine types...")
         out, code = self._gcloud_capture([
             "compute", "machine-types", "list",
             f"--filter=name={reference_type}",
@@ -324,21 +324,160 @@ class GCPVMManager:
     # Public actions
     # ------------------------------------------------------------------
 
+    def _fetch_usd_to_aud(self) -> float:
+        """Fetch live USD→AUD rate from frankfurter.app (no API key required)."""
+        try:
+            with urllib.request.urlopen(
+                "https://api.frankfurter.app/latest?from=USD&to=AUD", timeout=5
+            ) as r:
+                return json.loads(r.read())["rates"]["AUD"]
+        except Exception:
+            print("  Warning: could not fetch exchange rate, using fallback 1.55")
+            return 1.55
+
+    def _fetch_gcp_pricing(self) -> dict[str, float]:
+        """
+        Fetch on-demand per-core and per-GiB-RAM pricing from the GCP Billing SKUs API.
+        Returns a dict mapping lowercase family prefix → (core_usd_hr, ram_usd_gib_hr).
+        Requires an active gcloud auth token.
+        """
+        token_result = subprocess.run(
+            ["gcloud", "auth", "print-access-token"],
+            capture_output=True, text=True
+        )
+        if token_result.returncode != 0:
+            return {}
+        token = token_result.stdout.strip()
+
+        base = (
+            f"https://cloudbilling.googleapis.com/v1/services/"
+            f"{_GCP_BILLING_SERVICE}/skus?currencyCode=USD&pageSize=5000"
+        )
+        all_skus = []
+        page_token = ""
+        for _ in range(15):
+            url = base + (f"&pageToken={page_token}" if page_token else "")
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    data = json.loads(r.read())
+            except Exception:
+                break
+            all_skus.extend(data.get("skus", []))
+            page_token = data.get("nextPageToken", "")
+            if not page_token:
+                break
+
+        # Parse: on-demand core and RAM pricing per machine family, region=Americas
+        pricing: dict[str, dict] = {}
+        for sku in all_skus:
+            desc = sku.get("description", "")
+            cat = sku.get("category", {})
+            if cat.get("usageType") != "OnDemand":
+                continue
+            if "spot" in desc.lower() or "commitment" in desc.lower() or "sole tenancy" in desc.lower():
+                continue
+            regions = sku.get("serviceRegions", [])
+            if "us-central1" not in regions and "americas" not in " ".join(regions).lower():
+                continue
+
+            pricing_info = sku.get("pricingInfo", [])
+            if not pricing_info:
+                continue
+            pricing_expr = pricing_info[0].get("pricingExpression", {})
+            tiers = pricing_expr.get("tieredRates", [])
+            if not tiers:
+                continue
+            price = tiers[0].get("unitPrice", {})
+            usd = float(price.get("units", 0)) + price.get("nanos", 0) / 1e9
+            unit = pricing_expr.get("usageUnit", "")
+
+            # Match patterns like "C4D Instance Core running in Americas"
+            lower = desc.lower()
+            for family in ("c4d", "c4a", "c3d", "h4d", "z3", "c4", "c3"):  # longer prefixes first
+                if lower.startswith(family + " instance"):
+                    entry = pricing.setdefault(family, {})
+                    if "core" in lower and unit.endswith("h"):
+                        entry["core"] = usd
+                    elif "ram" in lower and ("giby" in unit.lower() or "gby" in unit.lower()):
+                        entry["ram"] = usd
+                    break
+
+        return pricing
+
+    def _list_lssd_machine_types(self) -> list[dict]:
+        """
+        Query gcloud for all lssd machine types with >= MIN_VCPUS vCPUs in the
+        configured zone. Returns list of dicts with name, vcpus, mem_gb.
+        """
+        out, code = self._gcloud_capture([
+            "compute", "machine-types", "list",
+            f"--filter=name~lssd AND guestCpus>={MIN_VCPUS}",
+            "--format=csv[no-heading](name,guestCpus,memoryMb)",
+            f"--zones={self.zone}",
+            f"--project={self.project}",
+        ])
+        if code != 0 or not out:
+            return []
+        seen, results = set(), []
+        for line in out.splitlines():
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+            name = parts[0].strip()
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                vcpus = int(float(parts[1]))
+                mem_gb = round(float(parts[2]) / 1024, 1)
+            except ValueError:
+                continue
+            results.append({"name": name, "vcpus": vcpus, "mem_gb": mem_gb})
+        return sorted(results, key=lambda x: (x["vcpus"], x["name"]))
+
+    def _compute_usd_hr(self, machine: dict, pricing: dict[str, dict]) -> float | None:
+        """Estimate on-demand USD/hr for a machine type using billing SKU rates."""
+        name = machine["name"].lower()
+        for family in ("c4d", "c4a", "c3d", "h4d", "z3", "c4", "c3"):  # longer prefixes first
+            if name.startswith(family):
+                entry = pricing.get(family, {})
+                core_rate = entry.get("core")
+                ram_rate = entry.get("ram")
+                if core_rate and ram_rate:
+                    mem_gib = machine["mem_gb"] * 1.024  # GB → GiB approx
+                    return round(machine["vcpus"] * core_rate + mem_gib * ram_rate, 4)
+                break
+        return None
+
     def _pick_machine_type(self) -> str:
-        print("\n  Select machine type:")
-        print(f"\n  {'#':<4} {'Machine Type':<30} {'vCPU':>6} {'RAM (GB)':>10} {'$/hr':>8} {'AUD/hr':>8} {'AUD/vCPU/hr':>12} {'$/min':>8}")
-        print(f"  {'-'*4} {'-'*30} {'-'*6} {'-'*10} {'-'*8} {'-'*8} {'-'*12} {'-'*8}")
-        for i, (name, vcpus, mem_gb, usd_hr) in enumerate(MACHINE_TYPES, 1):
-            aud_hr = usd_hr * USD_TO_AUD
-            aud_per_vcpu = aud_hr / vcpus
-            usd_min = usd_hr / 60
-            print(f"  {i:<4} {name:<30} {vcpus:>6} {mem_gb:>10} {usd_hr:>8.2f} {aud_hr:>8.2f} {aud_per_vcpu:>12.4f} {usd_min:>8.4f}")
+        print("\n  Fetching available machine types and live pricing...")
+        machines = self._list_lssd_machine_types()
+        if not machines:
+            print("  Could not query machine types. Enter machine type manually:")
+            return input("  Machine type: ").strip()
+
+        pricing = self._fetch_gcp_pricing()
+        usd_to_aud = self._fetch_usd_to_aud()
+
+        print(f"\n  {'#':<4} {'Machine Type':<32} {'vCPU':>6} {'RAM(GB)':>8} {'USD/hr':>8} {'AUD/hr':>8} {'AUD/vCPU/hr':>13} {'USD/min':>8}")
+        print(f"  {'-'*4} {'-'*32} {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*13} {'-'*8}")
+        for i, m in enumerate(machines, 1):
+            usd_hr = self._compute_usd_hr(m, pricing)
+            if usd_hr:
+                aud_hr = usd_hr * usd_to_aud
+                aud_per_vcpu = aud_hr / m["vcpus"]
+                usd_min = usd_hr / 60
+                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {usd_hr:>8.2f} {aud_hr:>8.2f} {aud_per_vcpu:>13.4f} {usd_min:>8.4f}")
+            else:
+                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {'n/a':>8} {'n/a':>8} {'n/a':>13} {'n/a':>8}")
+
         try:
             idx = int(input("\n  Select option: ").strip()) - 1
-            return MACHINE_TYPES[idx][0]
+            return machines[idx]["name"]
         except (ValueError, IndexError):
             print("  Invalid selection, defaulting to option 1.")
-            return MACHINE_TYPES[0][0]
+            return machines[0]["name"]
 
     def setup(self):
         """Create and fully configure a new VM."""
