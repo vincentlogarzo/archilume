@@ -81,11 +81,16 @@ fi
 
 # Install Google Cloud CLI
 echo "☁️  Installing Google Cloud CLI..."
-curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir="$HOME"
+if [ -d "$HOME/google-cloud-sdk" ]; then
+    echo "  Google Cloud SDK already installed, updating..."
+    "$HOME/google-cloud-sdk/bin/gcloud" components update --quiet || true
+else
+    curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir="$HOME"
+fi
 sudo ln -sf "$HOME/google-cloud-sdk/bin/gcloud" /usr/local/bin/gcloud
 sudo ln -sf "$HOME/google-cloud-sdk/bin/gsutil" /usr/local/bin/gsutil
 sudo ln -sf "$HOME/google-cloud-sdk/bin/bq" /usr/local/bin/bq
-echo "✅ Google Cloud CLI installed!"
+echo "✅ Google Cloud CLI ready!"
 
 # Install Python dependencies using uv
 echo "🐍 Installing Python dependencies..."
