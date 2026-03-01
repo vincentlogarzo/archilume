@@ -295,6 +295,57 @@ class GCPVMManager:
             print(f"  SSH key created: {SSH_KEY_PATH}")
         self._check_vscode_remote_ssh_config()
 
+    def _prompt_copy_ssh_key_to_windows(self):
+        """Prompt user to copy SSH key from Linux container to Windows host."""
+        is_wsl = Path("/proc/version").exists() and "microsoft" in Path("/proc/version").read_text().lower()
+        is_devcontainer = os.environ.get("REMOTE_CONTAINERS") or os.environ.get("CODESPACES")
+
+        # Only show this prompt if we're in a dev container or WSL
+        if not (is_wsl or is_devcontainer):
+            return
+
+        print("\n  ⚠️  SSH key synchronization for Windows host detected")
+        ans = input("  Do you need to copy the SSH key to your Windows host? (y/N): ").strip().lower()
+        if ans != "y":
+            return
+
+        print("\n  --- SSH Key Copy Instructions ---")
+        print(f"\n  Your SSH private key needs to be copied from Linux to Windows:")
+        print(f"\n  1️⃣  Copy the key content below:")
+        print(f"\n  {'-' * 70}")
+
+        # Read and display the private key
+        key_content = SSH_KEY_PATH.read_text()
+        print(key_content)
+        print(f"  {'-' * 70}")
+
+        print(f"\n  2️⃣  Paste it into your Windows SSH folder:")
+        windows_ssh_path = "C:\\Users\\<YourUsername>\\.ssh\\google_cloud_vm_key"
+        print(f"     📁 {windows_ssh_path}")
+        print(f"\n     Click here to open: file:///C:/Users/")
+
+        # Check if we can find the Windows user home
+        wsl_users = Path("/mnt/c/Users")
+        if wsl_users.exists():
+            user_dirs = [d for d in wsl_users.iterdir() if d.is_dir() and d.name not in ("Public", "Default", "Default User", "All Users")]
+            if user_dirs:
+                # Use first found user (usually the correct one)
+                windows_user = user_dirs[0].name
+                windows_ssh_key = f"C:\\Users\\{windows_user}\\.ssh\\google_cloud_vm_key"
+                print(f"\n     📍 Your path appears to be: {windows_ssh_key}")
+                print(f"     Click here to open: file:///C:/Users/{windows_user}/.ssh/")
+
+        print(f"\n  3️⃣  Fix SSH key permissions (Windows PowerShell as Admin):")
+        print(f"     icacls \"C:\\Users\\<YourUsername>\\.ssh\\google_cloud_vm_key\" /inheritance:r /grant:r \"%USERNAME%:F\"")
+
+        print(f"\n  4️⃣  Test SSH from Windows command prompt:")
+        print(f"     ssh gcp-vm")
+
+        print(f"\n  5️⃣  Then try VSCode Remote SSH again!")
+
+        input("\n  Press Enter after you've completed these steps...")
+        print("  ✅ Setup complete! VSCode Remote SSH should now work.")
+
     def _read_pubkey(self) -> str:
         return SSH_KEY_PATH.with_suffix(".pub").read_text().strip()
 
@@ -354,37 +405,10 @@ class GCPVMManager:
         self._upsert_ssh_config_block(SSH_CONFIG_PATH, SSH_HOST_ALIAS, container_block)
         print(f"  SSH config updated: {SSH_CONFIG_PATH}")
 
-        # Also write to Windows host SSH config if accessible (WSL/devcontainer)
-        win_config = self._find_windows_ssh_config()
-        win_block = (
-            f"Host {SSH_HOST_ALIAS}\n"
-            f"    HostName {ip}\n"
-            f"    User {username}\n"
-            f"    IdentityFile C:\\Users\\{username}\\.ssh\\google_cloud_vm_key\n"
-            f"    StrictHostKeyChecking accept-new\n"
-            f"    ConnectTimeout 5\n"
-        )
-        if win_config:
-            try:
-                self._upsert_ssh_config_block(win_config, SSH_HOST_ALIAS, win_block)
-                print(f"  Windows SSH config updated: {win_config}")
-            except PermissionError:
-                print(f"  ⚠️  Could not write Windows SSH config: {win_config} (permission denied)")
-                self._print_windows_ssh_config_instructions(win_block)
-        else:
-            # /mnt/c not mounted (typical in dev containers) — print instructions
-            self._print_windows_ssh_config_instructions(win_block)
-
-    def _print_windows_ssh_config_instructions(self, block: str):
-        print(
-            f"\n  ⚠️  Could not auto-update your Windows SSH config.\n"
-            f"     Paste the following into C:\\Users\\<you>\\.ssh\\config\n"
-            f"     (replacing any existing 'Host {SSH_HOST_ALIAS}' block):\n"
-            f"\n"
-        )
-        for line in block.splitlines():
-            print(f"     {line}")
-        print()
+        # The devcontainer mounts ~/.ssh from the WSL host, so writing to
+        # SSH_CONFIG_PATH here automatically updates C:\Users\<you>\.ssh\config
+        # on Windows. No separate Windows config write needed.
+        print(f"  SSH config written: Host {SSH_HOST_ALIAS} → {ip} (key: {SSH_KEY_PATH})")
 
     def _ensure_ssh_key_on_vm(self, vm_name: str):
         """Ensure our SSH public key is in the VM's instance metadata."""
@@ -868,12 +892,13 @@ class GCPVMManager:
     def _check_vm_idle(self, vm_name: str) -> tuple[bool, str]:
         """Check if the VM has any running user processes (python, bash scripts, etc).
         Returns (is_idle, description)."""
-        # Look for python/bash processes that indicate active work
-        # Exclude system processes, sshd, and the check command itself
+        # Look for user processes that indicate active work
+        # Exclude system daemons, services, and the check command itself
         out, code = self._ssh_capture(
             vm_name,
-            "ps aux --no-headers | grep -vE '(sshd|ps aux|grep|bash -c|gcloud)' | "
-            "grep -E '(python|node|java|make|gcc|g\\+\\+|cargo|go run)' || true"
+            "ps aux --no-headers | grep -v root | "
+            "grep -vE '(sshd|ps aux|grep|bash -c|gcloud|systemd|networkd|unattended|kworker)' | "
+            "grep -E '(python|node|java|make|gcc|g\\+\\+|cargo|go run|docker)' || true"
         )
         if code != 0:
             return False, "Could not check running processes"
@@ -914,7 +939,7 @@ class GCPVMManager:
         return True
 
     def delete(self):
-        """Select and delete one or more VMs, downloading outputs first."""
+        """Select and delete one or more VMs."""
         self.prompt_config()
         vms = self.list_vms()
         if not vms:
@@ -946,18 +971,11 @@ class GCPVMManager:
                 blocked.append(name)
 
         if blocked:
-            print(f"\n  Cannot proceed — the following VM(s) are still running code: {', '.join(blocked)}")
-            print("  Wait for processes to finish or stop them manually before deleting.")
-            return
-
-        # Download outputs from each running VM before deletion
-        for name, status, zone, _ in selected:
-            if status == "RUNNING":
-                self._download_outputs_from_vm(name, zone)
-
-        if input("\n  Have you verified you have downloaded the results you need? (y/N): ").strip().lower() != "y":
-            print("  Cancelled. VMs not deleted.")
-            return
+            print(f"\n  ⚠️  The following VM(s) are still running code: {', '.join(blocked)}")
+            force = input("  Force shutdown anyway? (y/N): ").strip().lower()
+            if force != "y":
+                print("  Cancelled. Wait for processes to finish or stop them manually.")
+                return
 
         print("\n  VMs to delete:")
         for name, status, zone, _ in selected:
@@ -988,6 +1006,30 @@ class GCPVMManager:
         for name, status, zone, ip in vms:
             print(f"  {name:<30}  {status:<12}  {zone:<25}  {ip or '—'}")
 
+    def download_outputs(self):
+        """Download outputs from selected VMs without deleting them."""
+        self.prompt_config()
+        vms = self.list_vms()
+        running = [(n, s, z, ip) for n, s, z, ip in vms if s == "RUNNING"]
+
+        if not running:
+            print("  No running archilume VMs found.")
+            return
+
+        print("\n  Running VMs:")
+        for i, (name, _, zone, ip) in enumerate(running, 1):
+            print(f"    {i}. {name}  ({zone})  {ip}")
+
+        try:
+            indices = [int(x.strip()) - 1 for x in input("\n  Enter numbers to download from (e.g. 1,3): ").split(",")]
+            selected = [running[i] for i in indices]
+        except (ValueError, IndexError):
+            print("  Invalid selection.")
+            return
+
+        for name, _, zone, _ in selected:
+            self._download_outputs_from_vm(name, zone)
+
     def run(self):
         """Show the main menu and dispatch the selected action."""
         print("\n============= Archilume GCP VM Manager =============")
@@ -997,9 +1039,11 @@ class GCPVMManager:
         print("\n  1. Setup new VM")
         print("  2. Connect to a VM")
         print("  3. Reconnect and rebuild dev container")
-        print("  4. Download results and delete VM(s)")
-        print("  5. Check / list VMs")
-        print("  6. Exit")
+        print("  4. Download outputs from VM(s)")
+        print("  5. Delete VM(s)")
+        print("  6. Check / list VMs")
+        print("  7. Sync SSH key to Windows host")
+        print("  8. Exit")
 
         choice = input("\nSelect option: ").strip()
 
@@ -1010,10 +1054,15 @@ class GCPVMManager:
         elif choice == "3":
             self.reconnect_and_rebuild()
         elif choice == "4":
-            self.delete()
+            self.download_outputs()
         elif choice == "5":
-            self.check()
+            self.delete()
         elif choice == "6":
+            self.check()
+        elif choice == "7":
+            self._ensure_ssh_key()
+            self._prompt_copy_ssh_key_to_windows()
+        elif choice == "8":
             raise SystemExit(0)
         else:
             print("  Invalid option.")
