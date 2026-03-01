@@ -632,22 +632,44 @@ class GCPVMManager:
             subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
 
     def copy_inputs_to_vm(self, ip: str, username: str) -> None:
-        """Copy local inputs folder to VM via SCP."""
+        """Copy aoi folder and input files from local inputs to VM via SCP."""
         local_inputs = Path.cwd() / "inputs"
         if not local_inputs.exists():
             print("  ℹ️  No local inputs folder found, skipping...")
             return
 
-        print("  📂 Copying inputs folder to VM...")
-        remote_workspace = f"{username}@{ip}:{REMOTE_WORKSPACE}"
-        result = subprocess.run(
-            ["scp", "-r", str(local_inputs), remote_workspace],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            print(f"  ⚠️  Warning: Failed to copy inputs: {result.stderr}")
+        print("  📂 Copying inputs data to VM...")
+        remote_inputs = f"{username}@{ip}:{REMOTE_WORKSPACE}/inputs"
+
+        # Copy aoi folder
+        aoi_folder = local_inputs / "aoi"
+        if aoi_folder.exists():
+            result = subprocess.run(
+                ["scp", "-r", str(aoi_folder), remote_inputs],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                print(f"    ⚠️  Warning: Failed to copy aoi folder: {result.stderr}")
+            else:
+                print("    ✅ AOI folder copied")
+
+        # Copy individual files (not subdirectories)
+        files_to_copy = [f for f in local_inputs.glob("*") if f.is_file()]
+        if files_to_copy:
+            for file in files_to_copy:
+                result = subprocess.run(
+                    ["scp", str(file), remote_inputs],
+                    capture_output=True, text=True
+                )
+                if result.returncode != 0:
+                    print(f"    ⚠️  Warning: Failed to copy {file.name}: {result.stderr}")
+                else:
+                    print(f"    ✅ Copied {file.name}")
+
+        if not aoi_folder.exists() and not files_to_copy:
+            print("  ℹ️  No aoi folder or input files found to copy")
         else:
-            print("  ✅ Inputs copied successfully!")
+            print("  ✅ Inputs data copied successfully!")
 
     def delete(self):
         """Select and delete one or more VMs."""
