@@ -1,4 +1,5 @@
 from .apng2mp4 import Apng2Mp4
+from .gcp_vm_manager import GCPVMManager
 from .ifc_strip import IfcStrip
 from .hdr2wpd import Hdr2Wpd
 from .mtl_converter import MtlConverter

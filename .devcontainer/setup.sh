@@ -59,10 +59,18 @@ rm -rf Accelerad
 # Add environment variables to bash profile
 echo "🔧 Configuring environment variables..."
 if ! grep -q "RAYPATH" ~/.bashrc; then
-    echo 'export PATH=$PATH:/usr/local/radiance/bin' >> ~/.bashrc
+    echo 'export PATH=$PATH:/usr/local/radiance/bin:/usr/local/google-cloud-sdk/bin' >> ~/.bashrc
     echo 'export RAYPATH=/usr/local/radiance/lib' >> ~/.bashrc
     echo 'export UV_LINK_MODE=copy' >> ~/.bashrc
 fi
+
+# Install Google Cloud CLI
+echo "☁️  Installing Google Cloud CLI..."
+curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir="$HOME"
+sudo ln -sf "$HOME/google-cloud-sdk/bin/gcloud" /usr/local/bin/gcloud
+sudo ln -sf "$HOME/google-cloud-sdk/bin/gsutil" /usr/local/bin/gsutil
+sudo ln -sf "$HOME/google-cloud-sdk/bin/bq" /usr/local/bin/bq
+echo "✅ Google Cloud CLI installed!"
 
 # Install Python dependencies using uv
 echo "🐍 Installing Python dependencies..."
