@@ -10,6 +10,30 @@ Usage:
     from archilume.obj_aoi_editor import ObjAoiEditor
     editor = ObjAoiEditor(obj_path="model.obj")
     editor.launch()
+
+Controls:
+    ↑/↓           Navigate floor levels
+    Left-click    Place vertex (draw) or drag vertex (edit mode)
+    Right-click   Select existing room
+    Scroll        Zoom centred on cursor
+    s             Save room / confirm edit
+    d             Delete selected room
+    e             Toggle Edit Mode
+    v             Cycle views: Plan → Elev X → Elev Y
+    a             Toggle all-floors display
+    f             Toggle floor finish overlay (horizontal faces coloured by material)
+    o             Align view: click 2 points on a wall to rotate that wall horizontal
+    O             Reset view rotation to 0°
+    r             Reset zoom (works correctly after rotation)
+    q             Quit
+
+View Rotation:
+    The plan view can be rotated orthogonally without modifying the OBJ or saved
+    room boundaries. Press 'o', click two points defining a line (e.g. along a
+    wall), and the view rotates so that line becomes horizontal. All drawing,
+    editing, and snapping continues to work normally in the rotated view.
+    Saved room vertices are always stored in the original world coordinate system.
+    Press 'O' (shift+o) to reset to the original orientation.
 """
 
 # Archilume imports
@@ -66,6 +90,11 @@ class MeshSlicer:
             raise FileNotFoundError(f"OBJ file not found: {obj_path}")
         self.mesh = pv.read(str(obj_path))
 
+        # Inject per-face material IDs by parsing the OBJ directly.
+        # PyVista/VTK does not populate cell_data['MaterialIds'] from OBJ files,
+        # so we build it ourselves from usemtl/f lines.
+        self._inject_material_ids(obj_path)
+
         # Apply mesh simplification if requested
         if simplify_ratio is not None and 0.0 < simplify_ratio < 1.0:
             original_cells = self.mesh.n_cells
@@ -91,6 +120,97 @@ class MeshSlicer:
         # Initialize slice cache (LRU cache for performance)
         self.slice_cache: OrderedDict[float, Tuple] = OrderedDict()
         self.cache_size_limit = 50  # Store up to 50 slices
+
+    def _inject_material_ids(self, obj_path: Path):
+        """Parse OBJ usemtl/f lines to build per-face MaterialIds and inject into mesh cell_data.
+
+        Builds:
+          mesh.field_data['MaterialNames'] – ordered list of material names (only those used by faces)
+          mesh.cell_data['MaterialIds']    – per-cell integer index into MaterialNames
+        """
+        mat_names = []        # ordered, only materials that have at least one face
+        mat_index = {}        # name -> index
+        face_mat_ids = []     # one entry per f-line in the OBJ
+        current_mat = None
+
+        try:
+            with open(obj_path, 'r', errors='replace') as f:
+                for line in f:
+                    if line.startswith('usemtl '):
+                        current_mat = line[7:].strip()
+                    elif line.startswith('f '):
+                        if current_mat is not None and current_mat not in mat_index:
+                            mat_index[current_mat] = len(mat_names)
+                            mat_names.append(current_mat)
+                        face_mat_ids.append(mat_index.get(current_mat, -1))
+        except OSError as e:
+            print(f"Could not parse OBJ for material IDs: {e}")
+            return
+
+        if not mat_names or not face_mat_ids:
+            return
+
+        n_cells = self.mesh.n_cells
+        if len(face_mat_ids) != n_cells:
+            print(f"Material ID count ({len(face_mat_ids)}) != mesh cell count ({n_cells}); skipping material injection.")
+            return
+
+        self.mesh.field_data['MaterialNames'] = np.array(mat_names, dtype=object)
+        self.mesh.cell_data['MaterialIds'] = np.array(face_mat_ids, dtype=np.int32)
+        print(f"Injected {len(mat_names)} materials across {n_cells:,} faces.")
+
+    def get_floor_finish_polygons(self, z_height: float, z_band: float = 0.5):
+        """Extract horizontal face polygons near z_height for floor finish overlay.
+
+        Finds all faces that are:
+          - Nearly horizontal (|normal.z| > 0.8)
+          - Whose centroid Z is within z_band of z_height
+
+        Returns:
+            List of (xy_points, material_id) where xy_points is an (N, 2) array
+            of the face vertices projected onto the XY plane.
+        """
+        mesh_n = self.mesh.compute_normals(cell_normals=True, point_normals=False)
+        normals = mesh_n['Normals']                    # (n_cells, 3)
+        centers = mesh_n.cell_centers().points         # (n_cells, 3)
+        mat_ids = self.mesh.cell_data.get('MaterialIds',
+                      np.full(self.mesh.n_cells, -1, dtype=np.int32))
+
+        horiz_mask = (np.abs(normals[:, 2]) > 0.8) & \
+                     (np.abs(centers[:, 2] - z_height) <= z_band)
+
+        if not horiz_mask.any():
+            return []
+
+        cell_indices = np.where(horiz_mask)[0]
+        polygons = []
+
+        # Extract face vertices for each matching cell
+        faces = self.mesh.faces  # flat VTK connectivity array
+        # Build per-cell face index map via cell sizes
+        cell_sizes = self.mesh.get_cell(0)  # probe — use direct faces array parsing
+        # Parse the flat faces array: [n, i0, i1, ..., n, i0, ...]
+        pts = self.mesh.points  # (n_pts, 3)
+
+        # Build a mapping: cell_idx -> slice into faces array
+        cell_offsets = []
+        i = 0
+        arr = faces
+        while i < len(arr):
+            n = int(arr[i])
+            cell_offsets.append((i + 1, n))
+            i += n + 1
+
+        for cell_idx in cell_indices:
+            if cell_idx >= len(cell_offsets):
+                continue
+            start, n_verts = cell_offsets[cell_idx]
+            vert_indices = arr[start:start + n_verts]
+            xy = pts[vert_indices, :2]      # project to XY
+            mid = int(mat_ids[cell_idx])
+            polygons.append((xy, mid))
+
+        return polygons
 
     def _detect_floor_levels(self,
                             z_resolution: float = 0.1,
@@ -236,12 +356,14 @@ class MeshSlicer:
         segment_material_ids = []
         unique_vertices = set()
 
-        # Per-point material IDs interpolated by VTK through the slice plane
-        mat_ids_per_point = None
-        if 'MaterialIds' in section.point_data:
-            mat_ids_per_point = np.round(section.point_data['MaterialIds']).astype(np.int32)
+        # Per-cell (per-segment) material IDs — VTK preserves cell_data through slicing
+        mat_ids_per_cell = None
+        if 'MaterialIds' in section.cell_data:
+            mat_ids_per_cell = section.cell_data['MaterialIds'].astype(np.int32)
 
         # Extract line segments from the PolyData lines connectivity
+        # Each entry in section.lines is: [n_pts, pt_idx0, pt_idx1, ...] — one per cell
+        cell_idx = 0
         if section.lines is not None and len(section.lines) > 0:
             lines = section.lines
             i = 0
@@ -255,12 +377,10 @@ class MeshSlicer:
                     segments.append((p1[0], p1[1], p2[0], p2[1]))
                     unique_vertices.add((p1[0], p1[1]))
                     unique_vertices.add((p2[0], p2[1]))
-                    # Use material of first endpoint; fall back to -1
-                    if mat_ids_per_point is not None:
-                        segment_material_ids.append(int(mat_ids_per_point[idx1]))
-                    else:
-                        segment_material_ids.append(-1)
+                    mat_id = int(mat_ids_per_cell[cell_idx]) if mat_ids_per_cell is not None else -1
+                    segment_material_ids.append(mat_id)
                 i += n_pts + 1
+                cell_idx += 1
 
         # Convert to numpy array
         vertices_array = np.array(list(unique_vertices)) if unique_vertices else np.array([])
@@ -408,11 +528,17 @@ class ObjAoiEditor:
         self.room_patches: List[Polygon] = []
         self.room_labels: List = []
         self.current_polygon_vertices = []
-        self.selected_room_idx: Optional[int] = None
+        self.selected_room_idx: Optional[int] = None   # Active room (edit/name/save)
+        self.selected_room_indices: set = set()          # All selected rooms (list multi-select)
 
         # Zoom state
         self.original_xlim = None
         self.original_ylim = None
+
+        # Current slice geometry (kept for tooltip hit-testing)
+        self._display_segments: List = []        # rotated (x0,y0,x1,y1) tuples
+        self._display_seg_mat_ids: np.ndarray = np.array([], dtype=np.int32)
+        self._tooltip_annotation = None          # matplotlib Annotation for hover tooltip
 
         # Mesh slicer (loaded on launch)
         self.slicer: Optional[MeshSlicer] = None
@@ -426,7 +552,8 @@ class ObjAoiEditor:
         self._vertex_kdtree: Optional[cKDTree] = None  # Spatial index for fast snapping
 
         # Visualization options
-        self.show_all_floors: bool = False  # Toggle to show rooms from all floors
+        self.show_all_floors: bool = False    # Toggle to show rooms from all floors
+        self.show_floor_finishes: bool = False  # Toggle floor finish (horizontal face) overlay
         self.view_mode: str = 'plan'  # 'plan', 'elevation_x', or 'elevation_y'
         self.elevation_position: float = 0.0  # Position of elevation slice
 
@@ -447,6 +574,8 @@ class ObjAoiEditor:
         # Room list scroll state
         self.room_list_scroll_offset: int = 0  # Scroll offset for saved rooms list
         self._room_list_hit_boxes: List[Tuple] = []  # [(y_min, y_max, room_idx), ...] in axes coords
+        self._room_list_flat_order: List[int] = []   # flat ordered room indices (for shift-click range)
+        self._room_list_last_clicked: Optional[int] = None  # room_idx of last non-shift click
 
         # Slider debouncing
         self._z_slider_timer: Optional[Any] = None  # matplotlib TimerBase
@@ -464,9 +593,27 @@ class ObjAoiEditor:
         # Material highlighting state
         self.material_names: List[str] = []          # Ordered list from mesh field_data
         self.material_colors: dict = {}               # material_name -> hex color string
-        self.highlighted_material: Optional[str] = None  # Currently selected material (None = all grey)
+        self.highlighted_materials: set = set()  # Currently selected materials (empty = show all)
         self._material_list_scroll: int = 0          # Scroll offset for material list
         self._material_list_hit_boxes: List[Tuple] = []  # [(y_min, y_max, mat_name), ...]
+
+        # Generate finish boundaries state
+        _ROOM_TYPES = ['LIVING', 'BED', 'POS']
+        self._gen_room_types: List[str] = _ROOM_TYPES
+        self._gen_room_type_idx: int = 0              # Index into _gen_room_types
+
+        # Room type color map: type prefix → (edge/face color, label background)
+        self._room_type_colors = {
+            'LIVING': ('#4CAF50', '#388E3C'),   # Green
+            'BED':    ('#2196F3', '#1565C0'),   # Blue
+            'POS':    ('#FF9800', '#E65100'),   # Orange
+        }
+        self.btn_gen_room_type: Optional[Button] = None
+
+        # View rotation (display-only, does not modify OBJ or stored vertices)
+        self.view_rotation_angle: float = 0.0        # Rotation angle in radians (CCW)
+        self._align_mode: bool = False               # True when waiting for two alignment points
+        self._align_pts: List[Tuple] = []            # Collected points for two-point align
 
     def launch(self):
         """Load the mesh and open the interactive editor window."""
@@ -507,6 +654,12 @@ class ObjAoiEditor:
 
         # Setup matplotlib figure with soft off-white background
         # Use a moderate default size that fits most screens; window will be maximized after
+        # Remove matplotlib default keybinding for 'f' (fullscreen) — conflicts with finish overlay
+        try:
+            plt.rcParams['keymap.fullscreen'].remove('f')
+        except (ValueError, KeyError):
+            pass
+
         self.fig = plt.figure(figsize=(14, 8), facecolor='#F5F5F0')
 
         # Adjust subplot parameters to ensure content fits within the figure
@@ -543,12 +696,14 @@ class ObjAoiEditor:
         self._setup_floor_level_indicators()
         self._setup_view_mode_buttons()
 
-        # Initial section render
-        self._render_section()
+        # Load existing session first so rotation angle and stored limits are available before render
+        self._load_session()
+        self._update_room_list()
+        self._update_floor_level_list()
+        self._update_material_list()
 
-        # Store original limits
-        self.original_xlim = self.ax.get_xlim()
-        self.original_ylim = self.ax.get_ylim()
+        # Initial section render (uses session limits if present, otherwise fits from geometry)
+        self._render_section()
 
         # Polygon selector for drawing room boundaries
         self._create_polygon_selector()
@@ -562,12 +717,6 @@ class ObjAoiEditor:
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.fig.canvas.mpl_connect('scroll_event', self._on_material_list_scroll)
-
-        # Load existing session if available
-        self._load_session()
-        self._update_room_list()
-        self._update_floor_level_list()
-        self._update_material_list()
 
         print("\n=== Boundary Editor ===")
         print("Draw room boundary polygons on the floor plan section.")
@@ -585,25 +734,25 @@ class ObjAoiEditor:
     # -------------------------------------------------------------------------
 
     def _load_material_info(self):
-        """Read material names from the loaded mesh and assign display colours.
+        """Read material names from the mesh field_data (injected by _inject_material_ids).
 
-        PyVista/VTK preserves MTL data in:
-          mesh.field_data['MaterialNames'] – ordered string array of material names
-          mesh.cell_data['MaterialIds']    – per-cell index into MaterialNames
+        Only materials that are actually assigned to at least one face are included,
+        so unused materials from the MTL file are automatically excluded.
 
         A distinct colour is assigned to each material using a qualitative palette
         that cycles for large material counts.
         """
         mesh = self.slicer.mesh
         if 'MaterialNames' not in mesh.field_data:
-            print("No material data found in mesh (no MTL file or not an OBJ with materials).")
+            print("No material data in mesh (OBJ has no usemtl lines or face count mismatch).")
             self.material_names = []
             self.material_colors = {}
             return
 
-        # field_data returns a numpy array of strings
-        raw = mesh.field_data['MaterialNames']
-        self.material_names = [str(n) for n in raw]
+        # _material_names_by_id preserves injection order (index matches cell_data MaterialIds)
+        self._material_names_by_id = [str(n) for n in mesh.field_data['MaterialNames']]
+        # material_names is sorted alphabetically for display in the panel
+        self.material_names = sorted(self._material_names_by_id)
 
         # Qualitative colour palette (cycles if > len(palette) materials)
         palette = [
@@ -629,9 +778,10 @@ class ObjAoiEditor:
         Returns:
             Hex colour string
         """
-        if not self.material_names or mat_id < 0 or mat_id >= len(self.material_names):
+        names_by_id = getattr(self, '_material_names_by_id', self.material_names)
+        if not names_by_id or mat_id < 0 or mat_id >= len(names_by_id):
             return '#303030'
-        name = self.material_names[mat_id]
+        name = names_by_id[mat_id]
         return self.material_colors.get(name, '#303030')
 
     # -------------------------------------------------------------------------
@@ -732,6 +882,9 @@ class ObjAoiEditor:
             ("e",                 "Toggle Edit Mode"),
             ("v",                 "Cycle views: Plan \u2192 Elev X \u2192 Elev Y"),
             ("a",                 "Toggle all-floors display"),
+            ("f",                 "Toggle floor finish overlay"),
+            ("o",                 "Align view: click 2 pts to rotate"),
+            ("O",                 "Reset view rotation"),
             ("r",                 "Reset zoom"),
             ("q",                 "Quit"),
         ]
@@ -743,67 +896,83 @@ class ObjAoiEditor:
                           transform=ax_instr.transAxes)
 
         # ── LEFT COLUMN: floor levels + input fields ──────────────────────────
+        # Layout top-down with explicit Y anchors for each element group
 
         # Floor level navigation section (left column)
-        ax_floor_hdr = self.fig.add_axes([pl, 0.75, pw_l, 0.03])
+        floor_hdr_y   = 0.760
+        floor_list_h  = 0.100
+        floor_list_y  = floor_hdr_y - 0.005 - floor_list_h   # 0.655
+
+        ax_floor_hdr = self.fig.add_axes([pl, floor_hdr_y, pw_l, 0.025])
         ax_floor_hdr.axis('off')
         ax_floor_hdr.text(0, 0.5, "FLOOR LEVELS:", fontsize=10, fontweight='bold', color='#404040')
 
         # Floor navigation arrow buttons
         btn_arrow_width = 0.025
-        btn_arrow_height = 0.05
+        btn_arrow_height = 0.046
         floor_list_left = pl + btn_arrow_width + 0.005
 
-        ax_next_floor = self.fig.add_axes([pl, 0.68, btn_arrow_width, btn_arrow_height])
+        ax_next_floor = self.fig.add_axes([pl, floor_list_y + floor_list_h - btn_arrow_height,
+                                           btn_arrow_width, btn_arrow_height])
         self.btn_next_floor = Button(ax_next_floor, '\u25b2', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_next_floor.on_clicked(self._on_next_floor_click)
 
-        ax_prev_floor = self.fig.add_axes([pl, 0.62, btn_arrow_width, btn_arrow_height])
+        ax_prev_floor = self.fig.add_axes([pl, floor_list_y,
+                                           btn_arrow_width, btn_arrow_height])
         self.btn_prev_floor = Button(ax_prev_floor, '\u25bc', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_prev_floor.on_clicked(self._on_prev_floor_click)
 
-        self.ax_floor_list = self.fig.add_axes([floor_list_left, 0.62, pw_l - btn_arrow_width - 0.005, 0.12])
+        self.ax_floor_list = self.fig.add_axes([floor_list_left, floor_list_y,
+                                                pw_l - btn_arrow_width - 0.005, floor_list_h])
         self.ax_floor_list.axis('off')
 
         # Parent apartment selector (half width - left column only)
-        ax_parent_lbl = self.fig.add_axes([pl, 0.565, pw_l, 0.03])
-        ax_parent_lbl.axis('off')
-        ax_parent_lbl.text(0, 0.5, "Parent Apartment:", fontsize=10, fontweight='bold')
+        parent_lbl_y = floor_list_y - 0.008 - 0.025    # 0.622
+        parent_btn_y = parent_lbl_y - 0.005 - 0.030    # 0.587
 
-        ax_parent_btn = self.fig.add_axes([pl, 0.525, pw_l, 0.035])
+        ax_parent_lbl = self.fig.add_axes([pl, parent_lbl_y, pw_l, 0.025])
+        ax_parent_lbl.axis('off')
+        ax_parent_lbl.text(0, 0.5, "Parent Apartment:", fontsize=9, fontweight='bold')
+
+        ax_parent_btn = self.fig.add_axes([pl, parent_btn_y, pw_l, 0.030])
         self.btn_parent = Button(ax_parent_btn, '(None)', color=self._btn_color, hovercolor=self._btn_hover)
         self.btn_parent.label.set_fontsize(8)
         self.btn_parent.on_clicked(self._on_parent_cycle)
 
         # Name preview label
-        ax_name_preview = self.fig.add_axes([pl, 0.500, pw_l, 0.02])
+        name_preview_y = parent_btn_y - 0.005 - 0.020  # 0.562
+        ax_name_preview = self.fig.add_axes([pl, name_preview_y, pw_l, 0.020])
         ax_name_preview.axis('off')
         self.name_preview_text = ax_name_preview.text(0, 0.5, "", fontsize=8, color='#666666', style='italic')
 
         # Room name input (half width - left column only)
-        ax_name_lbl = self.fig.add_axes([pl, 0.465, pw_l, 0.03])
+        name_lbl_y  = name_preview_y - 0.003 - 0.025   # 0.534
+        name_box_y  = name_lbl_y - 0.003 - 0.035       # 0.496
+
+        ax_name_lbl = self.fig.add_axes([pl, name_lbl_y, pw_l, 0.025])
         ax_name_lbl.axis('off')
         self.name_label_text = ax_name_lbl.text(0, 0.5, "Apartment Name:", fontsize=9, fontweight='bold')
-        ax_name = self.fig.add_axes([pl, 0.420, pw_l, 0.040])
+        ax_name = self.fig.add_axes([pl, name_box_y, pw_l, 0.035])
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
 
         # Status display (left column)
-        ax_status = self.fig.add_axes([pl, 0.375, pw_l, 0.03])
+        status_y = name_box_y - 0.005 - 0.025          # 0.466
+        ax_status = self.fig.add_axes([pl, status_y, pw_l, 0.025])
         ax_status.axis('off')
         self.status_text = ax_status.text(
             0, 0.5, "Status: Ready to draw", fontsize=8, color='blue', style='italic')
 
         # ── RIGHT COLUMN: SAVED ROOMS list ──────────────────────────────────────
 
-        list_hdr_y = 0.750
+        list_hdr_y = 0.760
         ax_list_hdr = self.fig.add_axes([pr, list_hdr_y, pw_r, 0.025])
         ax_list_hdr.axis('off')
         ax_list_hdr.text(0, 0.5, "SAVED ROOMS:",
                          fontsize=9, fontweight='bold')
 
-        # Scrollable room list — in right column
-        list_bottom = 0.375  # aligns with Status text level
+        # Scrollable room list — in right column, aligns with status_y bottom
+        list_bottom = status_y
         list_top = list_hdr_y - 0.005
         self.ax_list = self.fig.add_axes([pr, list_bottom, pw_r, list_top - list_bottom])
         self.ax_list.set_facecolor('#FAFAF8')
@@ -845,8 +1014,8 @@ class ObjAoiEditor:
 
         # ── FULL-WIDTH SECTION: snap slider ───────────────────────────────────
 
-        snap_lbl_y = 0.33
-        ax_snap_dist_lbl = self.fig.add_axes([pl, snap_lbl_y, pw, 0.02])
+        snap_lbl_y = 0.435
+        ax_snap_dist_lbl = self.fig.add_axes([pl, snap_lbl_y, pw, 0.020])
         ax_snap_dist_lbl.axis('off')
         ax_snap_dist_lbl.text(0, 0.5, f"Snap Distance: {self.snap_distance:.1f}m", fontsize=9, color='#505050')
         self.snap_dist_label = ax_snap_dist_lbl
@@ -863,7 +1032,8 @@ class ObjAoiEditor:
         btn_h = 0.028   # button height
         btn_gap = 0.005  # gap between buttons
         btn_w = (pw - 2 * btn_gap) / 3  # three buttons side by side
-        btn_y = snap_lbl_y - 0.070  # below snap slider
+        _slider_bottom = snap_lbl_y - 0.025          # bottom edge of slider axes
+        btn_y = _slider_bottom - 0.010 - btn_h       # 10px gap below slider
 
         btn_labels = [
             ('btn_save',   'Save Room',       self._on_save_click),
@@ -879,49 +1049,48 @@ class ObjAoiEditor:
             btn.on_clicked(callback)
             setattr(self, attr_name, btn)
 
-        # ── LEGEND (in left panel, below buttons) ───────────────────────────────
-        legend_height = 0.085
-        legend_bottom = btn_y - btn_h - 0.015 - legend_height  # below action buttons
+        # ── LEGEND (compact single-row strip below action buttons) ───────────────
+        legend_height = 0.028
+        legend_bottom = btn_y - btn_h - 0.006 - legend_height
         ax_legend = self.fig.add_axes([pl, legend_bottom, pw, legend_height])
         ax_legend.axis('off')
         ax_legend.set_facecolor('#F0F0EC')
-        ax_legend.text(0.01, 0.92, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
-                       transform=ax_legend.transAxes)
 
         legend_items = [
-            ('green',    0.4,  'Apartment (current floor)'),
-            ('#2196F3',  0.4,  'Sub-room (current floor)'),
-            ('yellow',   0.35, 'Selected'),
-            ('cyan',     0.35, 'Being edited'),
-            ('magenta',  0.35, 'Hover vertex (edit mode)'),
-            ('gray',     0.15, 'Other floor'),
+            ('#4CAF50',  0.5,  'LIVING'),
+            ('#2196F3',  0.5,  'BED'),
+            ('#FF9800',  0.5,  'POS'),
+            ('yellow',   0.5,  'Sel'),
+            ('cyan',     0.5,  'Edit'),
+            ('gray',     0.3,  'Other'),
         ]
 
-        # Two-column layout for legend items
+        # Single-row layout — evenly spaced across full width
+        n_items = len(legend_items)
+        col_w = 1.0 / n_items
         for i, (color, alpha, label) in enumerate(legend_items):
-            col = i // 3  # 0 for first 3, 1 for last 3
-            row = i % 3
-            x_base = 0.01 + col * 0.50
-            y0 = 0.72 - row * 0.26
-            rect = FancyBboxPatch((x_base, y0 - 0.10), 0.04, 0.18,
+            x0 = i * col_w + 0.01
+            rect = FancyBboxPatch((x0, 0.15), col_w * 0.22, 0.65,
                                   boxstyle='round,pad=0.01',
                                   facecolor=color, edgecolor=color,
                                   alpha=alpha, transform=ax_legend.transAxes,
-                                  clip_on=False)
+                                  clip_on=True)
             ax_legend.add_patch(rect)
-            ax_legend.text(x_base + 0.06, y0, label, fontsize=6, color='#404040',
+            ax_legend.text(x0 + col_w * 0.26, 0.50, label, fontsize=5.5, color='#404040',
                            va='center', transform=ax_legend.transAxes)
 
         # ── MATERIAL LIST (below legend) ─────────────────────────────────────
+        # Reserve space at bottom for the "Generate finish boundaries" controls
+        _gen_block_h = 0.080   # height reserved for generate UI block
         mat_panel_top = legend_bottom - 0.005
-        mat_panel_h = mat_panel_top - (bottom_btn_y + bottom_btn_h + 0.005)
+        mat_panel_h = mat_panel_top - (bottom_btn_y + bottom_btn_h + 0.005) - _gen_block_h
         if mat_panel_h > 0.02:
-            ax_mat_hdr = self.fig.add_axes([pl, mat_panel_top - 0.022, pw, 0.020])
+            ax_mat_hdr = self.fig.add_axes([pl, mat_panel_top - 0.018, pw, 0.016])
             ax_mat_hdr.axis('off')
             ax_mat_hdr.text(0, 0.5, "MATERIALS  (click to highlight / click again to clear)",
                             fontsize=7, fontweight='bold', color='#404040')
 
-            mat_list_h = mat_panel_h - 0.025
+            mat_list_h = mat_panel_h - 0.020
             self.ax_mat_list = self.fig.add_axes([pl, mat_panel_top - 0.025 - mat_list_h, pw, mat_list_h])
             self.ax_mat_list.set_facecolor('#FAFAF8')
             self.ax_mat_list.tick_params(left=False, bottom=False,
@@ -931,6 +1100,36 @@ class ObjAoiEditor:
                 spine.set_linewidth(0.5)
         else:
             self.ax_mat_list = None
+
+        # ── GENERATE FINISH BOUNDARIES block ─────────────────────────────────
+        _gen_top = bottom_btn_y + bottom_btn_h + 0.005 + _gen_block_h  # top of block
+        _row_h  = 0.026
+        _gap    = 0.005
+        _y = _gen_top
+
+        # Section header
+        ax_gen_hdr = self.fig.add_axes([pl, _y - _row_h, pw, _row_h])
+        ax_gen_hdr.axis('off')
+        ax_gen_hdr.text(0, 0.5, "GENERATE FINISH BOUNDARIES",
+                        fontsize=7, fontweight='bold', color='#404040')
+        _y -= _row_h + _gap
+
+        # Room type cycle button
+        _type_btn_w = pw * 0.48
+        ax_gen_type = self.fig.add_axes([pl, _y - _row_h, _type_btn_w, _row_h])
+        self.btn_gen_room_type = Button(ax_gen_type,
+                                        f"Type: {self._gen_room_types[self._gen_room_type_idx]}",
+                                        color=self._btn_color, hovercolor=self._btn_hover)
+        self.btn_gen_room_type.label.set_fontsize(7)
+        self.btn_gen_room_type.on_clicked(self._on_gen_room_type_cycle)
+
+        # Generate button
+        ax_gen_btn = self.fig.add_axes([pl + _type_btn_w + _gap, _y - _row_h,
+                                         pw - _type_btn_w - _gap, _row_h])
+        self.btn_gen_boundaries = Button(ax_gen_btn, 'Generate finish boundaries',
+                                          color='#C8E6C9', hovercolor='#A5D6A7')
+        self.btn_gen_boundaries.label.set_fontsize(7)
+        self.btn_gen_boundaries.on_clicked(self._on_generate_finish_boundaries)
 
     # -------------------------------------------------------------------------
     # Parent/Child relationship helpers (hierarchical support)
@@ -1096,6 +1295,40 @@ class ObjAoiEditor:
         self.fig.canvas.draw_idle()
 
     # -------------------------------------------------------------------------
+    # View rotation helpers
+    # -------------------------------------------------------------------------
+
+    def _rot_pts(self, pts: np.ndarray) -> np.ndarray:
+        """Rotate 2D points by the current view_rotation_angle (for display).
+
+        Args:
+            pts: (N, 2) array of [x, y] coordinates in real-world space.
+
+        Returns:
+            (N, 2) array rotated for display.
+        """
+        if self.view_rotation_angle == 0.0:
+            return pts
+        c, s = np.cos(self.view_rotation_angle), np.sin(self.view_rotation_angle)
+        R = np.array([[c, -s], [s, c]])
+        return pts @ R.T
+
+    def _unrot_pts(self, pts: np.ndarray) -> np.ndarray:
+        """Inverse-rotate 2D points from display space back to real-world space.
+
+        Args:
+            pts: (N, 2) array of [x, y] display coordinates.
+
+        Returns:
+            (N, 2) array in real-world coordinates.
+        """
+        if self.view_rotation_angle == 0.0:
+            return pts
+        c, s = np.cos(self.view_rotation_angle), np.sin(self.view_rotation_angle)
+        R_inv = np.array([[c, s], [-s, c]])
+        return pts @ R_inv.T
+
+    # -------------------------------------------------------------------------
     # Section rendering
     # -------------------------------------------------------------------------
 
@@ -1125,6 +1358,54 @@ class ObjAoiEditor:
             self._update_room_visuals()
             self.fig.canvas.draw_idle()
 
+    def _fit_limits_from_geometry(self, segments, vertices, pad: float = 0.05):
+        """Compute axis limits that fit all geometry, corrected for equal aspect ratio.
+
+        Returns ((xmin, xmax), (ymin, ymax)) or None if no geometry is present.
+        """
+        xs, ys = [], []
+        if segments is not None and len(segments) > 0:
+            arr = np.array(segments, dtype=float)  # (N, 4)
+            xs.extend([arr[:, 0].min(), arr[:, 2].min(), arr[:, 0].max(), arr[:, 2].max()])
+            ys.extend([arr[:, 1].min(), arr[:, 3].min(), arr[:, 1].max(), arr[:, 3].max()])
+        if vertices is not None and len(vertices) > 0:
+            v = np.array(vertices)
+            xs.extend([v[:, 0].min(), v[:, 0].max()])
+            ys.extend([v[:, 1].min(), v[:, 1].max()])
+        if not xs:
+            return None
+
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        xspan = max(xmax - xmin, 1.0)
+        yspan = max(ymax - ymin, 1.0)
+
+        # Add padding
+        xcen = (xmin + xmax) / 2
+        ycen = (ymin + ymax) / 2
+        xspan *= (1 + 2 * pad)
+        yspan *= (1 + 2 * pad)
+
+        # Expand the shorter axis so both spans match (equal aspect requires equal data spans
+        # relative to the axes box dimensions)
+        try:
+            bbox = self.ax.get_position()
+            fig_w, fig_h = self.fig.get_size_inches()
+            ax_w = bbox.width * fig_w
+            ax_h = bbox.height * fig_h
+            box_ratio = ax_w / ax_h if ax_h > 0 else 1.0
+        except Exception:
+            box_ratio = 1.0
+
+        # Required: xspan / yspan == box_ratio  (for equal aspect to show all content)
+        if xspan / max(yspan, 1e-9) < box_ratio:
+            xspan = yspan * box_ratio
+        else:
+            yspan = xspan / box_ratio
+
+        return ((xcen - xspan / 2, xcen + xspan / 2),
+                (ycen - yspan / 2, ycen + yspan / 2))
+
     def _do_full_render(self, xlim, ylim, reset_view: bool):
         """Perform a complete redraw of the scene (expensive, avoid when possible)."""
         self.ax.clear()
@@ -1148,7 +1429,23 @@ class ObjAoiEditor:
         else:
             segments, vertices, seg_mat_ids = [], np.array([]), np.array([], dtype=np.int32)
 
+        # Apply view rotation to geometry (display-only transform)
+        if self.view_rotation_angle != 0.0 and self.view_mode == 'plan':
+            if len(vertices) > 0:
+                vertices = self._rot_pts(np.array(vertices))
+            if segments:
+                segs_arr = np.array(segments, dtype=float)  # (N, 4): x0,y0,x1,y1
+                p0 = self._rot_pts(segs_arr[:, :2])
+                p1 = self._rot_pts(segs_arr[:, 2:])
+                segments = np.concatenate([p0, p1], axis=1).tolist()
+
+        # current_vertices holds rotated coords so snapping works in display space
         self.current_vertices = vertices
+
+        # Store display-space segments for tooltip hit-testing
+        self._display_segments = segments if segments else []
+        self._display_seg_mat_ids = seg_mat_ids
+        self._tooltip_annotation = None  # reset; will be recreated on next hover
 
         # Rebuild KD-tree for snapping whenever vertices change
         self._vertex_kdtree = None  # Will be lazily rebuilt on next snap
@@ -1158,14 +1455,16 @@ class ObjAoiEditor:
 
             if self.material_names and len(seg_mat_ids) == len(segments):
                 # Colour each segment by its material; dim non-highlighted materials when one is active
-                if self.highlighted_material is not None:
-                    hi_idx = (self.material_names.index(self.highlighted_material)
-                              if self.highlighted_material in self.material_names else -1)
+                if self.highlighted_materials:
+                    names_by_id = getattr(self, '_material_names_by_id', self.material_names)
+                    hi_ids = {names_by_id.index(n) for n in self.highlighted_materials
+                               if n in names_by_id}
                     colors = []
                     linewidths = []
                     for mid in seg_mat_ids:
-                        if mid == hi_idx:
-                            colors.append(self.material_colors.get(self.highlighted_material, '#E53935'))
+                        if mid in hi_ids:
+                            name = names_by_id[mid] if 0 <= mid < len(names_by_id) else None
+                            colors.append(self.material_colors.get(name, '#E53935') if name else '#E53935')
                             linewidths.append(1.5)
                         else:
                             colors.append('#D0D0D0')
@@ -1198,6 +1497,28 @@ class ObjAoiEditor:
                            transform=self.ax.transAxes, fontsize=7, color='gray',
                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
 
+        # ── Floor finish overlay (horizontal face polygons coloured by material) ──
+        if self.show_floor_finishes and self.view_mode == 'plan':
+            names_by_id = getattr(self, '_material_names_by_id', self.material_names)
+            hi_ids = {names_by_id.index(n) for n in self.highlighted_materials
+                       if n in names_by_id} if self.highlighted_materials else set()
+            finish_polys = self.slicer.get_floor_finish_polygons(self.current_z)
+            for xy, mid in finish_polys:
+                if self.view_rotation_angle != 0.0:
+                    xy = self._rot_pts(xy)
+                if not hi_ids:
+                    color = self._get_segment_color(mid)
+                    alpha = 0.40
+                elif mid in hi_ids:
+                    color = self._get_segment_color(mid)
+                    alpha = 0.70
+                else:
+                    color = '#C8C8C8'
+                    alpha = 0.20
+                patch = Polygon(xy, closed=True,
+                                facecolor=color, edgecolor='none', alpha=alpha, zorder=0)
+                self.ax.add_patch(patch)
+
         # Redraw saved room polygons (only in plan view)
         self.room_patches.clear()
         self.room_labels.clear()
@@ -1208,27 +1529,46 @@ class ObjAoiEditor:
             # In elevation view, show room boundaries as vertical lines
             self._draw_rooms_elevation()
 
-        self.ax.set_aspect('equal')
+        # Restore zoom state (or fit content on first render or view mode change)
+        has_stored = self.original_xlim is not None and self.original_ylim is not None
+        current_view_is_default = (xlim == (0.0, 1.0))
 
-        # Restore zoom state (or autoscale on first render or view mode change)
-        if reset_view:
-            # Reset view when switching modes - autoscale to fit new content
-            self.ax.autoscale()
-        elif hasattr(self, 'original_xlim') and xlim != (0, 1):  # (0,1) is default for cleared axes
-            # Restore previous zoom
-            self.ax.set_xlim(xlim)
-            self.ax.set_ylim(ylim)
+        if reset_view or not has_stored:
+            if has_stored and not reset_view:
+                # Session had stored limits — use them directly on first open
+                self.ax.set_aspect('equal')
+                self.ax.set_xlim(self.original_xlim)
+                self.ax.set_ylim(self.original_ylim)
+            else:
+                # Fit view to geometry: use segment bounds directly (autoscale misses LineCollections)
+                fitted = self._fit_limits_from_geometry(segments, vertices)
+                if fitted:
+                    self.ax.set_xlim(fitted[0])
+                    self.ax.set_ylim(fitted[1])
+                else:
+                    self.ax.autoscale()
+                self.ax.set_aspect('equal')
+                self.original_xlim = self.ax.get_xlim()
+                self.original_ylim = self.ax.get_ylim()
         else:
-            # First render - autoscale to fit content
-            self.ax.autoscale()
+            # Restore previous zoom (mid-session navigation)
+            self.ax.set_aspect('equal')
+            if current_view_is_default:
+                self.ax.set_xlim(self.original_xlim)
+                self.ax.set_ylim(self.original_ylim)
+            else:
+                self.ax.set_xlim(xlim)
+                self.ax.set_ylim(ylim)
 
         # Set axis labels based on view mode
         if self.view_mode == 'plan':
             self.ax.set_xlabel('X (m)')
             self.ax.set_ylabel('Y (m)')
-            title = f'Floor Plan Section at Z = {self.current_z:.1f}m'
+            rot_deg = np.degrees(self.view_rotation_angle)
+            rot_str = f'  [rot {rot_deg:.1f}°]' if self.view_rotation_angle != 0.0 else ''
+            title = f'Floor Plan Section at Z = {self.current_z:.1f}m{rot_str}'
             if self.current_floor_idx is not None and self.slicer.floor_levels:
-                title = f'Floor Level {self.current_floor_idx} (Z = {self.current_z:.1f}m)'
+                title = f'Floor Level {self.current_floor_idx} (Z = {self.current_z:.1f}m){rot_str}'
         elif self.view_mode == 'elevation_x':
             self.ax.set_xlabel('Y (m)')
             self.ax.set_ylabel('Z (m)')
@@ -1270,10 +1610,9 @@ class ObjAoiEditor:
                 continue
 
             # Determine current visual state
-            is_selected = (i == self.selected_room_idx)
+            is_selected = (i in self.selected_room_indices or i == self.selected_room_idx)
             is_hover = (i == self.hover_room_idx)
             is_editing = (i == self.edit_room_idx and self.edit_mode)
-            is_subroom = room.get('parent') is not None
 
             # Update colors based on state
             if is_editing:
@@ -1292,21 +1631,24 @@ class ObjAoiEditor:
                 patch.set_alpha(0.2)
                 patch.set_linewidth(2)
             elif is_current_floor:
-                if is_subroom:
-                    patch.set_edgecolor('#2196F3')
-                    patch.set_facecolor('#2196F3')
-                    patch.set_alpha(0.3)
-                    patch.set_linewidth(2)
-                else:
-                    patch.set_edgecolor('green')
-                    patch.set_facecolor('green')
-                    patch.set_alpha(0.25)
-                    patch.set_linewidth(2)
+                color, _ = self._get_room_type_color(room)
+                patch.set_edgecolor(color)
+                patch.set_facecolor(color)
+                patch.set_alpha(0.25)
+                patch.set_linewidth(2)
             else:
                 patch.set_edgecolor('gray')
                 patch.set_facecolor('gray')
                 patch.set_alpha(0.15)
                 patch.set_linewidth(1)
+
+    def _get_room_type_color(self, room: dict):
+        """Return (color, label_bg) for a room based on its name prefix."""
+        name = room.get('name', '')
+        for prefix, (color, label_bg) in self._room_type_colors.items():
+            if name.startswith(prefix):
+                return color, label_bg
+        return 'green', 'green'  # default for non-typed rooms
 
     def _draw_room_polygon(self, room: dict, idx: int, is_current_floor: bool = True):
         """Draw a single saved room polygon on the axes.
@@ -1320,10 +1662,13 @@ class ObjAoiEditor:
         if len(verts) < 3:
             return
 
-        is_selected = (idx == self.selected_room_idx)
+        # Rotate vertices for display if view rotation is active
+        if self.view_rotation_angle != 0.0 and self.view_mode == 'plan':
+            verts = self._rot_pts(np.array(verts)).tolist()
+
+        is_selected = (idx in self.selected_room_indices or idx == self.selected_room_idx)
         is_hover = (idx == self.hover_room_idx)
         is_editing = (idx == self.edit_room_idx and self.edit_mode)
-        is_subroom = room.get('parent') is not None  # Has a parent = is a sub-room
 
         # Color scheme based on state
         if is_editing:
@@ -1345,20 +1690,11 @@ class ObjAoiEditor:
             lw = 2
             label_bg = 'magenta'
         elif is_current_floor:
-            if is_subroom:
-                # Sub-rooms: use blue/teal color to distinguish from apartments
-                edge_color = '#2196F3'  # Material blue
-                face_color = '#2196F3'
-                alpha = 0.3
-                lw = 2
-                label_bg = '#1976D2'  # Darker blue for label
-            else:
-                # Apartments: use green
-                edge_color = 'green'
-                face_color = 'green'
-                alpha = 0.25
-                lw = 2
-                label_bg = 'green'
+            color, label_bg = self._get_room_type_color(room)
+            edge_color = color
+            face_color = color
+            alpha = 0.25
+            lw = 2
         else:
             # Other floors: use gray with lower opacity
             edge_color = 'gray'
@@ -1473,12 +1809,19 @@ class ObjAoiEditor:
             else:
                 continue
 
-            # Color based on selection
+            # Color based on selection and room type
             is_selected = (i == self.selected_room_idx)
-            edge_color = 'yellow' if is_selected else 'green'
-            face_color = 'yellow' if is_selected else 'green'
-            alpha = 0.3 if is_selected else 0.2
-            lw = 3 if is_selected else 1.5
+            if is_selected:
+                edge_color = 'yellow'
+                face_color = 'yellow'
+                alpha = 0.3
+                lw = 3
+            else:
+                color, _ = self._get_room_type_color(room)
+                edge_color = color
+                face_color = color
+                alpha = 0.2
+                lw = 1.5
 
             poly = Polygon(
                 rect_verts, closed=True,
@@ -1488,12 +1831,13 @@ class ObjAoiEditor:
             self.room_patches.append(poly)
 
             # Add label at center
+            _, label_bg = self._get_room_type_color(room)
             center_h = (rect_verts[0][0] + rect_verts[1][0]) / 2
             center_z = z_height + room_height / 2
             label_text = self.ax.text(
                 center_h, center_z, room.get('name', ''),
                 color='white', fontsize=7, ha='center', va='center',
-                bbox=dict(boxstyle='round', facecolor='green', alpha=0.6),
+                bbox=dict(boxstyle='round', facecolor=label_bg, alpha=0.6),
             )
             self.room_labels.append(label_text)
 
@@ -1759,6 +2103,28 @@ class ObjAoiEditor:
         if event.inaxes != self.ax:
             return
 
+        # Handle two-point orthogonal align mode
+        if self._align_mode and event.button == 1 and event.xdata is not None and event.ydata is not None:
+            self._align_pts.append((event.xdata, event.ydata))
+            if len(self._align_pts) == 1:
+                self._update_status("Align: click second point of the line to align horizontally", 'blue')
+            elif len(self._align_pts) == 2:
+                p1, p2 = self._align_pts
+                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+                if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+                    self._update_status("Align: points too close — try again (press o)", 'red')
+                else:
+                    # Angle to rotate so that p1→p2 becomes horizontal (+X axis)
+                    line_angle = np.arctan2(dy, dx)
+                    self.view_rotation_angle = -line_angle
+                    rot_deg = np.degrees(self.view_rotation_angle)
+                    self._update_status(f"View rotated {rot_deg:.1f}° — press O to reset", 'green')
+                    self._render_section(force_full=True, reset_view=True)
+                    self._save_session()
+                self._align_mode = False
+                self._align_pts = []
+            return
+
         # Disable left-click drawing in elevation view
         if event.button == 1 and self.view_mode != 'plan':
             self._update_status('Cannot draw in elevation view - press "v" for Plan view', 'red')
@@ -1802,7 +2168,9 @@ class ObjAoiEditor:
                 px, py = self.hover_edge_point
                 if self.snap_enabled:
                     px, py = self._snap_to_vertex(px, py)
-                room['vertices'].insert(insert_idx, [float(px), float(py)])
+                # hover_edge_point is in display (rotated) space — unrotate before storing
+                rw = self._unrot_pts(np.array([[float(px), float(py)]]))[0]
+                room['vertices'].insert(insert_idx, [float(rw[0]), float(rw[1])])
                 rname = room.get('name', 'unnamed')
                 self.hover_edge_room_idx = None
                 self.hover_edge_idx = None
@@ -1832,9 +2200,12 @@ class ObjAoiEditor:
             current_pos = room['vertices'][self.edit_vertex_idx]
 
             # Apply snap to mesh vertex if enabled
+            # Snap operates in display (rotated) space; current_pos is real-world, so rotate first
             if self.snap_enabled and event.xdata is not None and event.ydata is not None:
-                snapped_x, snapped_y = self._snap_to_vertex(current_pos[0], current_pos[1])
-                room['vertices'][self.edit_vertex_idx] = [float(snapped_x), float(snapped_y)]
+                disp = self._rot_pts(np.array([[current_pos[0], current_pos[1]]]))[0]
+                snapped_disp_x, snapped_disp_y = self._snap_to_vertex(float(disp[0]), float(disp[1]))
+                rw = self._unrot_pts(np.array([[snapped_disp_x, snapped_disp_y]]))[0]
+                room['vertices'][self.edit_vertex_idx] = [float(rw[0]), float(rw[1])]
 
             # Full render with selector recreation
             self.edit_vertex_idx = None
@@ -1844,9 +2215,72 @@ class ObjAoiEditor:
             self._render_section(force_full=True)  # Vertex moved
             self._create_polygon_selector()
 
+    def _update_segment_tooltip(self, x: float, y: float):
+        """Show a tooltip with the material name of the nearest mesh segment under the cursor."""
+        # Remove existing tooltip
+        if self._tooltip_annotation is not None:
+            try:
+                self._tooltip_annotation.remove()
+            except Exception:
+                pass
+            self._tooltip_annotation = None
+
+        segs = self._display_segments
+        mat_ids = self._display_seg_mat_ids
+        names_by_id = getattr(self, '_material_names_by_id', self.material_names)
+
+        if not segs or not names_by_id:
+            self.fig.canvas.draw_idle()
+            return
+
+        # Compute squared distance from cursor to each segment (midpoint approximation is fast)
+        segs_arr = np.array(segs, dtype=float)  # (N, 4)
+        mx = (segs_arr[:, 0] + segs_arr[:, 2]) / 2
+        my = (segs_arr[:, 1] + segs_arr[:, 3]) / 2
+        dist2 = (mx - x) ** 2 + (my - y) ** 2
+
+        # Use a pixel-based threshold: convert ~12px to data units via axes transform
+        try:
+            ax_bbox = self.ax.get_window_extent()
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            px_per_data_x = ax_bbox.width / max(xlim[1] - xlim[0], 1e-9)
+            px_per_data_y = ax_bbox.height / max(ylim[1] - ylim[0], 1e-9)
+            threshold_data = 12.0 / min(px_per_data_x, px_per_data_y)
+        except Exception:
+            threshold_data = 0.5
+
+        nearest = int(np.argmin(dist2))
+        if dist2[nearest] > threshold_data ** 2:
+            self.fig.canvas.draw_idle()
+            return
+
+        mat_id = int(mat_ids[nearest]) if nearest < len(mat_ids) else -1
+        mat_name = names_by_id[mat_id] if 0 <= mat_id < len(names_by_id) else 'unknown'
+
+        # Position tooltip slightly offset from cursor
+        self._tooltip_annotation = self.ax.annotate(
+            mat_name,
+            xy=(x, y),
+            xytext=(10, 10), textcoords='offset points',
+            fontsize=7,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC', edgecolor='#999900',
+                      alpha=0.92, linewidth=0.8),
+            zorder=20,
+        )
+        self.fig.canvas.draw_idle()
+
     def _on_mouse_motion(self, event):
         """Handle mouse movement for hover detection and vertex dragging."""
         if event.inaxes != self.ax or self.view_mode != 'plan':
+            # Clear tooltip when leaving main axes
+            if self._tooltip_annotation is not None:
+                try:
+                    self._tooltip_annotation.remove()
+                except Exception:
+                    pass
+                self._tooltip_annotation = None
+                self.fig.canvas.draw_idle()
             return
 
         x, y = event.xdata, event.ydata
@@ -1856,21 +2290,24 @@ class ObjAoiEditor:
         # Handle vertex dragging - fast update without full render
         if self.edit_vertex_idx is not None and self.edit_room_idx is not None:
             room = self.rooms[self.edit_room_idx]
-            # Update vertex position (don't snap during drag for responsiveness)
-            room['vertices'][self.edit_vertex_idx] = [float(x), float(y)]
+            # Mouse is in display (rotated) space — unrotate before storing
+            rw = self._unrot_pts(np.array([[float(x), float(y)]]))[0]
+            room['vertices'][self.edit_vertex_idx] = [float(rw[0]), float(rw[1])]
             # Quick redraw without recreating selector
             self._render_section(force_full=True)
             return
+
+        # ── Segment tooltip (always active, throttled) ─────────────────────────
+        now = time.monotonic()
+        if now - self._last_hover_check >= 0.067:
+            self._last_hover_check = now
+            self._update_segment_tooltip(x, y)
 
         # Hover detection in edit mode only
         if not self.edit_mode:
             return
 
-        # Throttle hover detection to ~15fps for performance (O(m×v) is expensive)
-        now = time.monotonic()
-        if now - self._last_hover_check < 0.067:
-            return
-        self._last_hover_check = now
+        # (Throttle already applied above for tooltip; edit-mode hover runs at same rate)
 
         # Check for vertex hover across ALL visible rooms
         hover_threshold = 0.3  # metres - kept tight so edge hover activates near existing vertices
@@ -1885,7 +2322,8 @@ class ObjAoiEditor:
             if not self.show_all_floors and not is_current_floor:
                 continue
 
-            verts = np.array(room['vertices'])
+            # Compare in display (rotated) space
+            verts = self._rot_pts(np.array(room['vertices']))
             distances = np.sqrt((verts[:, 0] - x)**2 + (verts[:, 1] - y)**2)
             min_dist_idx = np.argmin(distances)
             min_dist = distances[min_dist_idx]
@@ -1926,7 +2364,8 @@ class ObjAoiEditor:
                 is_current_floor = abs(room['z_height'] - self.current_z) < 0.5
                 if not self.show_all_floors and not is_current_floor:
                     continue
-                verts = room['vertices']
+                # Use rotated (display) verts for edge proximity in display space
+                verts = self._rot_pts(np.array(room['vertices'])).tolist()
                 n = len(verts)
                 for j in range(n):
                     ax_, ay_ = verts[j]
@@ -1980,6 +2419,13 @@ class ObjAoiEditor:
             self._on_next_floor_click(None)  # Up arrow = next (higher) floor
         elif event.key == 'down':
             self._on_prev_floor_click(None)  # Down arrow = previous (lower) floor
+        elif event.key == 'f':
+            self.show_floor_finishes = not self.show_floor_finishes
+            state = 'ON' if self.show_floor_finishes else 'OFF'
+            self._update_status(f"Floor finish overlay: {state}", 'blue')
+            self._material_list_scroll = 0
+            self._update_material_list()
+            self._render_section(force_full=True)
         elif event.key == 'a':
             self._on_show_all_toggle(None)  # 'a' = toggle All floors view
         elif event.key == 'v':
@@ -1992,6 +2438,22 @@ class ObjAoiEditor:
                 self._set_view_mode('plan')
         elif event.key == 'e':
             self._on_edit_mode_toggle(None)  # 'e' = toggle Edit mode
+        elif event.key == 'o':
+            # Start two-point orthogonal align mode
+            self._align_mode = True
+            self._align_pts = []
+            self._update_status("Align: click first point of the line to align horizontally", 'blue')
+            self.fig.canvas.draw_idle()
+        elif event.key == 'O':
+            # Reset view rotation — also clear stored limits so view re-fits to unrotated geometry
+            self.view_rotation_angle = 0.0
+            self.original_xlim = None
+            self.original_ylim = None
+            self._align_mode = False
+            self._align_pts = []
+            self._update_status("View rotation reset to 0°", 'green')
+            self._render_section(force_full=True, reset_view=True)
+            self._save_session()
 
     # -------------------------------------------------------------------------
     # Room selection
@@ -2009,7 +2471,8 @@ class ObjAoiEditor:
             if not self.show_all_floors and abs(room['z_height'] - self.current_z) > 0.5:
                 continue
 
-            verts = np.array(room['vertices'])
+            # Rotate verts to display space for hit testing (x, y are display coords)
+            verts = self._rot_pts(np.array(room['vertices']))
             if MplPath(verts).contains_point((x, y)):
                 # If room is on a different floor, jump to that floor
                 room_z = room['z_height']
@@ -2031,18 +2494,20 @@ class ObjAoiEditor:
         self._deselect_room()
 
     def _select_room(self, idx):
-        """Select a room by index and populate the input fields."""
+        """Select a room by index (canvas right-click — replaces list selection)."""
         self._deselect_room()
         self.selected_room_idx = idx
+        self.selected_room_indices = {idx}
         room = self.rooms[idx]
         self.name_textbox.set_val(room.get('name', ''))
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
         self._render_section()  # Selection change can use incremental update
 
     def _deselect_room(self):
-        """Deselect any selected room."""
-        if self.selected_room_idx is not None:
+        """Deselect all selected rooms."""
+        if self.selected_room_idx is not None or self.selected_room_indices:
             self.selected_room_idx = None
+            self.selected_room_indices.clear()
             self.name_textbox.set_val('')
             self._update_status("Ready to draw", 'blue')
             self._update_room_list()
@@ -2104,7 +2569,9 @@ class ObjAoiEditor:
         # Ensure unique name by appending numeric suffix if needed
         full_name = self._make_unique_name(full_name)
 
-        vertices = [[float(x), float(y)] for x, y in self.current_polygon_vertices]
+        raw_verts = np.array([[float(x), float(y)] for x, y in self.current_polygon_vertices])
+        # Inverse-rotate from display space back to real-world before storing
+        vertices = self._unrot_pts(raw_verts).tolist()
 
         # Check boundary containment if parent is selected
         warning_msg = ""
@@ -2174,21 +2641,26 @@ class ObjAoiEditor:
         self._update_status("Cleared - ready to draw", 'blue')
 
     def _on_delete_click(self, event):
-        """Delete the selected room."""
-        if self.selected_room_idx is None:
+        """Delete all selected rooms."""
+        targets = self.selected_room_indices or (
+            {self.selected_room_idx} if self.selected_room_idx is not None else set())
+        if not targets:
             self._update_status("No room selected to delete", 'red')
             return
-        idx = self.selected_room_idx
-        name = self.rooms[idx].get('name', 'unnamed')
-        self.rooms.pop(idx)
+        # Delete in reverse index order so earlier indices stay valid
+        names = [self.rooms[i].get('name', 'unnamed') for i in sorted(targets)]
+        for idx in sorted(targets, reverse=True):
+            self.rooms.pop(idx)
         self.selected_room_idx = None
-        self._update_status(f"Deleted '{name}'", 'green')
+        self.selected_room_indices.clear()
+        label = ', '.join(names) if len(names) <= 3 else f"{len(names)} rooms"
+        self._update_status(f"Deleted {label}", 'green')
         self._update_room_list()
         self._update_floor_level_list()
-        self._render_section(force_full=True)  # Room deleted
-        print(f"Deleted room '{name}'")
+        self._render_section(force_full=True)
+        print(f"Deleted rooms: {names}")
 
-        # Auto-save session to JSON after deleting room
+        # Auto-save session to JSON after deleting rooms
         self._save_session()
 
     def _on_reset_zoom_click(self, event):
@@ -2358,6 +2830,9 @@ class ObjAoiEditor:
             self.z_slider.set_val(target_z)
             self._update_status(f"Floor L{floor_idx}: Z={target_z:.2f}m", 'green')
             self._update_floor_level_list()
+            if self.show_floor_finishes:
+                self._update_material_list()
+            self._save_session()
             # Note: _render_section will be called by z_slider.set_val
 
     # -------------------------------------------------------------------------
@@ -2410,6 +2885,9 @@ class ObjAoiEditor:
             for child_idx, _ in children_by_parent.get(apt.get('name', ''), []):
                 flat_items.append((child_idx, 1))
 
+        # Persist flat order for shift-click range selection
+        self._room_list_flat_order = [room_idx for room_idx, _ in flat_items]
+
         total_items = len(flat_items)
         visible_rows = 22  # number of rows visible at once (tight spacing)
         pad_top = 0.01     # fraction of axes height reserved at top
@@ -2430,7 +2908,8 @@ class ObjAoiEditor:
             room = self.rooms[room_idx]
             name = room.get('name', 'unnamed')
             z = room.get('z_height', 0)
-            is_sel = (room_idx == self.selected_room_idx)
+            is_active = (room_idx == self.selected_room_idx)
+            is_sel    = (room_idx in self.selected_room_indices)
             is_subroom = indent > 0
 
             # Row top/bottom in axes coords (rows go top-down)
@@ -2438,12 +2917,13 @@ class ObjAoiEditor:
             row_bot = row_top - row_h
             row_mid = (row_top + row_bot) / 2
 
-            # Highlight background for selected room
-            if is_sel:
-        
+            # Highlight background: active = orange border, selected = yellow fill
+            if is_sel or is_active:
+                fc = '#FFE082' if is_active else '#FFF9C4'
+                ec = 'orange'  if is_active else '#FFD54F'
                 bg = FancyBboxPatch((0.01, row_bot + 0.002), 0.98, row_h - 0.004,
                                     boxstyle='round,pad=0.01',
-                                    facecolor='#FFE082', edgecolor='orange',
+                                    facecolor=fc, edgecolor=ec,
                                     linewidth=1.0, transform=self.ax_list.transAxes,
                                     clip_on=True)
                 self.ax_list.add_patch(bg)
@@ -2455,14 +2935,14 @@ class ObjAoiEditor:
                 if name.startswith(f"{parent_name}_"):
                     short_name = name[len(parent_name) + 1:]
                 display_text = f"  \u2514 {short_name}"
-                txt_color = '#0D47A1' if not is_sel else '#E65100'
+                txt_color = '#E65100' if is_active else ('#0D47A1' if not is_sel else '#BF360C')
                 fs = 6.5
                 fw = 'normal'
             else:
                 child_count = len(children_by_parent.get(name, []))
                 suffix = f" ({child_count})" if child_count else ""
                 display_text = f"{name}{suffix}"
-                txt_color = '#1B5E20' if not is_sel else '#E65100'
+                txt_color = '#E65100' if is_active else ('#1B5E20' if not is_sel else '#BF360C')
                 fs = 7
                 fw = 'bold'
 
@@ -2497,24 +2977,74 @@ class ObjAoiEditor:
         self.fig.canvas.draw_idle()
 
     def _on_list_click(self, event):
-        """Handle clicks on the saved rooms list to select and highlight a room."""
+        """Handle clicks on the saved rooms list.
+
+        Plain click      — select only this room (clear others).
+        Shift-click      — range-select from last clicked to this room.
+        Ctrl/Cmd-click   — toggle this room in/out of the selection.
+        """
         if event.inaxes != self.ax_list:
             return
         if event.xdata is None or event.ydata is None:
             return
 
-        # ydata is in data coordinates which equal axes coords since ylim=(0,1) and xlim=(0,1)
+        key = event.key or ''
+        is_shift = 'shift' in key
+        is_ctrl  = 'ctrl' in key or 'cmd' in key or 'control' in key
+
         y = event.ydata
+        clicked_idx = None
         for (y_min, y_max, room_idx) in self._room_list_hit_boxes:
             if y_min <= y <= y_max:
-                if self.selected_room_idx == room_idx:
-                    # Clicking again deselects
-                    self.selected_room_idx = None
-                else:
-                    self.selected_room_idx = room_idx
-                self._render_section()
-                self._update_room_list()
-                return
+                clicked_idx = room_idx
+                break
+
+        if clicked_idx is None:
+            return
+
+        if is_shift and self._room_list_last_clicked is not None:
+            # ── Shift-click: select the range in flat display order ───────────
+            flat = self._room_list_flat_order
+            if self._room_list_last_clicked in flat and clicked_idx in flat:
+                a = flat.index(self._room_list_last_clicked)
+                b = flat.index(clicked_idx)
+                lo, hi = min(a, b), max(a, b)
+                for idx in flat[lo:hi + 1]:
+                    self.selected_room_indices.add(idx)
+            # Active room moves to the shift-clicked end
+            self.selected_room_idx = clicked_idx
+
+        elif is_ctrl:
+            # ── Ctrl-click: toggle individual room ───────────────────────────
+            if clicked_idx in self.selected_room_indices:
+                self.selected_room_indices.discard(clicked_idx)
+                if self.selected_room_idx == clicked_idx:
+                    remaining = self.selected_room_indices
+                    self.selected_room_idx = next(iter(remaining)) if remaining else None
+            else:
+                self.selected_room_indices.add(clicked_idx)
+                self.selected_room_idx = clicked_idx
+            self._room_list_last_clicked = clicked_idx
+
+        else:
+            # ── Plain click: replace selection ────────────────────────────────
+            self.selected_room_indices = {clicked_idx}
+            self.selected_room_idx = clicked_idx
+            self._room_list_last_clicked = clicked_idx
+
+        # Sync name textbox to active room
+        if self.selected_room_idx is not None:
+            room = self.rooms[self.selected_room_idx]
+            self.name_textbox.set_val(room.get('name', ''))
+            n = len(self.selected_room_indices)
+            label = f"Selected {n} room(s) — active: {room.get('name','')}" if n > 1 else f"Selected: {room.get('name','')}"
+            self._update_status(label, 'orange')
+        else:
+            self.name_textbox.set_val('')
+            self._update_status("Ready to draw", 'blue')
+
+        self._render_section()
+        self._update_room_list()
 
     def _update_floor_level_list(self):
         """Refresh the floor level list in the side panel (descending order - top floor first)."""
@@ -2556,6 +3086,21 @@ class ObjAoiEditor:
 
         self.fig.canvas.draw_idle()
 
+    def _get_active_material_names(self) -> List[str]:
+        """Return the material names to show in the panel.
+
+        In floor-finish mode, only return materials that appear on floor-finish
+        polygons at the current Z level.  Otherwise return the full sorted list.
+        """
+        if self.show_floor_finishes and hasattr(self, 'slicer') and self.slicer:
+            finish_polys = self.slicer.get_floor_finish_polygons(self.current_z)
+            if finish_polys:
+                names_by_id = getattr(self, '_material_names_by_id', self.material_names)
+                seen_ids = {mid for _, mid in finish_polys if mid >= 0}
+                finish_names = {names_by_id[mid] for mid in seen_ids if mid < len(names_by_id)}
+                return sorted(n for n in self.material_names if n in finish_names)
+        return self.material_names
+
     def _update_material_list(self):
         """Refresh the material list panel in the side panel."""
         if self.ax_mat_list is None:
@@ -2570,58 +3115,63 @@ class ObjAoiEditor:
         self.ax_mat_list.set_xlim(0, 1)
         self.ax_mat_list.set_ylim(0, 1)
 
-        if not self.material_names:
-            self.ax_mat_list.text(0.02, 0.5, "(no material data in mesh)",
+        active_names = self._get_active_material_names()
+
+        if not active_names:
+            msg = ("(no floor finishes at this level)" if self.show_floor_finishes
+                   else "(no material data in mesh)")
+            self.ax_mat_list.text(0.02, 0.5, msg,
                                   fontsize=7, style='italic', color='gray',
                                   transform=self.ax_mat_list.transAxes)
             self.fig.canvas.draw_idle()
             return
 
-        # Determine how many rows fit; each row is ~0.13 axes-height units
-        row_h = 0.13
-        max_visible = max(1, int(1.0 / row_h))
-        total = len(self.material_names)
-        # Clamp scroll offset
-        self._material_list_scroll = max(0, min(self._material_list_scroll, total - max_visible))
+        # Two-column layout: each row is ~0.085 axes-height units
+        row_h = 0.085
+        n_cols = 2
+        max_rows = max(1, int(1.0 / row_h))
+        max_visible = max_rows * n_cols
+        total = len(active_names)
+        # Clamp scroll offset (scroll by rows, so step = n_cols)
+        max_scroll = max(0, total - max_visible)
+        self._material_list_scroll = max(0, min(self._material_list_scroll, max_scroll))
 
-        visible = self.material_names[self._material_list_scroll:self._material_list_scroll + max_visible]
+        visible = active_names[self._material_list_scroll:self._material_list_scroll + max_visible]
+
+        col_w = 1.0 / n_cols  # each column takes half the width
 
         for display_idx, name in enumerate(visible):
-            mat_idx = self._material_list_scroll + display_idx
-            y_top = 1.0 - display_idx * row_h
+            col = display_idx % n_cols
+            row = display_idx // n_cols
+            x_off = col * col_w
+            y_top = 1.0 - row * row_h
             y_center = y_top - row_h / 2
 
-            is_highlighted = (name == self.highlighted_material)
+            is_highlighted = (name in self.highlighted_materials)
             bg_color = self.material_colors.get(name, '#303030')
-            text_color = 'white'
             bg_alpha = 0.85 if is_highlighted else 0.35
 
             # Colour swatch
-            swatch = FancyBboxPatch((0.01, y_top - row_h + 0.01), 0.06, row_h - 0.02,
-                                    boxstyle='round,pad=0.005',
+            swatch_x = x_off + 0.01
+            swatch = FancyBboxPatch((swatch_x, y_top - row_h + 0.008), 0.045, row_h - 0.016,
+                                    boxstyle='round,pad=0.004',
                                     facecolor=bg_color, edgecolor=bg_color,
                                     alpha=bg_alpha, transform=self.ax_mat_list.transAxes,
                                     clip_on=True)
             self.ax_mat_list.add_patch(swatch)
 
-            # Name label — truncate long names
-            display_name = name if len(name) <= 22 else name[:20] + '…'
+            # Name label — truncate to fit half-width column
+            display_name = name if len(name) <= 14 else name[:13] + '…'
             fw = 'bold' if is_highlighted else 'normal'
             self.ax_mat_list.text(
-                0.10, y_center, display_name,
-                fontsize=6.5, color='#202020', fontweight=fw,
+                x_off + 0.07, y_center, display_name,
+                fontsize=5.5, color='#202020', fontweight=fw,
                 va='center', transform=self.ax_mat_list.transAxes,
+                clip_on=True,
             )
 
-            # Highlighted indicator star
-            if is_highlighted:
-                self.ax_mat_list.text(
-                    0.92, y_center, '★', fontsize=7, color=bg_color,
-                    va='center', ha='center', transform=self.ax_mat_list.transAxes,
-                )
-
-            # Store hit box in axes-fraction coords for click detection
-            self._material_list_hit_boxes.append((y_top - row_h, y_top, name))
+            # Store hit box: (x_min, x_max, y_min, y_max, name)
+            self._material_list_hit_boxes.append((x_off, x_off + col_w, y_top - row_h, y_top, name))
 
         # Scroll hint
         if total > max_visible:
@@ -2639,11 +3189,11 @@ class ObjAoiEditor:
         if self.ax_mat_list is None or event.inaxes != self.ax_mat_list:
             return
         if event.button == 'up':
-            self._material_list_scroll = max(0, self._material_list_scroll - 1)
+            self._material_list_scroll = max(0, self._material_list_scroll - 2)
         elif event.button == 'down':
             self._material_list_scroll = min(
-                max(0, len(self.material_names) - 1),
-                self._material_list_scroll + 1,
+                max(0, len(self._get_active_material_names()) - 1),
+                self._material_list_scroll + 2,
             )
         self._update_material_list()
 
@@ -2656,18 +3206,196 @@ class ObjAoiEditor:
         if event.xdata is None or event.ydata is None:
             return
 
-        # ydata is in axes-fraction coords (ylim=(0,1) for these off-axis panels)
-        y = event.ydata
-        for (y_min, y_max, name) in self._material_list_hit_boxes:
-            if y_min <= y <= y_max:
-                if self.highlighted_material == name:
-                    self.highlighted_material = None  # deselect
+        # xdata/ydata are in axes-fraction coords (xlim/ylim=(0,1) for these panels)
+        x, y = event.xdata, event.ydata
+        for (x_min, x_max, y_min, y_max, name) in self._material_list_hit_boxes:
+            if x_min <= x <= x_max and y_min <= y <= y_max:
+                if name in self.highlighted_materials:
+                    self.highlighted_materials.discard(name)
                 else:
-                    self.highlighted_material = name
+                    self.highlighted_materials.add(name)
                 self._update_material_list()
                 # Trigger mesh redraw to apply new highlight colours
                 self._do_full_render(self.ax.get_xlim(), self.ax.get_ylim(), reset_view=False)
                 return
+
+    # -------------------------------------------------------------------------
+    # Generate finish boundaries
+    # -------------------------------------------------------------------------
+
+    def _on_gen_room_type_cycle(self, event):
+        self._gen_room_type_idx = (self._gen_room_type_idx + 1) % len(self._gen_room_types)
+        label = f"Type: {self._gen_room_types[self._gen_room_type_idx]}"
+        self.btn_gen_room_type.label.set_text(label)
+        self.fig.canvas.draw_idle()
+
+    @staticmethod
+    def _union_face_boundary(face_polygons: list) -> Optional[np.ndarray]:
+        """Merge face polygons into a single boundary using geometric union.
+
+        Uses shapely to union all face polygons, correctly handling concave
+        shapes, shared edges, and irregular topology.
+
+        Args:
+            face_polygons: List of (N, 2) XY arrays, one per mesh face.
+
+        Returns:
+            (M, 2) array of ordered boundary vertices, or None on failure.
+        """
+        from shapely.geometry import Polygon as ShapelyPolygon
+        from shapely.ops import unary_union
+
+        polys = []
+        for xy in face_polygons:
+            if len(xy) < 3:
+                continue
+            try:
+                p = ShapelyPolygon(xy)
+                if p.is_valid and not p.is_empty:
+                    polys.append(p)
+                else:
+                    # Try to fix invalid polygon
+                    p = p.buffer(0)
+                    if not p.is_empty:
+                        polys.append(p)
+            except Exception:
+                continue
+
+        if not polys:
+            return None
+
+        merged = unary_union(polys)
+        if merged.is_empty:
+            return None
+
+        # If result is a MultiPolygon, take the largest piece
+        if merged.geom_type == 'MultiPolygon':
+            merged = max(merged.geoms, key=lambda g: g.area)
+
+        if merged.geom_type != 'Polygon':
+            return None
+
+        coords = np.array(merged.exterior.coords[:-1], dtype=float)  # drop closing dup
+        if len(coords) < 3:
+            return None
+
+        return coords
+
+    def _on_generate_finish_boundaries(self, event):
+        """Generate room boundaries from floor-finish polygons of the selected material.
+
+        Rules:
+        - Exactly one material must be selected (highlighted_materials).
+        - Only floor-finish (horizontal) faces at the current Z are used.
+        - Each spatially disconnected cluster of faces becomes a separate boundary
+          named <ROOM_TYPE>_01, _02, … (auto-numbered for uniqueness).
+        - Boundary vertices are the convex hull of all XY points in the cluster.
+        """
+        # ── Validate single material selection ───────────────────────────────
+        if len(self.highlighted_materials) == 0:
+            self._update_status("Select exactly one material first", 'red')
+            return
+        if len(self.highlighted_materials) > 1:
+            self._update_status("Only one material allowed — deselect extras", 'red')
+            return
+
+        mat_name = next(iter(self.highlighted_materials))
+        room_type = self._gen_room_types[self._gen_room_type_idx]
+
+        # ── Collect floor-finish polygons for this material ───────────────────
+        names_by_id = getattr(self, '_material_names_by_id', self.material_names)
+        if mat_name not in names_by_id:
+            self._update_status(f"Material '{mat_name}' not found in mesh", 'red')
+            return
+        target_id = names_by_id.index(mat_name)
+
+        finish_polys = self.slicer.get_floor_finish_polygons(self.current_z)
+        matching = [xy for xy, mid in finish_polys if mid == target_id]
+
+        if not matching:
+            self._update_status(f"No floor finishes for '{mat_name}' at this level", 'red')
+            return
+
+        # ── Cluster faces by spatial proximity (connected components) ─────────
+        centroids = np.array([xy.mean(axis=0) for xy in matching])
+        parent_of = list(range(len(matching)))
+
+        def _find(i):
+            # Iterative path-compression find
+            root = i
+            while parent_of[root] != root:
+                root = parent_of[root]
+            while parent_of[i] != root:
+                parent_of[i], i = root, parent_of[i]
+            return root
+
+        def _union(a, b):
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent_of[rb] = ra
+
+        merge_dist = 0.5  # metres — faces whose centroids are within this are same cluster
+        tree = cKDTree(centroids)
+        for a, b in tree.query_pairs(merge_dist):
+            _union(a, b)
+
+        # Group face indices by cluster root
+        groups: dict = {}
+        for i in range(len(matching)):
+            groups.setdefault(_find(i), []).append(i)
+
+        # Pre-collect existing names once for uniqueness checks
+        existing_names = {r['name'] for r in self.rooms}
+
+        # ── Trace exact exterior boundary for each cluster ────────────────────
+        saved_names = []
+        save_counter = 1  # independent counter so skipped clusters don't create gaps
+        for face_indices in groups.values():
+            cluster_faces = [matching[i] for i in face_indices]
+            all_pts = np.vstack(cluster_faces)
+
+            if len(all_pts) < 3:
+                continue
+
+            # Union all face polygons into a single boundary using shapely
+            boundary_pts = self._union_face_boundary(cluster_faces)
+            if boundary_pts is None or len(boundary_pts) < 3:
+                continue
+
+            # Vertices are already in real-world XY — no rotation transform needed
+            hull_pts_world = boundary_pts.tolist()
+
+            # Build unique name: ROOMTYPE_01, _02, …
+            while True:
+                candidate = f"{room_type}_{save_counter:02d}"
+                if candidate not in existing_names:
+                    break
+                save_counter += 1
+            full_name = candidate
+            existing_names.add(full_name)  # reserve for subsequent clusters this batch
+            save_counter += 1
+
+            room = {
+                'name':     full_name,
+                'parent':   self.selected_parent,
+                'vertices': hull_pts_world,
+                'z_height': self.current_z,
+            }
+            self.rooms.append(room)
+            saved_names.append(full_name)
+
+        if not saved_names:
+            self._update_status("No valid boundaries generated", 'red')
+            return
+
+        self._update_room_list()
+        self._update_floor_level_list()
+        self._render_section(force_full=True)
+        self._save_session()
+
+        count = len(saved_names)
+        self._update_status(f"Generated {count} boundar{'y' if count == 1 else 'ies'}: {', '.join(saved_names)}", 'green')
+        print(f"Generated {count} finish boundary rooms: {saved_names}")
 
     # -------------------------------------------------------------------------
     # Export functions
@@ -2779,7 +3507,11 @@ class ObjAoiEditor:
         data = {
             'obj_path': str(self.obj_path),
             'floor_levels': self.slicer.floor_levels if hasattr(self, 'slicer') else [],
+            'current_floor_idx': self.current_floor_idx,
             'rooms': self.rooms,
+            'view_rotation_angle': self.view_rotation_angle,
+            'original_xlim': list(self.original_xlim) if self.original_xlim else None,
+            'original_ylim': list(self.original_ylim) if self.original_ylim else None,
         }
         with open(self.session_path, 'w') as f:
             json.dump(data, f, indent=2)
@@ -2795,6 +3527,17 @@ class ObjAoiEditor:
             with open(self.session_path, 'r') as f:
                 data = json.load(f)
             self.rooms = data.get('rooms', [])
+            self.view_rotation_angle = float(data.get('view_rotation_angle', 0.0))
+            xlim = data.get('original_xlim')
+            ylim = data.get('original_ylim')
+            self.original_xlim = tuple(xlim) if xlim else None
+            self.original_ylim = tuple(ylim) if ylim else None
+            saved_floor_idx = data.get('current_floor_idx')
+            if saved_floor_idx is not None and self.slicer and self.slicer.floor_levels:
+                idx = int(saved_floor_idx)
+                if 0 <= idx < len(self.slicer.floor_levels):
+                    self.current_floor_idx = idx
+                    self.current_z = self.slicer.floor_levels[idx]
             source = "session"
         elif self.initial_csv_path and self.initial_csv_path.exists():
             # No session exists, load from initial CSV

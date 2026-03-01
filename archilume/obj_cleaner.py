@@ -1,15 +1,13 @@
 """
 OBJ File Cleaner for Radiance Sunlight Simulations
 
-Strips unnecessary data from OBJ files for lighting analysis.
+Strips unnecessary data from OBJ files for Radiance daylight simulation. Removes vertex normals (vn), texture coordinates (vt), face UV/normal references, smoothing groups (s), mtllib declarations, and comments — none of which affect Radiance light transport. Radiance computes surface normals internally and materials are supplied directly to the renderer, not via the OBJ mtllib pointer.
 
-Keeps: vertices (v), faces (f), object names (o), groups (g), materials (usemtl)
-Removes: normals (vn), textures (vt), face references, comments, smoothing groups
+Keeps: vertices (v), faces (f), object names (o), groups (g), material assignments (usemtl)
 
 Workflow:
 1. Decimate mesh in Blender (Modifiers > Decimate, ratio 0.1-0.5)
 2. Run this script to clean the OBJ file
-3. Convert materials with MtlConverter
 
 Output: Creates a new file with '_cleaned' suffix (original preserved)
 """
@@ -151,18 +149,12 @@ def clean_obj_for_radiance(input_path, output_path=None, verbose=True):
 
     return output_path
 
-
 if __name__ == "__main__":
     # Example usage - modify the input path to your OBJ file
-    input_file = config.INPUTS_DIR / "223181_AR_LOFTUS_BTR.obj"
+    input_file = config.INPUTS_DIR / "527DM" / "223181_AR_LOFTUS_BTR_cleaned_stripped_cleaned.obj"
 
     # Clean the file
     output_file = clean_obj_for_radiance(
         input_path=input_file,
         verbose=True
     )
-
-    print("Next steps:")
-    print("1. Review the cleaned OBJ file")
-    print("2. Convert materials with: MtlConverter()")
-    print("3. Use in your sunlight workflow")

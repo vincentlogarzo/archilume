@@ -4,6 +4,12 @@ IFC file stripping utility for removing unwanted elements before daylight simula
 This module contains:
 - IfcStrip: Removes IFC elements by class, name pattern, or type pattern, with an
   optional tkinter tree viewer showing the class hierarchy and instance counts.
+
+Strip unwanted elements from an IFC file.
+
+See archilume/ifc_strip.py for full documentation.
+Usage: python strip_ifc.py [input.ifc [output.ifc]]
+       If no arguments are given, a file picker window opens.
 """
 
 # Standard library imports
@@ -14,6 +20,9 @@ from typing import List, Optional
 # Third-party imports
 import ifcopenshell
 import ifcopenshell.ifcopenshell_wrapper as ifc_wrapper
+
+
+from archilume import config
 
 
 # Defaults
@@ -286,6 +295,17 @@ class IfcStrip:
         simplify_frame = tk.LabelFrame(filter_frame, text="Simplify Geometry", padx=4, pady=4)
         simplify_frame.pack(fill=tk.X, pady=(0, 8))
 
+        simplify_enabled_var = tk.BooleanVar(value=bool(self.simplify_classes))
+
+        def _toggle_simplify():
+            state = tk.NORMAL if simplify_enabled_var.get() else tk.DISABLED
+            simplify_lb.config(state=state)
+            simplify_entry.config(state=state)
+            defl_slider.config(state=state)
+
+        tk.Checkbutton(simplify_frame, text="Enable simplification",
+                       variable=simplify_enabled_var, command=_toggle_simplify).pack(anchor=tk.W)
+
         simplify_lb = tk.Listbox(simplify_frame, height=5, selectmode=tk.EXTENDED, exportselection=False)
         for item in self.simplify_classes:
             simplify_lb.insert(tk.END, item)
@@ -336,8 +356,11 @@ class IfcStrip:
 
         def read_filters():
             self.classes_to_remove = list(classes_lb.get(0, tk.END))
-            self.simplify_classes = list(simplify_lb.get(0, tk.END))
-            self.simplify_deflection = defl_var.get()
+            if simplify_enabled_var.get():
+                self.simplify_classes = list(simplify_lb.get(0, tk.END))
+                self.simplify_deflection = defl_var.get()
+            else:
+                self.simplify_classes = []
 
         inserted = {}
 
@@ -599,22 +622,41 @@ class IfcStrip:
 
         self._total_removed = 0
 
+        import time as _time
+
         _cb(0, "Removing by class...")
+        print("\n[Phase 1/5] Removing by class...")
+        _t0 = _time.monotonic()
         self._total_removed += self._remove_by_classes(progress_cb=progress_cb, pct_start=0, pct_end=40)
+        print(f"  Done in {_time.monotonic() - _t0:.1f}s")
 
         _cb(40, "Removing by name pattern...")
+        print("\n[Phase 2/5] Removing by name pattern...")
+        _t0 = _time.monotonic()
         self._total_removed += self._remove_by_name_patterns(progress_cb=progress_cb, pct_start=40, pct_end=70)
+        print(f"  Done in {_time.monotonic() - _t0:.1f}s")
 
         _cb(70, "Removing by type pattern...")
+        print("\n[Phase 3/5] Removing by type pattern...")
+        _t0 = _time.monotonic()
         self._total_removed += self._remove_by_type_patterns(progress_cb=progress_cb, pct_start=70, pct_end=80)
+        print(f"  Done in {_time.monotonic() - _t0:.1f}s")
 
-        _cb(80, "Simplifying geometry (mesh re-tessellation)...")
-        simplified = self._simplify_geometry(progress_cb=progress_cb, pct_start=80, pct_end=88)
-        print(f"Simplified geometry on {simplified} elements.")
+        if self.simplify_classes:
+            _cb(80, "Simplifying geometry (mesh re-tessellation)...")
+            print("\n[Phase 4/5] Simplifying geometry...")
+            _t0 = _time.monotonic()
+            simplified = self._simplify_geometry(progress_cb=progress_cb, pct_start=80, pct_end=88)
+            print(f"  Simplified {simplified} elements in {_time.monotonic() - _t0:.1f}s")
+        else:
+            _cb(80, "Simplify: skipped (no classes selected)")
+            print("\n[Phase 4/5] Simplify geometry: skipped (no classes selected).")
 
         _cb(88, "Purging orphaned geometry and materials...")
+        print("\n[Phase 5/5] Purging orphaned entities...")
+        _t0 = _time.monotonic()
         purged = self._purge_unused()
-        print(f"Purged {purged} orphaned entities.")
+        print(f"  Purged {purged} entities in {_time.monotonic() - _t0:.1f}s")
 
         _cb(95, "Writing output file...")
         self._ifc.write(str(self.output_path))
@@ -651,6 +693,10 @@ class IfcStrip:
 
     def _remove_by_name_patterns(self, progress_cb=None, pct_start=40, pct_end=70) -> int:
         count = 0
+        if not self.name_patterns:
+            print("Name pattern removal: skipped (no patterns)")
+            return 0
+        print("Scanning remaining products for name patterns...")
         elements = list(self._ifc.by_type("IfcProduct"))
         n = len(elements) or 1
         for i, element in enumerate(elements):
@@ -671,6 +717,10 @@ class IfcStrip:
 
     def _remove_by_type_patterns(self, progress_cb=None, pct_start=70, pct_end=80) -> int:
         count = 0
+        if not self.type_patterns:
+            print("Type pattern removal: skipped (no patterns)")
+            return 0
+        print("Scanning remaining products for type patterns...")
         elements = list(self._ifc.by_type("IfcProduct"))
         n = len(elements) or 1
         for i, element in enumerate(elements):
@@ -872,3 +922,45 @@ class IfcStrip:
                 except Exception:
                     pass
         return removed
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+    if len(sys.argv) > 1:
+        input_path = Path(sys.argv[1])
+        output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    else:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        selected = filedialog.askopenfilename(
+            title="Select IFC file to strip",
+            initialdir=config.INPUTS_DIR,
+            filetypes=[("IFC files", "*.ifc"), ("All files", "*.*")],
+        )
+        if not selected:
+            print("No file selected.")
+            sys.exit(0)
+        input_path = Path(selected)
+        output_path = None  # IfcStrip will default to _stripped suffix
+
+    stripper = IfcStrip(input_path=input_path, output_path=output_path)
+    stripper.load()
+    stripper.show_class_tree(run_fn=stripper.run)  # strip runs in background while tree is open
+
+
+# TODO: determine if output file can be written iteratively, it currently holds it all in memory untill complete and then writes the file at the end.
+
+    # In IFC, doors create holes in walls through IfcOpeningElement entities. The relationship chain is:
+    # IfcWall → IfcRelVoidsElement → IfcOpeningElement → IfcRelFillsElement → IfcDoor
+    # If you remove only the IfcDoor, the IfcOpeningElement still exists — the wall still has a void/hole, just with nothing filling it. The wall geometry remains voided.
+
+    # If you remove both IfcDoor and IfcOpeningElement (which is the current default — IfcOpeningElement is in DEFAULT_CLASSES_TO_REMOVE), then the IfcRelVoidsElement relationship is orphaned or removed too, and the wall's original solid geometry is restored — no hole.
+
+    # So with your current defaults: walls become solid when doors are removed, because IfcOpeningElement is also stripped. If you were to add IfcDoor to the remove list but keep IfcOpeningElement off it, you'd get empty holes.
+
+    # Please make this change, i would like door to be removed, and its ifcopening element remove instead of it currently being decimated which is taking ages.
+

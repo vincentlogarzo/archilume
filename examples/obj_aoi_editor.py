@@ -18,6 +18,8 @@ Controls:
     e             Toggle Edit Mode
     v             Cycle views: Plan → Elev X → Elev Y
     a             Toggle all-floors display
+    o             Align view: click 2 points to rotate plan orthogonally
+    O             Reset view rotation to 0°
     r             Reset zoom
     q             Quit
 
@@ -43,7 +45,7 @@ from archilume import config
 
 if __name__ == "__main__":
     editor = ObjAoiEditor(
-        obj_path            = config.INPUTS_DIR / "cowles" / "87Cowles_BLD_withWindows.obj",
+        obj_path            = config.INPUTS_DIR / "527DM" / "223181_AR_LOFTUS_BTR_stripped_cleaned_decimate.obj",
         initial_csv_path    = config.INPUTS_DIR / "cowles" /"87cowles_BLD_room_boundaries.csv",
         simplify_ratio      = None,
         detect_floors       = True,
