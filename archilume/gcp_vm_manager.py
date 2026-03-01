@@ -548,6 +548,7 @@ class GCPVMManager:
 
         ip = self._get_vm_ip(vm_name)
         self.update_ssh_config(ip, username)
+        self.copy_inputs_to_vm(ip, username)
 
         print(f"\n=== Setup complete! VM: {vm_name} | IP: {ip} ===")
         print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
@@ -575,7 +576,9 @@ class GCPVMManager:
             print("  Invalid selection.")
             return
 
-        self.update_ssh_config(ip, self._gcloud_username())
+        username = self._gcloud_username()
+        self.update_ssh_config(ip, username)
+        self.copy_inputs_to_vm(ip, username)
         print(f"\n  Opening VSCode remote: {vm_name}")
         subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
 
@@ -621,10 +624,30 @@ class GCPVMManager:
             "source ~/.bashrc"
         )
 
+        self.copy_inputs_to_vm(ip, username)
+
         print(f"\n=== Rebuild complete! VM: {vm_name} | IP: {ip} ===")
         print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
         if input("\nOpen VSCode now? (y/N): ").strip().lower() == "y":
             subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
+
+    def copy_inputs_to_vm(self, ip: str, username: str) -> None:
+        """Copy local inputs folder to VM via SCP."""
+        local_inputs = Path.cwd() / "inputs"
+        if not local_inputs.exists():
+            print("  ℹ️  No local inputs folder found, skipping...")
+            return
+
+        print("  📂 Copying inputs folder to VM...")
+        remote_workspace = f"{username}@{ip}:{REMOTE_WORKSPACE}"
+        result = subprocess.run(
+            ["scp", "-r", str(local_inputs), remote_workspace],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"  ⚠️  Warning: Failed to copy inputs: {result.stderr}")
+        else:
+            print("  ✅ Inputs copied successfully!")
 
     def delete(self):
         """Select and delete one or more VMs."""
