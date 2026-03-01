@@ -7,7 +7,9 @@ SSH key is stored at ~/.ssh/google_cloud_vm_key.
 """
 
 import json
+import os
 import subprocess
+import sys
 import time
 import urllib.request
 from datetime import datetime
@@ -23,6 +25,16 @@ VM_NAME_PREFIX = "archilume-vm"
 MIN_VCPUS = 64
 # GCP Compute Engine billing service ID (stable)
 _GCP_BILLING_SERVICE = "6F81-5844-456A"
+# Base clock speeds (GHz) per machine family — from GCP published specs
+_FAMILY_GHZ: dict[str, str] = {
+    "c4d": "3.4",
+    "c4a": "3.1",
+    "c4":  "3.1",
+    "c3d": "3.6",
+    "c3":  "3.1",
+    "h4d": "3.4",
+    "z3":  "3.6",
+}
 
 
 class GCPVMManager:
@@ -205,46 +217,102 @@ class GCPVMManager:
     # SSH helpers
     # ------------------------------------------------------------------
 
+    def _check_vscode_remote_ssh_config(self):
+        """
+        Check that VS Code Remote SSH is configured to use SSH_CONFIG_PATH.
+        Searches common settings.json locations and warns if the setting is missing or wrong.
+        Skips the check inside dev containers where the host filesystem is inaccessible.
+        """
+        # Inside a dev container we cannot access the host VS Code settings,
+        # and update_ssh_config() already writes to the Windows host SSH config
+        # via /mnt/c or _find_windows_ssh_config(). Skip the noisy warning.
+        if os.environ.get("REMOTE_CONTAINERS") or os.environ.get("CODESPACES"):
+            print("  ℹ️  Running inside a dev container — skipping VS Code settings.json check.\n"
+                  f"     SSH config is written directly to your host's ~/.ssh/config by this tool.")
+            return
+
+        candidate_dirs = [
+            Path.home() / ".config" / "Code" / "User",          # Linux host
+            Path.home() / ".config" / "Code - Insiders" / "User",
+            Path("/vscode/vscode-server/data/User"),             # dev container server
+            Path.home() / ".vscode-server" / "data" / "User",
+        ]
+        if sys.platform == "win32":
+            # Native Windows: %APPDATA%\Code\User
+            appdata = os.environ.get("APPDATA", "")
+            if appdata:
+                candidate_dirs.append(Path(appdata) / "Code" / "User")
+                candidate_dirs.append(Path(appdata) / "Code - Insiders" / "User")
+        else:
+            # WSL or Linux dev container: probe Windows drives via /mnt/c
+            wsl_users = Path("/mnt/c/Users")
+            if wsl_users.exists():
+                for user_dir in wsl_users.iterdir():
+                    candidate_dirs.append(user_dir / "AppData" / "Roaming" / "Code" / "User")
+                    candidate_dirs.append(user_dir / "AppData" / "Roaming" / "Code - Insiders" / "User")
+
+        found_settings = [d / "settings.json" for d in candidate_dirs if (d / "settings.json").exists()]
+
+        correct_path = str(SSH_CONFIG_PATH)
+        ok = False
+        for settings_file in found_settings:
+            try:
+                data = json.loads(settings_file.read_text())
+                configured = data.get("remote.SSH.configFile", "")
+                if configured == correct_path:
+                    ok = True
+                    break
+            except Exception:
+                continue
+
+        if not found_settings:
+            print(
+                f"\n  ⚠️  Could not locate a VS Code settings.json to verify Remote SSH config.\n"
+                f"     Ensure 'remote.SSH.configFile' is set to: {correct_path}\n"
+                f"     (VS Code → Settings → remote.SSH.configFile)"
+            )
+        elif not ok:
+            print(
+                f"\n  ⚠️  VS Code Remote SSH config may not point to the correct file.\n"
+                f"     Set 'remote.SSH.configFile' to: {correct_path}\n"
+                f"     (VS Code → Settings → remote.SSH.configFile)"
+            )
+        else:
+            print(f"  VS Code Remote SSH config file is correctly set to: {correct_path}")
+
     def _ensure_ssh_key(self):
         if SSH_KEY_PATH.exists():
             print(f"  SSH key already exists: {SSH_KEY_PATH}")
-            return
-        print("  Generating SSH key...")
-        email = self._gcloud_account()
-        subprocess.run([
-            "ssh-keygen", "-t", "rsa", "-b", "4096",
-            "-f", str(SSH_KEY_PATH),
-            "-C", email,
-            "-N", "",
-        ], check=True)
-        print(f"  SSH key created: {SSH_KEY_PATH}")
+        else:
+            print("  Generating SSH key...")
+            email = self._gcloud_account()
+            subprocess.run([
+                "ssh-keygen", "-t", "rsa", "-b", "4096",
+                "-f", str(SSH_KEY_PATH),
+                "-C", email,
+                "-N", "",
+            ], check=True)
+            print(f"  SSH key created: {SSH_KEY_PATH}")
+        self._check_vscode_remote_ssh_config()
 
     def _read_pubkey(self) -> str:
         return SSH_KEY_PATH.with_suffix(".pub").read_text().strip()
 
-    def update_ssh_config(self, ip: str, username: str):
-        """Write or replace the Host gcp-vm block in ~/.ssh/config."""
-        SSH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        existing = SSH_CONFIG_PATH.read_text() if SSH_CONFIG_PATH.exists() else ""
-
-        new_block = (
-            f"Host {SSH_HOST_ALIAS}\n"
-            f"    HostName {ip}\n"
-            f"    User {username}\n"
-            f"    IdentityFile {SSH_KEY_PATH}\n"
-            f"    StrictHostKeyChecking accept-new\n"
-            f"    ConnectTimeout 5\n"
-        )
+    @staticmethod
+    def _upsert_ssh_config_block(config_path: Path, host_alias: str, block: str):
+        """Insert or replace a Host block in an SSH config file."""
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = config_path.read_text() if config_path.exists() else ""
 
         lines = existing.splitlines(keepends=True)
         out_lines = []
         skip = False
         found = False
         for line in lines:
-            if line.strip() == f"Host {SSH_HOST_ALIAS}":
+            if line.strip() == f"Host {host_alias}":
                 skip = True
                 found = True
-                out_lines.append(new_block)
+                out_lines.append(block)
                 continue
             if skip and line.startswith("Host "):
                 skip = False
@@ -254,10 +322,101 @@ class GCPVMManager:
         if not found:
             if out_lines and not out_lines[-1].endswith("\n"):
                 out_lines.append("\n")
-            out_lines.append("\n" + new_block)
+            out_lines.append("\n" + block)
 
-        SSH_CONFIG_PATH.write_text("".join(out_lines))
+        config_path.write_text("".join(out_lines))
+
+    def _find_windows_ssh_config(self) -> Path | None:
+        """Find the Windows host SSH config path when running inside WSL/devcontainer."""
+        wsl_users = Path("/mnt/c/Users")
+        if not wsl_users.exists():
+            return None
+        for user_dir in wsl_users.iterdir():
+            if user_dir.name in ("Public", "Default", "Default User", "All Users"):
+                continue
+            ssh_dir = user_dir / ".ssh"
+            if ssh_dir.exists():
+                return ssh_dir / "config"
+        return None
+
+    def update_ssh_config(self, ip: str, username: str):
+        """Write or replace the Host gcp-vm block in ~/.ssh/config and Windows host config."""
+        # Block for the container/WSL config (uses container paths)
+        container_block = (
+            f"Host {SSH_HOST_ALIAS}\n"
+            f"    HostName {ip}\n"
+            f"    User {username}\n"
+            f"    IdentityFile {SSH_KEY_PATH}\n"
+            f"    StrictHostKeyChecking accept-new\n"
+            f"    ConnectTimeout 5\n"
+        )
+
+        self._upsert_ssh_config_block(SSH_CONFIG_PATH, SSH_HOST_ALIAS, container_block)
         print(f"  SSH config updated: {SSH_CONFIG_PATH}")
+
+        # Also write to Windows host SSH config if accessible (WSL/devcontainer)
+        win_config = self._find_windows_ssh_config()
+        win_block = (
+            f"Host {SSH_HOST_ALIAS}\n"
+            f"    HostName {ip}\n"
+            f"    User {username}\n"
+            f"    IdentityFile C:\\Users\\{username}\\.ssh\\google_cloud_vm_key\n"
+            f"    StrictHostKeyChecking accept-new\n"
+            f"    ConnectTimeout 5\n"
+        )
+        if win_config:
+            try:
+                self._upsert_ssh_config_block(win_config, SSH_HOST_ALIAS, win_block)
+                print(f"  Windows SSH config updated: {win_config}")
+            except PermissionError:
+                print(f"  ⚠️  Could not write Windows SSH config: {win_config} (permission denied)")
+                self._print_windows_ssh_config_instructions(win_block)
+        else:
+            # /mnt/c not mounted (typical in dev containers) — print instructions
+            self._print_windows_ssh_config_instructions(win_block)
+
+    def _print_windows_ssh_config_instructions(self, block: str):
+        print(
+            f"\n  ⚠️  Could not auto-update your Windows SSH config.\n"
+            f"     Paste the following into C:\\Users\\<you>\\.ssh\\config\n"
+            f"     (replacing any existing 'Host {SSH_HOST_ALIAS}' block):\n"
+            f"\n"
+        )
+        for line in block.splitlines():
+            print(f"     {line}")
+        print()
+
+    def _ensure_ssh_key_on_vm(self, vm_name: str):
+        """Ensure our SSH public key is in the VM's instance metadata."""
+        self._ensure_ssh_key()
+        username = self._gcloud_username()
+        pubkey = self._read_pubkey()
+        new_entry = f"{username}:{pubkey}"
+
+        # Fetch existing ssh-keys metadata
+        existing, code = self._gcloud_capture([
+            "compute", "instances", "describe", vm_name,
+            f"--zone={self.zone}", f"--project={self.project}",
+            "--format=value(metadata.items.ssh-keys)",
+        ])
+
+        if new_entry in (existing or ""):
+            print(f"  SSH public key already present on {vm_name}")
+            return
+
+        # Append our key to existing keys
+        if existing:
+            updated = existing.rstrip("\n") + "\n" + new_entry
+        else:
+            updated = new_entry
+
+        print(f"  Adding SSH public key to {vm_name}...")
+        self._gcloud([
+            "compute", "instances", "add-metadata", vm_name,
+            f"--zone={self.zone}", f"--project={self.project}",
+            f"--metadata=ssh-keys={updated}",
+        ])
+        print(f"  SSH public key added to {vm_name}")
 
     # ------------------------------------------------------------------
     # Remote command execution
@@ -335,7 +494,7 @@ class GCPVMManager:
             print("  Warning: could not fetch exchange rate, using fallback 1.55")
             return 1.55
 
-    def _fetch_gcp_pricing(self) -> dict[str, float]:
+    def _fetch_gcp_pricing(self) -> dict[str, dict]:
         """
         Fetch on-demand per-core and per-GiB-RAM pricing from the GCP Billing SKUs API.
         Returns a dict mapping lowercase family prefix → (core_usd_hr, ram_usd_gib_hr).
@@ -433,7 +592,8 @@ class GCPVMManager:
                 mem_gb = round(float(parts[2]) / 1024, 1)
             except ValueError:
                 continue
-            results.append({"name": name, "vcpus": vcpus, "mem_gb": mem_gb})
+            ghz = next((v for k, v in _FAMILY_GHZ.items() if name.startswith(k)), "n/a")
+            results.append({"name": name, "vcpus": vcpus, "mem_gb": mem_gb, "ghz": ghz})
         return sorted(results, key=lambda x: (x["vcpus"], x["name"]))
 
     def _compute_usd_hr(self, machine: dict, pricing: dict[str, dict]) -> float | None:
@@ -460,17 +620,18 @@ class GCPVMManager:
         pricing = self._fetch_gcp_pricing()
         usd_to_aud = self._fetch_usd_to_aud()
 
-        print(f"\n  {'#':<4} {'Machine Type':<32} {'vCPU':>6} {'RAM(GB)':>8} {'USD/hr':>8} {'AUD/hr':>8} {'AUD/vCPU/hr':>13} {'USD/min':>8}")
-        print(f"  {'-'*4} {'-'*32} {'-'*6} {'-'*8} {'-'*8} {'-'*8} {'-'*13} {'-'*8}")
+        print(f"\n  {'#':<4} {'Machine Type':<32} {'vCPU':>6} {'RAM(GB)':>8} {'GHz':>5} {'USD/hr':>8} {'AUD/hr':>8} {'cents/vCPU/hr':>15} {'USD/min':>8}")
+        print(f"  {'-'*4} {'-'*32} {'-'*6} {'-'*8} {'-'*5} {'-'*8} {'-'*8} {'-'*15} {'-'*8}")
         for i, m in enumerate(machines, 1):
             usd_hr = self._compute_usd_hr(m, pricing)
+            ghz = m.get("ghz", "n/a")
             if usd_hr:
                 aud_hr = usd_hr * usd_to_aud
-                aud_per_vcpu = aud_hr / m["vcpus"]
+                aud_cents_per_vcpu = (aud_hr / m["vcpus"]) * 100
                 usd_min = usd_hr / 60
-                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {usd_hr:>8.2f} {aud_hr:>8.2f} {aud_per_vcpu:>13.4f} {usd_min:>8.4f}")
+                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {ghz:>5} {usd_hr:>8.2f} {aud_hr:>8.2f} {aud_cents_per_vcpu:>15.2f} {usd_min:>8.4f}")
             else:
-                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {'n/a':>8} {'n/a':>8} {'n/a':>13} {'n/a':>8}")
+                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {ghz:>5} {'n/a':>8} {'n/a':>8} {'n/a':>15} {'n/a':>8}")
 
         try:
             idx = int(input("\n  Select option: ").strip()) - 1
@@ -547,8 +708,10 @@ class GCPVMManager:
             return
 
         ip = self._get_vm_ip(vm_name)
+        print(f"\n  VM external IP: {ip}")
         self.update_ssh_config(ip, username)
-        self.copy_inputs_to_vm(ip, username)
+        print(f"  SSH config written: Host {SSH_HOST_ALIAS} → {ip} (key: {SSH_KEY_PATH})")
+        self.copy_inputs_to_vm(vm_name)
 
         print(f"\n=== Setup complete! VM: {vm_name} | IP: {ip} ===")
         print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
@@ -576,9 +739,10 @@ class GCPVMManager:
             print("  Invalid selection.")
             return
 
+        self._ensure_ssh_key_on_vm(vm_name)
         username = self._gcloud_username()
         self.update_ssh_config(ip, username)
-        self.copy_inputs_to_vm(ip, username)
+        self.copy_inputs_to_vm(vm_name)
         print(f"\n  Opening VSCode remote: {vm_name}")
         subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
 
@@ -603,6 +767,7 @@ class GCPVMManager:
             print("  Invalid selection.")
             return
 
+        self._ensure_ssh_key_on_vm(vm_name)
         username = self._gcloud_username()
         self.update_ssh_config(ip, username)
 
@@ -624,55 +789,132 @@ class GCPVMManager:
             "source ~/.bashrc"
         )
 
-        self.copy_inputs_to_vm(ip, username)
+        self.copy_inputs_to_vm(vm_name)
 
         print(f"\n=== Rebuild complete! VM: {vm_name} | IP: {ip} ===")
         print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
         if input("\nOpen VSCode now? (y/N): ").strip().lower() == "y":
             subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
 
-    def copy_inputs_to_vm(self, ip: str, username: str) -> None:
-        """Copy aoi folder and input files from local inputs to VM via SCP."""
+    def _scp_cmd(self, vm_name: str) -> tuple[list[str], str]:
+        """Return (ssh_flags_list, user@ip) for direct scp transfers."""
+        ip = self._get_vm_ip(vm_name)
+        username = self._gcloud_username()
+        flags = [
+            "-i", str(SSH_KEY_PATH),
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=10",
+        ]
+        return flags, f"{username}@{ip}"
+
+    def copy_inputs_to_vm(self, vm_name: str) -> None:
+        """Copy aoi folder and input files from local inputs to VM via direct scp."""
         local_inputs = Path.cwd() / "inputs"
         if not local_inputs.exists():
             print("  ℹ️  No local inputs folder found, skipping...")
             return
 
         print("  📂 Copying inputs data to VM...")
-        remote_inputs = f"{username}@{ip}:{REMOTE_WORKSPACE}/inputs"
+        remote_inputs = f"{REMOTE_WORKSPACE}/inputs"
+        self._ssh(vm_name,
+            f"sudo mkdir -p {remote_inputs}/aoi && "
+            f"sudo chmod -R a+rwx {remote_inputs}"
+        )
 
-        # Copy aoi folder
+        ssh_flags, remote_host = self._scp_cmd(vm_name)
+        remote_dest = f"{remote_host}:{remote_inputs}/"
+
+        def _fmt_size(n: int) -> str:
+            for unit in ("B", "KB", "MB", "GB"):
+                if n < 1024:
+                    return f"{n:.1f} {unit}"
+                n /= 1024
+            return f"{n:.1f} TB"
+
+        anything_copied = False
+        any_failed = False
+
         aoi_folder = local_inputs / "aoi"
         if aoi_folder.exists():
-            result = subprocess.run(
-                ["scp", "-r", str(aoi_folder), remote_inputs],
-                capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                print(f"    ⚠️  Warning: Failed to copy aoi folder: {result.stderr}")
+            size = _fmt_size(sum(f.stat().st_size for f in aoi_folder.rglob("*") if f.is_file()))
+            print(f"    → Copying aoi/ ({size})...")
+            result = subprocess.run(["scp", "-r"] + ssh_flags + [str(aoi_folder), remote_dest])
+            if result.returncode == 0:
+                print("    ✅ aoi/ copied")
             else:
-                print("    ✅ AOI folder copied")
+                print("    ⚠️  Failed to copy aoi/")
+                any_failed = True
+            anything_copied = True
 
-        # Copy individual files (not subdirectories)
         files_to_copy = [f for f in local_inputs.glob("*") if f.is_file()]
         if files_to_copy:
-            for file in files_to_copy:
-                result = subprocess.run(
-                    ["scp", str(file), remote_inputs],
-                    capture_output=True, text=True
-                )
-                if result.returncode != 0:
-                    print(f"    ⚠️  Warning: Failed to copy {file.name}: {result.stderr}")
-                else:
-                    print(f"    ✅ Copied {file.name}")
+            total_size = _fmt_size(sum(f.stat().st_size for f in files_to_copy))
+            print(f"    → Copying {len(files_to_copy)} file(s) ({total_size})...")
+            result = subprocess.run(["scp"] + ssh_flags + [str(f) for f in files_to_copy] + [remote_dest])
+            if result.returncode == 0:
+                print(f"    ✅ {len(files_to_copy)} file(s) copied")
+            else:
+                print("    ⚠️  Failed to copy files")
+                any_failed = True
+            anything_copied = True
 
-        if not aoi_folder.exists() and not files_to_copy:
+        if not anything_copied:
             print("  ℹ️  No aoi folder or input files found to copy")
+        elif any_failed:
+            print("  ⚠️  Some files failed to copy — check errors above.")
         else:
             print("  ✅ Inputs data copied successfully!")
 
+    def _check_vm_idle(self, vm_name: str) -> tuple[bool, str]:
+        """Check if the VM has any running user processes (python, bash scripts, etc).
+        Returns (is_idle, description)."""
+        # Look for python/bash processes that indicate active work
+        # Exclude system processes, sshd, and the check command itself
+        out, code = self._ssh_capture(
+            vm_name,
+            "ps aux --no-headers | grep -vE '(sshd|ps aux|grep|bash -c|gcloud)' | "
+            "grep -E '(python|node|java|make|gcc|g\\+\\+|cargo|go run)' || true"
+        )
+        if code != 0:
+            return False, "Could not check running processes"
+        if out.strip():
+            return False, out.strip()
+        return True, ""
+
+    def _download_outputs_from_vm(self, vm_name: str, zone: str) -> bool:
+        """Download outputs directory from VM to local archive. Returns True on success."""
+        remote_outputs = f"{REMOTE_WORKSPACE}/outputs"
+        base_flags = [f"--zone={zone}", f"--project={self.project}"]
+
+        # Check if remote outputs directory exists and has content
+        out, code = self._ssh_capture(vm_name, f"ls -A {remote_outputs} 2>/dev/null")
+        if code != 0 or not out:
+            print(f"  No outputs found on {vm_name}, skipping download.")
+            return True
+
+        # Create local archive directory
+        archive_dir = Path.cwd() / "archive"
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        local_dest = archive_dir / f"{vm_name}_{ts}"
+        local_dest.mkdir(parents=True, exist_ok=True)
+
+        print(f"  📥 Downloading outputs from {vm_name} to {local_dest}...")
+        ssh_flags, remote_host = self._scp_cmd(vm_name)
+        result = subprocess.run(
+            ["scp", "-r"] + ssh_flags + [f"{remote_host}:{remote_outputs}/", str(local_dest) + "/"]
+        )
+        if result.returncode != 0:
+            print(f"  ⚠️  Failed to download outputs")
+            return False
+
+        # List what was downloaded
+        downloaded = list(local_dest.rglob("*"))
+        file_count = sum(1 for f in downloaded if f.is_file())
+        print(f"  ✅ Downloaded {file_count} file(s) to {local_dest}")
+        return True
+
     def delete(self):
-        """Select and delete one or more VMs."""
+        """Select and delete one or more VMs, downloading outputs first."""
         self.prompt_config()
         vms = self.list_vms()
         if not vms:
@@ -690,11 +932,38 @@ class GCPVMManager:
             print("  Invalid selection.")
             return
 
+        # Check each running VM for active processes
+        blocked = []
+        for name, status, zone, _ in selected:
+            if status != "RUNNING":
+                continue
+            print(f"\n  Checking {name} for active processes...")
+            is_idle, details = self._check_vm_idle(name)
+            if not is_idle:
+                print(f"  ⚠️  {name} is still running code:")
+                for line in details.splitlines()[:5]:
+                    print(f"      {line.strip()}")
+                blocked.append(name)
+
+        if blocked:
+            print(f"\n  Cannot proceed — the following VM(s) are still running code: {', '.join(blocked)}")
+            print("  Wait for processes to finish or stop them manually before deleting.")
+            return
+
+        # Download outputs from each running VM before deletion
+        for name, status, zone, _ in selected:
+            if status == "RUNNING":
+                self._download_outputs_from_vm(name, zone)
+
+        if input("\n  Have you verified you have downloaded the results you need? (y/N): ").strip().lower() != "y":
+            print("  Cancelled. VMs not deleted.")
+            return
+
         print("\n  VMs to delete:")
         for name, status, zone, _ in selected:
             print(f"    {name}  [{status}]  {zone}")
 
-        if input("\n  Confirm deletion? (y/N): ").strip().lower() != "y":
+        if input("\n  Type 'delete' to confirm: ").strip() != "delete":
             print("  Cancelled.")
             return
 
@@ -728,7 +997,7 @@ class GCPVMManager:
         print("\n  1. Setup new VM")
         print("  2. Connect to a VM")
         print("  3. Reconnect and rebuild dev container")
-        print("  4. Delete VM(s)")
+        print("  4. Download results and delete VM(s)")
         print("  5. Check / list VMs")
         print("  6. Exit")
 
