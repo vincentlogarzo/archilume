@@ -579,6 +579,53 @@ class GCPVMManager:
         print(f"\n  Opening VSCode remote: {vm_name}")
         subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
 
+    def reconnect_and_rebuild(self):
+        """Reconnect to an existing VM, re-clone repo, and rebuild dev container."""
+        self.prompt_config()
+        vms = self.list_vms()
+        running = [(n, s, z, ip) for n, s, z, ip in vms if s == "RUNNING"]
+
+        if not running:
+            print("  No running archilume VMs found.")
+            return
+
+        print("\n  Running VMs:")
+        for i, (name, _, zone, ip) in enumerate(running, 1):
+            print(f"    {i}. {name}  ({zone})  {ip}")
+
+        try:
+            idx = int(input("\n  Select VM number: ").strip()) - 1
+            vm_name, _, _, ip = running[idx]
+        except (ValueError, IndexError):
+            print("  Invalid selection.")
+            return
+
+        username = self._gcloud_username()
+        self.update_ssh_config(ip, username)
+
+        print(f"\n  Re-cloning repository and rebuilding dev container on {vm_name}...")
+        print("  This may take 10+ minutes...\n")
+
+        self._run_step(
+            "[1/2] Re-cloning repository...",
+            vm_name,
+            "rm -rf /mnt/disks/localssd/workspace/archilume && "
+            "cd /mnt/disks/localssd/workspace && "
+            "git clone https://github.com/vincentlogarzo/archilume.git"
+        )
+
+        self._run_step(
+            "[2/2] Running setup script...",
+            vm_name,
+            "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
+            "source ~/.bashrc"
+        )
+
+        print(f"\n=== Rebuild complete! VM: {vm_name} | IP: {ip} ===")
+        print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
+        if input("\nOpen VSCode now? (y/N): ").strip().lower() == "y":
+            subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
+
     def delete(self):
         """Select and delete one or more VMs."""
         self.prompt_config()
@@ -635,9 +682,10 @@ class GCPVMManager:
 
         print("\n  1. Setup new VM")
         print("  2. Connect to a VM")
-        print("  3. Delete VM(s)")
-        print("  4. Check / list VMs")
-        print("  5. Exit")
+        print("  3. Reconnect and rebuild dev container")
+        print("  4. Delete VM(s)")
+        print("  5. Check / list VMs")
+        print("  6. Exit")
 
         choice = input("\nSelect option: ").strip()
 
@@ -646,10 +694,12 @@ class GCPVMManager:
         elif choice == "2":
             self.connect()
         elif choice == "3":
-            self.delete()
+            self.reconnect_and_rebuild()
         elif choice == "4":
-            self.check()
+            self.delete()
         elif choice == "5":
+            self.check()
+        elif choice == "6":
             raise SystemExit(0)
         else:
             print("  Invalid option.")
