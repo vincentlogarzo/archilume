@@ -819,6 +819,7 @@ class GCPVMManager:
                 "cd /mnt/disks/localssd/workspace && "
                 "git clone https://github.com/vincentlogarzo/archilume.git && "
                 "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
+                "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace && "
                 "source ~/.bashrc"
             )
 
