@@ -20,8 +20,7 @@ sudo ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/lib
 # Install Radiance
 echo "🌟 Installing Radiance..."
 
-cd /tmp
-# Detect workspace path: prefer env vars set by Codespaces/devcontainers, else derive from script location
+# Detect workspace path BEFORE changing directories
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DERIVED_PATH="$(dirname "$SCRIPT_DIR")"
 # Validate derived path contains expected marker; fall back to known devcontainer mount
@@ -36,6 +35,8 @@ else
     WORKSPACE_PATH="$(find /workspaces -maxdepth 2 -name "pyproject.toml" -exec dirname {} \; 2>/dev/null | head -1)"
 fi
 echo "📂 Workspace path resolved to: $WORKSPACE_PATH"
+
+cd /tmp
 
 # Use bundled Radiance tarball from .devcontainer directory
 tar -xzf "$WORKSPACE_PATH/.devcontainer/Radiance_5085332d_Linux/radiance-6.1.5085332d6e-Linux.tar.gz"

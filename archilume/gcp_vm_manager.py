@@ -8,6 +8,7 @@ SSH key is stored at ~/.ssh/google_cloud_vm_key.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from archilume.config import GCLOUD_EXECUTABLE
 
 CONFIG_PATH = Path.home() / ".archilume_gcp_config.json"
 SSH_KEY_PATH = Path.home() / ".ssh" / "google_cloud_vm_key"
@@ -39,12 +41,14 @@ _FAMILY_GHZ: dict[str, str] = {
 
 class GCPVMManager:
     def __init__(self):
-        if subprocess.run(["which", "gcloud"], capture_output=True).returncode != 0:
+        # Check if gcloud exists at the configured path
+        if not GCLOUD_EXECUTABLE.exists():
             raise RuntimeError(
-                "gcloud CLI not found.\n"
+                f"gcloud CLI not found at: {GCLOUD_EXECUTABLE}\n"
                 "Install it from https://cloud.google.com/sdk/docs/install, then run:\n"
                 "  gcloud auth login\n"
-                "  gcloud config set project YOUR_PROJECT_ID"
+                "  gcloud config set project YOUR_PROJECT_ID\n"
+                f"Or set GCLOUD_SDK_ROOT environment variable to your installation path."
             )
         self._ensure_authenticated()
         self.cfg = self._load_config()
@@ -57,9 +61,9 @@ class GCPVMManager:
             is_wsl = Path("/proc/version").exists() and "microsoft" in Path("/proc/version").read_text().lower()
             if is_wsl:
                 print("  WSL detected — a URL will be printed below. Open it in your browser to log in.")
-                login_cmd = ["gcloud", "auth", "login", "--no-launch-browser"]
+                login_cmd = [str(GCLOUD_EXECUTABLE), "auth", "login", "--no-launch-browser"]
             else:
-                login_cmd = ["gcloud", "auth", "login"]
+                login_cmd = [str(GCLOUD_EXECUTABLE), "auth", "login"]
             result = subprocess.run(login_cmd)
             if result.returncode != 0:
                 raise RuntimeError("gcloud authentication failed. Run 'gcloud auth login' manually.")
@@ -70,7 +74,7 @@ class GCPVMManager:
 
     @staticmethod
     def _gcloud_capture_static(args: list) -> tuple[str, int]:
-        result = subprocess.run(["gcloud"] + args, capture_output=True, text=True)
+        result = subprocess.run([str(GCLOUD_EXECUTABLE)] + args, capture_output=True, text=True)
         return result.stdout.strip(), result.returncode
 
     # ------------------------------------------------------------------
@@ -161,7 +165,7 @@ class GCPVMManager:
 
     def _gcloud(self, args: list):
         """Run a gcloud command, streaming output live. Raises on failure."""
-        result = subprocess.run(["gcloud"] + args)
+        result = subprocess.run([str(GCLOUD_EXECUTABLE)] + args)
         if result.returncode != 0:
             raise RuntimeError(
                 f"gcloud command failed (exit {result.returncode}):\n  gcloud {' '.join(args)}"
@@ -449,7 +453,7 @@ class GCPVMManager:
     def _ssh(self, vm_name: str, command: str) -> int:
         """Run a command on the VM, streaming output live. Returns exit code."""
         return subprocess.run([
-            "gcloud", "compute", "ssh", vm_name,
+            str(GCLOUD_EXECUTABLE), "compute", "ssh", vm_name,
             f"--zone={self.zone}", f"--project={self.project}",
             f"--command={command}",
         ]).returncode
@@ -457,7 +461,7 @@ class GCPVMManager:
     def _ssh_capture(self, vm_name: str, command: str) -> tuple[str, int]:
         """Run a command on the VM and capture stdout. Returns (stdout, exit_code)."""
         result = subprocess.run([
-            "gcloud", "compute", "ssh", vm_name,
+            str(GCLOUD_EXECUTABLE), "compute", "ssh", vm_name,
             f"--zone={self.zone}", f"--project={self.project}",
             f"--command={command}",
         ], capture_output=True, text=True)
@@ -496,7 +500,7 @@ class GCPVMManager:
         if ans == "y":
             print(f"  Deleting {vm_name}...")
             subprocess.run([
-                "gcloud", "compute", "instances", "delete", vm_name,
+                str(GCLOUD_EXECUTABLE), "compute", "instances", "delete", vm_name,
                 f"--zone={self.zone}", f"--project={self.project}", "--quiet",
             ])
             print("  Deleted.")
@@ -525,7 +529,7 @@ class GCPVMManager:
         Requires an active gcloud auth token.
         """
         token_result = subprocess.run(
-            ["gcloud", "auth", "print-access-token"],
+            [str(GCLOUD_EXECUTABLE), "auth", "print-access-token"],
             capture_output=True, text=True
         )
         if token_result.returncode != 0:
@@ -684,6 +688,7 @@ class GCPVMManager:
             f"--project={self.project}", f"--zone={self.zone}",
             f"--machine-type={machine_type}",
             "--image-family=debian-12", "--image-project=debian-cloud",
+            "--boot-disk-size=100GB", "--boot-disk-type=pd-balanced",
             f"--metadata=ssh-keys={ssh_key_metadata}",
         ])
 
@@ -738,9 +743,14 @@ class GCPVMManager:
         self.copy_inputs_to_vm(vm_name)
 
         print(f"\n=== Setup complete! VM: {vm_name} | IP: {ip} ===")
-        print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
-        if input("\nOpen VSCode now? (y/N): ").strip().lower() == "y":
-            subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
+        print(f"\n📋 To connect with VS Code Remote SSH:")
+        print(f"   1. Open VS Code")
+        print(f"   2. Press F1 or Ctrl+Shift+P")
+        print(f"   3. Type: 'Remote-SSH: Connect to Host'")
+        print(f"   4. Select: {SSH_HOST_ALIAS}")
+        print(f"   5. Open folder: {REMOTE_WORKSPACE}")
+        print(f"\n   Or run this command:")
+        print(f"   code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
 
     def connect(self):
         """Select a running VM and open VSCode remote."""
@@ -767,8 +777,16 @@ class GCPVMManager:
         username = self._gcloud_username()
         self.update_ssh_config(ip, username)
         self.copy_inputs_to_vm(vm_name)
-        print(f"\n  Opening VSCode remote: {vm_name}")
-        subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
+
+        print(f"\n=== Ready to connect! VM: {vm_name} | IP: {ip} ===")
+        print(f"\n📋 To connect with VS Code Remote SSH:")
+        print(f"   1. Open VS Code")
+        print(f"   2. Press F1 or Ctrl+Shift+P")
+        print(f"   3. Type: 'Remote-SSH: Connect to Host'")
+        print(f"   4. Select: {SSH_HOST_ALIAS}")
+        print(f"   5. Open folder: {REMOTE_WORKSPACE}")
+        print(f"\n   Or run this command:")
+        print(f"   code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
 
     def reconnect_and_rebuild(self):
         """Reconnect to an existing VM, re-clone repo, and rebuild dev container."""
@@ -816,9 +834,14 @@ class GCPVMManager:
         self.copy_inputs_to_vm(vm_name)
 
         print(f"\n=== Rebuild complete! VM: {vm_name} | IP: {ip} ===")
-        print(f"\nTo open in VSCode:\n  code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
-        if input("\nOpen VSCode now? (y/N): ").strip().lower() == "y":
-            subprocess.run(["code", "--remote", f"ssh-remote+{SSH_HOST_ALIAS}", REMOTE_WORKSPACE])
+        print(f"\n📋 To connect with VS Code Remote SSH:")
+        print(f"   1. Open VS Code")
+        print(f"   2. Press F1 or Ctrl+Shift+P")
+        print(f"   3. Type: 'Remote-SSH: Connect to Host'")
+        print(f"   4. Select: {SSH_HOST_ALIAS}")
+        print(f"   5. Open folder: {REMOTE_WORKSPACE}")
+        print(f"\n   Or run this command:")
+        print(f"   code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
 
     def _scp_cmd(self, vm_name: str) -> tuple[list[str], str]:
         """Return (ssh_flags_list, user@ip) for direct scp transfers."""
@@ -988,7 +1011,7 @@ class GCPVMManager:
         for name, _, zone, _ in selected:
             print(f"\n  Deleting {name}...")
             subprocess.run([
-                "gcloud", "compute", "instances", "delete", name,
+                str(GCLOUD_EXECUTABLE), "compute", "instances", "delete", name,
                 f"--zone={zone}", f"--project={self.project}", "--quiet",
             ])
             print(f"  Deleted {name}.")
