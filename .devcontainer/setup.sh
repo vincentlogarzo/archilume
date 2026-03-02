@@ -39,9 +39,7 @@ if [ ! -f "$WORKSPACE_PATH/pyproject.toml" ]; then
 fi
 echo "📂 Workspace path resolved to: $WORKSPACE_PATH"
 
-# Use workspace directory for extraction (avoids /tmp space issues in containers)
-EXTRACT_DIR="$WORKSPACE_PATH/.devcontainer/tmp_extract"
-mkdir -p "$EXTRACT_DIR"
+EXTRACT_DIR=$(mktemp -d)
 cd "$EXTRACT_DIR"
 
 # Use bundled Radiance tarball from .devcontainer directory
@@ -59,9 +57,7 @@ echo "Note: GPU acceleration requires NVIDIA GPU and proper Docker GPU passthrou
 # Install build dependencies for Accelerad
 sudo apt-get install -y build-essential git cmake libx11-dev tcl-dev tk-dev
 
-# Clone Accelerad repository (use workspace to avoid /tmp space issues)
-BUILD_DIR="$WORKSPACE_PATH/.devcontainer/tmp_build"
-mkdir -p "$BUILD_DIR"
+BUILD_DIR=$(mktemp -d)
 cd "$BUILD_DIR"
 if [ ! -d "Accelerad" ]; then
     git clone https://github.com/nljones/Accelerad.git
