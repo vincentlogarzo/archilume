@@ -40,7 +40,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.3.1" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "psutil", specifier = ">=7.0.0" },
-    { name = "pyradiance", specifier = ">=1.1.5" },
+    { name = "pyradiance", specifier = ">=1.2.0" },
     { name = "pyvista", specifier = ">=0.46.4" },
     { name = "scikit-image", specifier = ">=0.25.2" },
     { name = "vtk", specifier = ">=9.6.0" },
@@ -832,17 +832,22 @@ wheels = [
 
 [[package]]
 name = "pyradiance"
-version = "1.1.5"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/c1/573ec3734ff3bdb44da4b280223ca439b3ef83c79381f3bd770fbe3e1487/pyradiance-1.1.5-cp312-abi3-macosx_10_14_x86_64.whl", hash = "sha256:365ed3926449a972efeca6ccfd2c8af2aa2787122eebaa08ea5bda23cbfae584", size = 6392583, upload-time = "2025-08-01T22:18:48.554Z" },
-    { url = "https://files.pythonhosted.org/packages/90/87/076e39b9b14548c5376a425931a701978bd95d40c8d6a10b88159a38af1e/pyradiance-1.1.5-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:099e0b6977d234f8a5c001ba7e38c043970525ea302a5d7235a55c1a0f8b64fe", size = 5968591, upload-time = "2025-08-01T22:18:50.033Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/76/6274eb168c826fdc817e722ba16e64112d12f1efe1ac81007e5ab0e83cbd/pyradiance-1.1.5-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:02915e2698364038a7e44f906878903aa92b4eb02cd8728b3ca0c596991fb0d8", size = 9193878, upload-time = "2025-08-01T22:18:53.745Z" },
-    { url = "https://files.pythonhosted.org/packages/f7/ed/c0557cb8795c63fad184ccb7cd0a8fbdde8ffdee04c0deff6e77d237fbba/pyradiance-1.1.5-cp312-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:df1048c92551743718003c8da5e5da74a9ea780ed022c677cf507ef8a1bbc52d", size = 9442893, upload-time = "2025-08-01T22:18:55.841Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/40/26de254448a9c38b584ffbccd94c39686e55dce5e2281c4341c31c10f3fa/pyradiance-1.1.5-cp312-abi3-win_amd64.whl", hash = "sha256:8d509a1a0b0bbfd739afd52ce26c07679ee8048e84c4f60aa396ed7c2cacbca9", size = 4941343, upload-time = "2025-08-01T22:18:57.649Z" },
+    { url = "https://files.pythonhosted.org/packages/24/af/81c9e28e831d01786462edc0d6b3e9819229171917b828547fffbf2575d7/pyradiance-1.2.0-cp312-cp312-macosx_10_14_x86_64.whl", hash = "sha256:56cb9849649ac5d958ee8df9d2dcbe79fb6bdd43f584c1794c3b10e8ab0379dc", size = 6268855, upload-time = "2026-01-30T20:29:10.743Z" },
+    { url = "https://files.pythonhosted.org/packages/05/e5/8fc004f4af83b7abc970093a9a6afddd1f087cdaf74985215d997b95bc34/pyradiance-1.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:745b7cb26b577569d0da2ab445190625bc7d63739bb4f06223ef1e94123b29f2", size = 5975034, upload-time = "2026-01-30T20:29:12.453Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/83/b3db438cf5624a779d96fe0c8952bc870cc056acf450e3068318262d7544/pyradiance-1.2.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0e12d9173efdeac7be7db6a7ddf26c0e34f7c491f7e873286437657a22d1ab6c", size = 9205165, upload-time = "2026-01-30T20:29:14.952Z" },
+    { url = "https://files.pythonhosted.org/packages/69/5d/9b2eece212bcbdf4d6b7ac2173da720a5baf6110c347187ed38fb32c7b13/pyradiance-1.2.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:cc92dcc67aec86559e08f848a14eb44c04ff0a6bce90e065d6e6bdd9950a4484", size = 11556187, upload-time = "2026-01-30T20:29:18.882Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/c9/43801cac10747cb0ce768bbef8e5a6d9fcb94de246b4e0238b0f75019122/pyradiance-1.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:f6dba916af1a4090fa8715c33bf08c9a02738cd8f6ce537441d01cc035646bd8", size = 4969531, upload-time = "2026-01-30T20:29:21.85Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/83/3c91be50992396488fe07e031c8f403d28d736746a19aad6a296a0284fac/pyradiance-1.2.0-cp313-cp313-macosx_10_14_x86_64.whl", hash = "sha256:0286c2ddcc4e3fbf394bb7ab1fe3b126b770884cd5d05e22e38b03f8e855fad4", size = 6268608, upload-time = "2026-01-30T20:29:23.591Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/72/916a48af26a56536a0a1659f3fff4aa1e295a20e2e5b77b3179bc1706f8e/pyradiance-1.2.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:b6d65d6709794b4dc0dbd5b41f9a1d2978fcb2d35197b92a61c92076719374ed", size = 5974662, upload-time = "2026-01-30T20:29:25.71Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/da/3bdcbd5ce4d925a10b5d99f61383129a42ea8f9febd173e81c2a1bdfc4b6/pyradiance-1.2.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:1b58e145e51db29cef5106b8ac4d9764b2fa814ac8dd8a63c1cfddc277ae28ed", size = 9204864, upload-time = "2026-01-30T20:29:28.735Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/e3/5ccf34e9cc9a33b0e0fc89435083e89ec0c5508ac59b6026ff3fba352f8f/pyradiance-1.2.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:ce4eb7270e62075a5a73bf4e167e8b5cb57b3eabd0b2db83476cc2a9ac209a3a", size = 11556126, upload-time = "2026-01-30T20:29:31.558Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/78/5e74baad1fa1f008dc33b5b201b393ff9519dae1a1ac72b462e1752ab174/pyradiance-1.2.0-cp313-cp313-win_amd64.whl", hash = "sha256:6f0968ff8311c9adf87181f163a24fadb202ab62bdf386d3e3c3ee42c78f89b3", size = 4969106, upload-time = "2026-01-30T20:29:34.336Z" },
 ]
 
 [[package]]

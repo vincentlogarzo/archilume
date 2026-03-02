@@ -52,6 +52,25 @@ RADIANCE_ROOT       = Path(os.getenv("RADIANCE_ROOT", _default_radiance))
 RADIANCE_BIN_PATH   = RADIANCE_ROOT / "bin"
 RADIANCE_LIB_PATH   = RADIANCE_ROOT / "lib"
 
+# ============================================================================
+# GOOGLE CLOUD SDK PATH
+# ============================================================================
+# Detect Google Cloud SDK installation
+# Users can set GCLOUD_SDK_ROOT env var to override default location
+if sys.platform == "win32":
+    # Windows: typical installation in %LOCALAPPDATA%\Google\Cloud SDK
+    _default_gcloud = Path.home() / "AppData" / "Local" / "Google" / "Cloud SDK" / "google-cloud-sdk"
+else:
+    # Unix: typical installation in home directory
+    _default_gcloud = Path.home() / "google-cloud-sdk"
+
+GCLOUD_SDK_ROOT = Path(os.getenv("GCLOUD_SDK_ROOT", str(_default_gcloud)))
+GCLOUD_BIN_PATH = GCLOUD_SDK_ROOT / "bin"
+
+# Determine the correct gcloud executable name based on platform
+_gcloud_exe = "gcloud.cmd" if sys.platform == "win32" else "gcloud"
+GCLOUD_EXECUTABLE = GCLOUD_BIN_PATH / _gcloud_exe
+
 # RAYPATH environment variable for Radiance tools
 # Users can also set RAYPATH directly via environment to override
 # Use bundled Accelerad lib first, then fall back to system Radiance if available
@@ -242,3 +261,7 @@ class InputValidator:
             for w in self._warnings: print(f" {w}")
         
         print("="*100 + "\n")
+
+#TODO: determine if radiance binaries can be used in place in the devcontainer. Instead of installing on the local machine. That way a user would not need to install radiance on windows if using the dev container to work. 
+
+#TODO: determine if the inputs validator is not appropriate to be in this configuration module. 

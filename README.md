@@ -41,6 +41,37 @@ That's it. You do **not** need to install Python, Radiance, or Accelerad — the
 3. When prompted, click **"Reopen in Container"** (or use `Ctrl+Shift+P` → `Dev Containers: Reopen in Container`).
 4. Wait for the container to build. Once ready, all dependencies are installed and the environment is fully configured.
 
+### Native Windows Setup (Without Docker)
+
+If you prefer to run Archilume natively on Windows without Docker:
+
+1. **Install Python 3.12+** from [python.org](https://www.python.org/downloads/)
+2. **Clone the repository**:
+
+   ```bash
+   git clone https://github.com/vincentlogarzo/archilume.git
+   cd archilume
+   ```
+
+3. **Install dependencies** using `uv`:
+
+   ```powershell
+   pip install uv
+   uv sync
+   ```
+
+   This will automatically install all Python dependencies and Google Cloud CLI.
+
+4. **Authenticate with Google Cloud** (if using GCP features):
+
+   ```powershell
+   gcloud init
+   gcloud auth login
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+The setup script will handle everything automatically, including installing Google Cloud CLI if you plan to use the GCP VM manager.
+
 ### Windows Users — Parallel Rendering Without an NVIDIA GPU
 
 Some of Archilume's parallel rendering features rely on multi-core Radiance tools (`rtpict`) that are only available on Linux. If you are on a Windows machine and do not have a compatible NVIDIA CUDA-enabled GPU for GPU-accelerated rendering, you can still access the full power of Radiance by:

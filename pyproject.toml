@@ -12,7 +12,7 @@ dependencies = [
     "pandas>=2.3.1",
     "pillow>=11.3.0",
     "psutil>=7.0.0",
-    "pyradiance>=1.1.5",
+    "pyradiance>=1.2.0",
     "pyvista>=0.46.4",
     "scikit-image>=0.25.2",
     "vtk>=9.6.0",
@@ -31,3 +31,6 @@ dev = [
     "coverage>=7.10.3",
     "pytest>=8.4.1",
 ]
+
+[tool.uv]
+post-sync = ["python archilume/setup_gcloud.py"]
