@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "/workspaces/archilume/.venv/bin/python",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "python.analysis.extraPaths": [
         "./archilume"
     ],
@@ -11,5 +11,6 @@
         "editor.codeActionsOnSave": {
             "source.organizeImports": "never"
         }
-    }
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }
