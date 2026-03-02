@@ -39,13 +39,18 @@ if [ ! -f "$WORKSPACE_PATH/pyproject.toml" ]; then
 fi
 echo "📂 Workspace path resolved to: $WORKSPACE_PATH"
 
-cd /tmp
+# Use workspace directory for extraction (avoids /tmp space issues in containers)
+EXTRACT_DIR="$WORKSPACE_PATH/.devcontainer/tmp_extract"
+mkdir -p "$EXTRACT_DIR"
+cd "$EXTRACT_DIR"
 
 # Use bundled Radiance tarball from .devcontainer directory
 tar -xzf "$WORKSPACE_PATH/.devcontainer/Radiance_5085332d_Linux/radiance-6.1.5085332d6e-Linux.tar.gz"
 sudo cp -r radiance-*/usr/local/radiance /usr/local/
 sudo chmod -R 755 /usr/local/radiance
 rm -rf radiance-*
+cd "$WORKSPACE_PATH"
+rm -rf "$EXTRACT_DIR"
 
 # Install Accelerad (GPU-accelerated Radiance)
 echo "⚡ Installing Accelerad..."
@@ -54,8 +59,10 @@ echo "Note: GPU acceleration requires NVIDIA GPU and proper Docker GPU passthrou
 # Install build dependencies for Accelerad
 sudo apt-get install -y build-essential git cmake libx11-dev tcl-dev tk-dev
 
-# Clone Accelerad repository
-cd /tmp
+# Clone Accelerad repository (use workspace to avoid /tmp space issues)
+BUILD_DIR="$WORKSPACE_PATH/.devcontainer/tmp_build"
+mkdir -p "$BUILD_DIR"
+cd "$BUILD_DIR"
 if [ ! -d "Accelerad" ]; then
     git clone https://github.com/nljones/Accelerad.git
 fi
@@ -64,16 +71,16 @@ cd Accelerad
 
 # Build and install Accelerad
 # Note: This will build CPU fallback if CUDA is not available
-if ./makeall install clean 2>&1 | tee /tmp/accelerad_install.log; then
+if ./makeall install clean 2>&1 | tee "$BUILD_DIR/accelerad_install.log"; then
     echo "✅ Accelerad installed successfully!"
     echo "Note: GPU acceleration requires CUDA toolkit and NVIDIA GPU"
 else
-    echo "⚠️  Accelerad installation encountered issues - check /tmp/accelerad_install.log"
+    echo "⚠️  Accelerad installation encountered issues - check $BUILD_DIR/accelerad_install.log"
     echo "Continuing with setup..."
 fi
 
-cd /tmp
-rm -rf Accelerad
+cd "$WORKSPACE_PATH"
+rm -rf "$BUILD_DIR"
 
 # Add environment variables to bash profile
 echo "🔧 Configuring environment variables..."

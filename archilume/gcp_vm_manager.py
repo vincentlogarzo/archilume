@@ -688,7 +688,7 @@ class GCPVMManager:
             f"--project={self.project}", f"--zone={self.zone}",
             f"--machine-type={machine_type}",
             "--image-family=debian-12", "--image-project=debian-cloud",
-            "--boot-disk-size=100GB", "--boot-disk-type=pd-balanced",
+            "--boot-disk-size=100GB", "--boot-disk-type=hyperdisk-balanced",
             f"--metadata=ssh-keys={ssh_key_metadata}",
         ])
 
@@ -848,6 +848,7 @@ class GCPVMManager:
         ip = self._get_vm_ip(vm_name)
         username = self._gcloud_username()
         flags = [
+            "-C",  # Enable compression for faster transfers
             "-i", str(SSH_KEY_PATH),
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=10",
@@ -855,7 +856,10 @@ class GCPVMManager:
         return flags, f"{username}@{ip}"
 
     def copy_inputs_to_vm(self, vm_name: str) -> None:
-        """Copy aoi folder and input files from local inputs to VM via direct scp."""
+        """Copy inputs folder to VM. Uses tar.gz for aoi folder (many small files) for speed."""
+        import tarfile
+        import tempfile
+
         local_inputs = Path.cwd() / "inputs"
         if not local_inputs.exists():
             print("  ℹ️  No local inputs folder found, skipping...")
@@ -881,18 +885,56 @@ class GCPVMManager:
         anything_copied = False
         any_failed = False
 
+        # Handle aoi folder: tar.gz it locally, scp the archive, extract on VM
         aoi_folder = local_inputs / "aoi"
         if aoi_folder.exists():
-            size = _fmt_size(sum(f.stat().st_size for f in aoi_folder.rglob("*") if f.is_file()))
-            print(f"    → Copying aoi/ ({size})...")
-            result = subprocess.run(["scp", "-r"] + ssh_flags + [str(aoi_folder), remote_dest])
-            if result.returncode == 0:
-                print("    ✅ aoi/ copied")
-            else:
-                print("    ⚠️  Failed to copy aoi/")
-                any_failed = True
-            anything_copied = True
+            aoi_files = list(aoi_folder.rglob("*"))
+            file_count = sum(1 for f in aoi_files if f.is_file())
+            if file_count > 0:
+                total_size = sum(f.stat().st_size for f in aoi_files if f.is_file())
+                print(f"    → Compressing aoi/ ({file_count} files, {_fmt_size(total_size)})...")
 
+                # Create temporary tar.gz file
+                with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+                    tar_path = Path(tmp.name)
+
+                try:
+                    # Create tar.gz archive
+                    with tarfile.open(tar_path, "w:gz") as tf:
+                        for file in aoi_folder.rglob("*"):
+                            if file.is_file():
+                                arcname = file.relative_to(aoi_folder)
+                                tf.add(file, arcname)
+
+                    tar_size = tar_path.stat().st_size
+                    print(f"    → Compressed to {_fmt_size(tar_size)} ({100 * tar_size // total_size}% of original)")
+                    print(f"    → Uploading aoi.tar.gz...")
+
+                    # Upload tar.gz to VM
+                    result = subprocess.run(
+                        ["scp"] + ssh_flags + [str(tar_path), f"{remote_host}:{remote_inputs}/aoi.tar.gz"]
+                    )
+                    if result.returncode == 0:
+                        # Extract on VM and clean up (tar is always available on Linux)
+                        print(f"    → Extracting on VM...")
+                        extract_result = self._ssh(vm_name,
+                            f"tar -xzf {remote_inputs}/aoi.tar.gz -C {remote_inputs}/aoi && rm {remote_inputs}/aoi.tar.gz"
+                        )
+                        if extract_result == 0:
+                            print("    ✅ aoi/ copied")
+                        else:
+                            print("    ⚠️  Failed to extract aoi.tar.gz on VM")
+                            any_failed = True
+                    else:
+                        print("    ⚠️  Failed to upload aoi.tar.gz")
+                        any_failed = True
+                finally:
+                    # Clean up local tar.gz
+                    tar_path.unlink(missing_ok=True)
+
+                anything_copied = True
+
+        # Handle loose files in inputs/ (not in subdirectories) - use regular scp
         files_to_copy = [f for f in local_inputs.glob("*") if f.is_file()]
         if files_to_copy:
             total_size = _fmt_size(sum(f.stat().st_size for f in files_to_copy))
