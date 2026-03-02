@@ -809,7 +809,7 @@ class GCPVMManager:
 
             self._run_step("[5/6] Installing Git and Docker...", vm_name,
                 "sudo apt-get update -y && "
-                "sudo apt-get install -y git docker.io && "
+                "sudo apt-get install -y git docker.io docker-buildx-plugin && "
                 f"sudo usermod -aG docker {username}"
             )
 
