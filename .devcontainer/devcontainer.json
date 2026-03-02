@@ -49,6 +49,11 @@
   "mounts": [
     // GitHub CLI config mount - only if directory exists
     // "source=${localEnv:HOME}${localEnv:USERPROFILE}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
+
+    // Mount host ~/.ssh into the container so SSH keys and config are shared
+    // with the Windows host. On WSL this is the same as C:\Users\<you>\.ssh\
+    // Commented out due to mount path resolution issues on Windows WSL
+    // "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
   ],
 
   "forwardPorts": [],

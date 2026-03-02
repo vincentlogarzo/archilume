@@ -3,6 +3,10 @@ set -e
 
 echo "🚀 Setting up Archilume development environment..."
 
+# Detect workspace path: prefer env vars set by Codespaces/devcontainers, else derive from script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DERIVED_PATH="$(dirname "$SCRIPT_DIR")"
+
 # Install system dependencies
 echo "📦 Installing system dependencies..."
 
@@ -20,19 +24,18 @@ sudo ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/lib
 # Install Radiance
 echo "🌟 Installing Radiance..."
 
-# Detect workspace path BEFORE changing directories
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DERIVED_PATH="$(dirname "$SCRIPT_DIR")"
+cd /tmp
 # Validate derived path contains expected marker; fall back to known devcontainer mount
-if [ -f "$DERIVED_PATH/pyproject.toml" ]; then
-    WORKSPACE_PATH="$DERIVED_PATH"
-elif [ -f "${CODESPACE_VSCODE_FOLDER:-}/pyproject.toml" ]; then
-    WORKSPACE_PATH="$CODESPACE_VSCODE_FOLDER"
-elif [ -f "${LOCAL_WORKSPACE_FOLDER:-}/pyproject.toml" ]; then
-    WORKSPACE_PATH="$LOCAL_WORKSPACE_FOLDER"
-else
-    # Last resort: scan /workspaces for the project
-    WORKSPACE_PATH="$(find /workspaces -maxdepth 2 -name "pyproject.toml" -exec dirname {} \; 2>/dev/null | head -1)"
+WORKSPACE_PATH="$DERIVED_PATH"
+if [ ! -f "$WORKSPACE_PATH/pyproject.toml" ]; then
+    if [ -f "${CODESPACE_VSCODE_FOLDER:-}/pyproject.toml" ]; then
+        WORKSPACE_PATH="$CODESPACE_VSCODE_FOLDER"
+    elif [ -f "${LOCAL_WORKSPACE_FOLDER:-}/pyproject.toml" ]; then
+        WORKSPACE_PATH="$LOCAL_WORKSPACE_FOLDER"
+    else
+        # Last resort: scan /workspaces for the project
+        WORKSPACE_PATH="$(find /workspaces -maxdepth 2 -name "pyproject.toml" -exec dirname {} \; 2>/dev/null | head -1)"
+    fi
 fi
 echo "📂 Workspace path resolved to: $WORKSPACE_PATH"
 
