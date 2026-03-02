@@ -33,4 +33,4 @@ dev = [
 ]
 
 [tool.uv]
-post-sync = ["python archilume/setup_gcloud.py"]
+post-sync = ["python archilume/gcloud_setup.py"]
