@@ -13,12 +13,15 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 from archilume.config import GCLOUD_EXECUTABLE
 
 CONFIG_PATH = Path.home() / ".archilume_gcp_config.json"
+ARCHIVE_DIR = Path.cwd() / "archive"
+PRICING_CACHE_PATH = ARCHIVE_DIR / ".gcp_pricing_cache.json"
 SSH_KEY_PATH = Path.home() / ".ssh" / "google_cloud_vm_key"
 SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 SSH_HOST_ALIAS = "gcp-vm"
@@ -511,6 +514,41 @@ class GCPVMManager:
     # Public actions
     # ------------------------------------------------------------------
 
+    def _load_pricing_cache(self) -> dict | None:
+        """Load cached pricing data if it exists and is from today."""
+        if not PRICING_CACHE_PATH.exists():
+            return None
+
+        try:
+            cache = json.loads(PRICING_CACHE_PATH.read_text())
+            cache_date = cache.get("date")
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            if cache_date == today:
+                return cache.get("data")
+        except Exception:
+            pass
+
+        return None
+
+    def _save_pricing_cache(self, pricing: dict, machines: list[dict], exchange_rate: float):
+        """Save pricing data to cache with today's date."""
+        try:
+            # Ensure archive directory exists
+            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+            cache = {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "data": {
+                    "pricing": pricing,
+                    "machines": machines,
+                    "exchange_rate": exchange_rate
+                }
+            }
+            PRICING_CACHE_PATH.write_text(json.dumps(cache, indent=2))
+        except Exception:
+            pass  # Silently fail if cache write fails
+
     def _fetch_usd_to_aud(self) -> float:
         """Fetch live USD→AUD rate from frankfurter.app (no API key required)."""
         try:
@@ -519,7 +557,7 @@ class GCPVMManager:
             ) as r:
                 return json.loads(r.read())["rates"]["AUD"]
         except Exception:
-            print("  Warning: could not fetch exchange rate, using fallback 1.55")
+            # Return fallback silently - caller will handle messaging if needed
             return 1.55
 
     def _fetch_gcp_pricing(self) -> dict[str, dict]:
@@ -594,34 +632,48 @@ class GCPVMManager:
 
     def _list_lssd_machine_types(self) -> list[dict]:
         """
-        Query gcloud for all lssd machine types with >= MIN_VCPUS vCPUs in the
+        Query GCP API for all lssd machine types with >= MIN_VCPUS vCPUs in the
         configured zone. Returns list of dicts with name, vcpus, mem_gb.
+        Uses direct API call for concurrent execution.
         """
-        out, code = self._gcloud_capture([
-            "compute", "machine-types", "list",
-            f"--filter=name~lssd AND guestCpus>={MIN_VCPUS}",
-            "--format=csv[no-heading](name,guestCpus,memoryMb)",
-            f"--zones={self.zone}",
-            f"--project={self.project}",
-        ])
-        if code != 0 or not out:
+        # Get access token
+        token_result = subprocess.run(
+            [str(GCLOUD_EXECUTABLE), "auth", "print-access-token"],
+            capture_output=True, text=True
+        )
+        if token_result.returncode != 0:
             return []
+        token = token_result.stdout.strip()
+
+        # Call Compute Engine API directly
+        url = (
+            f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
+            f"/zones/{self.zone}/machineTypes"
+        )
+
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+        except Exception:
+            return []
+
         seen, results = set(), []
-        for line in out.splitlines():
-            parts = line.split(",")
-            if len(parts) < 3:
+        for machine in data.get("items", []):
+            name = machine.get("name", "")
+            if not name or name in seen:
                 continue
-            name = parts[0].strip()
-            if name in seen:
+            # Filter for lssd machines with enough vCPUs
+            if "lssd" not in name or machine.get("guestCpus", 0) < MIN_VCPUS:
                 continue
+
             seen.add(name)
-            try:
-                vcpus = int(float(parts[1]))
-                mem_gb = round(float(parts[2]) / 1024, 1)
-            except ValueError:
-                continue
+            vcpus = machine.get("guestCpus", 0)
+            mem_mb = machine.get("memoryMb", 0)
+            mem_gb = round(mem_mb / 1024, 1)
             ghz = next((v for k, v in _FAMILY_GHZ.items() if name.startswith(k)), "n/a")
             results.append({"name": name, "vcpus": vcpus, "mem_gb": mem_gb, "ghz": ghz})
+
         return sorted(results, key=lambda x: (x["vcpus"], x["name"]))
 
     def _compute_usd_hr(self, machine: dict, pricing: dict[str, dict]) -> float | None:
@@ -639,14 +691,53 @@ class GCPVMManager:
         return None
 
     def _pick_machine_type(self) -> str:
-        print("\n  Fetching available machine types and live pricing...")
-        machines = self._list_lssd_machine_types()
+        # Try to load from cache first
+        cache = self._load_pricing_cache()
+        if cache:
+            print("\n  Using cached pricing data from today...")
+            machines = cache.get("machines", [])
+            pricing = cache.get("pricing", {})
+            usd_to_aud = cache.get("exchange_rate", 1.55)
+        else:
+            print("\n  Fetching available machine types and live pricing...")
+
+            # Fetch machine types, pricing, and exchange rate concurrently
+            machines = None
+            pricing = {}
+            usd_to_aud = 1.55  # fallback
+
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                # Submit all API calls concurrently
+                futures = {
+                    executor.submit(self._list_lssd_machine_types): "machines",
+                    executor.submit(self._fetch_gcp_pricing): "pricing",
+                    executor.submit(self._fetch_usd_to_aud): "exchange"
+                }
+
+                # Collect results as they complete
+                for future in as_completed(futures):
+                    task = futures[future]
+                    try:
+                        result = future.result()
+                        if task == "machines":
+                            machines = result
+                        elif task == "pricing":
+                            pricing = result
+                        elif task == "exchange":
+                            usd_to_aud = result
+                    except Exception as e:
+                        if task == "exchange":
+                            print(f"  Warning: could not fetch exchange rate, using fallback {usd_to_aud:.2f}")
+                        else:
+                            print(f"  Warning: {task} fetch failed: {e}")
+
+            # Save to cache for next time
+            if machines:
+                self._save_pricing_cache(pricing, machines, usd_to_aud)
+
         if not machines:
             print("  Could not query machine types. Enter machine type manually:")
             return input("  Machine type: ").strip()
-
-        pricing = self._fetch_gcp_pricing()
-        usd_to_aud = self._fetch_usd_to_aud()
 
         print(f"\n  {'#':<4} {'Machine Type':<32} {'vCPU':>6} {'RAM(GB)':>8} {'GHz':>5} {'USD/hr':>8} {'AUD/hr':>8} {'cents/vCPU/hr':>15} {'USD/min':>8}")
         print(f"  {'-'*4} {'-'*32} {'-'*6} {'-'*8} {'-'*5} {'-'*8} {'-'*8} {'-'*15} {'-'*8}")
@@ -983,9 +1074,8 @@ class GCPVMManager:
             return True
 
         # Create local archive directory
-        archive_dir = Path.cwd() / "archive"
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        local_dest = archive_dir / f"{vm_name}_{ts}"
+        local_dest = ARCHIVE_DIR / f"{vm_name}_{ts}"
         local_dest.mkdir(parents=True, exist_ok=True)
 
         print(f"  📥 Downloading outputs from {vm_name} to {local_dest}...")

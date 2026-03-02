@@ -137,7 +137,11 @@ cd "$WORKSPACE_PATH"
 # Ensure .venv directory exists before syncing
 mkdir -p .venv
 
-uv sync --link-mode=copy
+uv sync --python 3.13 --link-mode=copy
+
+# Run post-sync setup
+echo "🔧 Running gcloud setup..."
+uv run python archilume/gcloud_setup.py || echo "⚠️  gcloud_setup.py failed - skipping"
 
 # Verify Radiance installation
 echo "✅ Verifying Radiance installation..."

@@ -3,7 +3,7 @@ name = "archilume"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "ifcopenshell>=0.8.3.post1",
     "numpy>=2.3.2",
@@ -32,5 +32,3 @@ dev = [
     "pytest>=8.4.1",
 ]
 
-[tool.uv]
-post-sync = ["python archilume/gcloud_setup.py"]
