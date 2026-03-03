@@ -11,6 +11,5 @@
         "editor.codeActionsOnSave": {
             "source.organizeImports": "never"
         }
-    },
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    }
 }
