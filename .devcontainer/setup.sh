@@ -130,13 +130,14 @@ fi
 echo "📦 Syncing Python dependencies with uv..."
 cd "$WORKSPACE_PATH"
 
-# Ensure Python 3.12 and venv support are installed (required by pyproject.toml: >=3.12,<3.14)
-sudo apt-get install -y python3.12 python3.12-venv
+# Install Python 3.12 via uv (system apt may not have it) and create venv
+# Required by pyproject.toml: >=3.12,<3.14
+uv python install 3.12
 
 # Always recreate .venv using Python 3.12 to avoid stale/broken symlinks
 # when the venv was created on a different machine (e.g. WSL vs container)
 rm -rf .venv
-python3.12 -m venv .venv
+uv venv --python 3.12 .venv
 
 uv pip install -e . --python "$WORKSPACE_PATH/.venv/bin/python"
 
