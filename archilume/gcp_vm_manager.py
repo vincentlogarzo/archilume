@@ -1010,7 +1010,7 @@ class GCPVMManager:
                         # Extract on VM and clean up (tar is always available on Linux)
                         print(f"    → Extracting on VM...")
                         extract_result = self._ssh(vm_name,
-                            f"tar -xzf {remote_inputs}/aoi.tar.gz -C {remote_inputs}/aoi && rm {remote_inputs}/aoi.tar.gz"
+                            f"mkdir -p {remote_inputs}/aoi && tar -xzf {remote_inputs}/aoi.tar.gz -C {remote_inputs}/aoi && rm {remote_inputs}/aoi.tar.gz"
                         )
                         if extract_result == 0:
                             print("    ✅ aoi/ copied")
