@@ -35,6 +35,13 @@ OCTREE_DIR          = OUTPUTS_DIR / "octree"
 RAD_DIR             = OUTPUTS_DIR / "rad"
 
 # ============================================================================
+# GCLOUD CLI PATH
+# ============================================================================
+_default_gcloud_root = Path.home() / "google-cloud-sdk"
+GCLOUD_SDK_ROOT     = Path(os.getenv("GCLOUD_SDK_ROOT", str(_default_gcloud_root)))
+GCLOUD_EXECUTABLE   = GCLOUD_SDK_ROOT / "bin" / "gcloud"
+
+# ============================================================================
 # EXTERNAL TOOL PATHS (Radiance/Accelerad)
 # ============================================================================
 # Use bundled Accelerad from .devcontainer by default
