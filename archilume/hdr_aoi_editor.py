@@ -2115,6 +2115,7 @@ class HdrAoiEditor:
         if supports_blit:
             try:
                 if self._df_cursor_bg is None:
+                    self._df_cursor_text.set_visible(False)
                     canvas.draw()
                     self._df_cursor_bg = canvas.copy_from_bbox(self.ax.bbox)
                 canvas.restore_region(self._df_cursor_bg)
@@ -4316,7 +4317,7 @@ class HdrAoiEditor:
             timestamp = time.strftime('%Y%m%d_%H%M%S')
             zip_name  = f"archilume_export_{timestamp}"
             zip_path  = ARCHIVE_DIR / f"{zip_name}.zip"
-            shutil.make_archive(str(ARCHIVE_DIR / zip_name), 'zip', str(OUTPUTS_DIR))
+            shutil.make_archive(str(ARCHIVE_DIR / zip_name), 'zip', str(OUTPUTS_DIR.parent), OUTPUTS_DIR.name)
             print(f"Archive created: {zip_path}")
             return zip_path
         except Exception as e:
@@ -4353,14 +4354,27 @@ class HdrAoiEditor:
             return
         zip_path = Path(zip_path)
         try:
-            # Clear outputs directory (the zip contains an outputs/ prefix so we
-            # extract into the parent; wipe first to avoid stale files)
+            # Clear outputs directory; wipe first to avoid stale files
             if OUTPUTS_DIR.exists():
                 shutil.rmtree(OUTPUTS_DIR)
+            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
-            # Extract into parent — zip root is outputs/ so it lands at the right place
+            # Extract, stripping a leading "outputs/" prefix if present (old archives
+            # have no prefix; new archives created after the make_archive fix do).
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(str(OUTPUTS_DIR.parent))
+                for member in zf.infolist():
+                    member_path = member.filename
+                    if member_path.startswith('outputs/'):
+                        member_path = member_path[len('outputs/'):]
+                    if not member_path:
+                        continue
+                    dest = OUTPUTS_DIR / member_path
+                    if member.is_dir():
+                        dest.mkdir(parents=True, exist_ok=True)
+                    else:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src, open(dest, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
             print(f"Extracted archive: {zip_path} → {OUTPUTS_DIR}")
 
             # Full editor reload
@@ -4381,7 +4395,7 @@ class HdrAoiEditor:
         self.fig.canvas.draw_idle()
 
     @staticmethod
-    def _render_single_overlay(tiff_path, rooms_data, output_dir):
+    def _render_single_overlay(tiff_path, rooms_data, output_dir, stamps=None):
         """Render room boundary overlays onto a single TIFF and save.
 
         Designed to run in a ThreadPoolExecutor (I/O + PIL drawing).
@@ -4390,6 +4404,7 @@ class HdrAoiEditor:
             tiff_path: Path to source TIFF image.
             rooms_data: list of (name, vertices, df_display_lines) tuples.
             output_dir: directory to save the overlay TIFF.
+            stamps: list of (x, y, df_val[, px, py]) stamped DF readings.
         """
         from PIL import Image, ImageDraw, ImageFont
 
@@ -4418,10 +4433,36 @@ class HdrAoiEditor:
                         draw.text((x + ox, y + oy), text, fill=black, font=fnt)
             draw.text((x, y), text, fill=red, font=fnt)
 
-        for name, verts, df_lines in rooms_data:
+        def _dashed_polygon(pts_closed, fill, dash=8, gap=6):
+            """Draw a dashed polyline along pts_closed using alternating draw/skip segments."""
+            for i in range(len(pts_closed) - 1):
+                x0, y0 = pts_closed[i]
+                x1, y1 = pts_closed[i + 1]
+                seg_len = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+                if seg_len == 0:
+                    continue
+                dx, dy = (x1 - x0) / seg_len, (y1 - y0) / seg_len
+                pos, drawing = 0.0, True
+                while pos < seg_len:
+                    step = dash if drawing else gap
+                    end = min(pos + step, seg_len)
+                    if drawing:
+                        draw.line(
+                            [(int(x0 + dx * pos), int(y0 + dy * pos)),
+                             (int(x0 + dx * end), int(y0 + dy * end))],
+                            fill=fill, width=1)
+                    pos, drawing = end, not drawing
+
+        for name, verts, df_lines, is_circ in rooms_data:
             pts = [(int(round(v[0])), int(round(v[1]))) for v in verts]
             pts.append(pts[0])
-            draw.line(pts, fill=red, width=1)
+            if is_circ:
+                _dashed_polygon(pts, fill=red)
+            else:
+                draw.line(pts, fill=red, width=1)
+
+            if is_circ:
+                continue
 
             centroid = HdrAoiEditor._polygon_label_point(verts)
             cx, cy = int(round(centroid[0])), int(round(centroid[1]))
@@ -4438,6 +4479,17 @@ class HdrAoiEditor:
                 _outlined_text(cx - tw_s // 2, y_offset, line, font_sm)
                 y_offset += th_s + 2
 
+        # Draw stamped DF pixel readings (cyan dot + label), matching on-screen style
+        for stamp in (stamps or []):
+            sx, sy, df_val = stamp[0], stamp[1], stamp[2]
+            px = stamp[3] if len(stamp) > 3 else int(round(sx))
+            py = stamp[4] if len(stamp) > 4 else int(round(sy))
+            ix, iy = int(round(sx)), int(round(sy))
+            r = max(3, font_size // 4)
+            draw.ellipse((ix - r, iy - r, ix + r, iy + r), fill=(0, 255, 255))
+            label = f"DF: {df_val:.2f}%\npx({px},{py})"
+            _outlined_text(ix + r + 2, iy - font_size_small // 2, label, font_sm)
+
         out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.tiff"
         if out_path.exists():
             out_path.unlink()
@@ -4450,24 +4502,28 @@ class HdrAoiEditor:
 
         output_dir = self.image_dir
 
-        # Collect all (tiff_path, rooms_data) jobs
+        # Collect all (tiff_path, rooms_data, stamps) jobs
         jobs = []
         for entry in self.hdr_files:
             hdr_name = entry['name']
             rooms_on_hdr = [
                 (r.get('name', ''), r['vertices'],
-                 r.get('df_cache', {}).get('display_lines', []))
+                 r.get('df_cache', {}).get('display_lines', []),
+                 r.get('room_type', '') == 'CIRC')
                 for r in self.rooms
-                if r.get('hdr_file') == hdr_name and len(r.get('vertices', [])) >= 3
+                if r.get('hdr_file') == hdr_name
+                and len(r.get('vertices', [])) >= 3
             ]
             if not rooms_on_hdr:
                 continue
+            stamps = self._df_stamps.get(hdr_name, [])
             for tiff_path in entry.get('tiff_paths', []):
-                jobs.append((tiff_path, rooms_on_hdr, output_dir))
+                jobs.append((tiff_path, rooms_on_hdr, output_dir, stamps))
 
         max_workers = min(len(jobs), 4) if jobs else 1
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(self._render_single_overlay, *job) for job in jobs]
+            futures = [pool.submit(self._render_single_overlay, tiff_path, rooms_data, out_dir, stamps)
+                       for tiff_path, rooms_data, out_dir, stamps in jobs]
             for future in as_completed(futures):
                 future.result()  # propagate exceptions
 

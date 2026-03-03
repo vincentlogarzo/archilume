@@ -59,6 +59,25 @@ if __name__ == "__main__":
     #        Add a "Restore from source AOI" button for individual rooms or a selected group.
     # TODO: Add wall-thickness inset option: pull compliant area inward by a user-specified distance.
 
+    # --- Multi-Resolution AOI Reuse ---
+    # TODO: Allow pre-existing AOI boundaries to be reused across images rendered at different resolutions.
+    #        AOI vertices are currently stored in pixel coordinates tied to a specific render resolution, so
+    #        loading them against a different-resolution image causes misalignment.
+    #        Approach: store vertices in normalised [0,1] image-space coordinates (or world coordinates) and
+    #        convert to pixel space on load based on the actual image dimensions.
+    #        NOTE: The pixel-to-world coordinate map (currently a single file) must also be generated per
+    #        resolution, as the mapping changes with image size. Consider naming map files with a resolution
+    #        suffix (e.g. _r2048.map) so the editor can select the correct map for the active image.
+    #
+    #        LONGER TERM — free the editor from the pixel-to-world map file entirely:
+    #        The pixel↔world transform should be derived directly from the .hdr file itself.
+    #        The .hdr header contains the view parameters (VIEW= line: type, vp, vd, vu, vh, vv) which
+    #        define the world-space view frustum. However, the header does NOT contain the full rendered
+    #        resolution — only the exposure/format metadata. The actual pixel dimensions must be queried
+    #        separately (e.g. via `getinfo -d` or by reading the scanline count from the binary data).
+    #        Once both are known, the pixel↔world mapping can be computed on-the-fly per .hdr file,
+    #        removing the dependency on any external map file and making the editor fully self-contained.
+
     # --- Permutation Grid ---
     # TODO: Add 5×5 permutation grid for: quality, ceiling/wall/floor LRV, glass VLT, window frame LRV, resolution.
     #        For a selected failing room, highlight each permutation cell green/yellow/red based on DF% pass status.
