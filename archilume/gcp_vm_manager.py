@@ -515,24 +515,24 @@ class GCPVMManager:
     # ------------------------------------------------------------------
 
     def _load_pricing_cache(self) -> dict | None:
-        """Load cached pricing data if it exists and is from today."""
+        """Load cached pricing data if it exists and is less than 7 days old."""
         if not PRICING_CACHE_PATH.exists():
             return None
 
         try:
             cache = json.loads(PRICING_CACHE_PATH.read_text())
             cache_date = cache.get("date")
-            today = datetime.now().strftime("%Y-%m-%d")
-
-            if cache_date == today:
-                return cache.get("data")
+            if cache_date:
+                age_days = (datetime.now() - datetime.strptime(cache_date, "%Y-%m-%d")).days
+                if age_days < 7:
+                    return cache.get("data")
         except Exception:
             pass
 
         return None
 
     def _save_pricing_cache(self, pricing: dict, machines: list[dict], exchange_rate: float):
-        """Save pricing data to cache with today's date."""
+        """Save pricing data to cache with the current date (refreshed weekly)."""
         try:
             # Ensure archive directory exists
             ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -694,12 +694,12 @@ class GCPVMManager:
         # Try to load from cache first
         cache = self._load_pricing_cache()
         if cache:
-            print("\n  Using cached pricing data from today...")
+            print("\n  Using cached pricing data (updated weekly)...")
             machines = cache.get("machines", [])
             pricing = cache.get("pricing", {})
             usd_to_aud = cache.get("exchange_rate", 1.55)
         else:
-            print("\n  Fetching available machine types and live pricing...")
+            print("\n  Grabbing the latest price tags from the GCP shop — this only happens once a week, won't be long...")
 
             # Fetch machine types, pricing, and exchange rate concurrently
             machines = None
