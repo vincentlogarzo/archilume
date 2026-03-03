@@ -818,8 +818,8 @@ class GCPVMManager:
                 vm_name,
                 "cd /mnt/disks/localssd/workspace && "
                 "git clone https://github.com/vincentlogarzo/archilume.git && "
-                "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
                 "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace && "
+                "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
                 "source ~/.bashrc"
             )
 
