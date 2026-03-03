@@ -260,7 +260,7 @@ class HdrAoiEditor:
         # Stamped DF readings: hdr_name → list of (x, y, df_val, px, py)
         self._df_stamps:            dict                = {}
         # Placement mode: when True, left-click stamps DF%; when False, click only selects rooms
-        self.placement_mode:        bool                = True
+        self.placement_mode:        bool                = False
 
         # Room type tagging (BED / LIVING — LIVING requires sub-rooms)
         self.room_type:             Optional[str]       = None

@@ -95,3 +95,17 @@ if __name__ == "__main__":
     #        without touching the backend scripts. Scope first to local execution only — define clear UI states for
     #        idle, running, and complete with progress feedback. Defer Google Cloud execution to a later phase once
     #        local workflow is stable and the UI interaction model is proven.
+
+    # --- State Machine / Mode Stability [STABILITY] ---
+    # TODO: Replace the 20+ scattered mode-tracking attributes (draw_mode, edit_mode, divider_mode, edit_room_idx,
+    #        hover_room_idx, etc.) with a single explicit state machine. Each valid state should be an enum value;
+    #        transitions should be explicit methods that validate the current state before switching. This eliminates
+    #        the current risk of entering an invalid combined state (e.g. draw_mode=True and edit_mode=True
+    #        simultaneously, or divider_mode re-entered before the previous exit completes).
+    # TODO: Unify the two independent undo stacks (_edit_undo_stack and _draw_undo_stack) into a single ordered stack
+    #        of JSON state snapshots. Each mutating operation (vertex edit, room create, room divide) should push a
+    #        full snapshot; Ctrl+Z restores the previous snapshot and re-renders. This replaces the current per-operation
+    #        tuple encoding which is fragile to index mismatches and can corrupt state across stack boundaries.
+    # TODO: Add a mode-guard decorator or explicit precondition check to all event handlers (click, key, scroll) so
+    #        that handlers are no-ops when the editor is in an incompatible mode. Currently, rapid or overlapping
+    #        inputs (e.g. pressing D twice, scrolling mid-draw) can leave mode flags inconsistent with visible state.
