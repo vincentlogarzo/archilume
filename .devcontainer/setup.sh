@@ -136,7 +136,7 @@ uv python install 3.12
 
 # Always recreate .venv using Python 3.12 to avoid stale/broken symlinks
 # when the venv was created on a different machine (e.g. WSL vs container)
-rm -rf .venv
+sudo rm -rf .venv
 uv venv --python 3.12 .venv
 
 uv pip install -e . --python "$WORKSPACE_PATH/.venv/bin/python"
