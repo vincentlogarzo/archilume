@@ -19,8 +19,9 @@ if __name__ == "__main__":
 
     # --- Drawing & Sub-room Editing ---
     # TODO: Improve sub-room polygon placement: prevent duplicate points, add edge/vertex snapping to parent room boundary.
+    #TODO: add a rectangle tool to the drawing mode so a user can draw a rectangle and add some vertices to fit the room better. 
     # TODO: Disable draw button unless a room is selected; make this requirement visually clear in the UI.
-    # TODO: Auto-close unclosed polygons on Save or Backspace — link last point to first before labelling.
+    # TODO: Auto-close unclosed polygons on Save or Backspace — link last point to first before labelling. Update drawing mode, new subboundary spaces should only be drawn from the divide function. All new drawns rooms cannot clash with existing boundaries, or must be constrained to prevent overlap even i the user draws overlap. 
     #        Depends on: snapping/constraint to parent AOI boundary (above).
     # TODO: Handle input conflicts during draw mode — scroll, pan, and right-click events should be suppressed or
     #        explicitly handled to prevent accidental duplicate vertex placement or mode exit mid-polygon.

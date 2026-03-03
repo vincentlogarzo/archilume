@@ -2,38 +2,35 @@
 Archilume Example: IESVE Daylight Factor Analysis
 ======================================================================================================
 
-This example demonstrates a daylight factor (DF) analysis workflow using Archilume
-with pre-built IESVE octree models. The pipeline converts IESVE room data and AOI
-boundary files into Radiance view files, renders each view sequentially using all
-available CPU cores, and post-processes the results into falsecolor and contour
-overlay images.
+This example demonstrates a daylight factor (DF) analysis workflow using pre-built IESVE octree 
+models. The pipeline converts IESVE room data and AOI boundary files into Radiance view files, 
+renders each view sequentially using all available CPU cores, and post-processes the results 
+into falsecolor and contour overlay images. This code works most efficient on linux machines as these 
+have access to rtpict a multiprocessing program for radiance images. for example, if your machine 
+has 20 CPUs, then rendering times should be reduced by around 20 times when compared to windows. 
 
 The analysis workflow includes:
 1. Converting IESVE AOI boundary files + room data into ViewGenerator-compatible CSV
 2. Generating plan view files (.vp) for each floor level from room boundaries
-3. Rendering each view against the pre-built IESVE octree (This code only works with 10Klux sky.)
-4. Post-processing HDR images: smooth, falsecolor, contour overlays, and legends
+3. Rendering each view against the pre-built IESVE octree
+4. Post-processing HDR images: falsecolor, contour overlays, and image legends provided separately
 
 Note:               Only works with 10K lux (10,000 lux) overcast sky models from IESVE.
                     The octree must include the sky definition. DF values are derived
                     by scaling rendered irradiance (pcomb -s 0.01) against the 10K lux reference.
 
+                    If using wsl on windows, it is recommended to install Docker and utilise the devcontainer provided. In order to work with larger models, you'll need to alter the default RAM allowance that is default with wsl. Without this change, larger models do not run effectively if the multiprocessing rtpict is utilised with a high number of CPUs. Find the .wslconfig files and alter to the below. 
+
+                        @"
+                        [wsl2]
+                        memory=28GB
+                        processors=20
+                        "@ | Out-File -FilePath "$env:USERPROFILE\.wslconfig" -Encoding ASCII
+
+
 Input:              IESVE octree (.oct), rendering parameters (.rdp), AOI files (.aoi),
                     IESVE room data csv
 Output:             HDR images, falsecolor/contour TIFFs, legend images, view files
-
-
-arhcitecture to run on gcloud services and more cost optimised rendering pipelines for large scale daylighting analysis.
-    
-    c4d-standard-64-lssd (64 vCPUs, 248 GB memory) + local ssd to mitigate IO bottlenecks
-
-for use with WSL distro on Windows machines, alter the .wslconfig file to allow higher use of RAM and processors. 
-
-    @"
-    [wsl2]
-    memory=28GB
-    processors=20
-    "@ | Out-File -FilePath "$env:USERPROFILE\.wslconfig" -Encoding ASCII
 
 """
 
