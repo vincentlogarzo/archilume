@@ -141,10 +141,6 @@ uv venv --python 3.12 .venv
 
 uv pip install -e . --python "$WORKSPACE_PATH/.venv/bin/python"
 
-# Run post-sync setup
-echo "🔧 Running gcloud setup..."
-uv run python archilume/gcloud_setup.py || echo "⚠️  gcloud_setup.py failed - skipping"
-
 # Verify Radiance installation
 echo "✅ Verifying Radiance installation..."
 export PATH=$PATH:/usr/local/radiance/bin

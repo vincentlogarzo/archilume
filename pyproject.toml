@@ -5,13 +5,17 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "dash>=4.0.0",
+    "fitz>=0.0.1.dev2",
     "ifcopenshell>=0.8.3.post1",
     "numpy>=2.3.2",
     "opencv-python>=4.11.0.86",
     "openpyxl>=3.1.5",
     "pandas>=2.3.1",
     "pillow>=11.3.0",
+    "plotly>=6.6.0",
     "psutil>=7.0.0",
+    "pymupdf>=1.24.0",
     "pyradiance>=1.2.0",
     "pyvista>=0.46.4",
     "scikit-image>=0.25.2",

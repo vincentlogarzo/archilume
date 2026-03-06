@@ -8,6 +8,7 @@ SSH key is stored at ~/.ssh/google_cloud_vm_key.
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -46,15 +47,50 @@ class GCPVMManager:
     def __init__(self):
         # Check if gcloud exists at the configured path
         if not GCLOUD_EXECUTABLE.exists():
-            raise RuntimeError(
-                f"gcloud CLI not found at: {GCLOUD_EXECUTABLE}\n"
-                "Install it from https://cloud.google.com/sdk/docs/install, then run:\n"
-                "  gcloud auth login\n"
-                "  gcloud config set project YOUR_PROJECT_ID\n"
-                f"Or set GCLOUD_SDK_ROOT environment variable to your installation path."
-            )
+            self._install_gcloud()
         self._ensure_authenticated()
         self.cfg = self._load_config()
+
+    def _install_gcloud(self):
+        """Attempt to install the Google Cloud CLI if not found."""
+        print("Google Cloud CLI not found. Attempting to install...")
+        system = platform.system()
+
+        if system == "Windows":
+            gcloud_url = "https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe"
+            installer_path = Path.home() / "Downloads" / "GoogleCloudSDKInstaller.exe"
+            try:
+                print(f"  Downloading from {gcloud_url}...")
+                urllib.request.urlretrieve(gcloud_url, str(installer_path))
+                print("  Running installer (this may open a new window)...")
+                subprocess.run([str(installer_path)], check=False)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to install Google Cloud CLI: {e}\n"
+                    "Manual installation: https://cloud.google.com/sdk/docs/install-gcloud-cli"
+                ) from e
+        elif system in ("Darwin", "Linux"):
+            result = subprocess.run("curl https://sdk.cloud.google.com | bash", shell=True, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    "Google Cloud CLI installation failed.\n"
+                    "Manual installation: https://cloud.google.com/sdk/docs/install-gcloud-cli"
+                )
+        else:
+            raise RuntimeError(
+                f"Unsupported platform: {system}\n"
+                "Manual installation: https://cloud.google.com/sdk/docs/install-gcloud-cli"
+            )
+
+        # Verify installation succeeded
+        if not GCLOUD_EXECUTABLE.exists() and not shutil.which("gcloud"):
+            raise RuntimeError(
+                "Google Cloud CLI was installed but not found at expected path.\n"
+                "You may need to restart your terminal, then re-run this script.\n"
+                f"Expected path: {GCLOUD_EXECUTABLE}\n"
+                "Or set GCLOUD_SDK_ROOT environment variable to your installation path."
+            )
+        print("Google Cloud CLI installed successfully!")
 
     def _ensure_authenticated(self):
         """Check for an active gcloud account; run 'gcloud auth login' if missing."""

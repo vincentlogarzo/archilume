@@ -1,7 +1,6 @@
 """
 Archilume: Interactive Room Boundary Editor for HDR/TIFF Floor Plan Images
 
-NOTE: daylight_workflow_iesve.py must be run before use of this editor.
 The workflow generates the HDR/TIFF images and .aoi boundaries this
 editor depends on.
 
@@ -133,8 +132,7 @@ import matplotlib.patheffects as patheffects
 import numpy as np
 
 # Archilume imports
-from archilume import config, utils
-from archilume.hdr2wpd import Hdr2Wpd
+from archilume import config, utils, Hdr2Wpd
 
 
 class HdrAoiEditor:
@@ -156,7 +154,14 @@ class HdrAoiEditor:
         image_dir:              Union[Path, str]            = config.IMAGE_DIR,
         aoi_dir:                Union[Path, str]            = config.AOI_DIR,
         session_path:           Optional[Path]              = None,
+        pdf_path:               Optional[Union[Path, str]]  = None,
+        project:                Optional[str]               = None,
     ):
+        base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+        if pdf_path is not None:
+            pdf_path = Path(pdf_path)
+            pdf_path = base_dir / pdf_path if not pdf_path.is_absolute() else pdf_path
+
         self.image_dir                                  = Path(image_dir)
         self.aoi_dir                                    = Path(aoi_dir)
         self.session_path                               = session_path or (self.image_dir / "aoi_session.json")
@@ -265,6 +270,22 @@ class HdrAoiEditor:
         # Room type tagging (BED / LIVING — LIVING requires sub-rooms)
         self.room_type:             Optional[str]       = None
         self.multi_selected_room_idxs: set              = set()   # Ctrl+click multi-select
+
+        # PDF floor plan overlay state
+        self._overlay_pdf_path: Optional[Path]          = Path(pdf_path) if pdf_path else None
+        self._overlay_pdf_info: Optional[dict]          = None
+        self._overlay_page_idx: int                     = 0
+        self._overlay_rgba:     Optional[np.ndarray]    = None   # cached rasterized page (H,W,4)
+        self._overlay_visible:  bool                    = False
+        self._overlay_alpha:    float                   = 0.6
+        self._overlay_handle                            = None   # matplotlib AxesImage artist
+        # Per-HDR alignment: {hdr_name: {offset_x, offset_y, scale_x, scale_y, rotation_90, page_idx}}
+        self._overlay_transforms: dict                  = {}
+        # Two-point alignment mode
+        self._align_mode:       bool                    = False
+        self._align_points_overlay: list                = []
+        self._align_points_hdr: list                    = []
+        self._align_markers:    list                    = []
 
         # Daylight factor analysis — thresholds are fixed per room type
         self.DF_THRESHOLDS          = {'BED': 0.5, 'LIVING': 1.0}
@@ -693,7 +714,7 @@ class HdrAoiEditor:
                 pass
 
         # Main plot area — maximised to fill available space
-        self.ax = self._axes(0.02, 0.21, 0.96, 0.69)
+        self.ax = self._axes(0.02, 0.21, 0.96, 0.66)
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.set_facecolor('#FAFAF8')
 
@@ -738,6 +759,25 @@ class HdrAoiEditor:
 
         # Load existing session
         self._load_session()
+
+        # Deferred PDF overlay rasterization (from session restore or __init__ pdf_path)
+        if getattr(self, '_overlay_needs_rasterize', False) or (
+                self._overlay_pdf_path is not None and self._overlay_rgba is None):
+            try:
+                from archilume.utils import get_pdf_info
+                self._overlay_pdf_info = get_pdf_info(self._overlay_pdf_path)
+                self._rasterize_overlay_page()
+                self._overlay_visible = True
+                self._update_overlay_page_label()
+                self.btn_overlay_toggle.label.set_text('Floor Plan: ON')
+                self._style_toggle_button(self.btn_overlay_toggle, True)
+                self._render_section(force_full=True)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Warning: could not load PDF overlay: {e}")
+            self._overlay_needs_rasterize = False
+
         self._update_room_list()
         self._update_hdr_list()
 
@@ -898,12 +938,13 @@ class HdrAoiEditor:
             spine.set_linewidth(0.5)
 
     def _setup_bottom_toolbar(self):
-        """Create the two-row bottom toolbar with DF legend filling the right."""
+        """Create the three-row bottom toolbar with DF legend filling the right."""
         gap   = self._GAP
         tr_x  = 0.02                     # push buttons to far left
         tr_h  = 0.025                     # single row height
-        row1_y = 0.91                     # top row
-        row2_y = row1_y + tr_h + gap * 2    # bottom row (extra spacing for button shadows)
+        row1_y = 0.88                     # top row (shifted up to fit 3 rows)
+        row2_y = row1_y + tr_h + gap * 2
+        row3_y = row2_y + tr_h + gap * 2
 
         # Button width: 4 buttons across on top row
         n_cols   = 4
@@ -928,7 +969,7 @@ class HdrAoiEditor:
             tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
             ortho_label, self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
 
-        # Row 2: Export & Archive, Extract Archive, Reset Zoom
+        # Row 2: Export & Archive, Extract Archive, Reset Zoom, Place DF%
         self.btn_export = self._make_button(
             tr_x, row2_y, btn_w, tr_h,
             'Export & Archive', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
@@ -946,6 +987,17 @@ class HdrAoiEditor:
             tr_x + 3 * btn_step, row2_y, btn_w, tr_h,
             place_label, self._on_placement_toggle, color=place_color, hovercolor=place_hover)
 
+        # Row 3: PDF Overlay controls
+        self.btn_overlay_toggle = self._make_button(
+            tr_x, row3_y, btn_w, tr_h,
+            'Floor Plan: OFF', self._on_overlay_toggle)
+        self.btn_overlay_page = self._make_button(
+            tr_x + btn_step, row3_y, btn_w, tr_h,
+            'Cycle Floor Plans: -/-', self._on_overlay_page_cycle)
+        self.btn_overlay_align = self._make_button(
+            tr_x + 2 * btn_step, row3_y, btn_w, tr_h,
+            'Align Floor Plan: OFF', self._on_overlay_align_toggle)
+
         # DF% legend — right of buttons, constrained within toolbar
         legend_x = tr_x + n_cols * btn_step
         legend_w = min(0.98 - legend_x, 0.18)
@@ -955,7 +1007,7 @@ class HdrAoiEditor:
         self.ax_legend.set_visible(False)
 
         # Progress bar (hidden until export)
-        prog_y = row2_y + tr_h + gap * 0.5
+        prog_y = row3_y + tr_h + gap * 0.5
         self.ax_progress = self._axes(tr_x, prog_y, 0.96, 0.010)
         self.ax_progress.set_xlim(0, 1)
         self.ax_progress.set_ylim(0, 1)
@@ -1023,6 +1075,15 @@ class HdrAoiEditor:
         self.btn_parent.label.set_text('(None)')
         self.name_label_text.set_text("Apartment Name:")
         self._update_status(f"HDR: {self.current_hdr_name}", 'green')
+        # Restore per-HDR overlay page assignment
+        if self._overlay_pdf_path is not None and self._overlay_pdf_info is not None:
+            hdr = self.current_hdr_name
+            tf = self._overlay_transforms.get(hdr, {})
+            page_idx = tf.get('page_idx', self._overlay_page_idx)
+            if page_idx != self._overlay_page_idx:
+                self._overlay_page_idx = page_idx
+                self._rasterize_overlay_page()
+            self._update_overlay_page_label()
         self._update_hdr_list()
         self._update_room_list()
         self._render_section(reset_view=True, force_full=True)
@@ -1248,6 +1309,10 @@ class HdrAoiEditor:
                 extent=[0, W, H, 0],
                 aspect='equal', zorder=0,
             )
+            # Render PDF overlay if visible and available
+            self._overlay_handle = None
+            if self._overlay_visible and self._overlay_rgba is not None:
+                self._render_overlay(W, H)
             self.ax.set_xlim(0, W)
             self.ax.set_ylim(H, 0)
         else:
@@ -1882,6 +1947,12 @@ class HdrAoiEditor:
                 self._remove_df_stamp(event.xdata, event.ydata)
             return
 
+        # Left-click in align mode: collect alignment points
+        if event.button == 1 and self._align_mode and event.xdata is not None:
+            self._on_align_click(event.xdata, event.ydata)
+            return
+
+
         # Left-click in divider mode: place division line endpoints
         if event.button == 1 and self.divider_mode and event.xdata is not None and event.ydata is not None:
             self._on_divider_click(event.xdata, event.ydata)
@@ -2012,6 +2083,7 @@ class HdrAoiEditor:
             self._pan_start = None
             return
 
+
         if event.inaxes != self.ax:
             return
 
@@ -2079,6 +2151,7 @@ class HdrAoiEditor:
             self._df_cursor_bg = None  # invalidate stale blit background after pan
             self.fig.canvas.draw_idle()
             return
+
 
         if event.inaxes != self.ax:
             if self._df_cursor_text.get_visible():
@@ -2290,7 +2363,9 @@ class HdrAoiEditor:
         """Handle keyboard shortcuts."""
         if event.key in ('backspace', 'delete', 'escape'):
             if event.key == 'escape':
-                if self.divider_mode:
+                if self._align_mode:
+                    self._on_overlay_align_toggle(None)  # exit align mode
+                elif self.divider_mode:
                     self._exit_divider_mode(cancelled=True)
                 elif self.draw_mode:
                     self._exit_draw_mode()
@@ -2324,10 +2399,28 @@ class HdrAoiEditor:
             self._on_reset_zoom_click(None)
         elif event.key == 'q':
             plt.close(self.fig)
-        elif event.key == 'up':
-            self._on_next_hdr_click(None)
-        elif event.key == 'down':
-            self._on_prev_hdr_click(None)
+        elif event.key in ('up', 'down', 'left', 'right'):
+            # Arrow keys: move overlay if visible, otherwise navigate HDR files
+            if (self._overlay_visible and self._overlay_rgba is not None
+                    and not self.edit_mode and not self.draw_mode and not self.divider_mode):
+                step = max(1.0, self._image_width * 0.005)  # 0.5% of image width per press
+                hdr = self.current_hdr_name
+                tf = self._overlay_transforms.setdefault(hdr, {})
+                if event.key == 'left':
+                    tf['offset_x'] = tf.get('offset_x', 0.0) - step
+                elif event.key == 'right':
+                    tf['offset_x'] = tf.get('offset_x', 0.0) + step
+                elif event.key == 'up':
+                    tf['offset_y'] = tf.get('offset_y', 0.0) - step
+                elif event.key == 'down':
+                    tf['offset_y'] = tf.get('offset_y', 0.0) + step
+                self._render_section(force_full=True)
+                self._save_session()
+            else:
+                if event.key == 'up':
+                    self._on_next_hdr_click(None)
+                elif event.key == 'down':
+                    self._on_prev_hdr_click(None)
         elif event.key == 't':
             self._on_image_toggle_click(None)
         elif event.key == 'e':
@@ -2356,6 +2449,8 @@ class HdrAoiEditor:
             self._select_all_rooms()
         elif event.key == 'p':
             self._on_placement_toggle(None)
+        elif event.key == 'ctrl+r':
+            self._rotate_overlay_90()
 
     def _on_scroll(self, event):
         """Handle scroll wheel for zooming or room list scrolling."""
@@ -2372,6 +2467,28 @@ class HdrAoiEditor:
 
         if event.inaxes != self.ax:
             return
+
+        # Shift+scroll: overlay scale
+        if (event.key == 'shift' and self._overlay_visible
+                and self._overlay_rgba is not None
+                and not self.edit_mode and not self.draw_mode):
+            factor = 1.05 if event.button == 'up' else 1 / 1.05
+            hdr = self.current_hdr_name
+            tf = self._overlay_transforms.setdefault(hdr, {})
+            tf['scale_x'] = tf.get('scale_x', 1.0) * factor
+            tf['scale_y'] = tf.get('scale_y', 1.0) * factor
+            self._render_section(force_full=True)
+            self._save_session()
+            return
+
+        # Ctrl+scroll: overlay alpha
+        if event.key == 'control' and self._overlay_visible:
+            step = 0.05 if event.button == 'up' else -0.05
+            self._overlay_alpha = max(0.1, min(1.0, self._overlay_alpha + step))
+            self._render_section(force_full=True)
+            self._update_status(f"Overlay alpha: {self._overlay_alpha:.0%}", 'cyan')
+            return
+
         scale  = 1.2 if event.button == 'down' else 1 / 1.2
         xlim   = self.ax.get_xlim()
         ylim   = self.ax.get_ylim()
@@ -2902,7 +3019,10 @@ class HdrAoiEditor:
         except Exception:
             return
 
-        if self.divider_mode:
+        if self._align_mode:
+            tkcanvas.configure(cursor='crosshair')
+            canvas.set_cursor = lambda cursor: None          # suppress mpl overrides
+        elif self.divider_mode:
             tkcanvas.configure(cursor='crosshair')
             canvas.set_cursor = lambda cursor: None          # suppress mpl overrides
         elif self.edit_mode and self.hover_edge_room_idx is not None:
@@ -2946,6 +3066,8 @@ class HdrAoiEditor:
 
     def _on_edit_mode_toggle(self, event):
         """Toggle edit mode for modifying existing room boundaries."""
+        if self._align_mode:
+            self._on_overlay_align_toggle(None)
         if self.divider_mode:
             self._exit_divider_mode(cancelled=True)
         if self.draw_mode:
@@ -2973,6 +3095,8 @@ class HdrAoiEditor:
 
     def _on_draw_mode_toggle(self, event):
         """Toggle draw mode via the UI button."""
+        if self._align_mode:
+            self._on_overlay_align_toggle(None)
         if self.edit_mode:
             return   # draw mode not available in edit mode
         if self.draw_mode:
@@ -3004,6 +3128,231 @@ class HdrAoiEditor:
         state = "ON" if self.placement_mode else "OFF"
         self._update_status(f"DF% placement mode: {state}", 'blue')
         self.fig.canvas.draw_idle()
+
+    # ── PDF Overlay Callbacks ──────────────────────────────────────────────────
+
+    def _on_overlay_toggle(self, event):
+        """Toggle PDF overlay visibility."""
+        if self._overlay_rgba is None:
+            self._update_status("No PDF loaded — set pdf_path in HdrAoiEditor()", 'orange')
+            return
+        self._overlay_visible = not self._overlay_visible
+        label = 'Floor Plan: ON' if self._overlay_visible else 'Floor Plan: OFF'
+        self.btn_overlay_toggle.label.set_text(label)
+        self._style_toggle_button(self.btn_overlay_toggle, self._overlay_visible)
+        self._render_section(force_full=True)
+
+    def _on_overlay_page_cycle(self, event):
+        """Cycle to next PDF page."""
+        if self._overlay_pdf_path is None or self._overlay_pdf_info is None:
+            self._update_status("No PDF loaded", 'orange')
+            return
+        n = self._overlay_pdf_info['page_count']
+        self._overlay_page_idx = (self._overlay_page_idx + 1) % n
+        self._rasterize_overlay_page()
+        self._update_overlay_page_label()
+        # Persist page assignment per HDR
+        hdr = self.current_hdr_name
+        tf = self._overlay_transforms.setdefault(hdr, {})
+        tf['page_idx'] = self._overlay_page_idx
+        self._save_session()
+        self._render_section(force_full=True)
+
+    def _on_overlay_align_toggle(self, event):
+        """Enter/exit two-point alignment mode."""
+        if self._overlay_rgba is None:
+            self._update_status("Load a PDF first", 'orange')
+            return
+        self._align_mode = not self._align_mode
+        if self._align_mode:
+            # Exit other modes to prevent conflicts
+            if self.edit_mode:
+                self._on_edit_mode_toggle(None)
+            if self.draw_mode:
+                self._on_draw_mode_toggle(None)
+            self._align_points_overlay = []
+            self._align_points_hdr = []
+            self._clear_align_markers()
+            self.btn_overlay_align.label.set_text('Align Floor Plan: ON')
+            self._style_toggle_button(self.btn_overlay_align, True)
+            self._update_status("ALIGN: Click first point on overlay", 'cyan')
+        else:
+            self._clear_align_markers()
+            self.btn_overlay_align.label.set_text('Align Floor Plan: OFF')
+            self._style_toggle_button(self.btn_overlay_align, False)
+            self._update_status("Alignment cancelled", 'orange')
+        self.fig.canvas.draw_idle()
+
+    def _rasterize_overlay_page(self):
+        """Rasterize current PDF page and apply white-to-transparent."""
+        from archilume.utils import rasterize_pdf_page, make_lines_only
+
+        if self._overlay_pdf_path is None:
+            return
+        raster_w = self._image_width if self._image_width > 1 else 4000
+        raster_h = self._image_height if self._image_height > 1 else 2000
+        rgba = rasterize_pdf_page(
+            self._overlay_pdf_path,
+            self._overlay_page_idx,
+            raster_w,
+            raster_h,
+        )
+        self._overlay_rgba = make_lines_only(rgba, white_threshold=240)
+
+    def _update_overlay_page_label(self):
+        """Update the page cycle button label."""
+        if self._overlay_pdf_info is None:
+            self.btn_overlay_page.label.set_text('Cycle Floor Plans: -/-')
+        else:
+            n = self._overlay_pdf_info['page_count']
+            self.btn_overlay_page.label.set_text(f'Cycle Floor Plans: {self._overlay_page_idx + 1}/{n}')
+        self.fig.canvas.draw_idle()
+
+    def _render_overlay(self, img_w: int, img_h: int):
+        """Draw the PDF overlay as a second imshow artist above the base image."""
+        hdr = self.current_hdr_name
+        tf = self._overlay_transforms.get(hdr, {})
+        ox = tf.get('offset_x', 0.0)
+        oy = tf.get('offset_y', 0.0)
+        sx = tf.get('scale_x', 1.0)
+        sy = tf.get('scale_y', 1.0)
+        rot = tf.get('rotation_90', 0) % 4
+
+        rgba = self._overlay_rgba
+        if rot > 0:
+            rgba = np.rot90(rgba, k=rot)
+
+        oh, ow = rgba.shape[:2]
+
+        # Build display array with user-controlled alpha
+        display = rgba.copy()
+        display[:, :, 3] = (display[:, :, 3].astype(float) * self._overlay_alpha).astype(np.uint8)
+
+        extent_left   = ox
+        extent_right  = ox + ow * sx
+        extent_top    = oy
+        extent_bottom = oy + oh * sy
+
+        self._overlay_handle = self.ax.imshow(
+            display, origin='upper',
+            extent=[extent_left, extent_right, extent_bottom, extent_top],
+            aspect='equal', zorder=1, interpolation='bilinear',
+        )
+
+    def _update_overlay_extent(self):
+        """Update the overlay artist's extent from current transform state (fast path for drag)."""
+        if self._overlay_handle is None or self._overlay_rgba is None:
+            return
+        hdr = self.current_hdr_name
+        tf = self._overlay_transforms.get(hdr, {})
+        ox = tf.get('offset_x', 0.0)
+        oy = tf.get('offset_y', 0.0)
+        sx = tf.get('scale_x', 1.0)
+        sy = tf.get('scale_y', 1.0)
+        rot = tf.get('rotation_90', 0) % 4
+
+        rgba = self._overlay_rgba
+        if rot > 0:
+            oh, ow = np.rot90(rgba, k=rot).shape[:2]
+        else:
+            oh, ow = rgba.shape[:2]
+
+        self._overlay_handle.set_extent([
+            ox, ox + ow * sx,
+            oy + oh * sy, oy,
+        ])
+
+    def _clear_align_markers(self):
+        """Remove alignment marker artists from the canvas."""
+        for m in self._align_markers:
+            try:
+                m.remove()
+            except ValueError:
+                pass
+        self._align_markers = []
+
+    def _on_align_click(self, x, y):
+        """Handle a click during two-point alignment mode."""
+        n_overlay = len(self._align_points_overlay)
+        n_hdr = len(self._align_points_hdr)
+
+        if n_overlay == n_hdr:
+            # Collecting overlay point
+            self._align_points_overlay.append((x, y))
+            marker = self.ax.scatter(x, y, c='lime', s=100, zorder=500, marker='+', linewidths=2)
+            self._align_markers.append(marker)
+            if n_overlay == 0:
+                self._update_status("ALIGN: Now click matching point on HDR image", 'cyan')
+            else:
+                self._update_status("ALIGN: Now click matching point #2 on HDR image", 'cyan')
+            self.fig.canvas.draw_idle()
+        else:
+            # Collecting HDR point
+            self._align_points_hdr.append((x, y))
+            marker = self.ax.scatter(x, y, c='red', s=100, zorder=500, marker='+', linewidths=2)
+            self._align_markers.append(marker)
+            self.fig.canvas.draw_idle()
+
+            if len(self._align_points_hdr) == 1:
+                self._update_status("ALIGN: Click second point on overlay", 'cyan')
+            elif len(self._align_points_hdr) == 2:
+                self._compute_two_point_alignment()
+
+    def _compute_two_point_alignment(self):
+        """Compute translation + uniform scale from two point pairs."""
+        o1, o2 = self._align_points_overlay
+        h1, h2 = self._align_points_hdr
+
+        d_hdr = np.sqrt((h2[0] - h1[0])**2 + (h2[1] - h1[1])**2)
+
+        hdr = self.current_hdr_name
+        tf = self._overlay_transforms.setdefault(hdr, {})
+        old_sx = tf.get('scale_x', 1.0)
+        old_sy = tf.get('scale_y', 1.0)
+        old_ox = tf.get('offset_x', 0.0)
+        old_oy = tf.get('offset_y', 0.0)
+
+        # Convert overlay data-coord clicks to overlay-image-space
+        img_x1 = (o1[0] - old_ox) / old_sx
+        img_y1 = (o1[1] - old_oy) / old_sy
+        img_x2 = (o2[0] - old_ox) / old_sx
+        img_y2 = (o2[1] - old_oy) / old_sy
+
+        d_img = np.sqrt((img_x2 - img_x1)**2 + (img_y2 - img_y1)**2)
+        if d_img < 1e-6:
+            self._update_status("Overlay points too close together", 'red')
+            return
+
+        new_scale = d_hdr / d_img
+
+        # Offset so image point 1 maps to HDR point 1
+        new_ox = h1[0] - img_x1 * new_scale
+        new_oy = h1[1] - img_y1 * new_scale
+
+        tf['scale_x'] = new_scale
+        tf['scale_y'] = new_scale
+        tf['offset_x'] = new_ox
+        tf['offset_y'] = new_oy
+
+        # Exit align mode
+        self._align_mode = False
+        self._clear_align_markers()
+        self.btn_overlay_align.label.set_text('Align Floor Plan: OFF')
+        self._style_toggle_button(self.btn_overlay_align, False)
+        self._save_session()
+        self._render_section(force_full=True)
+        self._update_status("Alignment applied (2-point)", 'green')
+
+    def _rotate_overlay_90(self):
+        """Rotate overlay by 90 degrees clockwise."""
+        if self._overlay_rgba is None:
+            return
+        hdr = self.current_hdr_name
+        tf = self._overlay_transforms.setdefault(hdr, {})
+        tf['rotation_90'] = (tf.get('rotation_90', 0) + 1) % 4
+        self._save_session()
+        self._render_section(force_full=True)
+        self._update_status(f"Overlay rotated to {tf['rotation_90'] * 90}\u00b0", 'cyan')
 
     def _on_room_type_toggle(self, room_type: str, **_kw):
         """Toggle a room type on/off.  Supports bulk tagging when multi-selected."""
@@ -3962,6 +4311,10 @@ class HdrAoiEditor:
             'df_thresholds':  self.DF_THRESHOLDS,
             'rooms':          self.rooms,
             'df_stamps':      stamps_json,
+            'overlay_pdf_path':    str(self._overlay_pdf_path) if self._overlay_pdf_path else None,
+            'overlay_page_idx':    self._overlay_page_idx,
+            'overlay_transforms':  self._overlay_transforms,
+            'overlay_alpha':       self._overlay_alpha,
         }
         # Write to a temp file alongside the target, then atomically rename it
         # over the real path. This guarantees the session is never left in a
@@ -3988,6 +4341,14 @@ class HdrAoiEditor:
             stamps_raw = data.get('df_stamps', {})
             self._df_stamps = {hdr: [tuple(s) for s in stamps]
                                for hdr, stamps in stamps_raw.items()}
+            # Restore overlay state
+            self._overlay_transforms = data.get('overlay_transforms', {})
+            self._overlay_alpha = data.get('overlay_alpha', 0.6)
+            pdf_path_str = data.get('overlay_pdf_path')
+            if pdf_path_str and Path(pdf_path_str).exists():
+                self._overlay_pdf_path = Path(pdf_path_str)
+                self._overlay_page_idx = data.get('overlay_page_idx', 0)
+                self._overlay_needs_rasterize = True
             # df_thresholds from old sessions are ignored — now fixed per room type
             source = "session"
             cached = sum(1 for r in self.rooms if r.get('df_cache'))

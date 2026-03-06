@@ -1,137 +1,56 @@
 """
 Archilume Example: IESVE Daylight Factor Analysis
-======================================================================================================
+=============================================================
 
-This example demonstrates a daylight factor (DF) analysis workflow using pre-built IESVE octree 
-models. The pipeline converts IESVE room data and AOI boundary files into Radiance view files, 
-renders each view sequentially using all available CPU cores, and post-processes the results 
-into falsecolor and contour overlay images. This code works most efficient on linux machines as these 
-have access to rtpict a multiprocessing program for radiance images. for example, if your machine 
-has 20 CPUs, then rendering times should be reduced by around 20 times when compared to windows. 
+Daylight factor (DF) analysis using a pre-built IESVE octree 
+(10K lux CIE overcast sky). Converts IESVE room data + AOI files
+ into Radiance views, renders per floor, and exports HDR results.
 
-The analysis workflow includes:
-1. Converting IESVE AOI boundary files + room data into ViewGenerator-compatible CSV
-2. Generating plan view files (.vp) for each floor level from room boundaries
-3. Rendering each view against the pre-built IESVE octree
-4. Post-processing HDR images: falsecolor, contour overlays, and image legends provided separately
+Note:   Runs fastest on Linux via rtpict multiprocessing (20 CPUs
+         ≈ 20x speedup vs Windows). On WSL, increase RAM/CPU limits
+        in %USERPROFILE%/.wslconfig — default limits cause failures
+        on large models when rtpict is used with many cores.
 
-Note:               Only works with 10K lux (10,000 lux) overcast sky models from IESVE.
-                    The octree must include the sky definition. DF values are derived
-                    by scaling rendered irradiance (pcomb -s 0.01) against the 10K lux reference.
+Input:  IESVE octree (.oct), rendering parameters (.rdp), 
+        IESVE room data CSV, AOI files (.aoi)
+Output: HDR images, falsecolor/contour TIFFs, view files
 
-                    If using wsl on windows, it is recommended to install Docker and utilise the devcontainer provided. In order to work with larger models, you'll need to alter the default RAM allowance that is default with wsl. Without this change, larger models do not run effectively if the multiprocessing rtpict is utilised with a high number of CPUs. Find the .wslconfig files and alter to the below. 
-
-                        @"
-                        [wsl2]
-                        memory=28GB
-                        processors=20
-                        "@ | Out-File -FilePath "$env:USERPROFILE\.wslconfig" -Encoding ASCII
-
-
-Input:              IESVE octree (.oct), rendering parameters (.rdp), AOI files (.aoi),
-                    IESVE room data csv
-Output:             HDR images, falsecolor/contour TIFFs, legend images, view files
+Workflow Overview:
+1. Convert IESVE room data + AOI files into room boundary CSV.
+2. Generate plan view files (.vp) per floor level.
+3. Render each view against the pre-built IESVE octree.
+4. Generate AOI coordinate map for post-processing.
 
 """
 
 # fmt: off
 # autopep8: off
 
-# Archilume imports
-from archilume import (
-    ViewGenerator,
-    Objs2Octree,
-    DaylightRenderer,
-    Tiff2Animation,
-    Hdr2Wpd,
-    smart_cleanup,
-    utils,
-    PhaseTimer,
-    config
-)
+from archilume import smart_cleanup
+from archilume.workflows import IESVEDaylightWorkflow
 
-# Standard library imports
+def run_daylight_analysis():
+    # 1. cleanup redundant files or retain .amb file for faster simulation re-run
+    smart_cleanup(
+        timestep_changed            = False,
+        resolution_changed          = True,
+        rendering_mode_changed      = False,
+        rendering_quality_changed   = False
+    )
 
-# Third-party imports
+    # 2. Run the standardized workflow
+    inputs = IESVEDaylightWorkflow.InputsValidator(
+        project                     = "527DP",              # Optional: sub-folder within inputs/
+        octree_path                 = "527DP.oct",          # Must use a 10K Lux CIE Overcast sky
+        rendering_params            = "preview.rdp",
+        iesve_room_data             = "aoi/iesve_room_data.csv",
+        image_resolution            = 2048,
+        ffl_offset                  = 0.0,                  # Camera height above floor (m)
+    )
 
-
-def iesve_daylight_parallel_images():
-    
-    timer = PhaseTimer()
-    
-    with timer("Phase 0: User input 3D Scene file + Rendering parameter (.rdp) and aoi (.aoi)..."):
-        image_resolution    = 2048                            
-        ffl_offset          = 0.00
-        octree_path         = config.INPUTS_DIR / "527DP.oct" # Must use a 10K Lux CIE Overcast sky
-        rendering_params    = config.INPUTS_DIR / "preview.rdp"
-        iesve_room_data     = config.INPUTS_DIR / "aoi" / "iesve_room_data.csv"
-
-        # TODO: implement scenario grid, and file naming convention changes to match the variant grid. Simulation should run in a specific order to allow for the fastest outcome. Once this is done, the smart_cleanup function will not be needed at all. The files are unique to the scenario grid, and the same ambient file will be used across all resolution ranges, but a new abmient file for all other permutations. 
-        
-        # TODO: implement raw file compile into octree using the scenario grid. as .map files must be modified based on the scenario grid. 
-
-        # TODO: allowance for gpu rendering mode if a user wishes to have this. This would mean this could run on windows machine alike to the sunlight rendering workflow.
-
-        smart_cleanup(
-            timestep_changed            = False,  # Set TRUE if timestep changed (e.g., 5min → 10min)
-            resolution_changed          = True,  # Set TRUE if image_resolution changed (e.g., 512 → 1024)
-            rendering_mode_changed      = False,  # Set TRUE if switched cpu/gpu
-            rendering_quality_changed   = False  # Set TRUE if quality preset changed (e.g., 'fast' → 'stand')
-            )
-
-        #FIXME: AOI dir isnt properly cleaned when the smart clean up is True. 
-
-    with timer("Phase 1: Prepare Camera Views..."):
-        room_boundaries_csv = utils.iesve_aoi_to_room_boundaries_csv(
-            iesve_room_data_path        = iesve_room_data
-            )
-
-        view_generator = ViewGenerator(
-            room_boundaries_csv_path    = room_boundaries_csv,
-            ffl_offset                  = ffl_offset
-            )
-        view_generator.create_plan_view_files()
-
-    # FIXME, check that the room boundaties created from the aoi files enforces consistent width, height and centre points coordinate for each plan view. This is important to ensure that the same pixel in each view corresponds to the same world coordinate, which is critical for post processing and analysis of results. views are consistent from level to level.
-
-    with timer("Phase 2: Execute Image Rendering..."):
-        renderer = DaylightRenderer(
-            octree_path                 = octree_path,
-            rdp_path                    = rendering_params,
-            x_res                       = image_resolution,
-            view_files                  = view_generator.view_files,
-            )
-        renderer.daylight_rendering_pipeline()
-
-    #FIXME: move image post processing steps from this Renderer into the aoi editor, that way a user can update the values as they see fit before export of results. It would also mean that only one input id needed the .hdr files. Some meta data could be shown regarding image on the aoi editor so that i user can see what parameters were run, and a button to launch the accelerat_RT programm on the model the simulation was run on.
-
-    #TODO: convert outputs to png instead of .tiff, they are much more compact at the same quality. 
-
-    with timer("Phase 3: Post-processing and Stamping of Results..."):
-        with timer("  3a: Generate .aoi files..."):
-            coordinate_map_path         = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
-            view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
+    workflow = IESVEDaylightWorkflow()
+    workflow.run(inputs)
 
 
 if __name__ == "__main__":
-    iesve_daylight_parallel_images()
-
-
-# TODO: Parametric materials – use model.rad + swappable .mtl files to vary
-#   glass VLT, wall/ceiling LRV, etc. Support multiple .rdp/.rdv per run.
-# TODO: Parametric params – accept multiple parameter input files (or
-#   low/high param sets) for incremental refinement of AOI checks.
-# TODO: Grid-based resolution – replace image resolution with grid_res (mm). this brings consistency to any image produced across any model no matter how large the building. 
-#   Dynamically size images so pixel density is consistent across views.
-#   Run at half grid_res first for quick AOI review, full res second.
-# TODO: Room/floor-plate mode – run per-room or per-floor by compositing
-#   .aoi files into a single floor-plate view (depends on grid_res).
-# TODO: Input validation – extend validator to check IES room-data CSV
-#   column identifiers and other workflow-specific constraints.
-# TODO: View offset – use Radiance .views offset parameters instead of
-#   manual FFL offset, so the offset is captured in the .hdr header.
-# TODO: Smart cleanup – remove input dependency; decide whether to keep
-#   the ambient file by comparing .hdr headers to current parameters.
-#   Skip commands whose output files already match (same view, same
-#   params; resolution changes are allowed).
-# TODO: implement inputs validations checks alike to sunlight access workflow.
+    run_daylight_analysis()

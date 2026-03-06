@@ -34,8 +34,7 @@ Workflow:
 # fmt: off
 # autopep8: off
 
-from archilume.obj_aoi_editor import ObjAoiEditor
-from archilume import config
+from apps.obj_aoi_editor_matplotlib import ObjAoiEditor
 
 # initial_csv_path: optional CSV with pre-existing room boundaries (loaded if no session exists)
 # simplify_ratio: 0.0-1.0 mesh decimation for large files (None = off)
@@ -45,13 +44,12 @@ from archilume import config
 
 if __name__ == "__main__":
     editor = ObjAoiEditor(
-        obj_path            = config.INPUTS_DIR / "527DM" / "223181_AR_LOFTUS_BTR_stripped_cleaned_decimate.obj",
-        initial_csv_path    = config.INPUTS_DIR / "cowles" /"87cowles_BLD_room_boundaries.csv",
+        project             = "527DM",  # Optional: sub-folder within inputs/ 
+        obj_path            = "223181_AR_LOFTUS_BTR_stripped_cleaned_decimate.obj",
+        initial_csv_path    = "87cowles_BLD_room_boundaries.csv",
         simplify_ratio      = None,
         detect_floors       = True,
         max_vertex_display  = 5000,
     )
     editor.launch()
-
-# TODO: add option to copy boundaries up a level if levels are identical. add in flag to have a user double accept that their selection to copy up will remove any existing boundaries on the target level. add in option to copy down a level as well. add in option to copy across to another level (e.g. copy from 1st floor to 2nd floor if they are identical). add in option to mirror boundaries across a plane (e.g. mirror left half of floor plan to right half if they are symmetrical).
 

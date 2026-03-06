@@ -96,3 +96,25 @@ Always commit and push changes after completing a task unless told otherwise. Ve
 ## Development Environment
 
 The recommended setup is the **Docker dev container** (`.devcontainer/`), which bundles Python 3.12, Radiance, and Accelerad. Native Windows setup requires manual Radiance installation and `uv sync` for Python dependencies.
+
+## Claude Code Instructions
+
+**Before giving platform-specific advice, determine the execution environment:**
+
+1. **Check the system context** — Note the OS (Windows/Linux/macOS) and current working directory
+2. **Verify container/WSL status** — Determine if running in dev container, WSL, or native
+3. **Audit all command suggestions** for platform compatibility:
+   - Use `pathlib.Path` and forward slashes in Python (cross-platform)
+   - Use PowerShell syntax on Windows (not Unix bash)
+   - Always recommend `uv` for package management (never `pip`)
+   - Flag Linux-only tools (`rtpict` multi-core, `rsync`) if on Windows
+   - Remember AcceleradRT works natively on Windows; `rtpict` requires Linux
+4. **Flag any platform clashes** before suggesting terminal commands
+
+**Current environment:** Native Windows (not WSL, not dev container)
+
+**Tool availability by platform:**
+
+- **Native Windows**: Accelerad, AcceleradRT (GPU), basic Radiance tools
+- **WSL/Linux**: `rtpict` (multi-core rendering), Accelerad (needs GPU passthrough)
+- **Dev container**: All tools bundled and optimized

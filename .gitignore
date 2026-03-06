@@ -2,11 +2,14 @@ __pycache__/
 *.egg-info/
 .venv/
 
-# Claude Code settings and credentials
+# AI tool settings
 .claude/
 .env
 .env.local
 *.key
+
+# Documentation
+docs/radiance_testpad.md
 
 # Ignore all content in inputs/, outputs/, archive/ but preserve directory structure
 inputs/**

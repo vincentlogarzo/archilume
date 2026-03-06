@@ -502,6 +502,7 @@ class ObjAoiEditor:
         simplify_ratio: Optional[float] = None,
         detect_floors: bool = True,
         max_vertex_display: int = 5000,
+        project: Optional[str] = None,
     ):
         """Initialize the boundary editor.
 
@@ -513,11 +514,20 @@ class ObjAoiEditor:
             simplify_ratio: Optional mesh decimation ratio (0.0-1.0) for large meshes
             detect_floors: Whether to auto-detect floor levels (disable for very large meshes)
             max_vertex_display: Maximum vertices to display (downsample if exceeded)
+            project: Optional sub-folder name within inputs/ (e.g. "myproject" → inputs/myproject/)
         """
-        self.obj_path = Path(obj_path)
+        from archilume import config
+        base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+
+        obj_path = Path(obj_path)
+        self.obj_path = base_dir / obj_path if not obj_path.is_absolute() else obj_path
         self.mtl_path = mtl_path
         self.session_path = session_path or (self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.json")
-        self.initial_csv_path = Path(initial_csv_path) if initial_csv_path else None
+        if initial_csv_path is not None:
+            initial_csv_path = Path(initial_csv_path)
+            self.initial_csv_path = base_dir / initial_csv_path if not initial_csv_path.is_absolute() else initial_csv_path
+        else:
+            self.initial_csv_path = None
         self.csv_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.csv"
         self.simplify_ratio = simplify_ratio
         self.detect_floors = detect_floors

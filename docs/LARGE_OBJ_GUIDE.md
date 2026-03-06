@@ -122,6 +122,7 @@ editor.launch()
 - When you already know floor heights
 
 **How to manually set floors** (if disabled):
+
 ```python
 editor = BoundaryEditor(obj_paths=paths, detect_floors=False)
 editor.launch()

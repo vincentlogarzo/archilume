@@ -1781,3 +1781,82 @@ def smart_cleanup(
 
     print("="*80 + "\n")
 
+
+# ── PDF Floor Plan Utilities ──────────────────────────────────────────────────
+
+def rasterize_pdf_page(
+    pdf_path: Path,
+    page_index: int,
+    target_width: int,
+    target_height: int,
+) -> np.ndarray:
+    """Rasterize one PDF page to an RGBA numpy array.
+
+    Preserves the PDF page aspect ratio by computing a uniform scale from the
+    target pixel dimensions. The result may be smaller than (target_height,
+    target_width) on one axis — the caller is responsible for positioning.
+
+    Returns (H, W, 4) uint8 array with alpha=255.
+    """
+    import fitz  # pymupdf
+
+    doc = fitz.open(str(pdf_path))
+    page = doc[page_index]
+    rect = page.rect  # dimensions in points (72 pts = 1 inch)
+
+    # Uniform scale that fits the page within the target dimensions
+    scale = min(target_width / rect.width, target_height / rect.height)
+    mat = fitz.Matrix(scale, scale)
+
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3).copy()
+    doc.close()
+
+    # Convert RGB → RGBA
+    rgba = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
+    rgba[:, :, :3] = img
+    rgba[:, :, 3] = 255
+    return rgba
+
+
+def make_lines_only(
+    rgba: np.ndarray,
+    white_threshold: int = 240,
+) -> np.ndarray:
+    """Make near-white pixels fully transparent, keeping dark linework opaque.
+
+    Computes per-pixel luminance; pixels brighter than *white_threshold* become
+    fully transparent so only architectural linework is visible when overlaid on
+    another image.
+
+    Returns a new (H, W, 4) uint8 array.
+    """
+    result = rgba.copy()
+    lum = (0.299 * rgba[:, :, 0].astype(float)
+           + 0.587 * rgba[:, :, 1].astype(float)
+           + 0.114 * rgba[:, :, 2].astype(float))
+    result[lum > white_threshold, 3] = 0
+    return result
+
+
+def get_pdf_info(pdf_path: Path) -> dict:
+    """Return page count and per-page dimensions for a PDF file.
+
+    Returns ``{'page_count': int, 'pages': [{'index', 'width_pt', 'height_pt', 'label'}, ...]}``.
+    """
+    import fitz  # pymupdf
+
+    doc = fitz.open(str(pdf_path))
+    pages = []
+    for i in range(doc.page_count):
+        rect = doc[i].rect
+        pages.append({
+            "index": i,
+            "width_pt": rect.width,
+            "height_pt": rect.height,
+            "label": f"Page {i + 1} ({rect.width:.0f}\u00d7{rect.height:.0f} pt)",
+        })
+    count = doc.page_count
+    doc.close()
+    return {"page_count": count, "pages": pages}
+

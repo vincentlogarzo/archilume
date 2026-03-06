@@ -1,5 +1,5 @@
 # Archilume imports
-from archilume import radiance_materials as rm
+from . import radiance_materials as rm
 
 # Standard library imports
 import os
