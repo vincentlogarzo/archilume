@@ -5,7 +5,7 @@ Usage:
     python examples/gcp_launch_vm.py
 """
 
-from archilume.gcp_vm_manager import GCPVMManager
+from archilume.infra.gcp_vm_manager import GCPVMManager
 
 if __name__ == "__main__":
     GCPVMManager().run()
