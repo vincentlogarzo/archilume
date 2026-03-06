@@ -278,6 +278,7 @@ class HdrAoiEditor:
         self._overlay_rgba:     Optional[np.ndarray]    = None   # cached rasterized page (H,W,4)
         self._overlay_visible:  bool                    = False
         self._overlay_alpha:    float                   = 0.6
+        self._overlay_raster_dpi: int                  = 150    # global PDF rasterization DPI
         self._overlay_handle                            = None   # matplotlib AxesImage artist
         # Per-HDR alignment: {hdr_name: {offset_x, offset_y, scale_x, scale_y, rotation_90, page_idx}}
         self._overlay_transforms: dict                  = {}
@@ -759,6 +760,7 @@ class HdrAoiEditor:
 
         # Load existing session
         self._load_session()
+        self.btn_overlay_dpi.label.set_text(f'PDF Res: {self._overlay_raster_dpi} DPI')
 
         # Deferred PDF overlay rasterization (from session restore or __init__ pdf_path)
         if getattr(self, '_overlay_needs_rasterize', False) or (
@@ -997,6 +999,9 @@ class HdrAoiEditor:
         self.btn_overlay_align = self._make_button(
             tr_x + 2 * btn_step, row3_y, btn_w, tr_h,
             'Align Floor Plan: OFF', self._on_overlay_align_toggle)
+        self.btn_overlay_dpi = self._make_button(
+            tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
+            'PDF Res: 150 DPI', self._on_overlay_dpi_cycle)
 
         # DF% legend — right of buttons, constrained within toolbar
         legend_x = tr_x + n_cols * btn_step
@@ -3183,19 +3188,30 @@ class HdrAoiEditor:
             self._update_status("Alignment cancelled", 'orange')
         self.fig.canvas.draw_idle()
 
+    _DPI_PRESETS = [72, 100, 150, 200, 300]
+
+    def _on_overlay_dpi_cycle(self, event):
+        """Cycle PDF rasterization DPI through presets and re-rasterize."""
+        idx = self._DPI_PRESETS.index(self._overlay_raster_dpi)
+        self._overlay_raster_dpi = self._DPI_PRESETS[(idx + 1) % len(self._DPI_PRESETS)]
+        self.btn_overlay_dpi.label.set_text(f'PDF Res: {self._overlay_raster_dpi} DPI')
+        self._save_session()
+        if self._overlay_pdf_path is not None:
+            self._rasterize_overlay_page()
+            self._render_section(force_full=True)
+        else:
+            self.fig.canvas.draw_idle()
+
     def _rasterize_overlay_page(self):
         """Rasterize current PDF page and apply white-to-transparent."""
         from archilume.utils import rasterize_pdf_page, make_lines_only
 
         if self._overlay_pdf_path is None:
             return
-        raster_w = self._image_width if self._image_width > 1 else 4000
-        raster_h = self._image_height if self._image_height > 1 else 2000
         rgba = rasterize_pdf_page(
             self._overlay_pdf_path,
             self._overlay_page_idx,
-            raster_w,
-            raster_h,
+            dpi=self._overlay_raster_dpi,
         )
         self._overlay_rgba = make_lines_only(rgba, white_threshold=240)
 
@@ -4315,6 +4331,7 @@ class HdrAoiEditor:
             'overlay_page_idx':    self._overlay_page_idx,
             'overlay_transforms':  self._overlay_transforms,
             'overlay_alpha':       self._overlay_alpha,
+            'overlay_raster_dpi':  self._overlay_raster_dpi,
         }
         # Write to a temp file alongside the target, then atomically rename it
         # over the real path. This guarantees the session is never left in a
@@ -4344,6 +4361,7 @@ class HdrAoiEditor:
             # Restore overlay state
             self._overlay_transforms = data.get('overlay_transforms', {})
             self._overlay_alpha = data.get('overlay_alpha', 0.6)
+            self._overlay_raster_dpi = data.get('overlay_raster_dpi', 150)
             pdf_path_str = data.get('overlay_pdf_path')
             if pdf_path_str and Path(pdf_path_str).exists():
                 self._overlay_pdf_path = Path(pdf_path_str)

@@ -1787,25 +1787,24 @@ def smart_cleanup(
 def rasterize_pdf_page(
     pdf_path: Path,
     page_index: int,
-    target_width: int,
-    target_height: int,
+    dpi: int = 150,
 ) -> np.ndarray:
-    """Rasterize one PDF page to an RGBA numpy array.
+    """Rasterize one PDF page to an RGBA numpy array at the given DPI.
 
-    Preserves the PDF page aspect ratio by computing a uniform scale from the
-    target pixel dimensions. The result may be smaller than (target_height,
-    target_width) on one axis — the caller is responsible for positioning.
+    Output pixel dimensions are determined by the PDF page's physical size in mm
+    (1 pt = 25.4/72 mm) scaled to the requested DPI. A 150 DPI default gives
+    a good balance of sharpness and memory for typical A1/A0 floor plans.
 
     Returns (H, W, 4) uint8 array with alpha=255.
     """
-    import fitz  # pymupdf
+    import pymupdf as fitz  # pymupdf
 
     doc = fitz.open(str(pdf_path))
     page = doc[page_index]
-    rect = page.rect  # dimensions in points (72 pts = 1 inch)
+    rect = page.rect  # dimensions in points (72 pts = 1 inch = 25.4 mm)
 
-    # Uniform scale that fits the page within the target dimensions
-    scale = min(target_width / rect.width, target_height / rect.height)
+    # scale = target DPI / PDF native DPI (72)
+    scale = dpi / 72.0
     mat = fitz.Matrix(scale, scale)
 
     pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -1844,7 +1843,7 @@ def get_pdf_info(pdf_path: Path) -> dict:
 
     Returns ``{'page_count': int, 'pages': [{'index', 'width_pt', 'height_pt', 'label'}, ...]}``.
     """
-    import fitz  # pymupdf
+    import pymupdf as fitz  # pymupdf
 
     doc = fitz.open(str(pdf_path))
     pages = []
