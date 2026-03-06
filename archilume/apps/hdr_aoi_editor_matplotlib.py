@@ -279,6 +279,8 @@ class HdrAoiEditor:
         self._overlay_visible:  bool                    = False
         self._overlay_alpha:    float                   = 0.6
         self._overlay_raster_dpi: int                  = 150    # global PDF rasterization DPI
+        self._overlay_cache_pdf:  Optional[str]        = None   # PDF path used for cached raster
+        self._overlay_cache_dpi:  Optional[int]        = None   # DPI used for cached raster
         self._overlay_handle                            = None   # matplotlib AxesImage artist
         # Per-HDR alignment: {hdr_name: {offset_x, offset_y, scale_x, scale_y, rotation_90, page_idx}}
         self._overlay_transforms: dict                  = {}
@@ -3203,17 +3205,43 @@ class HdrAoiEditor:
             self.fig.canvas.draw_idle()
 
     def _rasterize_overlay_page(self):
-        """Rasterize current PDF page and apply white-to-transparent."""
+        """Rasterize current PDF page and apply white-to-transparent.
+
+        The processed RGBA array is cached to disk as a .npy file. The cache
+        is valid when the PDF path, DPI, and PDF file modification time all
+        match the values stored in the session. Any change to the PDF file or
+        DPI (including switching to a different PDF) triggers a fresh raster.
+        """
         from archilume.utils import rasterize_pdf_page, make_lines_only
+        import numpy as np
 
         if self._overlay_pdf_path is None:
             return
-        rgba = rasterize_pdf_page(
-            self._overlay_pdf_path,
-            self._overlay_page_idx,
-            dpi=self._overlay_raster_dpi,
+
+        cache_path = self.session_path.parent / "overlay_raster_cache.npy"
+        pdf_str    = str(self._overlay_pdf_path)
+        pdf_mtime  = self._overlay_pdf_path.stat().st_mtime
+
+        cache_hit = (
+            cache_path.exists()
+            and self._overlay_cache_pdf == pdf_str
+            and self._overlay_cache_dpi == self._overlay_raster_dpi
+            and cache_path.stat().st_mtime >= pdf_mtime
         )
-        self._overlay_rgba = make_lines_only(rgba, white_threshold=240)
+
+        if cache_hit:
+            self._overlay_rgba = np.load(str(cache_path))
+        else:
+            rgba = rasterize_pdf_page(
+                self._overlay_pdf_path,
+                self._overlay_page_idx,
+                dpi=self._overlay_raster_dpi,
+            )
+            self._overlay_rgba = make_lines_only(rgba, white_threshold=240)
+            np.save(str(cache_path), self._overlay_rgba)
+            self._overlay_cache_pdf = pdf_str
+            self._overlay_cache_dpi = self._overlay_raster_dpi
+            self._save_session()
 
     def _update_overlay_page_label(self):
         """Update the page cycle button label."""
@@ -4332,6 +4360,8 @@ class HdrAoiEditor:
             'overlay_transforms':  self._overlay_transforms,
             'overlay_alpha':       self._overlay_alpha,
             'overlay_raster_dpi':  self._overlay_raster_dpi,
+            'overlay_cache_pdf':   self._overlay_cache_pdf,
+            'overlay_cache_dpi':   self._overlay_cache_dpi,
         }
         # Write to a temp file alongside the target, then atomically rename it
         # over the real path. This guarantees the session is never left in a
@@ -4362,6 +4392,8 @@ class HdrAoiEditor:
             self._overlay_transforms = data.get('overlay_transforms', {})
             self._overlay_alpha = data.get('overlay_alpha', 0.6)
             self._overlay_raster_dpi = data.get('overlay_raster_dpi', 150)
+            self._overlay_cache_pdf  = data.get('overlay_cache_pdf')
+            self._overlay_cache_dpi  = data.get('overlay_cache_dpi')
             pdf_path_str = data.get('overlay_pdf_path')
             if pdf_path_str and Path(pdf_path_str).exists():
                 self._overlay_pdf_path = Path(pdf_path_str)
