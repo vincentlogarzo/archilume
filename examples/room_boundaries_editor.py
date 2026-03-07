@@ -7,21 +7,6 @@ Two editors for different workflow stages:
         Draw room boundaries on a 3D OBJ mesh slice.
         Run this before simulation to define rooms.
 
-        Controls:
-            ↑/↓           Navigate floor levels
-            Left-click    Place vertex (draw) or drag vertex (edit mode)
-            Right-click   Select existing room
-            Scroll        Zoom centred on cursor
-            s             Save room / confirm edit
-            d             Delete selected room
-            e             Toggle Edit Mode
-            v             Cycle views: Plan → Elev X → Elev Y
-            a             Toggle all-floors display
-            o             Align view: click 2 points to rotate plan orthogonally
-            O             Reset view rotation to 0°
-            r             Reset zoom
-            q             Quit
-
         Workflow:
             1. Navigate to floor with ↑/↓
             2. Draw apartment boundary → name "U101" → Save
@@ -32,25 +17,6 @@ Two editors for different workflow stages:
   HDR AOI Editor (post-simulation):
       Review and refine room boundaries on rendered PNG floor plan images.
       Requires daylight_workflow_iesve.py to have been run successfully.
-
-        Controls:
-            Up/Down       Navigate HDR files
-            t             Toggle image variant (HDR / PNG)
-            Left-click    Select room / place vertex (draw mode) / drag vertex (edit mode)
-            Shift+click   Drag entire edge in edit mode
-            Right-click   Delete hovered vertex (edit mode) / undo divider point (divider mode)
-            Scroll        Zoom centred on cursor
-            s             Save room / confirm edit
-            e             Toggle Edit Mode
-            d             Toggle Draw Mode / room divider (edit mode)
-            Esc           Exit draw / divider mode / deselect room
-            Ctrl+Z        Undo
-            o             Toggle orthogonal lines (H/V snap)
-            Ctrl+click    Multi-select rooms in list
-            Ctrl+A        Select all rooms on current HDR
-            f             Fit zoom to selected room
-            r             Reset zoom
-            q             Quit
 
         Workflow:
             1. Navigate to the desired HDR file with Up/Down
