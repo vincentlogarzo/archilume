@@ -4976,6 +4976,20 @@ class HdrAoiEditor:
             self._overlay_raster_dpi = data.get('overlay_raster_dpi', 150)
             self._overlay_cache_pdf  = data.get('overlay_cache_pdf')
             self._overlay_cache_dpi  = data.get('overlay_cache_dpi')
+
+            # Fix DPI mismatch: if the cached raster was built at a different DPI
+            # than the current raster DPI, compensate all saved scale values so the
+            # overlay renders at the correct world-space size after rasterization.
+            if (self._overlay_cache_dpi and self._overlay_raster_dpi
+                    and self._overlay_cache_dpi != self._overlay_raster_dpi):
+                k = self._overlay_cache_dpi / self._overlay_raster_dpi
+                for tf in self._overlay_transforms.values():
+                    if 'scale_x' in tf:
+                        tf['scale_x'] *= k
+                    if 'scale_y' in tf:
+                        tf['scale_y'] *= k
+                self._overlay_cache_dpi = self._overlay_raster_dpi
+
             pdf_path_str = data.get('overlay_pdf_path')
             if pdf_path_str and Path(pdf_path_str).exists():
                 self._overlay_pdf_path = Path(pdf_path_str)
