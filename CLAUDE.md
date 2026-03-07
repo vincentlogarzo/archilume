@@ -83,6 +83,21 @@ Before making code changes, briefly explain your approach and get confirmation. 
 
 Always commit and push changes after completing a task unless told otherwise. Verify git status and ensure all modified files are staged.
 
+**Before every commit, scan all staged changes for sensitive information:**
+
+- API keys, tokens, secrets, or passwords (hardcoded or in config files)
+- Private keys or certificates (`.pem`, `.key`, `.p12`, etc.)
+- Cloud credentials or service account files (`.json` GCP/AWS/Azure credentials)
+- SSH private keys or known-hosts with internal IPs
+- `.env` files or any file containing `SECRET`, `PASSWORD`, `TOKEN`, `API_KEY` patterns
+- Internal hostnames, IP addresses, or infrastructure details that should not be public
+
+If any sensitive data is found, **stop and alert the user** before proceeding. Do not commit or push until the issue is resolved.
+
+## Units
+
+Always use SI units (metres, millimetres, kilograms, lux, etc.) in all discussions, code comments, and documentation. Never use imperial units (inches, feet, miles, etc.).
+
 ## Coding Conventions
 
 - **Paths**: Always use `pathlib.Path`. Reference `archilume.config` for standard project paths.
@@ -92,6 +107,7 @@ Always commit and push changes after completing a task unless told otherwise. Ve
 - **Rendering classes**: Prefer `SunlightRenderer`/`DaylightRenderer` over calling Radiance binaries directly.
 - **Cleanup**: Use `utils.smart_cleanup()` to clear previous results based on changed parameters.
 - **Verification**: Check HDR outputs exist in `outputs/image/` before proceeding to post-processing.
+- **Imports**: All `import` statements must be placed at the top of the module. Never place imports inside functions or methods. Before adding an import, check if it already exists in the file.
 
 ## Development Environment
 

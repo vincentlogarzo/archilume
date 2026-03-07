@@ -136,9 +136,11 @@ class DaylightRenderer:
         stem = hdr_path.stem
         d = self.image_dir
 
-        dimmed      = d / f"{stem}_dimmed_temp.hdr"
-        falsecolor  = d / f'{stem}_df_false.tiff'
-        contour     =  d / f'{stem}_df_cntr.hdr'
+        dimmed          = d / f"{stem}_dimmed_temp.hdr"
+        contour         = d / f'{stem}_df_cntr.hdr'
+        contour_tiff    = d / f'{stem}_df_cntr.tiff'
+        falsecolor      = d / f'{stem}_df_false.tiff'
+
         commands = [
             # Falsecolor visualisation
             rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 10 -l 'DF %' -lw 0 | ra_tiff - {falsecolor}",
@@ -150,12 +152,17 @@ class DaylightRenderer:
             rf"pfilt -e 0.5 {hdr_path} > {dimmed}",
 
             # Contour overlay: composite contour over dimmed background → tiff
-            rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' {dimmed} {contour} | ra_tiff - {d / f'{stem}_df_cntr.tiff'}",
+            rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' {dimmed} {contour} | ra_tiff - {contour_tiff}",
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)
 
-        for tmp in (dimmed, contour):
+        # Convert output TIFFs to PNG
+        for tiff in (falsecolor, contour_tiff):
+            if tiff.exists() and tiff.stat().st_size >= 1000:
+                Image.open(tiff).save(tiff.with_suffix('.png'), format='PNG', optimize=True, compress_level=9)
+
+        for tmp in (dimmed, contour, falsecolor, contour_tiff):
             if tmp.exists():
                 tmp.unlink()
 
@@ -203,12 +210,18 @@ class DaylightRenderer:
                     # Per-core
                     core_str = "  ".join(f"C{i}:{v:.0f}%" for i, v in enumerate(per_core))
                     f.write(f"Cores: {core_str}\n")
-                    # Memory
-                    f.write(
+                    # Memory (cached/buffers are Linux-only psutil fields)
+                    cached = getattr(vm, "cached", None)
+                    buffers = getattr(vm, "buffers", None)
+                    mem_str = (
                         f"Mem: used {vm.used/1e6:.0f} MB / {vm.total/1e6:.0f} MB  "
-                        f"avail {vm.available/1e6:.0f} MB  cached {vm.cached/1e6:.0f} MB  "
-                        f"buffers {vm.buffers/1e6:.0f} MB\n"
+                        f"avail {vm.available/1e6:.0f} MB"
                     )
+                    if cached is not None:
+                        mem_str += f"  cached {cached/1e6:.0f} MB"
+                    if buffers is not None:
+                        mem_str += f"  buffers {buffers/1e6:.0f} MB"
+                    f.write(mem_str + "\n")
                     f.write(
                         f"Swap: used {sw.used/1e6:.0f} MB / {sw.total/1e6:.0f} MB\n"
                     )
