@@ -1824,18 +1824,21 @@ def make_lines_only(
 ) -> np.ndarray:
     """Make near-white pixels fully transparent, keeping dark linework opaque.
 
-    Computes per-pixel luminance; pixels brighter than *white_threshold* become
-    fully transparent so only architectural linework is visible when overlaid on
-    another image.
+    Uses integer-based luminance calculation (faster than float) to identify
+    near-white pixels and set their alpha channel to 0. Modifies the array
+    in-place to reduce memory overhead.
 
-    Returns a new (H, W, 4) uint8 array.
+    Returns the modified (H, W, 4) uint8 array.
     """
-    result = rgba.copy()
-    lum = (0.299 * rgba[:, :, 0].astype(float)
-           + 0.587 * rgba[:, :, 1].astype(float)
-           + 0.114 * rgba[:, :, 2].astype(float))
-    result[lum > white_threshold, 3] = 0
-    return result
+    # Using integer weights for luminance: 0.299*256~77, 0.587*256~150, 0.114*256~29
+    # This avoids float conversions and is much faster for large images.
+    r = rgba[:, :, 0].astype(np.uint16)
+    g = rgba[:, :, 1].astype(np.uint16)
+    b = rgba[:, :, 2].astype(np.uint16)
+    lum = (r * 77 + g * 150 + b * 29) >> 8
+
+    rgba[lum > white_threshold, 3] = 0
+    return rgba
 
 
 def get_pdf_info(pdf_path: Path) -> dict:

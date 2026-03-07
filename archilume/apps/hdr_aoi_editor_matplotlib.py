@@ -157,15 +157,26 @@ class HdrAoiEditor:
         pdf_path:               Optional[Union[Path, str]]  = None,
         project:                Optional[str]               = None,
     ):
-        base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+        # Base project directory within inputs/
+        self.project_input_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+        
+        # Protected directory for editor-generated files (session, CSV, cache)
+        # This prevents simulation reruns in outputs/ from overwriting manual editor work.
+        self.project_aoi_dir = self.project_input_dir / "aoi"
+        if project:
+            self.project_aoi_dir.mkdir(parents=True, exist_ok=True)
+
         if pdf_path is not None:
             pdf_path = Path(pdf_path)
-            pdf_path = base_dir / pdf_path if not pdf_path.is_absolute() else pdf_path
+            pdf_path = self.project_input_dir / pdf_path if not pdf_path.is_absolute() else pdf_path
 
         self.image_dir                                  = Path(image_dir)
-        self.aoi_dir                                    = Path(aoi_dir)
-        self.session_path                               = session_path or (self.image_dir / "aoi_session.json")
-        self.csv_path                                   = self.image_dir / "aoi_boundaries.csv"
+        # Use the protected project AOI dir for both session and .aoi exports if project is set
+        self.aoi_dir                                    = self.project_aoi_dir if project else Path(aoi_dir)
+        
+        # Session and CSV paths now default to the protected project input directory
+        self.session_path                               = session_path or (self.project_aoi_dir / "aoi_session.json")
+        self.csv_path                                   = self.project_aoi_dir / "aoi_boundaries.csv"
 
         # Scan HDR files in image_dir
         self.hdr_files:             List[dict]          = self._scan_hdr_files()
@@ -239,6 +250,8 @@ class HdrAoiEditor:
 
         # Image cache: path → numpy array (avoids reloading from disk)
         self._image_cache:          dict                = {}
+        self._image_cache_lock:     threading.Lock      = threading.Lock()
+        self._image_cache_limit:    int                 = 15
 
         # Cached matplotlib artists for incremental rendering
         self._room_patch_cache                          = {}
@@ -261,6 +274,11 @@ class HdrAoiEditor:
         # Blitting state for drag operations
         self._blit_background                           = None
         self._blit_active:          bool                = False
+        
+        # Prefetching state
+        self._prefetching_pages:    set                 = set()
+        self._prefetching_hdrs:     set                 = set()
+        self._blit_save_timer                           = None
         # Blitting state for DF cursor readout
         self._df_cursor_bg                              = None
         self._image_handle                              = None
@@ -617,6 +635,7 @@ class HdrAoiEditor:
         """Load an image file as a normalised float32 numpy array.
 
         Results are cached in memory so repeated renders don't hit disk.
+        Thread-safe: uses a lock and maintains an LRU-style cache size limit.
 
         Args:
             path: Path to .hdr or .tiff file.
@@ -625,8 +644,11 @@ class HdrAoiEditor:
             Array of shape (H, W, 3) with values in [0, 1], or None on failure.
         """
         key = str(path)
-        if key in self._image_cache:
-            return self._image_cache[key]
+        with self._image_cache_lock:
+            if key in self._image_cache:
+                # Move to end to maintain LRU order (if using OrderedDict, but here
+                # we just use a simple dict for compatibility)
+                return self._image_cache[key]
 
         try:
             if path.suffix.lower() == '.hdr':
@@ -643,11 +665,70 @@ class HdrAoiEditor:
                 pil_img = Image.open(path).convert('RGB')
                 img = np.array(pil_img, dtype=np.float32) / 255.0
 
-            self._image_cache[key] = img
+            with self._image_cache_lock:
+                # Enforce cache size limit (LRU-ish)
+                if len(self._image_cache) >= self._image_cache_limit:
+                    # Drop a random item (or first key if Python 3.7+)
+                    first_key = next(iter(self._image_cache))
+                    self._image_cache.pop(first_key)
+                
+                self._image_cache[key] = img
             return img
         except Exception as exc:
             print(f"Warning: could not load image {path}: {exc}")
             return None
+
+    def _start_hdr_prefetch(self):
+        """Trigger background loading for adjacent HDR and TIFF images.
+
+        Identifies the next and previous floor levels and spawns a thread
+        to pre-load their assets into the memory cache.
+        """
+        if not self.hdr_files:
+            return
+
+        targets = []
+        curr = self.current_hdr_idx
+        # Check neighbors: next and previous
+        for idx in [curr + 1, curr - 1]:
+            if 0 <= idx < len(self.hdr_files):
+                entry = self.hdr_files[idx]
+                # Priority 1: the HDR itself
+                targets.append((idx, entry['hdr_path']))
+                # Priority 2: associated TIFFs (e.g. falsecolor)
+                for tiff_path in entry.get('tiff_paths', []):
+                    targets.append((idx, tiff_path))
+
+        # Filter out what's already cached or already being fetched
+        with self._image_cache_lock:
+            to_fetch = []
+            for idx, path in targets:
+                path_str = str(path)
+                if path_str not in self._image_cache and path_str not in self._prefetching_hdrs:
+                    to_fetch.append((idx, path))
+                    self._prefetching_hdrs.add(path_str)
+
+        if not to_fetch:
+            return
+
+        def _prefetch_worker():
+            try:
+                for idx, path in to_fetch:
+                    # RELEVANCE VALIDATION:
+                    # If the user has spammed buttons and moved far away from this floor,
+                    # abort the expensive loading process immediately.
+                    if abs(idx - self.current_hdr_idx) > 2:
+                        continue
+                    
+                    self._load_image(path)
+                    
+                    with self._image_cache_lock:
+                        self._prefetching_hdrs.discard(str(path))
+            except Exception as e:
+                print(f"Prefetch error: {e}")
+
+        thread = threading.Thread(target=_prefetch_worker, daemon=True)
+        thread.start()
 
     def _get_legend_for_variant(self, path: Optional[Path]) -> Optional[Path]:
         """Return the legend TIFF matching the given image variant, or None.
@@ -1058,7 +1139,7 @@ class HdrAoiEditor:
             'Toggle Image Layers: HDR (Press T)', self._on_image_toggle_click)
         self.btn_edit_mode = self._make_button(
             tr_x + btn_step, row1_y, btn_w, tr_h,
-            'Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
+            'Boundary Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
         self.btn_draw_mode = self._make_button(
             tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
             'Draw Mode: OFF (Press D)', self._on_draw_mode_toggle)
@@ -1081,7 +1162,7 @@ class HdrAoiEditor:
             tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
             'Reset Zoom (Press R)', self._on_reset_zoom_click)
 
-        place_label = 'Place DF%: ON (Press P)' if self.placement_mode else 'Place DF%: OFF (Press P)'
+        place_label = 'Place DF% Point: ON (Press P)' if self.placement_mode else 'Place DF% Point: OFF (Press P)'
         place_color = self._btn_on_color if self.placement_mode else self._btn_color
         place_hover = self._btn_on_hover if self.placement_mode else self._btn_hover
         self.btn_placement = self._make_button(
@@ -1097,7 +1178,7 @@ class HdrAoiEditor:
             'Cycle Floor Plans: -/-', self._on_overlay_page_cycle)
         self.btn_overlay_align = self._make_button(
             tr_x + 2 * btn_step, row3_y, btn_w, tr_h,
-            'Align Floor Plan: OFF', self._on_overlay_align_toggle)
+            'Plan Alignment Edit Mode: OFF', self._on_overlay_align_toggle)
         self.btn_overlay_dpi = self._make_button(
             tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
             f'PDF Res: {self._overlay_raster_dpi} DPI', self._on_overlay_dpi_click)
@@ -1225,6 +1306,7 @@ class HdrAoiEditor:
         self._update_room_list()
         self._render_section(reset_view=True, force_full=True)
         self._create_polygon_selector()
+        self._start_hdr_prefetch()
 
     def _update_hdr_list(self):
         """Refresh the HDR file list in the side panel."""
@@ -2541,29 +2623,45 @@ class HdrAoiEditor:
         elif event.key == 'q':
             plt.close(self.fig)
         elif event.key in ('up', 'down', 'left', 'right'):
-            # Arrow keys: move overlay if visible, otherwise navigate HDR files
-            if (self._overlay_visible and self._overlay_rgba is not None
-                    and not self.edit_mode and not self.draw_mode and not self.divider_mode):
-                # Use smaller increments in align mode for precision (0.05% vs 0.2% vs original 0.5%)
-                step_pct = 0.0005 if self._align_mode else 0.002
-                step = max(1.0, self._image_width * step_pct)
-                hdr = self.current_hdr_name
-                tf = self._overlay_transforms.setdefault(hdr, {})
-                if event.key == 'left':
-                    tf['offset_x'] = tf.get('offset_x', 0.0) - step
-                elif event.key == 'right':
-                    tf['offset_x'] = tf.get('offset_x', 0.0) + step
-                elif event.key == 'up':
-                    tf['offset_y'] = tf.get('offset_y', 0.0) - step
-                elif event.key == 'down':
-                    tf['offset_y'] = tf.get('offset_y', 0.0) + step
-                self._render_section(force_full=True)
-                self._save_session()
+            # Arrow keys: move overlay if align mode is ON, otherwise navigate HDR files with Up/Down
+            if self._align_mode:
+                if (self._overlay_visible and self._overlay_rgba is not None
+                        and not self.edit_mode and not self.draw_mode and not self.divider_mode):
+                    
+                    # Ensure blit background is ready for the first move
+                    if self._blit_background is None:
+                        self._start_overlay_blit()
+
+                    # Use smaller increments in align mode for precision (0.05%)
+                    step_pct = 0.0005
+                    step = max(1.0, self._image_width * step_pct)
+                    hdr = self.current_hdr_name
+                    tf = self._make_overlay_manual(hdr)
+                    if event.key == 'left':
+                        tf['offset_x'] = tf.get('offset_x', 0.0) - step
+                    elif event.key == 'right':
+                        tf['offset_x'] = tf.get('offset_x', 0.0) + step
+                    elif event.key == 'up':
+                        tf['offset_y'] = tf.get('offset_y', 0.0) - step
+                    elif event.key == 'down':
+                        tf['offset_y'] = tf.get('offset_y', 0.0) + step
+                    
+                    # Fast update using blitting instead of force_full=True
+                    self._update_overlay_blit()
+
+                    # Debounced session save and full render cleanup
+                    if hasattr(self, '_blit_save_timer') and self._blit_save_timer:
+                        self._blit_save_timer.stop()
+                    self._blit_save_timer = self.fig.canvas.new_timer(interval=500)
+                    self._blit_save_timer.single_shot = True
+                    self._blit_save_timer.add_callback(lambda: self._end_overlay_blit(save=True))
+                    self._blit_save_timer.start()
             else:
                 if event.key == 'up':
                     self._on_next_hdr_click(None)
                 elif event.key == 'down':
                     self._on_prev_hdr_click(None)
+                # left/right do nothing in normal mode as requested
         elif event.key == 't':
             self._on_image_toggle_click(None)
         elif event.key == 'e':
@@ -2615,14 +2713,28 @@ class HdrAoiEditor:
         if (event.key == 'shift' and self._overlay_visible
                 and self._overlay_rgba is not None
                 and not self.edit_mode and not self.draw_mode):
+            
+            # Ensure blit background is ready
+            if self._blit_background is None:
+                self._start_overlay_blit()
+
             # Use smaller increments for resizing (1% instead of 5%)
             factor = 1.01 if event.button == 'up' else 1 / 1.01
             hdr = self.current_hdr_name
-            tf = self._overlay_transforms.setdefault(hdr, {})
+            tf = self._make_overlay_manual(hdr)
             tf['scale_x'] = tf.get('scale_x', 1.0) * factor
             tf['scale_y'] = tf.get('scale_y', 1.0) * factor
-            self._render_section(force_full=True)
-            self._save_session()
+            
+            # Fast update using blitting
+            self._update_overlay_blit()
+
+            # Debounced session save and full render cleanup
+            if hasattr(self, '_blit_save_timer') and self._blit_save_timer:
+                self._blit_save_timer.stop()
+            self._blit_save_timer = self.fig.canvas.new_timer(interval=500)
+            self._blit_save_timer.single_shot = True
+            self._blit_save_timer.add_callback(lambda: self._end_overlay_blit(save=True))
+            self._blit_save_timer.start()
             return
 
         # Ctrl+scroll: overlay alpha
@@ -3219,20 +3331,20 @@ class HdrAoiEditor:
 
         self.edit_mode = not self.edit_mode
         self.btn_edit_mode.label.set_text(
-            'Edit Mode: ON (Press E)' if self.edit_mode else 'Edit Mode: OFF (Press E)')
+            'Boundary Edit Mode: ON (Press E)' if self.edit_mode else 'Boundary Edit Mode: OFF (Press E)')
         self._style_toggle_button(self.btn_edit_mode, self.edit_mode)
 
         if self.edit_mode:
             self._edit_undo_stack.clear()
             if hasattr(self, 'selector') and self.selector is not None:
                 self.selector.set_active(False)
-            self._update_status("Edit Mode: Hover over any vertex to drag (all rooms editable)", 'cyan')
+            self._update_status("Boundary Edit Mode: Hover over any vertex to drag (all rooms editable)", 'cyan')
         else:
             self._reset_hover_state()
             self._edit_undo_stack.clear()
             self._save_session()
             self._create_polygon_selector()   # set_active(False) applied inside via draw_mode=False
-            self._update_status("Edit Mode OFF — press 'd' to draw, left-click to select", 'blue')
+            self._update_status("Boundary Edit Mode OFF — press 'd' to draw, left-click to select", 'blue')
             self._update_cursor()
 
         self._render_section(force_full=True)
@@ -3267,7 +3379,7 @@ class HdrAoiEditor:
         """
         self.placement_mode = not self.placement_mode
         self.btn_placement.label.set_text(
-            'Place DF%: ON (Press P)' if self.placement_mode else 'Place DF%: OFF (Press P)')
+            'Place DF% Point: ON (Press P)' if self.placement_mode else 'Place DF% Point: OFF (Press P)')
         self._style_toggle_button(self.btn_placement, self.placement_mode)
         state = "ON" if self.placement_mode else "OFF"
         self._update_status(f"DF% placement mode: {state}", 'blue')
@@ -3307,6 +3419,69 @@ class HdrAoiEditor:
         self._save_session()
         self._render_section(force_full=True)
 
+    # === OVERLAY BLITTING OPTIMIZATIONS ========================================
+
+    def _start_overlay_blit(self):
+        """Capture a clean background for fast overlay movement via blitting.
+        Background includes the HDR image and all room polygons/labels, but
+        specifically excludes the PDF overlay itself.
+        """
+        canvas = self.fig.canvas
+        if not getattr(canvas, 'supports_blit', False) or self._overlay_handle is None:
+            return
+
+        # Temporarily hide overlay to capture everything underneath
+        self._overlay_handle.set_visible(False)
+        canvas.draw()
+        self._blit_background = canvas.copy_from_bbox(self.ax.bbox)
+        self._overlay_handle.set_visible(True)
+        self._blit_active = True
+
+    def _update_overlay_blit(self):
+        """Update only the PDF overlay's position and redraw using blitting.
+        This provides instantaneous feedback during arrow-key alignment.
+        """
+        if self._overlay_handle is None:
+            return
+
+        # Update the artist's extent from stored transforms
+        hdr_name = self.current_hdr_name
+        tf = self._overlay_transforms.get(hdr_name, {})
+        sx = tf.get('scale_x', 1.0)
+        sy = tf.get('scale_y', 1.0)
+        rot = tf.get('rotation_90', 0) % 4
+        
+        rgba = self._overlay_rgba
+        if rot > 0:
+            oh, ow = np.rot90(rgba, k=rot).shape[:2]
+        else:
+            oh, ow = rgba.shape[:2]
+            
+        ox = tf.get('offset_x', 0.0)
+        oy = tf.get('offset_y', 0.0)
+        
+        self._overlay_handle.set_extent([
+            ox, ox + ow * sx,
+            oy + oh * sy, oy,
+        ])
+
+        canvas = self.fig.canvas
+        if self._blit_active and self._blit_background is not None:
+            canvas.restore_region(self._blit_background)
+            self.ax.draw_artist(self._overlay_handle)
+            canvas.blit(self.ax.bbox)
+        else:
+            # Fallback for systems without blit support
+            canvas.draw_idle()
+
+    def _end_overlay_blit(self, save=True):
+        """Finalise movement and save session state."""
+        self._blit_active = False
+        self._blit_background = None
+        if save:
+            self._save_session()
+        self._render_section(force_full=True) # Full render to restore everything properly
+
     def _on_overlay_align_toggle(self, event):
         """Enter/exit two-point alignment mode."""
         if self._overlay_rgba is None:
@@ -3333,7 +3508,8 @@ class HdrAoiEditor:
             self._clear_align_markers()
             self.btn_overlay_align.label.set_text('Align Floor Plan: OFF')
             self._style_toggle_button(self.btn_overlay_align, False)
-            self._update_status("Alignment cancelled", 'orange')
+            self._update_status("Alignment finished", 'green')
+            self._end_overlay_blit(save=True)
         self.fig.canvas.draw_idle()
 
     def _on_overlay_reset_click(self, event):
@@ -3347,10 +3523,7 @@ class HdrAoiEditor:
             tf.pop('offset_y', None)
             tf.pop('scale_x', None)
             tf.pop('scale_y', None)
-            # page_idx and rotation_90 are usually floor-specific and preserved
-            
-            # If the dict is now empty (excluding page/rotation), we could remove it,
-            # but keeping it is fine as _get_effective_overlay_transform handles missing keys.
+            tf.pop('rotation_90', None)
             
             self._update_status(f"Reset '{hdr}' to default inheritance", 'blue')
             self._save_session()
@@ -3409,13 +3582,69 @@ class HdrAoiEditor:
             artist.set_visible(visible)
         self.fig.canvas.draw_idle()
 
-    def _rasterize_overlay_page(self):
-        """Rasterize current PDF page and apply white-to-transparent.
+    def _get_overlay_cache_path(self, page_idx: Optional[int] = None, dpi: Optional[int] = None) -> Optional[Path]:
+        """Generate a unique, persistent cache path for a specific PDF page and resolution.
+        
+        Filename includes the PDF stem, page index, DPI, and a short hash of the 
+        absolute PDF path to prevent collisions between different files with the same name.
+        """
+        if self._overlay_pdf_path is None:
+            return None
+            
+        import hashlib
+        page = page_idx if page_idx is not None else self._overlay_page_idx
+        res  = dpi if dpi is not None else self._overlay_raster_dpi
+        pdf_path = self._overlay_pdf_path
+        
+        # Create a 6-char hash of the absolute path to handle duplicate filenames in different folders
+        pdf_hash = hashlib.md5(str(pdf_path.absolute()).encode()).hexdigest()[:6]
 
-        The processed RGBA array is cached to disk as a .npy file. The cache
-        is valid when the PDF path, DPI, and PDF file modification time all
-        match the values stored in the session. Any change to the PDF file or
-        DPI (including switching to a different PDF) triggers a fresh raster.
+        cache_dir = self.project_aoi_dir / ".overlay_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)        
+        # Example: FloorPlans_p0_300dpi_a1b2c3.npy
+        fname = f"{pdf_path.stem}_p{page}_{res}dpi_{pdf_hash}.npy"
+        return cache_dir / fname
+
+    def _start_background_prefetch(self):
+        """Prefetch adjacent pages (n+1, n-1) in a background thread to eliminate future lag."""
+        if self._overlay_pdf_info is None or self._overlay_pdf_path is None:
+            return
+            
+        current = self._overlay_page_idx
+        total = self._overlay_pdf_info['page_count']
+        
+        # Pages to prefetch: look ahead first, then look behind
+        to_fetch = []
+        if current + 1 < total:
+            to_fetch.append(current + 1)
+        if current - 1 >= 0:
+            to_fetch.append(current - 1)
+            
+        # Filter out pages already being prefetched to avoid redundant threads
+        to_fetch = [p for p in to_fetch if p not in self._prefetching_pages]
+        
+        if not to_fetch:
+            return
+
+        def _worker():
+            pdf_mtime = self._overlay_pdf_path.stat().st_mtime
+            for p in to_fetch:
+                self._prefetching_pages.add(p)
+                try:
+                    path = self._get_overlay_cache_path(page_idx=p)
+                    # Only rasterize if not already in cache or if cache is stale
+                    if not path.exists() or path.stat().st_mtime < pdf_mtime:
+                        self._rasterize_overlay_page(page_idx=p, use_bg_thread=True)
+                finally:
+                    self._prefetching_pages.discard(p)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _rasterize_overlay_page(self, page_idx: Optional[int] = None, use_bg_thread: bool = False):
+        """Rasterize a PDF page and apply transparency, using a persistent multi-page cache.
+        
+        If page_idx is provided and use_bg_thread is True, it performs a silent 
+        background cache generation. Otherwise, it updates the active overlay image.
         """
         from archilume.utils import rasterize_pdf_page, make_lines_only
         import numpy as np
@@ -3423,30 +3652,49 @@ class HdrAoiEditor:
         if self._overlay_pdf_path is None:
             return
 
-        cache_path = self.session_path.parent / "overlay_raster_cache.npy"
-        pdf_str    = str(self._overlay_pdf_path)
+        target_page = page_idx if page_idx is not None else self._overlay_page_idx
+        cache_path = self._get_overlay_cache_path(page_idx=target_page)
         pdf_mtime  = self._overlay_pdf_path.stat().st_mtime
 
+        # Cache is valid if it exists and is newer than the source PDF
         cache_hit = (
             cache_path.exists()
-            and self._overlay_cache_pdf == pdf_str
-            and self._overlay_cache_dpi == self._overlay_raster_dpi
             and cache_path.stat().st_mtime >= pdf_mtime
         )
 
         if cache_hit:
-            self._overlay_rgba = np.load(str(cache_path))
-        else:
+            if not use_bg_thread:
+                # Instant load for active page
+                try:
+                    self._overlay_rgba = np.load(str(cache_path))
+                except (ValueError, EOFError):
+                    # Corrupt cache (rare due to atomic save, but possible)
+                    cache_hit = False
+
+        if not cache_hit:
+            # Rasterize and process (the slow part)
             rgba = rasterize_pdf_page(
                 self._overlay_pdf_path,
-                self._overlay_page_idx,
+                target_page,
                 dpi=self._overlay_raster_dpi,
             )
-            self._overlay_rgba = make_lines_only(rgba, white_threshold=240)
-            np.save(str(cache_path), self._overlay_rgba)
-            self._overlay_cache_pdf = pdf_str
-            self._overlay_cache_dpi = self._overlay_raster_dpi
-            self._save_session()
+            processed = make_lines_only(rgba, white_threshold=240)
+            
+            # Atomic Save: Save to temp file then rename to prevent partial-read crashes
+            tmp_path = cache_path.with_suffix(".tmp.npy")
+            np.save(str(tmp_path), processed)
+            import os
+            os.replace(str(tmp_path), str(cache_path))
+            
+            if not use_bg_thread:
+                self._overlay_rgba = processed
+                self._overlay_cache_pdf = str(self._overlay_pdf_path)
+                self._overlay_cache_dpi = self._overlay_raster_dpi
+                self._save_session()
+
+        # If we just loaded/created the main active page, trigger pre-fetch for its neighbors
+        if not use_bg_thread:
+            self._start_background_prefetch()
 
     def _update_overlay_page_label(self):
         """Update the page cycle button label."""
@@ -3457,39 +3705,77 @@ class HdrAoiEditor:
             self.btn_overlay_page.label.set_text(f'Cycle Floor Plans: {self._overlay_page_idx + 1}/{n}')
         self.fig.canvas.draw_idle()
 
+    def _make_overlay_manual(self, hdr_name: str):
+        """Ensure the given HDR level has a manual transform, starting from inherited values.
+        
+        This prevents 'jumps' when starting to adjust an inherited alignment.
+        """
+        tf = self._overlay_transforms.get(hdr_name, {})
+        if tf.get('is_manual'):
+            return tf
+
+        # Find the HDR index for this name
+        hdr_idx = -1
+        for i, entry in enumerate(self.hdr_files):
+            if entry['name'] == hdr_name:
+                hdr_idx = i
+                break
+
+        # Get the effective values (including inherited ones)
+        eff_tf = self._get_effective_overlay_transform(hdr_idx)
+
+        # Populate the current level's transform with these values and mark it manual
+        tf = self._overlay_transforms.setdefault(hdr_name, {})
+        for k in ['offset_x', 'offset_y', 'scale_x', 'scale_y', 'rotation_90']:
+            if k in eff_tf:
+                tf[k] = eff_tf[k]
+        tf['is_manual'] = True
+        return tf
+
     def _get_effective_overlay_transform(self, hdr_idx: Optional[int] = None) -> dict:
         """Return the transform for the given HDR level, inheriting from below if needed.
-        
-        If the current level hasn't been manually adjusted ('is_manual': True), 
-        it searches downwards through lower floors to find the first level that 
-        was manually adjusted and inherits its scale and offset.
+
+        If the current level hasn't been manually adjusted, it searches downwards
+        through lower floors to find the first level that has manual alignment
+        data and inherits its scale, offset, and rotation.
         """
         if hdr_idx is None:
             hdr_idx = self.current_hdr_idx
-        
+
         if not (0 <= hdr_idx < len(self.hdr_files)):
             return {}
 
         hdr_name = self.hdr_files[hdr_idx]['name']
         tf = self._overlay_transforms.get(hdr_name, {})
-        
-        # If this level is manual, we're done
-        if tf.get('is_manual'):
+
+        # Helper to check if a transform dict contains meaningful spatial data
+        def is_actually_manual(t):
+            return t.get('is_manual') or 'scale_x' in t or 'offset_x' in t
+
+        # If this level is explicitly or implicitly manual, we're done
+        if is_actually_manual(tf):
             return tf
 
         # Search downwards for a manual level to inherit from
         for i in range(hdr_idx - 1, -1, -1):
             prev_name = self.hdr_files[i]['name']
             prev_tf = self._overlay_transforms.get(prev_name, {})
-            if prev_tf.get('is_manual'):
-                # Inherit scale and offset, but NOT the page index
+            if is_actually_manual(prev_tf):
+                # Inherit scale, offset, and rotation, but NOT the page index
                 inherited = prev_tf.copy()
                 inherited['is_manual'] = False # Still not manual for this level
-                # Keep our current page index if we have one
+                
+                # Keep our current level-specific overrides if we have them
+                # page_idx is always level-specific
                 if 'page_idx' in tf:
                     inherited['page_idx'] = tf['page_idx']
+                # rotation_90 is also preserved if set specifically on this level 
+                # even if not manual (though usually it would be manual)
+                if 'rotation_90' in tf:
+                    inherited['rotation_90'] = tf['rotation_90']
+                    
                 return inherited
-        
+
         # No manual level found below, return what we have (or defaults)
         return tf
 
@@ -3598,14 +3884,13 @@ class HdrAoiEditor:
         o1, o2 = self._align_points_overlay
         h1, h2 = self._align_points_hdr
 
-        d_hdr = np.sqrt((h2[0] - h1[0])**2 + (h2[1] - h1[1])**2)
-
         hdr = self.current_hdr_name
-        tf = self._overlay_transforms.setdefault(hdr, {})
-        old_sx = tf.get('scale_x', 1.0)
-        old_sy = tf.get('scale_y', 1.0)
-        old_ox = tf.get('offset_x', 0.0)
-        old_oy = tf.get('offset_y', 0.0)
+        # Use effective (inherited) values as base for the computation
+        eff_tf = self._get_effective_overlay_transform()
+        old_sx = eff_tf.get('scale_x', 1.0)
+        old_sy = eff_tf.get('scale_y', 1.0)
+        old_ox = eff_tf.get('offset_x', 0.0)
+        old_oy = eff_tf.get('offset_y', 0.0)
 
         # Convert overlay data-coord clicks to overlay-image-space
         img_x1 = (o1[0] - old_ox) / old_sx
@@ -3618,22 +3903,28 @@ class HdrAoiEditor:
             self._update_status("Overlay points too close together", 'red')
             return
 
+        h1_arr, h2_arr = np.array(h1), np.array(h2)
+        d_hdr = np.linalg.norm(h2_arr - h1_arr)
+
         new_scale = d_hdr / d_img
 
         # Offset so image point 1 maps to HDR point 1
         new_ox = h1[0] - img_x1 * new_scale
         new_oy = h1[1] - img_y1 * new_scale
 
+        tf = self._overlay_transforms.setdefault(hdr, {})
         tf['scale_x'] = new_scale
         tf['scale_y'] = new_scale
         tf['offset_x'] = new_ox
         tf['offset_y'] = new_oy
+        tf['is_manual'] = True
 
         # Exit align mode
         self._align_mode = False
         self._clear_align_markers()
         self.btn_overlay_align.label.set_text('Align Floor Plan: OFF')
         self._style_toggle_button(self.btn_overlay_align, False)
+        self.btn_overlay_reset.ax.set_visible(False)
         self._save_session()
         self._render_section(force_full=True)
         self._update_status("Alignment applied (2-point)", 'green')
