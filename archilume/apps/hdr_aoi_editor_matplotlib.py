@@ -326,6 +326,9 @@ class HdrAoiEditor:
         self._align_points_overlay: list                = []
         self._align_points_hdr: list                    = []
         self._align_markers:    list                    = []
+        # Arrow-key acceleration for overlay alignment
+        self._align_key_press_start: Optional[float]    = None
+        self._align_key_last:   Optional[str]           = None
 
         # Daylight factor analysis — thresholds are fixed per room type
         self.DF_THRESHOLDS          = {'BED': 0.5, 'LIVING': 1.0}
@@ -891,6 +894,7 @@ class HdrAoiEditor:
         self.fig.canvas.mpl_connect('button_release_event', self._on_button_release)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_mouse_motion)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
+        self.fig.canvas.mpl_connect('key_release_event', self._on_key_release)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.fig.canvas.mpl_connect('close_event', self._on_close)
 
@@ -2640,9 +2644,17 @@ class HdrAoiEditor:
                     if self._blit_background is None:
                         self._start_overlay_blit()
 
-                    # Use smaller increments in align mode for precision (0.05%)
+                    # Accelerating step: fine (0.05%) at tap, ramps to 40× over ~1.5s hold
                     step_pct = 0.0005
-                    step = max(1.0, self._image_width * step_pct)
+                    now = time.monotonic()
+                    if self._align_key_last == event.key and self._align_key_press_start is not None:
+                        held = now - self._align_key_press_start
+                        accel = min(1.0 + held * 25, 40.0)
+                    else:
+                        accel = 1.0
+                        self._align_key_press_start = now
+                    self._align_key_last = event.key
+                    step = max(1.0, self._image_width * step_pct * accel)
                     hdr = self.current_hdr_name
                     tf = self._make_overlay_manual(hdr)
                     if event.key == 'left':
@@ -2700,6 +2712,12 @@ class HdrAoiEditor:
             self._on_placement_toggle(None)
         elif event.key == 'ctrl+r':
             self._rotate_overlay_90()
+
+    def _on_key_release(self, event):
+        """Reset arrow-key acceleration state when a key is released."""
+        if event.key in ('up', 'down', 'left', 'right'):
+            self._align_key_press_start = None
+            self._align_key_last = None
 
     def _on_scroll(self, event):
         """Handle scroll wheel for zooming or room list scrolling."""
