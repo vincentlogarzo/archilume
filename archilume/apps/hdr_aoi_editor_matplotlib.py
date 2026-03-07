@@ -1043,13 +1043,13 @@ class HdrAoiEditor:
         gap   = self._GAP
         tr_x  = 0.02                     # push buttons to far left
         tr_h  = 0.025                     # single row height
-        row1_y = 0.88                     # top row (shifted up to fit 3 rows)
+        row1_y = 0.88                     # top row
         row2_y = row1_y + tr_h + gap * 2
         row3_y = row2_y + tr_h + gap * 2
 
-        # Button width: 4 buttons across on top row
-        n_cols   = 4
-        btn_w    = 0.130
+        # Button width: 5 columns across to fit the Reset button
+        n_cols   = 5
+        btn_w    = 0.115
         btn_step = btn_w + gap
 
         # Row 1: Toggle, Edit, Draw, Ortho
@@ -1101,6 +1101,13 @@ class HdrAoiEditor:
         self.btn_overlay_dpi = self._make_button(
             tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
             f'PDF Res: {self._overlay_raster_dpi} DPI', self._on_overlay_dpi_click)
+
+        # 5th Column on Row 3: Reset Level Alignment
+        self.btn_overlay_reset = self._make_button(
+            tr_x + 4 * btn_step, row3_y, btn_w, tr_h,
+            'Reset Level Alignment', self._on_overlay_reset_click,
+            color='#FFEBEE', hovercolor='#FFCDD2') # Subtle red tint for "reset" action
+        self.btn_overlay_reset.ax.set_visible(False) # Only show when Align mode is ON
 
         # Create DPI RadioButtons (initially hidden)
         # Position it vertically above the main DPI button
@@ -3306,6 +3313,10 @@ class HdrAoiEditor:
             self._update_status("Load a PDF first", 'orange')
             return
         self._align_mode = not self._align_mode
+        
+        # Show/hide Reset Level Alignment button
+        self.btn_overlay_reset.ax.set_visible(self._align_mode)
+        
         if self._align_mode:
             # Exit other modes to prevent conflicts
             if self.edit_mode:
@@ -3324,6 +3335,28 @@ class HdrAoiEditor:
             self._style_toggle_button(self.btn_overlay_align, False)
             self._update_status("Alignment cancelled", 'orange')
         self.fig.canvas.draw_idle()
+
+    def _on_overlay_reset_click(self, event):
+        """Clear manual overrides for the current level and revert to inheritance."""
+        hdr = self.current_hdr_name
+        if hdr in self._overlay_transforms:
+            tf = self._overlay_transforms[hdr]
+            # Remove manual flags and spatial overrides
+            tf.pop('is_manual', None)
+            tf.pop('offset_x', None)
+            tf.pop('offset_y', None)
+            tf.pop('scale_x', None)
+            tf.pop('scale_y', None)
+            # page_idx and rotation_90 are usually floor-specific and preserved
+            
+            # If the dict is now empty (excluding page/rotation), we could remove it,
+            # but keeping it is fine as _get_effective_overlay_transform handles missing keys.
+            
+            self._update_status(f"Reset '{hdr}' to default inheritance", 'blue')
+            self._save_session()
+            self._render_section(force_full=True)
+        else:
+            self._update_status("No custom alignment to reset on this level", 'orange')
 
     _DPI_PRESETS = [72, 100, 150, 200, 300]
 
