@@ -12,6 +12,8 @@ import platform
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -985,9 +987,6 @@ class GCPVMManager:
 
     def copy_inputs_to_vm(self, vm_name: str) -> None:
         """Copy inputs folder to VM. Uses tar.gz for aoi folder (many small files) for speed."""
-        import tarfile
-        import tempfile
-
         local_inputs = Path.cwd() / "inputs"
         if not local_inputs.exists():
             print("  ℹ️  No local inputs folder found, skipping...")

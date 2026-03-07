@@ -15,6 +15,7 @@ from archilume import (
 import subprocess
 import sys
 import math
+import traceback
 import numpy as np
 from matplotlib.path import Path as MplPath
 from pathlib import Path
@@ -896,7 +897,6 @@ class Hdr2Wpd:
 
                 except Exception as e:
                     print(f"Error processing {view_name}: {e}")
-                    import traceback
                     traceback.print_exc()
 
         print(f"[OK] All {len(processors)} workers completed successfully\n")

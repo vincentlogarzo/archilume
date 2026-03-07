@@ -113,17 +113,29 @@ Functionality:
 
 # Standard library imports
 import csv
+import hashlib
 import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
+import traceback
+import types
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from tkinter import Tk, filedialog, messagebox
 from typing import List, Optional, Tuple, Union
 
 # Third-party imports
+import imageio.v2 as imageio
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 from matplotlib.widgets import PolygonSelector, TextBox, Button, RadioButtons
 from matplotlib.patches import Polygon, FancyBboxPatch
@@ -133,6 +145,8 @@ import numpy as np
 
 # Archilume imports
 from archilume import config, utils, Hdr2Wpd
+from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
+from archilume.utils import rasterize_pdf_page, make_lines_only
 
 
 class HdrAoiEditor:
@@ -558,10 +572,10 @@ class HdrAoiEditor:
         result = []
         for hdr_path in hdr_paths:
             stem = hdr_path.stem
-            # Associated TIFFs: any .tiff in same dir whose stem starts with stem + '_'
+            # Associated PNGs: any .png in same dir whose stem starts with stem + '_'
             # Exclude previously-exported aoi_overlay files to avoid re-processing them
             tiff_paths = sorted(
-                p for p in self.image_dir.glob("*.tiff")
+                p for p in self.image_dir.glob("*.png")
                 if p.stem.startswith(stem + "_") and not p.stem.endswith("_aoi_overlay")
             )
             result.append({
@@ -570,10 +584,10 @@ class HdrAoiEditor:
                 'name': stem,
             })
 
-        # Build legend map: key → Path for files matching '*_legend.tiff'
-        # e.g. 'df_cntr' → Path('df_cntr_legend.tiff')
+        # Build legend map: key → Path for files matching '*_legend.png'
+        # e.g. 'df_cntr' → Path('df_cntr_legend.png')
         self.legend_map: dict = {}
-        for legend_path in sorted(self.image_dir.glob("*_legend.tiff")):
+        for legend_path in sorted(self.image_dir.glob("*_legend.png")):
             key = legend_path.stem[: -len("_legend")]  # strip trailing '_legend'
             self.legend_map[key] = legend_path
         if self.legend_map:
@@ -652,7 +666,6 @@ class HdrAoiEditor:
 
         try:
             if path.suffix.lower() == '.hdr':
-                import imageio.v2 as imageio
                 img = imageio.imread(str(path)).astype(np.float32)
                 if img.ndim == 2:
                     img = np.stack([img, img, img], axis=-1)
@@ -661,7 +674,6 @@ class HdrAoiEditor:
                     img = img / p99
                 img = np.clip(img ** (1.0 / 2.2), 0.0, 1.0)
             else:
-                from PIL import Image
                 pil_img = Image.open(path).convert('RGB')
                 img = np.array(pil_img, dtype=np.float32) / 255.0
 
@@ -820,7 +832,6 @@ class HdrAoiEditor:
                 
                 # Apply maximization state
                 is_maximized = ws.get('maximized', True) # default to maximized
-                import sys
                 if sys.platform == "win32":
                     if is_maximized:
                         window.state('zoomed')
@@ -904,7 +915,6 @@ class HdrAoiEditor:
                 self._update_overlay_page_label()
                 self._render_section(force_full=True)
             except Exception as e:
-                import traceback
                 traceback.print_exc()
                 print(f"Warning: could not load PDF overlay: {e}")
             self._overlay_needs_rasterize = False
@@ -945,7 +955,6 @@ class HdrAoiEditor:
             window = self.fig.canvas.manager.window
             
             # Maximization state
-            import sys
             is_maximized = False
             if sys.platform == "win32":
                 is_maximized = window.state() == 'zoomed'
@@ -954,7 +963,6 @@ class HdrAoiEditor:
 
             # Only capture normal/maximized geometry, not minimized or intermediate closing states
             geom_str = window.geometry()
-            import re
             match = re.match(r'(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)', geom_str)
             if match:
                 w, h, x, y = match.groups()
@@ -3286,7 +3294,6 @@ class HdrAoiEditor:
             canvas.set_cursor = lambda cursor: None          # suppress mpl overrides
         else:
             # Restore matplotlib's own set_cursor before resetting
-            import types
             from matplotlib.backends._backend_tk import FigureCanvasTk
             canvas.set_cursor = types.MethodType(FigureCanvasTk.set_cursor, canvas)
             tkcanvas.configure(cursor='arrow')
@@ -3591,7 +3598,6 @@ class HdrAoiEditor:
         if self._overlay_pdf_path is None:
             return None
             
-        import hashlib
         page = page_idx if page_idx is not None else self._overlay_page_idx
         res  = dpi if dpi is not None else self._overlay_raster_dpi
         pdf_path = self._overlay_pdf_path
@@ -3646,9 +3652,6 @@ class HdrAoiEditor:
         If page_idx is provided and use_bg_thread is True, it performs a silent 
         background cache generation. Otherwise, it updates the active overlay image.
         """
-        from archilume.utils import rasterize_pdf_page, make_lines_only
-        import numpy as np
-
         if self._overlay_pdf_path is None:
             return
 
@@ -3683,7 +3686,6 @@ class HdrAoiEditor:
             # Atomic Save: Save to temp file then rename to prevent partial-read crashes
             tmp_path = cache_path.with_suffix(".tmp.npy")
             np.save(str(tmp_path), processed)
-            import os
             os.replace(str(tmp_path), str(cache_path))
             
             if not use_bg_thread:
@@ -4993,7 +4995,6 @@ class HdrAoiEditor:
                 window = self.fig.canvas.manager.window
                 
                 # Capture current window state
-                import sys
                 is_maximized = False
                 try:
                     if sys.platform == "win32":
@@ -5013,7 +5014,6 @@ class HdrAoiEditor:
                     # We'll use the current geometry string for the most accurate restore
                     geom_str = window.geometry()
                     # Geometry string is WxH+X+Y or WxH-X-Y
-                    import re
                     match = re.match(r'(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)', geom_str)
                     if match:
                         w, h, x, y = match.groups()
@@ -5185,10 +5185,6 @@ class HdrAoiEditor:
           - aoi_report_daylight.xlsx  — one summary row per room
           - <room_name>_pixels.csv    — one file per room with per-pixel lux + DF%
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        import pandas as pd
-        import csv as csv_mod
-
         try:
             # Build HDR name → path lookup
             hdr_lookup = {entry['name']: entry['hdr_path'] for entry in self.hdr_files}
@@ -5243,9 +5239,6 @@ class HdrAoiEditor:
             output_dir.mkdir(parents=True, exist_ok=True)
 
             # Excel summary (one row per room)
-            from openpyxl import load_workbook
-            from openpyxl.utils import get_column_letter
-            from openpyxl.worksheet.table import Table, TableStyleInfo
             df = pd.DataFrame(all_summary_rows) if all_summary_rows else pd.DataFrame()
             output_path = output_dir / 'aoi_report_daylight.xlsx'
             df.to_excel(output_path, sheet_name='Room Summary', index=False)
@@ -5274,7 +5267,7 @@ class HdrAoiEditor:
                 safe_name = room_name.replace('/', '_').replace('\\', '_')
                 csv_path = csv_subdir / f"{safe_name}_pixels.csv"
                 with open(csv_path, 'w', newline='') as f:
-                    writer = csv_mod.writer(f)
+                    writer = csv.writer(f)
                     writer.writerow(['Room', 'Illuminance (Lux)', 'Daylight Factor (%)'])
                     for lux, df_pct in zip(lux_vals, df_pct_vals):
                         writer.writerow([room_name, lux, df_pct])
@@ -5342,8 +5335,6 @@ class HdrAoiEditor:
 
     def _on_extract_click(self, event):
         """Open a file picker to select a zip archive, extract it to outputs, and reload."""
-        from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
-        from tkinter import Tk, filedialog, messagebox
         root = Tk()
         root.withdraw()
         root.attributes('-topmost', True)
@@ -5422,8 +5413,6 @@ class HdrAoiEditor:
             output_dir: directory to save the overlay TIFF.
             stamps: list of (x, y, df_val[, px, py]) stamped DF readings.
         """
-        from PIL import Image, ImageDraw, ImageFont
-
         if not tiff_path.exists():
             return
         img = Image.open(tiff_path).convert('RGB')
@@ -5506,7 +5495,7 @@ class HdrAoiEditor:
             label = f"DF: {df_val:.2f}%\npx({px},{py})"
             _outlined_text(ix + r + 2, iy - font_size_small // 2, label, font_sm)
 
-        out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.tiff"
+        out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.png"
         if out_path.exists():
             out_path.unlink()
         img.save(out_path)

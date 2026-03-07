@@ -11,6 +11,7 @@ from PIL import Image
 import numpy as np
 import pandas as pd
 import tkinter as tk
+import pymupdf as fitz
 from archilume import config
 
 
@@ -247,8 +248,6 @@ class PhaseTimer:
             rendering_subphases: Optional list to override auto-detected rendering subphases
             postprocessing_subphases: Optional list to override auto-detected postprocessing subphases
         """
-        import re
-
         total_runtime = time.time() - self.script_start_time
 
         # Build subphases_by_parent from the hierarchy tracked during execution
@@ -1797,7 +1796,6 @@ def rasterize_pdf_page(
 
     Returns (H, W, 4) uint8 array with alpha=255.
     """
-    import pymupdf as fitz  # pymupdf
 
     doc = fitz.open(str(pdf_path))
     page = doc[page_index]
@@ -1846,7 +1844,6 @@ def get_pdf_info(pdf_path: Path) -> dict:
 
     Returns ``{'page_count': int, 'pages': [{'index', 'width_pt', 'height_pt', 'label'}, ...]}``.
     """
-    import pymupdf as fitz  # pymupdf
 
     doc = fitz.open(str(pdf_path))
     pages = []

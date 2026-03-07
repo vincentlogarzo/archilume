@@ -2,6 +2,8 @@ import dash
 from dash import dcc, html, Input, Output, State, callback_context, no_update
 import plotly.graph_objects as go
 import cv2
+import imageio.v2 as imageio
+from PIL import Image
 import numpy as np
 import base64
 import json
@@ -91,7 +93,6 @@ def load_and_tonemap(filepath):
         return res
 
     if path.suffix.lower() == '.hdr':
-        import imageio.v2 as imageio
         img = imageio.imread(str(path)).astype(np.float32)
         if img.ndim == 2:
             img = np.stack([img, img, img], axis=-1)
@@ -101,7 +102,6 @@ def load_and_tonemap(filepath):
         img = np.clip(img ** (1.0 / 2.2), 0.0, 1.0)
         img_rgb = (img * 255).astype(np.uint8)
     else:
-        from PIL import Image
         pil_img = Image.open(path).convert('RGB')
         img_rgb = np.array(pil_img)
     

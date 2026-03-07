@@ -42,6 +42,9 @@ from archilume import config
 # Standard library imports
 import csv
 import json
+import os
+import re
+import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -516,7 +519,6 @@ class ObjAoiEditor:
             max_vertex_display: Maximum vertices to display (downsample if exceeded)
             project: Optional sub-folder name within inputs/ (e.g. "myproject" → inputs/myproject/)
         """
-        from archilume import config
         base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
 
         obj_path = Path(obj_path)
@@ -677,7 +679,6 @@ class ObjAoiEditor:
 
         # Maximise the window on open so it fills the screen regardless of OS placement
         try:
-            import sys
             manager = plt.get_current_fig_manager()
             if sys.platform == "win32":
                 manager.window.state('zoomed')       # Windows TkAgg
@@ -1208,7 +1209,6 @@ class ObjAoiEditor:
             return base_name
 
         # Strip any existing numeric suffix to get the root name
-        import re
         match = re.match(r'^(.*?)(\d+)$', base_name)
         if match:
             root = match.group(1)
@@ -3584,7 +3584,6 @@ class ObjAoiEditor:
         Args:
             csv_path: Path to the CSV file
         """
-        import re
         self.rooms = []
         seen_apartments = set()  # Track which apartments we've seen
 
@@ -3656,7 +3655,6 @@ class ObjAoiEditor:
         Returns:
             Number of rooms that were renamed
         """
-        import re
         seen_names = set()
         renamed_count = 0
 

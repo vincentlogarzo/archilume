@@ -12,6 +12,7 @@ import logging
 import multiprocessing
 import os
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import product
@@ -121,7 +122,6 @@ class ViewGenerator:
         # Check if CSV file exists
         if not self.room_boundaries_csv_path.exists():
             print(f"\nError: Room boundaries CSV not found at {self.room_boundaries_csv_path}")
-            import sys
             sys.exit(1)
 
         # Default ffl_offset to 0.01m if zero or negative
