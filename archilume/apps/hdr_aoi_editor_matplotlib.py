@@ -125,7 +125,7 @@ from typing import List, Optional, Tuple, Union
 
 # Third-party imports
 import matplotlib.pyplot as plt
-from matplotlib.widgets import PolygonSelector, TextBox, Button
+from matplotlib.widgets import PolygonSelector, TextBox, Button, RadioButtons
 from matplotlib.patches import Polygon, FancyBboxPatch
 from matplotlib.path import Path as MplPath
 import matplotlib.patheffects as patheffects
@@ -247,6 +247,9 @@ class HdrAoiEditor:
         self._edit_vertex_scatter                       = None
         self._last_hover_check                          = 0.0
         self._last_drag_draw:       float               = 0.0
+        # Window persistence settings
+        self.window_settings:       dict                = {}
+        self._closing:              bool                = False
         # Pre-built hover arrays (rebuilt on full render)
         self._hover_all_verts:      Optional[np.ndarray]= None
         self._hover_vert_room_idx:  Optional[np.ndarray]= None
@@ -282,6 +285,8 @@ class HdrAoiEditor:
         self._overlay_cache_pdf:  Optional[str]        = None   # PDF path used for cached raster
         self._overlay_cache_dpi:  Optional[int]        = None   # DPI used for cached raster
         self._overlay_handle                            = None   # matplotlib AxesImage artist
+        self._dpi_dropdown_visible: bool                = False
+        self._dpi_radio                                 = None
         # Per-HDR alignment: {hdr_name: {offset_x, offset_y, scale_x, scale_y, rotation_90, page_idx}}
         self._overlay_transforms: dict                  = {}
         # Two-point alignment mode
@@ -684,6 +689,9 @@ class HdrAoiEditor:
             print(f"Warning: DF analysis unavailable ({exc}). Results will not be shown.")
             self._hdr2wpd = None
 
+        # Load existing session to get window settings before creating the figure
+        self._load_session()
+
         # Setup matplotlib figure — wide to match ~2.6:1 floor plan aspect ratio
         plt.rcParams['savefig.directory'] = str(self.image_dir)
         plt.rcParams['keymap.save']       = []  # disable 's' / 'ctrl+s' save-figure hotkey
@@ -693,28 +701,62 @@ class HdrAoiEditor:
         self.fig.canvas.manager.set_window_title(self._WINDOW_TITLE)
         self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
 
-        # Maximise window
+        # Restore window position and maximization state with safety check
         try:
-            import sys
-            manager = plt.get_current_fig_manager()
-            if sys.platform == "win32":
-                manager.window.state('zoomed')
-            else:
-                manager.window.attributes('-zoomed', True)
-            self.fig.canvas.mpl_connect('resize_event', self._on_resize)
-            self.fig.canvas.get_tk_widget().after(100, self._force_resize_update)
-            # Intercept the OS window-close (X button) on TkAgg so _on_close runs
-            # before the window is destroyed (close_event alone does not fire for X).
-            manager.window.protocol(
-                'WM_DELETE_WINDOW',
-                lambda: (self._on_close(None), plt.close(self.fig)))
-        except AttributeError:
-            try:
-                manager = plt.get_current_fig_manager()
-                manager.window.showMaximized()
+            manager = self.fig.canvas.manager
+            if manager and hasattr(manager, 'window'):
+                window = manager.window
+                
+                # Bind configure event to track moves/resizes while window is healthy
+                window.bind('<Configure>', self._on_window_configure)
+
+                # Apply saved geometry before maximization
+                ws = self.window_settings
+                if ws and all(k in ws for k in ('x', 'y', 'width', 'height')):
+                    x, y, w, h = ws['x'], ws['y'], ws['width'], ws['height']
+                    
+                    # Ignore tiny/square "dying" states (e.g. 200x200) captured during close
+                    if w > 400 and h > 400:
+                        # Safety Check: Ensure the window top-left is within the virtual desktop bounds
+                        try:
+                            v_x = window.winfo_vrootx()
+                            v_y = window.winfo_vrooty()
+                            v_w = window.winfo_vrootwidth()
+                            v_h = window.winfo_vrootheight()
+                            
+                            if not (v_x <= x < v_x + v_w and v_y <= y < v_y + v_h):
+                                print(f"Window position ({x}, {y}) is off-screen. Resetting to primary.")
+                                sw = window.winfo_screenwidth()
+                                sh = window.winfo_screenheight()
+                                x = (sw - w) // 2
+                                y = (sh - h) // 2
+                        except Exception:
+                            pass
+                        
+                        # Apply geometry using absolute coordinates (works across multiple monitors)
+                        window.geometry(f"{w}x{h}+{x:d}+{y:d}")
+                        window.update_idletasks()
+                
+                # Apply maximization state
+                is_maximized = ws.get('maximized', True) # default to maximized
+                import sys
+                if sys.platform == "win32":
+                    if is_maximized:
+                        window.state('zoomed')
+                else:
+                    if is_maximized:
+                        window.attributes('-zoomed', True)
+                    else:
+                        window.attributes('-zoomed', False)
+                
+                window.update_idletasks()
+
                 self.fig.canvas.mpl_connect('resize_event', self._on_resize)
-            except AttributeError:
-                pass
+                window.after(100, self._force_resize_update)
+                # Intercept the OS window-close (X button)
+                window.protocol('WM_DELETE_WINDOW', lambda: (self._on_close(None), plt.close(self.fig)))
+        except (AttributeError, Exception) as exc:
+            print(f"Warning: could not restore window state: {exc}")
 
         # Main plot area — maximised to fill available space
         self.ax = self._axes(0.02, 0.21, 0.96, 0.66)
@@ -741,8 +783,8 @@ class HdrAoiEditor:
         self._style_toggle_button(self.btn_placement, self.placement_mode)
         self._update_room_type_buttons()
 
-        # Initial render
-        self._render_section()
+        # Initial render - force_full=True is critical to load the image
+        self._render_section(force_full=True)
 
         # Store original limits
         self.original_xlim = self.ax.get_xlim()
@@ -760,9 +802,16 @@ class HdrAoiEditor:
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.fig.canvas.mpl_connect('close_event', self._on_close)
 
-        # Load existing session
-        self._load_session()
+        # Apply loaded PDF resolution to button label
         self.btn_overlay_dpi.label.set_text(f'PDF Res: {self._overlay_raster_dpi} DPI')
+
+        # Sync overlay button label and style with loaded state
+        if self._overlay_visible:
+            self.btn_overlay_toggle.label.set_text('Floor Plan: ON')
+            self._style_toggle_button(self.btn_overlay_toggle, True)
+        else:
+            self.btn_overlay_toggle.label.set_text('Floor Plan: OFF')
+            self._style_toggle_button(self.btn_overlay_toggle, False)
 
         # Deferred PDF overlay rasterization (from session restore or __init__ pdf_path)
         if getattr(self, '_overlay_needs_rasterize', False) or (
@@ -771,10 +820,7 @@ class HdrAoiEditor:
                 from archilume.utils import get_pdf_info
                 self._overlay_pdf_info = get_pdf_info(self._overlay_pdf_path)
                 self._rasterize_overlay_page()
-                self._overlay_visible = True
                 self._update_overlay_page_label()
-                self.btn_overlay_toggle.label.set_text('Floor Plan: ON')
-                self._style_toggle_button(self.btn_overlay_toggle, True)
                 self._render_section(force_full=True)
             except Exception as e:
                 import traceback
@@ -790,7 +836,58 @@ class HdrAoiEditor:
         print("Use Up/Down to navigate HDR files, 't' to toggle image variant.")
         print("Scroll: zoom | Right-click: select room | s: save | d: delete | q: quit")
         print("===========================\n")
-        plt.show()
+        
+        # Bind configure event to track moves/resizes while window is healthy
+        try:
+            self.fig.canvas.manager.window.bind('<Configure>', self._on_window_configure)
+        except Exception:
+            pass
+
+        try:
+            plt.show()
+        except KeyboardInterrupt:
+            # Clean exit on Ctrl+C or window force-close
+            pass
+
+    def _on_window_configure(self, event):
+        """Track window geometry and maximization state while window is healthy."""
+        if self._closing:
+            return
+        
+        # Debounce: only capture at most once every 200ms to avoid GIL churn
+        now = time.monotonic()
+        if now - getattr(self, '_last_win_capture', 0.0) < 0.2:
+            return
+        self._last_win_capture = now
+
+        try:
+            window = self.fig.canvas.manager.window
+            
+            # Maximization state
+            import sys
+            is_maximized = False
+            if sys.platform == "win32":
+                is_maximized = window.state() == 'zoomed'
+            else:
+                is_maximized = window.attributes('-zoomed')
+
+            # Only capture normal/maximized geometry, not minimized or intermediate closing states
+            geom_str = window.geometry()
+            import re
+            match = re.match(r'(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)', geom_str)
+            if match:
+                w, h, x, y = match.groups()
+                # 300x300 is a common dying state or tiny default; ignore it
+                if int(w) > 300 and int(h) > 300:
+                    self.window_settings = {
+                        'x': int(x.lstrip('+').replace('-', '-')), # handle negative signs correctly
+                        'y': int(y.lstrip('+').replace('-', '-')),
+                        'width': int(w),
+                        'height': int(h),
+                        'maximized': bool(is_maximized)
+                    }
+        except Exception:
+            pass
 
     # === UI SETUP ==============================================================
 
@@ -982,7 +1079,7 @@ class HdrAoiEditor:
             'Extract Archive', self._on_extract_click)
         self.btn_reset_zoom = self._make_button(
             tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
-            'Reset Zoom', self._on_reset_zoom_click)
+            'Reset Zoom (Press R)', self._on_reset_zoom_click)
 
         place_label = 'Place DF%: ON (Press P)' if self.placement_mode else 'Place DF%: OFF (Press P)'
         place_color = self._btn_on_color if self.placement_mode else self._btn_color
@@ -1003,7 +1100,33 @@ class HdrAoiEditor:
             'Align Floor Plan: OFF', self._on_overlay_align_toggle)
         self.btn_overlay_dpi = self._make_button(
             tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
-            'PDF Res: 150 DPI', self._on_overlay_dpi_cycle)
+            f'PDF Res: {self._overlay_raster_dpi} DPI', self._on_overlay_dpi_click)
+
+        # Create DPI RadioButtons (initially hidden)
+        # Position it vertically above the main DPI button
+        radio_h = 0.20  # increased from 0.12 for more space
+        radio_y = row3_y - radio_h - gap
+        self.ax_dpi_radio = self._axes(tr_x + 3 * btn_step, radio_y, btn_w, radio_h)
+        self.ax_dpi_radio.set_facecolor('#FFFFFF') # White background for better contrast
+        self.ax_dpi_radio.set_zorder(1000) # Ensure it's on top
+        self.ax_dpi_radio.set_navigate(False)
+        # Draw a subtle border
+        for spine in self.ax_dpi_radio.spines.values():
+            spine.set_visible(True)
+            spine.set_color('#B0B0B0')
+            spine.set_linewidth(1.0)
+
+        labels = [f"{d} DPI" for d in self._DPI_PRESETS]
+        active_idx = self._DPI_PRESETS.index(self._overlay_raster_dpi) if self._overlay_raster_dpi in self._DPI_PRESETS else 2
+        self._dpi_radio = RadioButtons(self.ax_dpi_radio, labels, active=active_idx,
+                                       activecolor='#4CAF50', radio_props={'s': 100}) # s=100 for very large buttons
+        # Style the labels
+        for txt in self._dpi_radio.labels:
+            txt.set_fontsize(9.5) # increased from 8.5
+            txt.set_color('#111111')
+
+        self._dpi_radio.on_clicked(self._on_dpi_radio_select)
+        self._toggle_dpi_dropdown(False)
 
         # DF% legend — right of buttons, constrained within toolbar
         legend_x = tr_x + n_cols * btn_step
@@ -1356,7 +1479,11 @@ class HdrAoiEditor:
 
         # Restore or reset zoom
         if reset_view or not hasattr(self, 'original_xlim') or xlim == (0.0, 1.0):
-            self.ax.autoscale()
+            if img is not None:
+                self.ax.set_xlim(0, self._image_width)
+                self.ax.set_ylim(self._image_height, 0)
+            else:
+                self.ax.autoscale()
         elif img is not None and xlim != (0.0, 1.0):
             self.ax.set_xlim(xlim)
             self.ax.set_ylim(ylim)
@@ -2410,7 +2537,9 @@ class HdrAoiEditor:
             # Arrow keys: move overlay if visible, otherwise navigate HDR files
             if (self._overlay_visible and self._overlay_rgba is not None
                     and not self.edit_mode and not self.draw_mode and not self.divider_mode):
-                step = max(1.0, self._image_width * 0.005)  # 0.5% of image width per press
+                # Use smaller increments in align mode for precision (0.05% vs 0.2% vs original 0.5%)
+                step_pct = 0.0005 if self._align_mode else 0.002
+                step = max(1.0, self._image_width * step_pct)
                 hdr = self.current_hdr_name
                 tf = self._overlay_transforms.setdefault(hdr, {})
                 if event.key == 'left':
@@ -2479,7 +2608,8 @@ class HdrAoiEditor:
         if (event.key == 'shift' and self._overlay_visible
                 and self._overlay_rgba is not None
                 and not self.edit_mode and not self.draw_mode):
-            factor = 1.05 if event.button == 'up' else 1 / 1.05
+            # Use smaller increments for resizing (1% instead of 5%)
+            factor = 1.01 if event.button == 'up' else 1 / 1.01
             hdr = self.current_hdr_name
             tf = self._overlay_transforms.setdefault(hdr, {})
             tf['scale_x'] = tf.get('scale_x', 1.0) * factor
@@ -3141,12 +3271,17 @@ class HdrAoiEditor:
     def _on_overlay_toggle(self, event):
         """Toggle PDF overlay visibility."""
         if self._overlay_rgba is None:
-            self._update_status("No PDF loaded — set pdf_path in HdrAoiEditor()", 'orange')
-            return
+            if self._overlay_pdf_path is not None:
+                self._rasterize_overlay_page()
+            else:
+                self._update_status("No PDF loaded — set pdf_path in HdrAoiEditor()", 'orange')
+                return
+        
         self._overlay_visible = not self._overlay_visible
         label = 'Floor Plan: ON' if self._overlay_visible else 'Floor Plan: OFF'
         self.btn_overlay_toggle.label.set_text(label)
         self._style_toggle_button(self.btn_overlay_toggle, self._overlay_visible)
+        self._save_session()
         self._render_section(force_full=True)
 
     def _on_overlay_page_cycle(self, event):
@@ -3192,17 +3327,54 @@ class HdrAoiEditor:
 
     _DPI_PRESETS = [72, 100, 150, 200, 300]
 
-    def _on_overlay_dpi_cycle(self, event):
-        """Cycle PDF rasterization DPI through presets and re-rasterize."""
-        idx = self._DPI_PRESETS.index(self._overlay_raster_dpi)
-        self._overlay_raster_dpi = self._DPI_PRESETS[(idx + 1) % len(self._DPI_PRESETS)]
+    def _on_overlay_dpi_click(self, event):
+        """Toggle DPI preset dropdown visibility."""
+        self._toggle_dpi_dropdown(not self._dpi_dropdown_visible)
+
+    def _on_dpi_radio_select(self, label):
+        """Handle selection from DPI RadioButtons dropdown."""
+        # label is e.g. "150 DPI"
+        new_dpi = int(label.split()[0])
+        old_dpi = self._overlay_raster_dpi
+        if new_dpi == old_dpi:
+            self._toggle_dpi_dropdown(False)
+            return
+
+        # Adjust existing transforms to maintain PDF world-space scale and position
+        # ow_new = ow_old * (new_dpi / old_dpi)
+        # To keep (ow * scale) constant: scale_new = scale_old * (old_dpi / new_dpi)
+        k = old_dpi / new_dpi
+        for hdr in self._overlay_transforms:
+            tf = self._overlay_transforms[hdr]
+            if 'scale_x' in tf: tf['scale_x'] *= k
+            if 'scale_y' in tf: tf['scale_y'] *= k
+            # offset_x/y are in world coordinates (HDR pixels) and don't need adjustment
+
+        self._overlay_raster_dpi = new_dpi
         self.btn_overlay_dpi.label.set_text(f'PDF Res: {self._overlay_raster_dpi} DPI')
+
+        # Hide dropdown after selection
+        self._toggle_dpi_dropdown(False)
+
         self._save_session()
         if self._overlay_pdf_path is not None:
+            # Capture current view limits before re-rasterization/full render
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
             self._rasterize_overlay_page()
-            self._render_section(force_full=True)
+            # force_full=True triggers _do_full_render with these limits
+            self._do_full_render(xlim, ylim, reset_view=False)
         else:
             self.fig.canvas.draw_idle()
+
+    def _toggle_dpi_dropdown(self, visible: bool):
+        """Thoroughly show or hide the DPI dropdown and all its components."""
+        self._dpi_dropdown_visible = visible
+        self.ax_dpi_radio.set_visible(visible)
+        # Explicitly toggle all children (circles, labels, spines) to ensure visibility
+        for artist in self.ax_dpi_radio.get_children():
+            artist.set_visible(visible)
+        self.fig.canvas.draw_idle()
 
     def _rasterize_overlay_page(self):
         """Rasterize current PDF page and apply white-to-transparent.
@@ -3252,21 +3424,63 @@ class HdrAoiEditor:
             self.btn_overlay_page.label.set_text(f'Cycle Floor Plans: {self._overlay_page_idx + 1}/{n}')
         self.fig.canvas.draw_idle()
 
+    def _get_effective_overlay_transform(self, hdr_idx: Optional[int] = None) -> dict:
+        """Return the transform for the given HDR level, inheriting from below if needed.
+        
+        If the current level hasn't been manually adjusted ('is_manual': True), 
+        it searches downwards through lower floors to find the first level that 
+        was manually adjusted and inherits its scale and offset.
+        """
+        if hdr_idx is None:
+            hdr_idx = self.current_hdr_idx
+        
+        if not (0 <= hdr_idx < len(self.hdr_files)):
+            return {}
+
+        hdr_name = self.hdr_files[hdr_idx]['name']
+        tf = self._overlay_transforms.get(hdr_name, {})
+        
+        # If this level is manual, we're done
+        if tf.get('is_manual'):
+            return tf
+
+        # Search downwards for a manual level to inherit from
+        for i in range(hdr_idx - 1, -1, -1):
+            prev_name = self.hdr_files[i]['name']
+            prev_tf = self._overlay_transforms.get(prev_name, {})
+            if prev_tf.get('is_manual'):
+                # Inherit scale and offset, but NOT the page index
+                inherited = prev_tf.copy()
+                inherited['is_manual'] = False # Still not manual for this level
+                # Keep our current page index if we have one
+                if 'page_idx' in tf:
+                    inherited['page_idx'] = tf['page_idx']
+                return inherited
+        
+        # No manual level found below, return what we have (or defaults)
+        return tf
+
     def _render_overlay(self, img_w: int, img_h: int):
         """Draw the PDF overlay as a second imshow artist above the base image."""
-        hdr = self.current_hdr_name
-        tf = self._overlay_transforms.get(hdr, {})
-        ox = tf.get('offset_x', 0.0)
-        oy = tf.get('offset_y', 0.0)
+        tf = self._get_effective_overlay_transform()
         sx = tf.get('scale_x', 1.0)
         sy = tf.get('scale_y', 1.0)
         rot = tf.get('rotation_90', 0) % 4
 
         rgba = self._overlay_rgba
+        if rgba is None:
+            return
+
         if rot > 0:
             rgba = np.rot90(rgba, k=rot)
 
         oh, ow = rgba.shape[:2]
+
+        # Default offset: centre overlay on HDR image; use saved offset if present
+        default_ox = (img_w - ow * sx) / 2.0
+        default_oy = (img_h - oh * sy) / 2.0
+        ox = tf.get('offset_x', default_ox)
+        oy = tf.get('offset_y', default_oy)
 
         # Build display array with user-controlled alpha
         display = rgba.copy()
@@ -3287,10 +3501,7 @@ class HdrAoiEditor:
         """Update the overlay artist's extent from current transform state (fast path for drag)."""
         if self._overlay_handle is None or self._overlay_rgba is None:
             return
-        hdr = self.current_hdr_name
-        tf = self._overlay_transforms.get(hdr, {})
-        ox = tf.get('offset_x', 0.0)
-        oy = tf.get('offset_y', 0.0)
+        tf = self._get_effective_overlay_transform()
         sx = tf.get('scale_x', 1.0)
         sy = tf.get('scale_y', 1.0)
         rot = tf.get('rotation_90', 0) % 4
@@ -3300,6 +3511,13 @@ class HdrAoiEditor:
             oh, ow = np.rot90(rgba, k=rot).shape[:2]
         else:
             oh, ow = rgba.shape[:2]
+
+        img_w = getattr(self, '_image_width', 0)
+        img_h = getattr(self, '_image_height', 0)
+        default_ox = (img_w - ow * sx) / 2.0
+        default_oy = (img_h - oh * sy) / 2.0
+        ox = tf.get('offset_x', default_ox)
+        oy = tf.get('offset_y', default_oy)
 
         self._overlay_handle.set_extent([
             ox, ox + ow * sx,
@@ -4352,16 +4570,20 @@ class HdrAoiEditor:
                        for hdr, stamps in self._df_stamps.items() if stamps}
         data = {
             'image_dir':      str(self.image_dir),
+            'current_hdr_idx':     self.current_hdr_idx,
+            'current_variant_idx': self.current_variant_idx,
             'df_thresholds':  self.DF_THRESHOLDS,
             'rooms':          self.rooms,
             'df_stamps':      stamps_json,
             'overlay_pdf_path':    str(self._overlay_pdf_path) if self._overlay_pdf_path else None,
             'overlay_page_idx':    self._overlay_page_idx,
+            'overlay_visible':     self._overlay_visible,
             'overlay_transforms':  self._overlay_transforms,
             'overlay_alpha':       self._overlay_alpha,
             'overlay_raster_dpi':  self._overlay_raster_dpi,
             'overlay_cache_pdf':   self._overlay_cache_pdf,
             'overlay_cache_dpi':   self._overlay_cache_dpi,
+            'window_settings':     self.window_settings,
         }
         # Write to a temp file alongside the target, then atomically rename it
         # over the real path. This guarantees the session is never left in a
@@ -4388,7 +4610,19 @@ class HdrAoiEditor:
             stamps_raw = data.get('df_stamps', {})
             self._df_stamps = {hdr: [tuple(s) for s in stamps]
                                for hdr, stamps in stamps_raw.items()}
+            
+            # Restore window settings
+            self.window_settings = data.get('window_settings', {})
+            
+            # Restore HDR and variant selection
+            self.current_hdr_idx = data.get('current_hdr_idx', 0)
+            self.current_variant_idx = data.get('current_variant_idx', 0)
+            if not (0 <= self.current_hdr_idx < len(self.hdr_files)):
+                self.current_hdr_idx = 0
+            self._rebuild_image_variants()
+
             # Restore overlay state
+            self._overlay_visible = data.get('overlay_visible', False)
             self._overlay_transforms = data.get('overlay_transforms', {})
             self._overlay_alpha = data.get('overlay_alpha', 0.6)
             self._overlay_raster_dpi = data.get('overlay_raster_dpi', 150)
@@ -4424,8 +4658,55 @@ class HdrAoiEditor:
     # === ARCHIVE ===============================================================
 
     def _on_close(self, event):
-        """Handle editor window close."""
-        pass
+        """Handle editor window close. Capture window state before saving session."""
+        if self._closing:
+            return
+        self._closing = True
+
+        try:
+            # Access the window via the specific figure manager to be safe
+            if hasattr(self, 'fig') and self.fig.canvas.manager:
+                window = self.fig.canvas.manager.window
+                
+                # Capture current window state
+                import sys
+                is_maximized = False
+                try:
+                    if sys.platform == "win32":
+                        is_maximized = window.state() == 'zoomed'
+                    else:
+                        is_maximized = window.attributes('-zoomed')
+                except Exception:
+                    # Window might already be partially destroyed
+                    pass
+
+                # Get geometry using winfo for more robustness than string parsing
+                try:
+                    # winfo_x/y includes the window decorations (title bar, borders)
+                    # winfo_width/height is the client area (the actual canvas)
+                    # We want the values we can pass back to window.geometry()
+                    # window.geometry() on Tk returns "WIDTHxHEIGHT+X+Y"
+                    # We'll use the current geometry string for the most accurate restore
+                    geom_str = window.geometry()
+                    # Geometry string is WxH+X+Y or WxH-X-Y
+                    import re
+                    match = re.match(r'(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)', geom_str)
+                    if match:
+                        w, h, x, y = match.groups()
+                        self.window_settings = {
+                            'x': int(x.lstrip('+')),
+                            'y': int(y.lstrip('+')),
+                            'width': int(w),
+                            'height': int(h),
+                            'maximized': bool(is_maximized)
+                        }
+                        print(f"Captured window state: {self.window_settings}")
+                except Exception as e:
+                    print(f"Note: could not capture geometry details: {e}")
+        except Exception as exc:
+            print(f"Warning: could not capture window state on close: {exc}")
+
+        self._save_session()
 
     # === EXPORT ================================================================
 
