@@ -3402,13 +3402,17 @@ class HdrAoiEditor:
             else:
                 self._update_status("No PDF loaded — set pdf_path in HdrAoiEditor()", 'orange')
                 return
-        
+
+        # Preserve current zoom so toggling visibility never changes the view
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+
         self._overlay_visible = not self._overlay_visible
         label = 'Floor Plan: ON' if self._overlay_visible else 'Floor Plan: OFF'
         self.btn_overlay_toggle.label.set_text(label)
         self._style_toggle_button(self.btn_overlay_toggle, self._overlay_visible)
         self._save_session()
-        self._render_section(force_full=True)
+        self._do_full_render(xlim, ylim, reset_view=False)
 
     def _on_overlay_page_cycle(self, event):
         """Cycle to next PDF page."""
