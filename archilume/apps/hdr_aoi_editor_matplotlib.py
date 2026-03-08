@@ -152,6 +152,42 @@ from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
 from archilume.utils import rasterize_pdf_page, make_lines_only
 
 
+def _load_pil_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """Load a Unicode-capable TrueType font at *size* points.
+
+    Resolution order:
+      1. Matplotlib's bundled DejaVu Sans (always present, cross-platform).
+      2. System DejaVu / Arial as fallback in case font_manager returns a path
+         that PIL cannot open (very rare).
+      3. PIL bitmap default as last resort.
+    """
+    from matplotlib import font_manager as _fm
+    style = 'bold' if bold else 'normal'
+    candidates = []
+    try:
+        candidates.append(_fm.findfont(_fm.FontProperties(family='DejaVu Sans', weight=style)))
+    except Exception:
+        pass
+    # Common system paths as insurance
+    if bold:
+        candidates += [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+    else:
+        candidates += [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError, TypeError):
+            pass
+    return ImageFont.load_default()
+
+
 class HdrAoiEditor:
     """Interactive room boundary drawing tool for HDR/TIFF floor plan images.
 
@@ -176,6 +212,7 @@ class HdrAoiEditor:
         iesve_room_data:        Optional[Union[Path, str]]  = None,
     ):
         # Base project directory within inputs/
+        self.project = project
         self.project_input_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
 
         # Protected directory for editor-generated files (session, CSV, cache)
@@ -5717,6 +5754,7 @@ class HdrAoiEditor:
 
             progress['phase'] = 'overlays'
             self._export_overlay_images(progress)
+            self._export_pdf_underlay_images()
             progress['phase'] = 'done'
         except Exception as exc:
             progress['error'] = exc
@@ -5766,7 +5804,8 @@ class HdrAoiEditor:
         try:
             ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
             timestamp = time.strftime('%Y%m%d_%H%M%S')
-            zip_name  = f"archilume_export_{timestamp}"
+            project_suffix = f"_{self.project}" if self.project else ""
+            zip_name  = f"archilume_export{project_suffix}_{timestamp}"
             zip_path  = ARCHIVE_DIR / f"{zip_name}.zip"
             shutil.make_archive(str(ARCHIVE_DIR / zip_name), 'zip', str(OUTPUTS_DIR.parent), OUTPUTS_DIR.name)
             print(f"Archive created: {zip_path}")
@@ -5862,12 +5901,8 @@ class HdrAoiEditor:
 
         font_size = max(12, int(img.height * 0.012))
         font_size_small = max(10, int(font_size * 0.8))
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-            font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size_small)
-        except (OSError, IOError):
-            font = ImageFont.load_default()
-            font_sm = font
+        font = _load_pil_font(font_size, bold=True)
+        font_sm = _load_pil_font(font_size_small, bold=False)
 
         red = (255, 0, 0)
         black = (0, 0, 0)
@@ -5971,6 +6006,218 @@ class HdrAoiEditor:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [pool.submit(self._render_single_overlay, tiff_path, rooms_data, out_dir, stamps)
                        for tiff_path, rooms_data, out_dir, stamps in jobs]
+            for future in as_completed(futures):
+                future.result()  # propagate exceptions
+
+    @staticmethod
+    def _render_pdf_underlay(
+        df_false_path: Path,
+        rooms_data: list,
+        stamps: list,
+        pdf_path,           # Path or None
+        pdf_transform: dict,
+        session_dpi: int,
+        output_dir: Path,
+        pdf_opacity: float = 0.6,
+    ):
+        """Render one level's PDF underlay composite and save.
+
+        Layers (bottom to top):
+          1. df_false PNG — fully opaque falsecolour base (HDR pixel dimensions).
+          2. PDF floor plan — composited at pdf_opacity (matching the viewer's
+             overlay alpha) so the falsecolour remains visible beneath.
+          3. AOI room boundaries and labels drawn directly onto the canvas.
+
+        Designed to run in a ThreadPoolExecutor (PIL + numpy, GIL-free I/O).
+
+        Args:
+            df_false_path:  Path to the df_false PNG (base canvas, HDR pixel dims).
+            rooms_data:     list of (name, vertices, df_display_lines, is_circ).
+            stamps:         list of (x, y, df_val[, px, py]) stamped DF readings.
+            pdf_path:       Path to PDF, or None if no overlay configured.
+            pdf_transform:  dict with scale_x/y, offset_x/y, rotation_90, page_idx.
+            session_dpi:    DPI the PDF was rasterized at in the editor session.
+            output_dir:     Directory to write the output PNG.
+            pdf_opacity:    Opacity of the PDF layer (0–1). Should match the
+                            session's _overlay_alpha so the export looks identical
+                            to the on-screen viewer. Default 0.6.
+        """
+        EXPORT_DPI = 300
+
+        base_img = Image.open(df_false_path).convert('RGB')
+        hdr_w, hdr_h = base_img.size
+
+        # --- Composite PDF onto df_false base ---
+        if pdf_path is not None and pdf_transform and 'scale_x' in pdf_transform:
+            page_idx = pdf_transform.get('page_idx', 0)
+            sx = pdf_transform.get('scale_x', 1.0)
+            sy = pdf_transform.get('scale_y', 1.0)
+            ox = pdf_transform.get('offset_x', 0.0)
+            oy = pdf_transform.get('offset_y', 0.0)
+            rot = pdf_transform.get('rotation_90', 0) % 4
+
+            pdf_rgba = rasterize_pdf_page(pdf_path, page_idx, dpi=session_dpi)
+            if rot > 0:
+                pdf_rgba = np.rot90(pdf_rgba, k=rot)
+            pdf_h_px, pdf_w_px = pdf_rgba.shape[:2]
+
+            pdf_canvas = Image.new('RGBA', (hdr_w, hdr_h), (255, 255, 255, 0))
+            pdf_pil = Image.fromarray(pdf_rgba[:, :, :3]).convert('RGBA')
+
+            dest_w = max(1, int(round(pdf_w_px * sx)))
+            dest_h = max(1, int(round(pdf_h_px * sy)))
+            if dest_w != pdf_w_px or dest_h != pdf_h_px:
+                pdf_pil = pdf_pil.resize((dest_w, dest_h), Image.LANCZOS)
+
+            pdf_canvas.paste(pdf_pil, (int(round(ox)), int(round(oy))))
+
+            alpha_val = int(round(pdf_opacity * 255))
+            pdf_arr = np.array(pdf_canvas)
+            pdf_arr[:, :, 3] = np.where(pdf_arr[:, :, 3] > 0, alpha_val, 0).astype(np.uint8)
+            pdf_canvas = Image.fromarray(pdf_arr, 'RGBA')
+            composited = Image.alpha_composite(base_img.convert('RGBA'), pdf_canvas).convert('RGB')
+        else:
+            composited = base_img
+
+        # --- Scale up to 300 DPI ---
+        scale_up = EXPORT_DPI / session_dpi
+        if abs(scale_up - 1.0) > 0.01:
+            new_w = max(1, int(round(hdr_w * scale_up)))
+            new_h = max(1, int(round(hdr_h * scale_up)))
+            composited = composited.resize((new_w, new_h), Image.LANCZOS)
+        else:
+            scale_up = 1.0
+
+        draw = ImageDraw.Draw(composited)
+        out_h = composited.size[1]
+
+        font_size = max(16, int(out_h * 0.018))
+        font_size_small = max(13, int(font_size * 0.8))
+        font = _load_pil_font(font_size, bold=True)
+        font_sm = _load_pil_font(font_size_small, bold=False)
+
+        red = (255, 0, 0)
+        black = (0, 0, 0)
+        outline_w = max(1, font_size // 10)
+        line_w = max(2, int(round(font_size // 7)))
+
+        def _sv(hdr_x, hdr_y):
+            return int(round(hdr_x * scale_up)), int(round(hdr_y * scale_up))
+
+        def _outlined_text(x, y, text, fnt):
+            for ddx in range(-outline_w, outline_w + 1):
+                for ddy in range(-outline_w, outline_w + 1):
+                    if ddx or ddy:
+                        draw.text((x + ddx, y + ddy), text, fill=black, font=fnt)
+            draw.text((x, y), text, fill=red, font=fnt)
+
+        def _dashed_polygon(pts_closed, fill, dash=8, gap=6):
+            for i in range(len(pts_closed) - 1):
+                x0, y0 = pts_closed[i]
+                x1, y1 = pts_closed[i + 1]
+                seg_len = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+                if seg_len == 0:
+                    continue
+                ddx, ddy = (x1 - x0) / seg_len, (y1 - y0) / seg_len
+                pos, drawing = 0.0, True
+                while pos < seg_len:
+                    step = dash if drawing else gap
+                    end = min(pos + step, seg_len)
+                    if drawing:
+                        draw.line(
+                            [(int(x0 + ddx * pos), int(y0 + ddy * pos)),
+                             (int(x0 + ddx * end), int(y0 + ddy * end))],
+                            fill=fill, width=line_w)
+                    pos, drawing = end, not drawing
+
+        for name, verts, df_lines, is_circ in rooms_data:
+            pts = [_sv(v[0], v[1]) for v in verts]
+            pts.append(pts[0])
+            if is_circ:
+                _dashed_polygon(pts, fill=red)
+            else:
+                draw.line(pts, fill=red, width=line_w)
+
+            if is_circ:
+                continue
+
+            centroid = HdrAoiEditor._polygon_label_point(verts)
+            cx, cy = _sv(centroid[0], centroid[1])
+
+            bbox = draw.textbbox((0, 0), name, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            _outlined_text(cx - tw // 2, cy - th // 2, name, font)
+
+            y_offset = cy + th
+            for line in df_lines:
+                bbox_s = draw.textbbox((0, 0), line, font=font_sm)
+                tw_s = bbox_s[2] - bbox_s[0]
+                th_s = bbox_s[3] - bbox_s[1]
+                _outlined_text(cx - tw_s // 2, y_offset, line, font_sm)
+                y_offset += th_s + 2
+
+        for stamp in (stamps or []):
+            sx_stamp, sy_stamp, df_val = stamp[0], stamp[1], stamp[2]
+            ix, iy = _sv(sx_stamp, sy_stamp)
+            r = max(3, font_size // 4)
+            draw.ellipse((ix - r, iy - r, ix + r, iy + r), fill=(0, 255, 255))
+            px_lbl = stamp[3] if len(stamp) > 3 else int(round(sx_stamp))
+            py_lbl = stamp[4] if len(stamp) > 4 else int(round(sy_stamp))
+            _outlined_text(ix + r + 2, iy - font_size_small // 2,
+                           f"DF: {df_val:.2f}%\npx({px_lbl},{py_lbl})", font_sm)
+
+        out_path = output_dir / f"{df_false_path.stem.split('_df_false')[0]}_pdf_aoi_overlay.png"
+        if out_path.exists():
+            out_path.unlink()
+        composited.save(out_path, dpi=(EXPORT_DPI, EXPORT_DPI))
+        print(f"PDF underlay overlay saved: {out_path}")
+
+    def _export_pdf_underlay_images(self):
+        """Dispatch per-level PDF underlay renders concurrently via ThreadPoolExecutor."""
+        output_dir = self.image_dir
+        session_dpi = self._overlay_raster_dpi
+        pdf_opacity = self._overlay_alpha  # match the viewer's current overlay transparency
+        pdf_path = self._overlay_pdf_path if (
+            self._overlay_pdf_path is not None and self._overlay_pdf_path.exists()
+        ) else None
+
+        jobs = []
+        for idx, entry in enumerate(self.hdr_files):
+            hdr_name = entry['name']
+
+            rooms_on_hdr = [
+                (r.get('name', ''), r['vertices'],
+                 r.get('df_cache', {}).get('display_lines', []),
+                 r.get('room_type', '') == 'CIRC')
+                for r in self.rooms
+                if r.get('hdr_file') == hdr_name
+                and len(r.get('vertices', [])) >= 3
+            ]
+            if not rooms_on_hdr:
+                continue
+
+            df_false_path = next(
+                (p for p in entry.get('tiff_paths', []) if '_df_false' in p.stem),
+                None
+            )
+            if df_false_path is None or not df_false_path.exists():
+                print(f"PDF underlay export: no df_false image found for {hdr_name}, skipping")
+                continue
+
+            tf = self._get_effective_overlay_transform(hdr_idx=idx)
+            # Pass a copy so the thread holds no reference into mutable editor state
+            pdf_transform = dict(tf) if (tf and 'scale_x' in tf) else {}
+            stamps = list(self._df_stamps.get(hdr_name, []))
+
+            jobs.append((df_false_path, rooms_on_hdr, stamps, pdf_path,
+                         pdf_transform, session_dpi, output_dir, pdf_opacity))
+
+        max_workers = min(len(jobs), 4) if jobs else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [
+                pool.submit(self._render_pdf_underlay, *job)
+                for job in jobs
+            ]
             for future in as_completed(futures):
                 future.result()  # propagate exceptions
 

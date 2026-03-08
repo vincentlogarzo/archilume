@@ -9,5 +9,5 @@ from .post.tiff2animation import Tiff2Animation
 from .core.sky_generator import SkyGenerator
 from .core.view_generator import ViewGenerator
 from .utils import smart_cleanup, clear_outputs_folder, PhaseTimer
-from .workflows.workflows import SunlightAccessWorkflow, IESVEDaylightWorkflow
+from .workflows import SunlightAccessWorkflow, IESVEDaylightWorkflow
 from . import utils, config

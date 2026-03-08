@@ -42,7 +42,7 @@ from archilume.apps.obj_aoi_editor_matplotlib import ObjAoiEditor
 from archilume.apps.hdr_aoi_editor_matplotlib import HdrAoiEditor
 from pathlib import Path
 
-EDITOR = 'hdr'  # 'obj' or 'hdr' or 'iesve'
+EDITOR = 'iesve'  # 'obj' or 'hdr' or 'iesve'
 
 if __name__ == "__main__":
 

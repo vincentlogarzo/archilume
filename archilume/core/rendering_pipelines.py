@@ -169,15 +169,27 @@ class DaylightRenderer:
     def _generate_legends(self) -> None:
         """Generate standalone falsecolor and contour legend TIFF images."""
 
+        df_false_legend = 'df_false_legend.tiff'
+        df_cntr_legend  = 'df_cntr_legend.tiff'
+
         commands = [
             # Falsecolor legend
-            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -s 4 -n 10 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / 'df_false_legend.tiff'}",
+            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s 4 -n 10 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / df_false_legend}',
 
             # Contour legend
-            rf"pcomb -e 'ro=1;go=1;bo=1' -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / 'df_cntr_legend.tiff'}",
+            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / df_cntr_legend}',
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)
+
+        legend_tiffs = [
+            config.IMAGE_DIR / df_false_legend,
+            config.IMAGE_DIR / df_cntr_legend,
+        ]
+        for tiff in legend_tiffs:
+            if tiff.exists() and tiff.stat().st_size >= 1000:
+                Image.open(tiff).save(tiff.with_suffix('.png'), format='PNG', optimize=True, compress_level=9)
+                tiff.unlink()
 
     def _start_cpu_logger(self) -> threading.Event | None:
         """Start a background CPU/memory logger using psutil. Returns a stop event."""

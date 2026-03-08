@@ -2,6 +2,29 @@
 
 This file tracks planned features, optimizations, and known issues for the Archilume framework.
 
+## 🔴 TOP PRIORITY: Project-Based Folder Structure Refactor
+
+Restructure the file system model from a flat global `inputs/` + `outputs/` layout to a per-project hierarchy. Each project is a self-contained folder:
+
+```text
+projects/
+└── <project_name>/
+    ├── inputs/       # OBJ, IFC, CSV, PDF plans, AOI files
+    ├── outputs/      # Rendered HDR/PNG/TIFF, WPD, reports
+    └── archive/      # Timestamped export zips from the editor
+```
+
+**Motivation:** Users currently working on multiple projects simultaneously share a single global `inputs/` and `outputs/` directory, causing file collisions and confusion. Scoping all simulation inputs, outputs, and archives to a named project folder eliminates ambiguity and makes deliverables self-contained.
+
+**Scope:**
+
+- Refactor `config.py` to resolve all paths relative to a `projects/<project_name>/` root instead of the global `inputs/` and `outputs/` dirs.
+- All workflows (`SunlightAccessWorkflow`, `DaylightRenderer`, IESVE workflow) must accept and enforce a `project` parameter that maps to the project folder — simulations may not run without one.
+- Update `HdrAoiEditor` and `ObjAoiEditor` to resolve `image_dir`, `aoi_dir`, and `session_path` within the project folder.
+- Move archive export output (currently written to `image_dir`) to the project's dedicated `archive/` subfolder.
+- Update all example scripts and documentation to use the new structure.
+- Provide a migration utility or clear instructions for moving existing flat-layout projects into the new structure.
+
 ## 🔴 HIGH PRIORITY: Core Workflow & Output Improvements
 
 - **Grid Resolution:** Support grid size input in millimeters. Auto-calculate `x_res`, `y_res` from room extents.
@@ -10,6 +33,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Advanced Reporting:** Replace Excel output with a `wpd2report` module generating PDF/HTML with NSW ADG metrics.
 - **Auto-Cleanup:** Move `smart_cleanup` into each workflow's `InputsValidator`. Must happen *after* file naming encodes the scenario grid (resolution, rendering params, etc.) so the cache can distinguish previously completed runs. For the IESVE daylight workflow specifically, the only input the user should need to flag is whether the source `.oct` file has changed — parameter/resolution changes should be inferred automatically from the output file names.
 - **Packaging:** Implement Phase 6 to package final results into a timestamped `.zip` deliverable.
+- **Standalone Contour & Falsecolor Generators:** Create standalone contour (`cnt`) and falsecolor generators that accept IESVE `.pic` files or Archilume-rendered `.hdr` files, using the same conversion steps as `daylight_workflow_iesve.py`. Integrate these as interactive layers within `room_boundaries_editor.py` so users only need rendered images to perform analysis — no workflow re-run required. Users should be able to switch between raw, contour, and falsecolor layers, adjust parameters (e.g. scale, step size, legend range) per layer, and see updates live in the editor.
 
 ## 🟡 MEDIUM PRIORITY: Input Handling & Validation
 
@@ -110,6 +134,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ### UI/UX & Visualization
 
+- **Room List Search & Filter:** Add a search/filter bar to the saved rooms panel so users can filter visible rooms by name, type (e.g. BED, LIVING, CIRC), or sub-room prefix. Filtering should hide non-matching rooms from the list and dim (but not remove) their boundaries on the canvas so spatial context is preserved.
 - **Dynamic Labeling:** Update result label positions using a two-pass approach: identify high-DF facade edges and use pole-of-inaccessibility for fallback.
 - **Compliance Overlays:** Display building/floor level BESS pass/fail summaries in a fixed UI panel; add pass/fail toggle overlays with image export. Results are shown on a room by room basis at the moment.
 - **Post-Processing Integration:** Integrate CNT and DF false-color generation into the viewer with automated temp file management.

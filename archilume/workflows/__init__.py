@@ -1,1 +1,2 @@
-from .workflows import SunlightAccessWorkflow, IESVEDaylightWorkflow
+from .sunlight_access_workflow import SunlightAccessWorkflow
+from .iesve_daylight_workflow import IESVEDaylightWorkflow

@@ -3,177 +3,184 @@
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A Python library for Radiance-based architectural daylight and sunlight analysis.
-
-## Overview
-
-Archilume provides preset workflows/tools for creating and validating physically accurate daylight simulations. It provides a bridge for direct input of 3D models from CAD softwares into [Radiance](https://www.radiance-online.org/). It automates geometry conversion, sky generation, camera view setup, rendering, and post-processing into compliance results.
-
-The easiest way to use Archilume is through the included **Docker dev container**, which ships with Python, Radiance, and Accelerad pre-installed — no manual setup required. See [Prerequisites](#prerequisites) to get started.
-
-### Key Features
-
-- **Pre-configured workflows** for sunlight access and daylight factor analysis, ready to run out of the box
-- **Room boundary tools** for generating analysis boundaries when they cannot be sourced directly from your 3D modelling software — includes an interactive editor for drawing boundaries on OBJ floor plan slices and a converter for IESVE room data
-- **GPU-accelerated rendering** via Accelerad for significantly faster simulations
-- **Parallel processing** with multi-core support for computationally intensive operations
-- **Compliance reporting** with automated Excel report generation and annotated animations to inform your decisions
-- **Cloud-ready** — the dev container setup enables running simulations on cloud provider virtual machines for access to higher compute resources
+A Python framework for Radiance-based architectural daylight and sunlight simulations. Archilume converts 3D CAD models (OBJ/MTL, IFC) into physically accurate lighting analyses with compliance reporting.
 
 ---
 
-## Prerequisites
+## Quick Start
 
-All you need to run Archilume:
+### Option A — Dev Container (Recommended)
 
-1. **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** — provides the containerised environment
-2. **[VS Code](https://code.visualstudio.com/)** with the **[Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)** extension — lets you develop inside the container
+The dev container bundles Python 3.12, Radiance, and Accelerad so there is nothing to install manually.
 
-That's it. You do **not** need to install Python, Radiance, or Accelerad — they are all bundled in the dev container.
+**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) and [VS Code](https://code.visualstudio.com/) with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension.
 
-### Getting Started
+```bash
+git clone https://github.com/vincentlogarzo/archilume.git
+```
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/vincentlogarzo/archilume.git
-   ```
-2. Open the project folder in VS Code.
-3. When prompted, click **"Reopen in Container"** (or use `Ctrl+Shift+P` → `Dev Containers: Reopen in Container`).
-4. Wait for the container to build. Once ready, all dependencies are installed and the environment is fully configured.
+Open the folder in VS Code and click **"Reopen in Container"** when prompted (or `Ctrl+Shift+P` → `Dev Containers: Reopen in Container`). Once the container finishes building, the environment is ready.
 
-### Native Windows Setup (Without Docker)
+### Option B — WSL (Multi-Core Rendering on Windows)
 
-If you prefer to run Archilume natively on Windows without Docker:
+Some Radiance tools (`rtpict`) only support multi-core rendering on Linux. If you don't have an NVIDIA GPU for Accelerad, you can get full parallel rendering through WSL:
 
-1. **Install Python 3.12+** from [python.org](https://www.python.org/downloads/)
-2. **Clone the repository**:
+1. Install [WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
+2. In VS Code, install the [WSL extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl) and connect (`Ctrl+Shift+P` → `WSL: Connect to WSL`).
+3. Reopen the repository inside the dev container from the WSL session.
 
-   ```bash
-   git clone https://github.com/vincentlogarzo/archilume.git
-   cd archilume
-   ```
+### Option C — Native Windows
 
-3. **Install dependencies** using `uv`:
+1. Install **[Python 3.12+](https://www.python.org/downloads/)**.
+2. Install **[Radiance](https://www.radiance-online.org/)** (and optionally [Accelerad](https://nljones.github.io/Accelerad/) for GPU rendering).
+3. Clone and install dependencies:
 
    ```powershell
+   git clone https://github.com/vincentlogarzo/archilume.git
+   cd archilume
    pip install uv
    uv sync
    ```
 
-   This will automatically install all Python dependencies and Google Cloud CLI.
-
-4. **Authenticate with Google Cloud** (if using GCP features):
+4. Verify Radiance is on your `PATH`:
 
    ```powershell
-   gcloud init
-   gcloud auth login
-   gcloud config set project YOUR_PROJECT_ID
+   rpict -version
    ```
 
-The setup script will handle everything automatically, including installing Google Cloud CLI if you plan to use the GCP VM manager.
-
-### Windows Users — Parallel Rendering Without an NVIDIA GPU
-
-Some of Archilume's parallel rendering features rely on multi-core Radiance tools (`rtpict`) that are only available on Linux. If you are on a Windows machine and do not have a compatible NVIDIA CUDA-enabled GPU for GPU-accelerated rendering, you can still access the full power of Radiance by:
-
-1. Installing **[WSL](https://learn.microsoft.com/en-us/windows/wsl/install)** (Windows Subsystem for Linux).
-2. Connecting to WSL through VS Code (install the **[WSL](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl)** extension, then `Ctrl+Shift+P` → `WSL: Connect to WSL`).
-3. Reopening this repository **inside the dev container from within the WSL session**.
-
-This gives you a full Linux environment where Radiance's multi-core rendering is available without needing a GPU.
+   If Radiance is installed elsewhere, set `RADIANCE_ROOT` to its install directory (the folder containing `bin/`). Optionally set `ACCELERAD_ROOT` for GPU tools.
 
 ---
 
-## Core Modules
+## Key Features
 
-### ObjAoiEditor
-
-Interactive GUI for drawing room boundaries on 2D floor plan slices of OBJ models. Supports hierarchical naming (apartment → sub-room), polygon editing, and exports to CSV for use with `ViewGenerator`.
-
-### Objs2Octree
-
-Converts wavefront object (`.obj`) building models and their corresponding material descriptions (`.mtl`) into a Radiance octree (`.oct`) format. Accepts multiple geometry files (e.g. building + site context) and produces a skyless octree ready for rendering.
-
-### MtlConverter
-
-Converts Wavefront `.mtl` material files (e.g. from Revit OBJ exports) into Radiance material `.rad` files.
-
-### SkyGenerator
-
-Generates Radiance sky files for specific dates, times, and geographic locations. Supports sun-only sky series for sunlight access studies and CIE overcast skies for daylight factor analysis.
-
-### ViewGenerator
-
-Creates Radiance view parameter files from room boundary data. Parses a room boundaries CSV, computes building extents, and generates orthographic plan views and area-of-interest (AOI) files per room per floor level.
-
-### SunlightRenderer
-
-Manages batch sunlight rendering across all sky/view combinations. Supports CPU (`rpict`) and GPU (`accelerad_rpict`) modes with configurable quality presets. Handles ambient file caching, overture passes, HDR compositing, and TIFF output.
-
-### DaylightRenderer
-
-Renders daylight factor analysis from pre-built IESVE octrees. Uses multi-core `rtpict` on Linux for parallel rendering per view. Includes post-processing for falsecolor maps, contour overlays, and legends.
-
-### Hdr2Wpd
-
-Extracts illuminance and daylight factor data from rendered HDR images using AOI polygon masks. Produces `.wpd` (Working Plan Data) files for compliance assessment.
-
-### Wpd2Xlsx
-
-Generates formatted Excel reports from `.wpd` files with raw data, pivot summaries, and compliance metrics with conditional formatting.
-
-### Tiff2Animation
-
-Post-processes rendered TIFFs with metadata annotations and AOI overlays. Creates animated GIF or APNG sequences from time-series renders.
+- **Pre-configured workflows** for sunlight access and daylight factor analysis
+- **Multiple geometry inputs** — OBJ/MTL exports (e.g. from Revit) and IFC models
+- **Interactive editors** for drawing room boundaries on floor plans (OBJ slicing) and editing AOIs on HDR renders
+- **GPU-accelerated rendering** via Accelerad
+- **Parallel processing** with multi-core support for batch operations
+- **Compliance reporting** — Excel reports with pivot summaries, annotated GIF/APNG animations
+- **Cloud-ready** — GCP VM provisioning for remote simulations
 
 ---
 
 ## Example Workflows
 
-Pre-configured workflows are available in the [examples/](examples/) directory:
+Pre-configured workflow scripts in [examples/](examples/):
 
-| Workflow | Description |
-|----------|-------------|
-| [sunlight_access_workflow.py](examples/sunlight_access_workflow.py) | End-to-end sunlight access analysis: OBJ conversion, sky generation, rendering, WPD extraction, Excel reporting, and animated results |
-| [daylight_workflow_iesve.py](examples/daylight_workflow_iesve.py) | Daylight factor analysis using pre-built IESVE octrees with falsecolor post-processing |
-| [daylight_workflow_obj.py](examples/daylight_workflow_obj.py) | Daylight factor analysis from OBJ geometry |
-| [aoi_editor_obj.py](examples/aoi_editor_obj.py) | Launch the interactive room boundary editor on an OBJ model |
+| Script | Description |
+| ------ | ----------- |
+| [sunlight_access_workflow.py](examples/sunlight_access_workflow.py) | End-to-end sunlight access: OBJ → octree → sky series → rendering → HDR analysis → Excel report → animation |
+| [daylight_workflow_iesve.py](examples/daylight_workflow_iesve.py) | Daylight factor analysis from IESVE octrees with falsecolor post-processing |
+| [room_boundaries_editor.py](examples/room_boundaries_editor.py) | Launch the interactive room boundary editor on an OBJ model |
+| [gcp_launch_vm.py](examples/gcp_launch_vm.py) | Provision and manage a GCP VM for remote simulation runs |
+
+Run a workflow:
+
+```bash
+uv run python examples/sunlight_access_workflow.py
+```
+
+---
+
+## Simulation Stages
+
+The core flow is: **Geometry → Octree → Sky + Views → Rendering → Post-Processing → Reports**
+
+1. **Geometry conversion** — OBJ/MTL files are translated to Radiance format and compiled into an octree (`.oct`) via `Objs2Octree`. IFC models can be inspected and stripped with `geo` utilities.
+2. **Sky generation** — `SkyGenerator` produces time-series sunny skies (sunlight access) or CIE overcast skies (daylight factor).
+3. **View & AOI generation** — `ViewGenerator` parses room boundaries, computes building extents, and generates orthographic plan views and AOI masks per room/level.
+4. **Rendering** — `SunlightRenderer` (multi-phase HDR compositing, CPU or GPU) and `DaylightRenderer` (falsecolor + contour overlays). Both support configurable quality presets.
+5. **Post-processing** — `Hdr2Wpd` extracts illuminance from HDR using AOI polygon masks. `Tiff2Animation` stamps metadata and creates GIF/APNG animations.
 
 ---
 
 ## Project Structure
 
-```
+```text
 archilume/
-├── .devcontainer/             # Dev container with Radiance & Accelerad
-├── archilume/                 # Core package
-│   ├── objs2octree.py         # OBJ/MTL → Radiance octree conversion
-│   ├── sky_generator.py       # Sky condition generation
-│   ├── view_generator.py      # View and AOI file generation
-│   ├── rendering_pipelines.py # SunlightRenderer & DaylightRenderer
-│   ├── hdr2wpd.py             # HDR → working plan data extraction
-│   ├── wpd2xlsx.py            # WPD → Excel compliance reports
-│   ├── tiff2animation.py      # Annotated animations from renders
-│   ├── mtl_converter.py       # MTL → Radiance material conversion
-│   ├── obj_aoi_editor.py      # Interactive room boundary editor
-│   ├── radiance_materials.py  # Radiance material primitives library
-│   ├── utils.py               # Geometry, timing, and helper utilities
-│   └── config.py              # Paths, validation, and defaults
+├── .devcontainer/                  # Docker dev container (Radiance + Accelerad)
+├── archilume/                      # Core package
+│   ├── core/                       # Simulation engine
+│   │   ├── objs2octree.py          #   OBJ/MTL → Radiance octree
+│   │   ├── sky_generator.py        #   Sky condition generation
+│   │   ├── view_generator.py       #   View and AOI file generation
+│   │   ├── rendering_pipelines.py  #   SunlightRenderer & DaylightRenderer
+│   │   ├── mtl_converter.py        #   Wavefront MTL → Radiance materials
+│   │   └── radiance_materials.py   #   Radiance material primitives
+│   │
+│   ├── geo/                        # Geometry utilities
+│   │   ├── ifc_inspector.py        #   IFC model inspection
+│   │   ├── ifc_strip.py            #   IFC element extraction
+│   │   ├── obj2boundaries.py       #   OBJ → room boundary extraction
+│   │   ├── obj_cleaner.py          #   OBJ geometry cleanup
+│   │   └── obj_inspector.py        #   OBJ model inspection
+│   │
+│   ├── post/                       # Post-processing
+│   │   ├── hdr2wpd.py              #   HDR → illuminance data extraction
+│   │   ├── tiff2animation.py       #   Annotated GIF/APNG from renders
+│   │   └── apng2mp4.py             #   APNG → MP4 conversion
+│   │
+│   ├── apps/                       # Interactive editors
+│   │   ├── obj_aoi_editor_matplotlib.py   # Room boundary editor (matplotlib)
+│   │   ├── hdr_aoi_editor_matplotlib.py   # HDR AOI editor (matplotlib)
+│   │   ├── hdr_aoi_editor_dash.py         # HDR AOI editor (Dash/Plotly)
+│   │   └── octree_viewer.py               # 3D octree viewer
+│   │
+│   ├── workflows/                  # Orchestrated pipelines
+│   │   ├── sunlight_access_workflow.py    # Full sunlight access pipeline
+│   │   └── iesve_daylight_workflow.py     # IESVE daylight factor pipeline
+│   │
+│   ├── infra/                      # Cloud infrastructure
+│   │   └── gcp_vm_manager.py       #   GCP VM lifecycle management
+│   │
+│   ├── config.py                   # Paths, environment detection, tool resolution
+│   └── utils.py                    # Parallel execution, timing, geometry helpers
 │
-├── examples/                  # Pre-configured workflow scripts and tools
-├── inputs/                    # Input files (OBJ, MTL, CSV)
-├── outputs/                   # Rendered images, reports, animations
-└── tests/                     # Test suite
+├── examples/                       # Workflow scripts and editor launchers
+├── inputs/                         # Input files (OBJ, MTL, IFC, CSV)
+├── outputs/                        # Rendered images, reports, animations
+└── tests/                          # Test suite
 ```
+
+---
+
+## Common Commands
+
+```bash
+# Install dependencies
+uv sync
+
+# Run tests
+pytest
+pytest tests/test_sky_generator.py      # single file
+
+# Run a workflow
+uv run python examples/sunlight_access_workflow.py
+
+# Launch interactive editors
+uv run python examples/room_boundaries_editor.py
+```
+
+---
+
+## Configuration
+
+`archilume.config` manages all path resolution and environment detection:
+
+- **Tool paths** — Automatically finds Radiance and Accelerad binaries. Override with `RADIANCE_ROOT` and `ACCELERAD_ROOT` environment variables.
+- **Project directories** — `inputs/`, `outputs/`, and intermediate files are managed automatically.
+- **Worker count** — Parallel operations respect `config.WORKERS` (defaults to CPU count).
+- **Platform awareness** — Detects Windows vs Linux, bundled vs system Radiance, GPU availability.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
-## Acknowledgments
+## Acknowledgements
 
-- Built on [Radiance](https://www.radiance-online.org/), the industry-standard lighting simulation software
-- GPU acceleration powered by [Accelerad](https://nljones.github.io/Accelerad/)
-- Uses [PyRadiance](https://github.com/LBNL-ETA/pyradiance) for Python-Radiance integration
+- [Radiance](https://www.radiance-online.org/) — industry-standard lighting simulation
+- [Accelerad](https://nljones.github.io/Accelerad/) — GPU-accelerated rendering
+- [PyRadiance](https://github.com/LBNL-ETA/pyradiance) — Python–Radiance integration

@@ -6,7 +6,7 @@ This example demonstrates how to configure and run a sunlight
 access workflow to determine the quantity of sunlight on 
 horizontal plane over a single day across many rooms in a
 building. The core simulation logic is handled by the 
-`SunlightAccessWorkflow` class in workflows.py
+`SunlightAccessWorkflow` class in sunlight_access_workflow.py
 
 Workflow Overview:
 1. Load 3D geometry (OBJ/MTL).
