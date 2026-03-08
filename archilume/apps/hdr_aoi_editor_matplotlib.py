@@ -115,6 +115,8 @@ Functionality:
 import csv
 import hashlib
 import json
+import ctypes
+import ctypes.wintypes
 import os
 import re
 import shutil
@@ -571,7 +573,7 @@ class HdrAoiEditor:
             print(f"Warning: image_dir does not exist: {self.image_dir}")
             return []
 
-        hdr_paths = sorted(self.image_dir.glob("*.hdr"))
+        hdr_paths = sorted([*self.image_dir.glob("*.hdr"), *self.image_dir.glob("*.pic")])
         result = []
         for hdr_path in hdr_paths:
             stem = hdr_path.stem
@@ -668,7 +670,7 @@ class HdrAoiEditor:
                 return self._image_cache[key]
 
         try:
-            if path.suffix.lower() == '.hdr':
+            if path.suffix.lower() in ('.hdr', '.pic'):
                 img = imageio.imread(str(path)).astype(np.float32)
                 if img.ndim == 2:
                     img = np.stack([img, img, img], axis=-1)
@@ -765,6 +767,32 @@ class HdrAoiEditor:
 
     _WINDOW_TITLE = "Archilume - HDR AOI Editor"
 
+    @staticmethod
+    def _get_monitor_rects() -> list:
+        """Return a list of (left, top, right, bottom) rects for all active monitors.
+
+        Uses EnumDisplayMonitors via ctypes on Windows. Falls back to an empty
+        list on other platforms (caller should handle the fallback).
+        """
+        rects = []
+        if sys.platform != "win32":
+            return rects
+        try:
+            MonitorEnumProc = ctypes.WINFUNCTYPE(
+                ctypes.c_bool,
+                ctypes.c_ulong, ctypes.c_ulong,
+                ctypes.POINTER(ctypes.wintypes.RECT),
+                ctypes.c_double,
+            )
+            def _callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
+                r = lprcMonitor.contents
+                rects.append((r.left, r.top, r.right, r.bottom))
+                return True
+            ctypes.windll.user32.EnumDisplayMonitors(None, None, MonitorEnumProc(_callback), 0)
+        except Exception:
+            pass
+        return rects
+
     def launch(self):
         """Open the interactive editor window."""
         if not self.hdr_files:
@@ -785,14 +813,26 @@ class HdrAoiEditor:
             print(f"Warning: DF analysis unavailable ({exc}). Results will not be shown.")
             self._hdr2wpd = None
 
+        # Capture the pdf_path passed to __init__ before _load_session() can overwrite it.
+        # An explicit constructor argument always takes priority over the session-stored path.
+        _init_pdf_path = self._overlay_pdf_path
+
         # Load existing session to get window settings before creating the figure
         self._load_session()
+
+        # Re-apply constructor pdf_path if one was explicitly provided
+        if _init_pdf_path is not None:
+            self._overlay_pdf_path = _init_pdf_path
+            self._overlay_needs_rasterize = True
 
         # Setup matplotlib figure — wide to match ~2.6:1 floor plan aspect ratio
         plt.rcParams['savefig.directory'] = str(self.image_dir)
         plt.rcParams['keymap.save']       = []  # disable 's' / 'ctrl+s' save-figure hotkey
         plt.rcParams['keymap.fullscreen'] = []  # disable 'f' fullscreen hotkey
-        self.fig = plt.figure(figsize=(20, 8), facecolor='#F5F5F0')
+        # Small initial size (matplotlib figsize API requires inches); window is
+        # immediately maximised so this value is only used for the brief render before
+        # _force_resize_update corrects it to the actual screen dimensions.
+        self.fig = plt.figure(figsize=(8, 5), facecolor='#F5F5F0')
         self.fig._archilume_editor = True
         self.fig.canvas.manager.set_window_title(self._WINDOW_TITLE)
         self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
@@ -813,19 +853,34 @@ class HdrAoiEditor:
                     
                     # Ignore tiny/square "dying" states (e.g. 200x200) captured during close
                     if w > 400 and h > 400:
-                        # Safety Check: Ensure the window top-left is within the virtual desktop bounds
+                        # Safety check: ensure window top-left falls within an active monitor.
+                        # Uses EnumDisplayMonitors on Windows for accurate multi-monitor rects;
+                        # falls back to winfo_screenwidth/height on other platforms.
                         try:
-                            v_x = window.winfo_vrootx()
-                            v_y = window.winfo_vrooty()
-                            v_w = window.winfo_vrootwidth()
-                            v_h = window.winfo_vrootheight()
-                            
-                            if not (v_x <= x < v_x + v_w and v_y <= y < v_y + v_h):
-                                print(f"Window position ({x}, {y}) is off-screen. Resetting to primary.")
+                            monitor_rects = self._get_monitor_rects()
+                            if monitor_rects:
+                                on_screen = any(
+                                    l <= x < r and t <= y < b
+                                    for l, t, r, b in monitor_rects
+                                )
+                                if not on_screen:
+                                    print(f"Window position ({x}, {y}) is off-screen (no active monitor). Resetting to primary.")
+                                    l, t, r, b = monitor_rects[0]
+                                    sw, sh = r - l, b - t
+                                    w = min(w, sw)
+                                    h = min(h, sh)
+                                    x = l + (sw - w) // 2
+                                    y = t + (sh - h) // 2
+                            else:
+                                # Non-Windows fallback
                                 sw = window.winfo_screenwidth()
                                 sh = window.winfo_screenheight()
-                                x = (sw - w) // 2
-                                y = (sh - h) // 2
+                                if not (0 <= x < sw and 0 <= y < sh):
+                                    print(f"Window position ({x}, {y}) is off-screen. Resetting to primary.")
+                                    w = min(w, sw)
+                                    h = min(h, sh)
+                                    x = (sw - w) // 2
+                                    y = (sh - h) // 2
                         except Exception:
                             pass
                         
@@ -847,7 +902,10 @@ class HdrAoiEditor:
                 window.update_idletasks()
 
                 self.fig.canvas.mpl_connect('resize_event', self._on_resize)
+                # Fire once early (handles non-maximised restores), then again after
+                # the OS has finished processing the zoomed state (Windows is async).
                 window.after(100, self._force_resize_update)
+                window.after(400, self._force_resize_update)
                 # Intercept the OS window-close (X button)
                 window.protocol('WM_DELETE_WINDOW', lambda: (self._on_close(None), plt.close(self.fig)))
         except (AttributeError, Exception) as exc:
@@ -1755,7 +1813,7 @@ class HdrAoiEditor:
         lines = []
         for tr in result['thresholds']:
             pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
-            lines.append(f"{tr['area_m2']:.1f} m\u00b2 ({pct:.0f}%)")
+            lines.append(f"{tr['area_m2']:.2f} m\u00b2 ({pct:.0f}%)")
             lines.append(f"@ {tr['threshold']:g}% DF")
         return lines
 
@@ -2845,6 +2903,9 @@ class HdrAoiEditor:
             width  = tk_widget.winfo_width()
             height = tk_widget.winfo_height()
             if width > 1 and height > 1:
+                # set_size_inches is a matplotlib API requirement; values are pixel dimensions
+                # divided by the figure's dots-per-inch scaling factor.
+                self.fig.set_size_inches(width / self.fig.dpi, height / self.fig.dpi, forward=False)
                 canvas.resize(width, height)
             canvas.draw_idle()
         except Exception:

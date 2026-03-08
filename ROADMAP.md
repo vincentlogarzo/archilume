@@ -122,6 +122,11 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Permutation Grid:** Add 5×5 permutation grid for quality, LRV, and VLT variables to evaluate sensitivity for failing rooms.
 - **Boundary Management:** Allow deletion of boundaries and restoration from source AOI files within the UI.
 
+### IESVE .pic Compatibility
+
+- **Native .pic Support:** Investigate whether the HDR AOI Editor can operate directly on `.pic` files exported from IESVE, without requiring a full Archilume simulation run. The editor would load `.pic` files as the base image and accept a PDF underlay for alignment, enabling room boundary markup in a standalone capacity.
+- **Migrate Post-Processing into Room Boundary Editor:** For this to be viable, the `df_cnt` (contour) and `df_false` (falsecolor) conversion steps currently handled in the rendering pipeline would need to be surfaced within `room_boundaries_editor.py`, so the editor can produce annotated outputs independently.
+
 ### Notes
 
 - **Prerequisites:** `daylight_workflow_iesve.py` must be run before use of this editor.

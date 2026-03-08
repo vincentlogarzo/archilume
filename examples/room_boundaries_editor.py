@@ -36,6 +36,7 @@ Set EDITOR = 'obj' or 'hdr' to launch the desired editor.
 
 from archilume.apps.obj_aoi_editor_matplotlib import ObjAoiEditor
 from archilume.apps.hdr_aoi_editor_matplotlib import HdrAoiEditor
+from pathlib import Path
 
 EDITOR = 'hdr'  # 'obj' or 'hdr'
 
@@ -51,10 +52,17 @@ if __name__ == "__main__":
             max_vertex_display  = 5000,    # downsample snap-point display above this count
         )
 
+    # elif EDITOR == 'hdr':
+    #     editor = HdrAoiEditor(
+    #         project     = "527DP", # Optional: sub-folder within inputs/
+    #         pdf_path    = "plans/SK01.09-PLAN - TYPICAL(P1).pdf",  # optional: auto-load PDF overlay
+    #     )
+
     elif EDITOR == 'hdr':
         editor = HdrAoiEditor(
-            project  = "527DP",             # Optional: sub-folder within inputs/
-            pdf_path = "plans/SK01.09-PLAN - TYPICAL(P1).pdf",  # optional: auto-load PDF overlay
+            project     = "1523A",   # Optional: sub-folder within inputs/
+            pdf_path    = "plans/1523A_IFC_Plans.pdf",  # optional: auto-load PDF overlay
+            image_dir   = Path("inputs/1523A/pic")
         )
 
     else:
