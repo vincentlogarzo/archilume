@@ -28,6 +28,10 @@ Two editors for different workflow stages:
             4. Draw new apartment boundary, or divide existing boundary, press s to save
             5. Export and archive results as CSV for analysis and reporting
 
+    IESVE editor
+        This is a no simulation editor. Where the user wishes to do boundary markup on 
+        existing radiance simulated .pic illuminance images. 
+
 Set EDITOR = 'obj' or 'hdr' to launch the desired editor.
 """
 
@@ -38,7 +42,7 @@ from archilume.apps.obj_aoi_editor_matplotlib import ObjAoiEditor
 from archilume.apps.hdr_aoi_editor_matplotlib import HdrAoiEditor
 from pathlib import Path
 
-EDITOR = 'hdr'  # 'obj' or 'hdr'
+EDITOR = 'hdr'  # 'obj' or 'hdr' or 'iesve'
 
 if __name__ == "__main__":
 
@@ -52,20 +56,21 @@ if __name__ == "__main__":
             max_vertex_display  = 5000,    # downsample snap-point display above this count
         )
 
-    # elif EDITOR == 'hdr':
-    #     editor = HdrAoiEditor(
-    #         project     = "527DP", # Optional: sub-folder within inputs/
-    #         pdf_path    = "plans/SK01.09-PLAN - TYPICAL(P1).pdf",  # optional: auto-load PDF overlay
-    #     )
-
     elif EDITOR == 'hdr':
         editor = HdrAoiEditor(
-            project     = "1523A",   # Optional: sub-folder within inputs/
-            pdf_path    = "plans/1523A_IFC_Plans.pdf",  # optional: auto-load PDF overlay
-            image_dir   = Path("inputs/1523A/pic")
+            project     = "527DP", # Optional: sub-folder within inputs/
+            pdf_path    = "plans/SK01.09-PLAN - TYPICAL(P1).pdf",  # optional: auto-load PDF overlay
+        )
+
+    elif EDITOR == 'iesve':
+        editor = HdrAoiEditor(
+            project          = "1523A",                        # Optional: sub-folder within inputs/
+            pdf_path         = "plans/1523A_IFC_Plans.pdf",    # optional: auto-load PDF overlay
+            image_dir        = "pic",
+            iesve_room_data  = "aoi/iesve_room_data.csv",      # optional: seed rooms from IESVE CSV (first launch only)
         )
 
     else:
-        raise ValueError(f"EDITOR must be 'obj' or 'hdr', got {EDITOR!r}")
+        raise ValueError(f"EDITOR must be 'obj' or 'hdr' or 'iesve', got {EDITOR!r}")
 
     editor.launch()

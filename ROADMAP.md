@@ -111,20 +111,19 @@ This file tracks planned features, optimizations, and known issues for the Archi
 ### UI/UX & Visualization
 
 - **Dynamic Labeling:** Update result label positions using a two-pass approach: identify high-DF facade edges and use pole-of-inaccessibility for fallback.
-- **Compliance Overlays:** Display building/floor BESS pass/fail summaries in a fixed UI panel; add pass/fail toggle overlays with image export.
+- **Compliance Overlays:** Display building/floor level BESS pass/fail summaries in a fixed UI panel; add pass/fail toggle overlays with image export. Results are shown on a room by room basis at the moment.
 - **Post-Processing Integration:** Integrate CNT and DF false-color generation into the viewer with automated temp file management.
 - **Hotkey Mirroring:** Mirror all hotkeys as labeled UI buttons with context-sensitive grey-out states.
 - **Viewport Optimization:** Remove side border gaps in the UI to maximize the image viewport.
 
 ### Workflow & Simulation
 
-- **Integrated Controls:** Add simulation and post-processing controls directly to the UI to run the full daylight IESVE workflow locally.
+- **Integrated Controls:** Add simulation and post-processing controls directly to the UI to run the full daylight IESVE workflow locally. <- this item is to progress to a docker image that launches a dash web UI to control everything. The user can click through pre-configured workflows, and auhment whatever parameters they are allow to augment.
 - **Permutation Grid:** Add 5×5 permutation grid for quality, LRV, and VLT variables to evaluate sensitivity for failing rooms.
 - **Boundary Management:** Allow deletion of boundaries and restoration from source AOI files within the UI.
 
 ### IESVE .pic Compatibility
 
-- **Native .pic Support:** Investigate whether the HDR AOI Editor can operate directly on `.pic` files exported from IESVE, without requiring a full Archilume simulation run. The editor would load `.pic` files as the base image and accept a PDF underlay for alignment, enabling room boundary markup in a standalone capacity.
 - **Migrate Post-Processing into Room Boundary Editor:** For this to be viable, the `df_cnt` (contour) and `df_false` (falsecolor) conversion steps currently handled in the rendering pipeline would need to be surfaced within `room_boundaries_editor.py`, so the editor can produce annotated outputs independently.
 
 ### Notes

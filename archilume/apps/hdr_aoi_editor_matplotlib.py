@@ -115,6 +115,7 @@ Functionality:
 import csv
 import hashlib
 import json
+import subprocess
 import ctypes
 import ctypes.wintypes
 import os
@@ -172,10 +173,11 @@ class HdrAoiEditor:
         session_path:           Optional[Path]              = None,
         pdf_path:               Optional[Union[Path, str]]  = None,
         project:                Optional[str]               = None,
+        iesve_room_data:        Optional[Union[Path, str]]  = None,
     ):
         # Base project directory within inputs/
         self.project_input_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
-        
+
         # Protected directory for editor-generated files (session, CSV, cache)
         # This prevents simulation reruns in outputs/ from overwriting manual editor work.
         self.project_aoi_dir = self.project_input_dir / "aoi"
@@ -186,7 +188,22 @@ class HdrAoiEditor:
             pdf_path = Path(pdf_path)
             pdf_path = self.project_input_dir / pdf_path if not pdf_path.is_absolute() else pdf_path
 
-        self.image_dir                                  = Path(image_dir)
+        if iesve_room_data is not None:
+            iesve_room_data = Path(iesve_room_data)
+            iesve_room_data = self.project_input_dir / iesve_room_data if not iesve_room_data.is_absolute() else iesve_room_data
+        self._iesve_room_data_path: Optional[Path]          = iesve_room_data
+
+        image_dir = Path(image_dir)
+        image_dir = self.project_input_dir / image_dir if not image_dir.is_absolute() else image_dir
+        self.image_dir                                  = image_dir
+
+        # Validate required paths before building any UI
+        if pdf_path is not None and not pdf_path.exists():
+            raise FileNotFoundError(f"pdf_path not found: {pdf_path}")
+        if iesve_room_data is not None and not iesve_room_data.exists():
+            raise FileNotFoundError(f"iesve_room_data not found: {iesve_room_data}")
+        if not self.image_dir.exists():
+            raise FileNotFoundError(f"image_dir not found: {self.image_dir}")
         # Use the protected project AOI dir for both session and .aoi exports if project is set
         self.aoi_dir                                    = self.project_aoi_dir if project else Path(aoi_dir)
         
@@ -307,6 +324,11 @@ class HdrAoiEditor:
         # Room type tagging (BED / LIVING — LIVING requires sub-rooms)
         self.room_type:             Optional[str]       = None
         self.multi_selected_room_idxs: set              = set()   # Ctrl+click multi-select
+        self._last_list_click_idx:  Optional[int]       = None   # for Shift+click range select
+        self._room_list_flat_items: List[Tuple]         = []     # ordered items for range select
+
+        # IESVE AOI level assignment state
+        self._aoi_level_idx:        int                 = 0       # current FFL group index
 
         # PDF floor plan overlay state
         self._overlay_pdf_path: Optional[Path]          = Path(pdf_path) if pdf_path else None
@@ -333,7 +355,7 @@ class HdrAoiEditor:
         self._align_key_last:   Optional[str]           = None
 
         # Daylight factor analysis — thresholds are fixed per room type
-        self.DF_THRESHOLDS          = {'BED': 0.5, 'LIVING': 1.0}
+        self.DF_THRESHOLDS          = {'BED': 0.5, 'LIVING': 1.0, 'NON-RESI': 2.0}
         self._df_image:             Optional[np.ndarray]= None   # (H, W) DF% for current HDR
         self._df_image_cache:       dict                = {}     # hdr_path_str → np.ndarray
         self._room_df_results:      dict                = {}     # room_idx → list of result strings
@@ -561,6 +583,157 @@ class HdrAoiEditor:
 
         print(f"Loaded {len(self.rooms)} rooms from {len(aoi_files)} .aoi files in {aoi_dir}")
 
+    def _load_from_iesve_aoi(self) -> int:
+        """Load room boundaries from IESVE .aoi files (world X/Y only).
+
+        Reads the IESVE .aoi format (no pixel coords, no z-height) from
+        self.aoi_dir and uses iesve_room_data CSV to look up the FFL (finished
+        floor level) for each room by Space ID. World coordinates are projected
+        to pixel coordinates using the VIEW header of the first .pic/.hdr file.
+
+        Each room dict gains two extra keys beyond the standard set:
+            'ffl'            - finished floor level in metres (float)
+            'world_vertices' - original world X/Y pairs, preserved for
+                               re-projection when the user cycles AOI levels
+
+        All rooms are initially assigned to the first HDR entry. The user then
+        uses the AOI Level cycle button to reassign each FFL group to the
+        correct .pic level, at which point vertices are re-projected using that
+        level's VIEW header and hdr_file is updated.
+
+        Returns the number of rooms loaded.
+        """
+        csv_path = self._iesve_room_data_path
+        if not self.hdr_files:
+            print("Warning: no image files found, cannot project IESVE AOI vertices.")
+            return 0
+
+        # Build Space ID → FFL lookup from CSV if provided
+        ffl_lookup: dict = {}
+        if csv_path is not None and csv_path.exists():
+            try:
+                df_csv = pd.read_csv(csv_path, encoding='utf-8')
+                id_col  = 'Space ID'
+                ffl_col = 'Min. Height (m) (Real)'
+                if id_col in df_csv.columns and ffl_col in df_csv.columns:
+                    ffl_lookup = dict(zip(df_csv[id_col].astype(str), df_csv[ffl_col]))
+                else:
+                    print(f"Warning: iesve_room_data missing '{id_col}' or '{ffl_col}' columns.")
+            except Exception as exc:
+                print(f"Warning: could not read iesve_room_data CSV: {exc}")
+
+        # Get VIEW params from the first image file for initial projection
+        first_entry = self.hdr_files[0]
+        view_params = self._read_view_params(first_entry['hdr_path'])
+        if view_params is None:
+            print(f"Warning: no VIEW params in {first_entry['hdr_path'].name}, cannot project.")
+            return 0
+        vp_x, vp_y, vh_val, vv_val, img_w, img_h = view_params
+
+        aoi_files = sorted(self.aoi_dir.glob('*.aoi'))
+        count = 0
+        for aoi_path in aoi_files:
+            with open(aoi_path, 'r') as f:
+                lines = [l.strip() for l in f.readlines()]
+
+            # IESVE format: line 0 = header, line 1 = ZONE id name, line 2 = POINTS n
+            if len(lines) < 4:
+                continue
+            zone_match = re.match(r'ZONE\s+(\S+)\s+(.*)', lines[1])
+            if not zone_match:
+                continue
+            space_id  = zone_match.group(1)
+            room_name = zone_match.group(2).strip()
+            ffl       = ffl_lookup.get(space_id, 0.0)
+
+            world_verts = []
+            for line in lines[3:]:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        world_verts.append([float(parts[0]), float(parts[1])])
+                    except ValueError:
+                        continue
+
+            if len(world_verts) < 3:
+                continue
+
+            pixels = self._world_to_pixels(world_verts, vp_x, vp_y, vh_val, vv_val, img_w, img_h)
+            self.rooms.append({
+                'name':           f"{space_id} {room_name}",
+                'parent':         None,
+                'vertices':       pixels,
+                'world_vertices': world_verts,
+                'ffl':            ffl,
+                'hdr_file':       first_entry['name'],
+            })
+            count += 1
+
+        # Auto-distribute FFL groups across HDR levels (sorted by height → sorted
+        # HDR entries).  Each group is re-projected using the target level's VIEW
+        # params so rooms appear on the correct image from the start.
+        ffl_groups = sorted({r['ffl'] for r in self.rooms if 'ffl' in r})
+        if len(ffl_groups) > 1 and len(self.hdr_files) >= len(ffl_groups):
+            ffl_to_entry = dict(zip(ffl_groups, self.hdr_files))
+            view_cache: dict = {}
+            for ffl_val, entry in ffl_to_entry.items():
+                vp = self._read_view_params(entry['hdr_path'])
+                if vp is not None:
+                    view_cache[ffl_val] = (entry, vp)
+            for room in self.rooms:
+                cached = view_cache.get(room.get('ffl'))
+                if cached and 'world_vertices' in room:
+                    entry, (vx, vy, vh_v, vv_v, w, h) = cached
+                    room['vertices'] = self._world_to_pixels(
+                        room['world_vertices'], vx, vy, vh_v, vv_v, w, h)
+                    room['hdr_file'] = entry['name']
+            assigned = [f"{ffl} m -> {ffl_to_entry[ffl]['name']}" for ffl in ffl_groups if ffl in view_cache]
+            print(f"Auto-assigned {len(assigned)} FFL groups: {', '.join(assigned)}")
+
+        print(f"Loaded {count} IESVE AOI rooms from {self.aoi_dir}")
+        return count
+
+    @staticmethod
+    def _read_view_params(pic_path: Path):
+        """Extract (vp_x, vp_y, vh, vv, img_w, img_h) from a .pic/.hdr VIEW header.
+
+        Returns None if the VIEW line is missing or incomplete.
+        """
+        try:
+            with open(pic_path, 'r', encoding='utf-8', errors='ignore') as f:
+                view_line = next((l.strip() for l in f if l.startswith('VIEW=')), None)
+            if not view_line:
+                return None
+            vp = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)', view_line)
+            vh = re.search(r'-vh\s+([\d.-]+)', view_line)
+            vv = re.search(r'-vv\s+([\d.-]+)', view_line)
+            if not (vp and vh and vv):
+                return None
+            vp_x, vp_y = float(vp.group(1)), float(vp.group(2))
+            vh_val = float(vh.group(1))
+            vv_val = float(vv.group(1))
+            img = imageio.imread(str(pic_path))
+            img_h, img_w = img.shape[:2]
+            return vp_x, vp_y, vh_val, vv_val, img_w, img_h
+        except Exception as exc:
+            print(f"Warning: could not read VIEW params from {pic_path}: {exc}")
+            return None
+
+    @staticmethod
+    def _world_to_pixels(world_verts, vp_x, vp_y, vh_val, vv_val, img_w, img_h):
+        """Convert a list of [world_x, world_y] to pixel [px, py] coordinates.
+
+        Uses the inverse of the Radiance orthographic (-vtl) projection:
+            px = (world_x - vp_x) / (vh / img_w) + img_w / 2
+            py = img_h / 2 - (world_y - vp_y) / (vv / img_h)
+        """
+        pixels = []
+        for wx, wy in world_verts:
+            px = (wx - vp_x) / (vh_val / img_w) + img_w / 2
+            py = img_h / 2 - (wy - vp_y) / (vv_val / img_h)
+            pixels.append([px, py])
+        return pixels
+
     # === IMAGE SCANNING & LOADING ==============================================
 
     def _scan_hdr_files(self) -> List[dict]:
@@ -569,10 +742,6 @@ class HdrAoiEditor:
         Returns:
             Sorted list of dicts with keys: hdr_path, tiff_paths, name (stem).
         """
-        if not self.image_dir.exists():
-            print(f"Warning: image_dir does not exist: {self.image_dir}")
-            return []
-
         hdr_paths = sorted([*self.image_dir.glob("*.hdr"), *self.image_dir.glob("*.pic")])
         result = []
         for hdr_path in hdr_paths:
@@ -1130,7 +1299,7 @@ class HdrAoiEditor:
         rtype_y = row_y + lbl_h + gap + inp_h + gap
         self._make_label(prnt_x, rtype_y, prnt_w, lbl_h, "Room Type:")
         rtype_btn_y = rtype_y + lbl_h + gap
-        n_type_btns = 3
+        n_type_btns = 4
         rtype_btn_w = (prnt_w - gap * (n_type_btns - 1)) / n_type_btns
         self.btn_room_type_bed = self._make_button(
             prnt_x, rtype_btn_y, rtype_btn_w, inp_h, 'BED',
@@ -1138,8 +1307,11 @@ class HdrAoiEditor:
         self.btn_room_type_living = self._make_button(
             prnt_x + (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'LIVING',
             lambda e: self._on_room_type_toggle('LIVING', requires_children=True))
+        self.btn_room_type_nonresi = self._make_button(
+            prnt_x + 2 * (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'NON-RESI',
+            lambda e: self._on_room_type_toggle('NON-RESI'))
         self.btn_room_type_circ = self._make_button(
-            prnt_x + 2 * (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'CIRC',
+            prnt_x + 3 * (rtype_btn_w + gap), rtype_btn_y, rtype_btn_w, inp_h, 'CIRC',
             lambda e: self._on_room_type_toggle('CIRC'))
 
         # Status / preview
@@ -1259,6 +1431,13 @@ class HdrAoiEditor:
             'Reset Level Alignment', self._on_overlay_reset_click,
             color='#FFEBEE', hovercolor='#FFCDD2') # Subtle red tint for "reset" action
         self.btn_overlay_reset.ax.set_visible(False) # Only show when Align mode is ON
+
+        # 6th Column on Row 3: IESVE AOI level cycle — only shown when iesve_room_data provided
+        self.btn_aoi_level = self._make_button(
+            tr_x + 5 * btn_step, row3_y, btn_w, tr_h,
+            'AOI Level: -/-', self._on_aoi_level_cycle)
+        self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
+        self._update_aoi_level_label()
 
         # Create DPI RadioButtons (initially hidden)
         # Position it vertically above the main DPI button
@@ -1697,7 +1876,12 @@ class HdrAoiEditor:
         self.ax_legend.set_visible(True)
 
     def _load_current_df_image(self):
-        """Load the DF% image for the current HDR file (cached)."""
+        """Load the DF% image for the current HDR file (cached).
+
+        For IESVE .pic files ``pvalue -o`` is used to undo any EXPOSURE
+        header adjustment (e.g. from ``pfilt``) so that the raw irradiance
+        values are recovered before converting to DF%.
+        """
         if self._hdr2wpd is None or not self.hdr_files:
             self._df_image = None
             return
@@ -1706,9 +1890,33 @@ class HdrAoiEditor:
         if key in self._df_image_cache:
             self._df_image = self._df_image_cache[key]
             return
-        self._df_image = Hdr2Wpd.load_df_image(hdr_path)
+        if self._iesve_room_data_path is not None:
+            self._df_image = self._load_iesve_df_image(hdr_path)
+        else:
+            self._df_image = Hdr2Wpd.load_df_image(hdr_path)
         if self._df_image is not None:
             self._df_image_cache[key] = self._df_image
+
+    @staticmethod
+    def _load_iesve_df_image(hdr_path: Path) -> Optional[np.ndarray]:
+        """Load a DF% image from an IESVE .pic file, undoing any EXPOSURE adjustment.
+
+        IESVE .pic files are post-processed with ``pfilt`` which embeds an
+        EXPOSURE header that scales pixel values.  Using ``pvalue -o``
+        reverses this so the original irradiance values are recovered.
+        """
+        try:
+            width, height = utils.get_hdr_resolution(hdr_path)
+            result = subprocess.run(
+                ['pvalue', '-h', '-H', '-b', '-o', '-df', str(hdr_path)],
+                capture_output=True, check=True,
+            )
+            raw_image = np.frombuffer(result.stdout, dtype=np.float32).reshape((height, width))
+            df_image = raw_image * 1.79  # W/m² → DF%
+            return df_image
+        except Exception as exc:
+            print(f"Warning: could not load IESVE DF image from {hdr_path}: {exc}")
+            return None
 
     @staticmethod
     def _vertices_hash(vertices: list) -> str:
@@ -3536,6 +3744,60 @@ class HdrAoiEditor:
         self._save_session()
         self._render_section(force_full=True)
 
+    def _on_aoi_level_cycle(self, event):
+        """Cycle to the next FFL group and reassign those rooms to the current .pic level."""
+        ffl_groups = self._aoi_ffl_groups()
+        if not ffl_groups:
+            self._update_status("No IESVE AOI rooms loaded", 'orange')
+            return
+        n = len(ffl_groups)
+        self._aoi_level_idx = (self._aoi_level_idx + 1) % n
+        self._reassign_aoi_level()
+        self._update_aoi_level_label()
+        self._save_session()
+        self._render_section(force_full=True)
+
+    def _aoi_ffl_groups(self) -> list:
+        """Return sorted list of unique FFL values from rooms that have a 'ffl' key."""
+        ffls = sorted({r['ffl'] for r in self.rooms if 'ffl' in r})
+        return ffls
+
+    def _reassign_aoi_level(self):
+        """Re-project rooms in the current FFL group using the current .pic's VIEW header
+        and assign them to the current HDR file."""
+        ffl_groups = self._aoi_ffl_groups()
+        if not ffl_groups or not self.hdr_files:
+            return
+        target_ffl = ffl_groups[self._aoi_level_idx]
+        entry      = self.hdr_files[self.current_hdr_idx]
+        view_params = self._read_view_params(entry['hdr_path'])
+        if view_params is None:
+            self._update_status(f"No VIEW params in {entry['name']}", 'orange')
+            return
+        vp_x, vp_y, vh_val, vv_val, img_w, img_h = view_params
+        for room in self.rooms:
+            if room.get('ffl') == target_ffl and 'world_vertices' in room:
+                room['vertices'] = self._world_to_pixels(
+                    room['world_vertices'], vp_x, vp_y, vh_val, vv_val, img_w, img_h)
+                room['hdr_file'] = entry['name']
+                room.pop('df_cache', None)
+        self._update_status(
+            f"Assigned FFL {target_ffl} m rooms → {entry['name']}", 'green')
+
+    def _update_aoi_level_label(self):
+        """Update the AOI level cycle button label."""
+        if not hasattr(self, 'btn_aoi_level'):
+            return
+        ffl_groups = self._aoi_ffl_groups()
+        if not ffl_groups:
+            self.btn_aoi_level.label.set_text('AOI Level: -/-')
+        else:
+            n   = len(ffl_groups)
+            idx = self._aoi_level_idx % n
+            ffl = ffl_groups[idx]
+            self.btn_aoi_level.label.set_text(f'AOI Level: {idx + 1}/{n} ({ffl} m)')
+        self.fig.canvas.draw_idle()
+
     # === OVERLAY BLITTING OPTIMIZATIONS ========================================
 
     def _start_overlay_blit(self):
@@ -4115,6 +4377,7 @@ class HdrAoiEditor:
         """Style BED/LIVING/CIRC buttons to reflect current room_type."""
         self._style_toggle_button(self.btn_room_type_bed, self.room_type == 'BED')
         self._style_toggle_button(self.btn_room_type_living, self.room_type == 'LIVING')
+        self._style_toggle_button(self.btn_room_type_nonresi, self.room_type == 'NON-RESI')
         self._style_toggle_button(self.btn_room_type_circ, self.room_type == 'CIRC')
 
     # === ROOM DIVIDER ==========================================================
@@ -4806,6 +5069,7 @@ class HdrAoiEditor:
             return
 
         flat_items, children_by_parent = self._build_room_tree(hdr_rooms)
+        self._room_list_flat_items = flat_items
         self._render_room_list_rows(flat_items, children_by_parent)
         self.fig.canvas.draw_idle()
 
@@ -4958,8 +5222,9 @@ class HdrAoiEditor:
         """Handle clicks on the saved rooms list to select a room.
 
         Ctrl+click toggles rooms in/out of the multi-selection set,
-        allowing bulk room-type tagging.  Plain click reverts to
-        single-select behaviour.
+        allowing bulk room-type tagging.  Shift+click selects all rooms
+        between the last clicked room and the current one.  Plain click
+        reverts to single-select behaviour.
         """
         if event.inaxes != self.ax_list:
             return
@@ -4967,7 +5232,8 @@ class HdrAoiEditor:
             return
         x = event.xdata
         y = event.ydata
-        ctrl = event.key == 'control'
+        ctrl  = event.key == 'control'
+        shift = event.key == 'shift'
         for hit in self._room_list_hit_boxes:
             if len(hit) == 5:
                 y_min, y_max, x_min, x_max, room_idx = hit
@@ -4975,7 +5241,19 @@ class HdrAoiEditor:
                 y_min, y_max, room_idx = hit
                 x_min, x_max = 0, 1
             if y_min <= y <= y_max and x_min <= x <= x_max:
-                if ctrl:
+                if shift and self._last_list_click_idx is not None:
+                    # Shift+click: select range between last click and this one
+                    flat_idxs = [item[0] for item in self._room_list_flat_items]
+                    try:
+                        a = flat_idxs.index(self._last_list_click_idx)
+                        b = flat_idxs.index(room_idx)
+                    except ValueError:
+                        a, b = 0, len(flat_idxs) - 1
+                    lo, hi = min(a, b), max(a, b)
+                    self.multi_selected_room_idxs = set(flat_idxs[lo:hi + 1])
+                    n = len(self.multi_selected_room_idxs)
+                    self._update_status(f"Multi-select: {n} room(s)", 'blue')
+                elif ctrl:
                     # Ctrl+click: toggle room in multi-selection
                     if room_idx in self.multi_selected_room_idxs:
                         self.multi_selected_room_idxs.discard(room_idx)
@@ -4986,9 +5264,11 @@ class HdrAoiEditor:
                         self.multi_selected_room_idxs.add(self.selected_room_idx)
                     n = len(self.multi_selected_room_idxs)
                     self._update_status(f"Multi-select: {n} room(s)", 'blue')
+                    self._last_list_click_idx = room_idx
                 else:
                     # Plain click: clear multi-selection, single-select
                     self.multi_selected_room_idxs.clear()
+                    self._last_list_click_idx = room_idx
                     if self.selected_room_idx == room_idx:
                         self._deselect_room()
                     else:
@@ -5013,6 +5293,7 @@ class HdrAoiEditor:
             'df_stamps':      stamps_json,
             'overlay_pdf_path':    str(self._overlay_pdf_path) if self._overlay_pdf_path else None,
             'overlay_page_idx':    self._overlay_page_idx,
+            'aoi_level_idx':       self._aoi_level_idx,
             'overlay_visible':     self._overlay_visible,
             'overlay_transforms':  self._overlay_transforms,
             'overlay_alpha':       self._overlay_alpha,
@@ -5083,14 +5364,45 @@ class HdrAoiEditor:
                 self._overlay_pdf_path = Path(pdf_path_str)
                 self._overlay_page_idx = data.get('overlay_page_idx', 0)
                 self._overlay_needs_rasterize = True
+            self._aoi_level_idx = data.get('aoi_level_idx', 0)
+            # If iesve_room_data is set but session has no rooms or rooms lack 'ffl'
+            # keys, the session predates IESVE AOI support or was saved before rooms
+            # were loaded — (re-)load from IESVE AOI files.
+            if (self._iesve_room_data_path is not None
+                    and (not self.rooms
+                         or not any('ffl' in r for r in self.rooms))):
+                print("Session has no IESVE rooms — loading from IESVE AOI files.")
+                self.rooms = []
+                n = self._load_from_iesve_aoi()
+                if n == 0:
+                    return
+                self._save_session()
             # df_thresholds from old sessions are ignored — now fixed per room type
             source = "session"
             cached = sum(1 for r in self.rooms if r.get('df_cache'))
             if cached:
                 print(f"Restored DF cache for {cached}/{len(self.rooms)} rooms")
         elif self.aoi_dir.exists() and list(self.aoi_dir.glob('*.aoi')):
-            self._load_from_aoi_files(self.aoi_dir)
-            source = "AOI files"
+            # Distinguish IESVE .aoi format (world X/Y only, 'AoI Points File :' header)
+            # from modern Archilume format (pixel coords included, 'AOI Points File:' header).
+            # IESVE files are only processed when iesve_room_data is provided.
+            first_aoi = next(self.aoi_dir.glob('*.aoi'), None)
+            is_iesve = False
+            if first_aoi is not None and self._iesve_room_data_path is not None:
+                try:
+                    with open(first_aoi, 'r') as _f:
+                        is_iesve = _f.readline().startswith('AoI Points File :')
+                except Exception:
+                    pass
+            if is_iesve:
+                n = self._load_from_iesve_aoi()
+                if n == 0:
+                    return
+                source = "IESVE AOI files"
+                self._save_session()  # persist so conversion never runs again
+            else:
+                self._load_from_aoi_files(self.aoi_dir)
+                source = "AOI files"
         else:
             return
 
@@ -5222,7 +5534,7 @@ class HdrAoiEditor:
         self._start_export_progress_poll(progress, n_rooms)
 
     @staticmethod
-    def _compute_summary_for_hdr(hdr_name, hdr_path, rooms_for_hdr):
+    def _compute_summary_for_hdr(hdr_name, hdr_path, rooms_for_hdr, iesve_mode=False):
         """Load one HDR's DF image and compute per-room summary statistics.
 
         Designed to run in a ThreadPoolExecutor — the heavy work is the
@@ -5235,6 +5547,8 @@ class HdrAoiEditor:
                            child_verts_list is a list of vertex lists for sub-rooms to
                            exclude from this room's pixel set (mirrors the UI behaviour).
                            Pass an empty list for rooms that have no children.
+            iesve_mode: When True, use ``pvalue -o`` to undo EXPOSURE header
+                        adjustments (e.g. from ``pfilt``).
 
         Returns:
             (summary_rows, pixel_chunks) where summary_rows is a list of dicts
@@ -5245,7 +5559,10 @@ class HdrAoiEditor:
         """
         from skimage.draw import polygon as skimage_polygon
 
-        df_img = Hdr2Wpd.load_df_image(hdr_path)
+        if iesve_mode:
+            df_img = HdrAoiEditor._load_iesve_df_image(hdr_path)
+        else:
+            df_img = Hdr2Wpd.load_df_image(hdr_path)
         if df_img is None:
             return [], []
 
@@ -5343,10 +5660,11 @@ class HdrAoiEditor:
             max_workers = min(len(hdr_room_groups), 4) if hdr_room_groups else 1
             completed_rooms = 0
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                iesve = self._iesve_room_data_path is not None
                 futures = {
                     pool.submit(
                         self._compute_summary_for_hdr,
-                        hdr_name, hdr_lookup[hdr_name], rooms_list
+                        hdr_name, hdr_lookup[hdr_name], rooms_list, iesve
                     ): rooms_list
                     for hdr_name, rooms_list in hdr_room_groups.items()
                 }

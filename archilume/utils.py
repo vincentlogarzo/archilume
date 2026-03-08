@@ -1003,7 +1003,7 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
     try:
         # Step 1: Locate and validate hdr file
 
-        hdr_file_path = next(image_dir.glob('*.hdr'), None)
+        hdr_file_path = next(image_dir.glob('*.hdr'), None) or next(image_dir.glob('*.pic'), None)
 
         if hdr_file_path is None:
             raise FileNotFoundError(f"No HDR files found in {image_dir}")
