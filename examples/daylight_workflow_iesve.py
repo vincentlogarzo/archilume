@@ -40,12 +40,12 @@ def run_daylight_analysis():
 
     # 2. Run the standardized workflow
     inputs = IESVEDaylightWorkflow.InputsValidator(
-        project                     = "527DP",              # Optional: sub-folder within inputs/
-        octree_path                 = "527DP.oct",          # Must use a 10K Lux CIE Overcast sky
+        project                     = "527DP",  # Optional: sub-folder in inputs/
+        octree_path                 = "527DP.oct",  # Must use 10KLx sky
         rendering_params            = "preview.rdp",
         iesve_room_data             = "aoi/iesve_room_data.csv",
         image_resolution            = 2048,
-        ffl_offset                  = 0.0,                  # Camera height above floor (m)
+        ffl_offset                  = 0.0,  # Camera height above floor (m)
     )
 
     workflow = IESVEDaylightWorkflow()

@@ -28,11 +28,18 @@ Archilume is a Python-based framework designed to automate Radiance-based archit
 - `archilume/config.py`: Centralized configuration. Detects tool paths (Radiance/Accelerad) and manages project directories (`inputs/`, `outputs/`, `intermediates/`).
 - `archilume/workflows.py`: High-level simulation orchestrators. Currently hosts the `SunlightAccessWorkflow` and its `Inputs` validator class.
 - `archilume/rendering_pipelines.py`: Orchestrates complex rendering tasks. 
-    - `SunlightRenderer`: Handles multi-phase rendering (overcast indirect baseline + sunny direct sun).
-    - `DaylightRenderer`: Handles daylight factor simulations.
+  - `SunlightRenderer`: Handles multi-phase rendering (overcast indirect baseline + sunny direct sun).
+  - `DaylightRenderer`: Handles daylight factor simulations.
 - `archilume/objs2octree.py`: Manages the geometry conversion lifecycle using `obj2rad` and `oconv`.
 - `archilume/sky_generator.py`: Interfaces with `gensky` to produce time-series sky files.
 - `archilume/utils.py`: A comprehensive suite of utilities for parallel command execution, timing (`PhaseTimer`), geometry calculations, and smart cleanup of outputs.
+
+## Platform & Environment Awareness
+
+- **OS Awareness:** This project is being developed on **Windows (win32)**.
+- **Search Tooling:** **NEVER** use the `grep` command within `run_shell_command`. It is a Linux utility and is not available in this Windows environment. Instead, use the built-in `grep_search` and `glob` tools for all codebase searching and file location tasks.
+- **Exploratory Authorization:** You have full, standing authorization to use any information-gathering tools (`grep_search`, `glob`, `read_file`, `list_directory`) and exploratory `run_shell_command` calls (e.g., `git status`, `ls`, `Get-ChildItem`) without seeking prior confirmation to conduct plan creation.
+- **PowerShell Commands:** When using `run_shell_command`, prefer PowerShell-native equivalents (e.g., `Select-String` instead of `grep`, `Get-ChildItem` instead of `ls`) if you must use shell commands.
 
 ## Coding Standards & Conventions
 

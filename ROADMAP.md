@@ -7,7 +7,6 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Grid Resolution:** Support grid size input in millimeters. Auto-calculate `x_res`, `y_res` from room extents.
 - **RDP References:** Implement inline `@v{rdp_file_path}` implementation to simplify command outputs.
 - **Modular Post-Processing:** Break `Tiff2Animation` into `Wpd2Tiff` and `Tiff2Animation` for clearer function separation.
-- **AI Readiness:** Implement PNG conversion post-render for AI-compatible image enhancement (Google Nano Banana API).
 - **Advanced Reporting:** Replace Excel output with a `wpd2report` module generating PDF/HTML with NSW ADG metrics.
 - **Auto-Cleanup:** Move `smart_cleanup` into each workflow's `InputsValidator`. Must happen *after* file naming encodes the scenario grid (resolution, rendering params, etc.) so the cache can distinguish previously completed runs. For the IESVE daylight workflow specifically, the only input the user should need to flag is whether the source `.oct` file has changed — parameter/resolution changes should be inferred automatically from the output file names.
 - **Packaging:** Implement Phase 6 to package final results into a timestamped `.zip` deliverable.
@@ -35,6 +34,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ## 🟢 LOW PRIORITY: Performance, Cross-Platform & Deployment
 
+- **Compressed PNG Output:** Convert TIFF outputs from `SunlightAccessWorkflow` to compressed PNG (as already done in the daylight workflow). PNG files are significantly more compact than TIFFs, reducing storage footprint for large time-series simulation runs.
 - **GPU Optimization:** Use `nvmath-python` for GPU-accelerated matrix operations during WPD extraction.
 - **Parallel Compilation:** Run sky/view generation in parallel with `oconv` compilation.
 - **Pre-processing:** Add Blender decimation scripts to pre-process site context OBJs.
@@ -88,9 +88,8 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ### Core Architecture
 
-- **DXF Integration:** On editor launch, convert all .dxf files found in inputs_dir to PNG using ezdxf. Match each PNG to its corresponding floor plate by plan key. Add toggle to show/hide DXF background.
 - **Multi-Resolution Reuse:** Allow pre-existing AOI boundaries to be reused across images rendered at different resolutions by storing vertices in normalized [0,1] or world coordinates.
-- **Self-Contained Transform:** Derive pixel↔world transform directly from the .hdr header (VIEW= parameters) and pixel dimensions, removing map file dependency.
+- **Self-Contained Transform:** Derive pixel to world transform directly from the .hdr header (VIEW= parameters) and pixel dimensions, removing map file dependency.
 - **State Machine Integration:** Replace scattered mode-tracking attributes with a single explicit state machine to prevent invalid combined states.
 - **Unified Undo Stack:** Consolidate independent undo stacks into a single ordered stack of JSON state snapshots for consistent restoration.
 

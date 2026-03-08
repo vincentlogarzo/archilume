@@ -15,6 +15,9 @@ Workflow Overview:
 4. Export results to Excel and animated APNG/GIF.
 """
 
+# fmt: off
+# autopep8: off
+
 from archilume.workflows import SunlightAccessWorkflow
 
 def run_sunlight_analysis():

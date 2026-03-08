@@ -81,7 +81,7 @@ Before making code changes, briefly explain your approach and get confirmation. 
 
 ## Git Workflow
 
-Always commit and push changes after completing a task unless told otherwise. Verify git status and ensure all modified files are staged.
+Only commit and push when explicitly instructed by the user. Do not commit or push automatically after completing a task.
 
 **Before every commit, scan all staged changes for sensitive information:**
 

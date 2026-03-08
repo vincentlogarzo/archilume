@@ -1,17 +1,20 @@
 """
 Archilume: Room Boundary Editors
 
+AOI = Area of interest
+
 Two editors for different workflow stages:
 
   OBJ AOI Editor (pre-simulation):
         Draw room boundaries on a 3D OBJ mesh slice.
-        Run this before simulation to define rooms.
+        Run this before simulation to define rooms to be analysed.
 
         Workflow:
-            1. Navigate to floor with ↑/↓
-            2. Draw apartment boundary → name "U101" → Save
-            3. Select "U101" as parent
-            4. Draw sub-rooms (e.g. "BED1" → auto-saved as "U101_BED1")
+            1. Launch editor
+            2. Navigate floors using ↑/↓ arrow keys 
+            3. Draw apartment boundary → name "U101" → Save
+            4. Select "U101" as parent, and Draw sub-rooms 
+                (e.g. "BED1" → auto-saved as "U101_BED1")
             5. Repeat for each floor/apartment
 
   HDR AOI Editor (post-simulation):
@@ -19,12 +22,11 @@ Two editors for different workflow stages:
       Requires daylight_workflow_iesve.py to have been run successfully.
 
         Workflow:
-            1. Navigate to the desired HDR file with Up/Down
-            2. Draw apartment boundary, name "U101", press s to save
-            3. Select "U101" as parent
-            4. Draw sub-rooms (e.g. "BED1" auto-saved as "U101_BED1")
-            5. Repeat for each HDR file / floor
-            6. Export and archive results as CSV for analysis and reporting
+            1. Launch editor
+            2. Navigate floors using ↑/↓ arrow keys
+            3. Adjust overlayed PDF architecutral plans scale and position 
+            4. Draw new apartment boundary, or divide existing boundary, press s to save
+            5. Export and archive results as CSV for analysis and reporting
 
 Set EDITOR = 'obj' or 'hdr' to launch the desired editor.
 """
@@ -43,7 +45,7 @@ if __name__ == "__main__":
         editor = ObjAoiEditor(
             project             = "527DM", # Optional: sub-folder within inputs/
             obj_path            = "223181_AR_LOFTUS_BTR_stripped_cleaned_decimate.obj",
-            initial_csv_path    = "87cowles_BLD_room_boundaries.csv",  # optional: pre-existing room boundaries
+            initial_csv_path    = "87cowles_BLD_room_boundaries.csv",  # optional: pre-existing boundaries
             simplify_ratio      = None,    # 0.0-1.0 mesh decimation for large files (None = off)
             detect_floors       = True,    # False to skip auto floor detection on very large meshes
             max_vertex_display  = 5000,    # downsample snap-point display above this count

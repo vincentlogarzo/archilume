@@ -2735,21 +2735,48 @@ class HdrAoiEditor:
         if event.inaxes != self.ax:
             return
 
-        # Shift+scroll: overlay scale
-        if (event.key == 'shift' and self._overlay_visible
+        # Shift+scroll: overlay scale (align mode only)
+        if (event.key == 'shift' and self._align_mode
+                and self._overlay_visible
                 and self._overlay_rgba is not None
                 and not self.edit_mode and not self.draw_mode):
-            
+
             # Ensure blit background is ready
             if self._blit_background is None:
                 self._start_overlay_blit()
 
-            # Use smaller increments for resizing (1% instead of 5%)
+            # Use smaller increments for resizing (1% per scroll tick)
             factor = 1.01 if event.button == 'up' else 1 / 1.01
             hdr = self.current_hdr_name
             tf = self._make_overlay_manual(hdr)
-            tf['scale_x'] = tf.get('scale_x', 1.0) * factor
-            tf['scale_y'] = tf.get('scale_y', 1.0) * factor
+
+            old_sx = tf.get('scale_x', 1.0)
+            old_sy = tf.get('scale_y', 1.0)
+            new_sx = old_sx * factor
+            new_sy = old_sy * factor
+
+            # Determine rendered pixel dimensions (account for 90° rotation)
+            rot = tf.get('rotation_90', 0) % 4
+            if rot > 0:
+                oh, ow = np.rot90(self._overlay_rgba, k=rot).shape[:2]
+            else:
+                oh, ow = self._overlay_rgba.shape[:2]
+
+            # Current overlay centre in world coordinates
+            img_w = self._image_width
+            img_h = self._image_height
+            default_ox = (img_w - ow * old_sx) / 2.0
+            default_oy = (img_h - oh * old_sy) / 2.0
+            ox = tf.get('offset_x', default_ox)
+            oy = tf.get('offset_y', default_oy)
+            cx = ox + ow * old_sx / 2.0
+            cy = oy + oh * old_sy / 2.0
+
+            # Shift offset so the centre stays fixed after scaling
+            tf['scale_x'] = new_sx
+            tf['scale_y'] = new_sy
+            tf['offset_x'] = cx - ow * new_sx / 2.0
+            tf['offset_y'] = cy - oh * new_sy / 2.0
             
             # Fast update using blitting
             self._update_overlay_blit()
