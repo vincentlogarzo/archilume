@@ -2,29 +2,6 @@
 
 This file tracks planned features, optimizations, and known issues for the Archilume framework.
 
-## 🔴 TOP PRIORITY: Project-Based Folder Structure Refactor
-
-Restructure the file system model from a flat global `inputs/` + `outputs/` layout to a per-project hierarchy. Each project is a self-contained folder:
-
-```text
-projects/
-└── <project_name>/
-    ├── inputs/       # OBJ, IFC, CSV, PDF plans, AOI files
-    ├── outputs/      # Rendered HDR/PNG/TIFF, WPD, reports
-    └── archive/      # Timestamped export zips from the editor
-```
-
-**Motivation:** Users currently working on multiple projects simultaneously share a single global `inputs/` and `outputs/` directory, causing file collisions and confusion. Scoping all simulation inputs, outputs, and archives to a named project folder eliminates ambiguity and makes deliverables self-contained.
-
-**Scope:**
-
-- Refactor `config.py` to resolve all paths relative to a `projects/<project_name>/` root instead of the global `inputs/` and `outputs/` dirs.
-- All workflows (`SunlightAccessWorkflow`, `DaylightRenderer`, IESVE workflow) must accept and enforce a `project` parameter that maps to the project folder — simulations may not run without one.
-- Update `HdrAoiEditor` and `ObjAoiEditor` to resolve `image_dir`, `aoi_dir`, and `session_path` within the project folder.
-- Move archive export output (currently written to `image_dir`) to the project's dedicated `archive/` subfolder.
-- Update all example scripts and documentation to use the new structure.
-- Provide a migration utility or clear instructions for moving existing flat-layout projects into the new structure.
-
 ## 🔴 HIGH PRIORITY: Core Workflow & Output Improvements
 
 - **Grid Resolution:** Support grid size input in millimeters. Auto-calculate `x_res`, `y_res` from room extents.

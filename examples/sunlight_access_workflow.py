@@ -34,7 +34,7 @@ def run_sunlight_analysis():
         rendering_mode      = "gpu",     # Backend: 'cpu' or 'gpu'
         rendering_quality   = "stand",   # Quality: 'draft', 'stand', 'prod', etc.
         animation_format    = "apng",    # Options: 'apng', 'gif'
-        project             = "cowles",  # Optional: project sub-folder within inputs/
+        project             = "cowles",  # Required: project name under projects/ (e.g. projects/cowles/)
         room_boundaries_csv = "87cowles_BLD_room_boundaries.csv",
         obj_paths           = [
                                 "87Cowles_BLD_withWindows.obj",

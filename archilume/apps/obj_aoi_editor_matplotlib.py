@@ -517,9 +517,9 @@ class ObjAoiEditor:
             simplify_ratio: Optional mesh decimation ratio (0.0-1.0) for large meshes
             detect_floors: Whether to auto-detect floor levels (disable for very large meshes)
             max_vertex_display: Maximum vertices to display (downsample if exceeded)
-            project: Optional sub-folder name within inputs/ (e.g. "myproject" → inputs/myproject/)
+            project: Optional project name under projects/ (e.g. "myproject" → projects/myproject/inputs/)
         """
-        base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+        base_dir = config.get_project_paths(project).inputs_dir if project else config.PROJECT_ROOT / "inputs"
 
         obj_path = Path(obj_path)
         self.obj_path = base_dir / obj_path if not obj_path.is_absolute() else obj_path

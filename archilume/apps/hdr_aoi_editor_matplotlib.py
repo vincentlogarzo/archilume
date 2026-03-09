@@ -148,7 +148,6 @@ import numpy as np
 
 # Archilume imports
 from archilume import config, utils, Hdr2Wpd
-from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
 from archilume.utils import rasterize_pdf_page, make_lines_only
 
 
@@ -204,22 +203,39 @@ class HdrAoiEditor:
 
     def __init__(
         self,
-        image_dir:              Union[Path, str]            = config.IMAGE_DIR,
-        aoi_dir:                Union[Path, str]            = config.AOI_DIR,
+        image_dir:              Optional[Union[Path, str]]  = None,
+        aoi_dir:                Optional[Union[Path, str]]  = None,
         session_path:           Optional[Path]              = None,
         pdf_path:               Optional[Union[Path, str]]  = None,
         project:                Optional[str]               = None,
         iesve_room_data:        Optional[Union[Path, str]]  = None,
     ):
-        # Base project directory within inputs/
+        # Resolve project paths — all dirs derive from the project when one is provided
         self.project = project
-        self.project_input_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
-
-        # Protected directory for editor-generated files (session, CSV, cache)
-        # This prevents simulation reruns in outputs/ from overwriting manual editor work.
-        self.project_aoi_dir = self.project_input_dir / "aoi"
         if project:
+            paths = config.get_project_paths(project)
+            self.project_input_dir = paths.inputs_dir
+            self.project_aoi_dir   = paths.aoi_inputs_dir   # inputs/aoi/
+            self.archive_dir       = paths.archive_dir
             self.project_aoi_dir.mkdir(parents=True, exist_ok=True)
+            # Default image_dir to outputs/image/ when project is given.
+            # If caller explicitly passes a relative string (e.g. "pic" for IESVE mode),
+            # resolve it against inputs_dir; otherwise use the project outputs path directly.
+            if image_dir is None:
+                resolved_image_dir = paths.image_dir
+            else:
+                image_dir = Path(image_dir)
+                resolved_image_dir = self.project_input_dir / image_dir if not image_dir.is_absolute() else image_dir
+            self.image_dir = resolved_image_dir
+        else:
+            if image_dir is None:
+                raise ValueError("Either 'project' or 'image_dir' must be provided.")
+            if aoi_dir is None:
+                raise ValueError("Either 'project' or 'aoi_dir' must be provided.")
+            self.project_input_dir = Path(image_dir).parent
+            self.project_aoi_dir   = Path(aoi_dir)
+            self.archive_dir       = config.PROJECT_ROOT / "archive"
+            self.image_dir         = Path(image_dir)
 
         if pdf_path is not None:
             pdf_path = Path(pdf_path)
@@ -230,10 +246,6 @@ class HdrAoiEditor:
             iesve_room_data = self.project_input_dir / iesve_room_data if not iesve_room_data.is_absolute() else iesve_room_data
         self._iesve_room_data_path: Optional[Path]          = iesve_room_data
 
-        image_dir = Path(image_dir)
-        image_dir = self.project_input_dir / image_dir if not image_dir.is_absolute() else image_dir
-        self.image_dir                                  = image_dir
-
         # Validate required paths before building any UI
         if pdf_path is not None and not pdf_path.exists():
             raise FileNotFoundError(f"pdf_path not found: {pdf_path}")
@@ -241,10 +253,11 @@ class HdrAoiEditor:
             raise FileNotFoundError(f"iesve_room_data not found: {iesve_room_data}")
         if not self.image_dir.exists():
             raise FileNotFoundError(f"image_dir not found: {self.image_dir}")
-        # Use the protected project AOI dir for both session and .aoi exports if project is set
-        self.aoi_dir                                    = self.project_aoi_dir if project else Path(aoi_dir)
-        
-        # Session and CSV paths now default to the protected project input directory
+
+        # AOI dir: always the project_aoi_dir (inputs/aoi/) when project is set
+        self.aoi_dir                                    = self.project_aoi_dir
+
+        # Session and CSV paths live in the protected project input aoi directory
         self.session_path                               = session_path or (self.project_aoi_dir / "aoi_session.json")
         self.csv_path                                   = self.project_aoi_dir / "aoi_boundaries.csv"
 
@@ -5800,14 +5813,15 @@ class HdrAoiEditor:
 
     def _run_archive(self) -> Optional[Path]:
         """Zip the outputs directory into the archive folder. Returns the zip path or None."""
-        from archilume.config import OUTPUTS_DIR, ARCHIVE_DIR
+        outputs_dir = self.image_dir.parent  # outputs/ = image_dir/../
+        archive_dir = self.archive_dir
         try:
-            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            archive_dir.mkdir(parents=True, exist_ok=True)
             timestamp = time.strftime('%Y%m%d_%H%M%S')
             project_suffix = f"_{self.project}" if self.project else ""
             zip_name  = f"archilume_export{project_suffix}_{timestamp}"
-            zip_path  = ARCHIVE_DIR / f"{zip_name}.zip"
-            shutil.make_archive(str(ARCHIVE_DIR / zip_name), 'zip', str(OUTPUTS_DIR.parent), OUTPUTS_DIR.name)
+            zip_path  = archive_dir / f"{zip_name}.zip"
+            shutil.make_archive(str(archive_dir / zip_name), 'zip', str(outputs_dir.parent), outputs_dir.name)
             print(f"Archive created: {zip_path}")
             return zip_path
         except Exception as e:
@@ -5816,10 +5830,12 @@ class HdrAoiEditor:
 
     def _on_extract_click(self, event):
         """Open a file picker to select a zip archive, extract it to outputs, and reload."""
+        outputs_dir = self.image_dir.parent  # outputs/ = image_dir/../
+        archive_dir = self.archive_dir
         root = Tk()
         root.withdraw()
         root.attributes('-topmost', True)
-        initial_dir = str(ARCHIVE_DIR) if ARCHIVE_DIR.exists() else str(Path.cwd())
+        initial_dir = str(archive_dir) if archive_dir.exists() else str(Path.cwd())
         zip_path = filedialog.askopenfilename(
             title="Select archive to extract",
             initialdir=initial_dir,
@@ -5832,7 +5848,7 @@ class HdrAoiEditor:
             title="Overwrite outputs?",
             message=(
                 f"Extract '{Path(zip_path).name}' and overwrite all files in:\n\n"
-                f"{OUTPUTS_DIR}\n\n"
+                f"{outputs_dir}\n\n"
                 "This will replace all current output data. Continue?"
             ),
             parent=root,
@@ -5843,9 +5859,9 @@ class HdrAoiEditor:
         zip_path = Path(zip_path)
         try:
             # Clear outputs directory; wipe first to avoid stale files
-            if OUTPUTS_DIR.exists():
-                shutil.rmtree(OUTPUTS_DIR)
-            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+            if outputs_dir.exists():
+                shutil.rmtree(outputs_dir)
+            outputs_dir.mkdir(parents=True, exist_ok=True)
 
             # Extract, stripping a leading "outputs/" prefix if present (old archives
             # have no prefix; new archives created after the make_archive fix do).
@@ -5856,14 +5872,14 @@ class HdrAoiEditor:
                         member_path = member_path[len('outputs/'):]
                     if not member_path:
                         continue
-                    dest = OUTPUTS_DIR / member_path
+                    dest = outputs_dir / member_path
                     if member.is_dir():
                         dest.mkdir(parents=True, exist_ok=True)
                     else:
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         with zf.open(member) as src, open(dest, 'wb') as dst:
                             shutil.copyfileobj(src, dst)
-            print(f"Extracted archive: {zip_path} → {OUTPUTS_DIR}")
+            print(f"Extracted archive: {zip_path} → {outputs_dir}")
 
             # Full editor reload
             self.rooms = []

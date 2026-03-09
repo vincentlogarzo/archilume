@@ -32,12 +32,13 @@ class Objs2Octree:
 
     # User inputs - support multiple files
     input_obj_paths: list[Path]             = None
+    output_dir: Path                        = None
+    rad_dir: Path                           = None
 
     # Internal output file paths (set automatically during processing)
     input_mtl_paths: list[Path]             = field(init=False, default=None)
     combined_radiance_mtl_path: str | None  = field(init=False, default=None)
     output_rad_paths: list[str]             = field(init=False, default=None)
-    output_dir: Path                        = field(init=False, default_factory=lambda: config.OCTREE_DIR)
     skyless_octree_path: Path               = field(init=False, default=None)
     
     def __post_init__(self):
@@ -117,7 +118,7 @@ class Objs2Octree:
 
         for input_obj_path in self.input_obj_paths:
 
-            output_rad_path = config.RAD_DIR / input_obj_path.with_suffix('.rad').name
+            output_rad_path = self.rad_dir / input_obj_path.with_suffix('.rad').name
             self.output_rad_paths.append(output_rad_path)
 
             print(f"Running: \"{exe_path}\" \"{input_obj_path}\" > \"{output_rad_path}\"")

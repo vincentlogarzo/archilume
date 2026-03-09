@@ -24,10 +24,13 @@ class Tiff2Animation:
     latitude: float
     ffl_offset: float
 
-    # Optional fields with config defaults
-    sky_files_dir: Path = field(default_factory=lambda: config.SKY_DIR)
-    view_files_dir: Path = field(default_factory=lambda: config.VIEW_DIR)
-    image_dir: Path = field(default_factory=lambda: config.IMAGE_DIR)
+    # Required — project-scoped output directories
+    sky_files_dir: Path
+    view_files_dir: Path
+    image_dir: Path
+    aoi_dir: Path
+
+    # Optional with defaults
     animation_format: str = 'gif'  # Output format: 'gif' or 'apng'
 
     # Auto-populated fields
@@ -279,7 +282,7 @@ class Tiff2Animation:
             return
 
         # Load AOI files once at the start
-        aoi_dir = config.AOI_DIR
+        aoi_dir = self.aoi_dir
         aoi_files = list(aoi_dir.glob("*.aoi")) if aoi_dir.exists() else []
 
         # Parse all AOI files once (not per-image)

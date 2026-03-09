@@ -206,12 +206,13 @@ class Hdr2Wpd:
 
     # Input parameters
     pixel_to_world_map: Path
+    aoi_dir: Path
+    wpd_dir: Path
+    image_dir: Path
     pixel_threshold_value: float = 0.0
 
     def __post_init__(self):
-        """Initialize output directories from config."""
-        self.aoi_dir = config.AOI_DIR
-        self.wpd_dir = config.WPD_DIR
+        """Initialize output directories."""
         self.max_workers = config.WORKERS["wpd_processing"]
 
         self.wpd_dir.mkdir(parents=True, exist_ok=True)
@@ -728,7 +729,7 @@ class Hdr2Wpd:
             Tuple of (hdr_files, aoi_files)
         """
         print("Scanning directories...")
-        hdr_files_all = sorted(config.IMAGE_DIR.glob("*.hdr"))
+        hdr_files_all = sorted(self.image_dir.glob("*.hdr"))
         aoi_files_all = sorted(self.aoi_dir.glob("*.aoi"))
 
         print(f"Found {len(hdr_files_all)} HDR files")

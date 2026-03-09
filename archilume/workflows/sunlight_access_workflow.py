@@ -41,8 +41,8 @@ class SunlightAccessWorkflow:
             rendering_quality: str,
             room_boundaries_csv: Path | str,
             obj_paths: List[Path | str],
-            animation_format: str = "apng",
-            project: Optional[str] = None
+            project: str,
+            animation_format: str = "apng"
         ):
             self.building_latitude = building_latitude
             self.month = month
@@ -56,8 +56,9 @@ class SunlightAccessWorkflow:
             self.rendering_quality = rendering_quality
             self.animation_format = animation_format.lower()
             self.project = project
+            self.paths = config.get_project_paths(project)
 
-            base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+            base_dir = self.paths.inputs_dir
             self.room_boundaries_csv = base_dir / room_boundaries_csv if not Path(room_boundaries_csv).is_absolute() else Path(room_boundaries_csv)
             self.obj_paths = [base_dir / p if not Path(p).is_absolute() else Path(p) for p in obj_paths]
 
@@ -173,7 +174,9 @@ class SunlightAccessWorkflow:
         timer = PhaseTimer()
 
         with timer("Phase 0: Setup and Cleanup"):
+            inputs.paths.create_dirs()
             smart_cleanup(
+                paths=inputs.paths,
                 timestep_changed=True,
                 resolution_changed=True,
                 rendering_mode_changed=True,
@@ -181,11 +184,18 @@ class SunlightAccessWorkflow:
             )
 
         with timer("Phase 1: Establishing 3D Scene"):
-            octree_generator = Objs2Octree(inputs.obj_paths)
+            octree_generator = Objs2Octree(
+                input_obj_paths=inputs.obj_paths,
+                output_dir=inputs.paths.octree_dir,
+                rad_dir=inputs.paths.rad_dir,
+            )
             octree_generator.create_skyless_octree_for_analysis()
 
         with timer("Phase 2: Generate Sky Conditions"):
-            sky_generator = SkyGenerator(lat=inputs.building_latitude)
+            sky_generator = SkyGenerator(
+                lat=inputs.building_latitude,
+                sky_file_dir=inputs.paths.sky_dir,
+            )
             sky_generator.generate_TenK_cie_overcast_skyfile()
             sky_generator.generate_sunny_sky_series(
                 month=inputs.month,
@@ -198,7 +208,9 @@ class SunlightAccessWorkflow:
         with timer("Phase 3: Prepare Camera Views"):
             view_generator = ViewGenerator(
                 room_boundaries_csv_path=inputs.room_boundaries_csv,
-                ffl_offset=inputs.ffl_offset
+                ffl_offset=inputs.ffl_offset,
+                view_file_dir=inputs.paths.view_dir,
+                aoi_dir=inputs.paths.aoi_dir,
             )
             view_generator.create_plan_view_files()
 
@@ -209,17 +221,25 @@ class SunlightAccessWorkflow:
                 x_res=inputs.image_resolution,
                 y_res=inputs.image_resolution,
                 rendering_mode=inputs.rendering_mode,
-                gpu_quality=inputs.rendering_quality
+                gpu_quality=inputs.rendering_quality,
+                skies_dir=inputs.paths.sky_dir,
+                views_dir=inputs.paths.view_dir,
+                image_dir=inputs.paths.image_dir,
             )
             renderer.sunlight_rendering_pipeline()
 
         with timer("Phase 5: Post-Process & Results Stamping"):
             with timer("  5a: Generate AOI files..."):
-                coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
+                coordinate_map_path = utils.create_pixel_to_world_coord_map(inputs.paths.image_dir)
                 view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
             with timer("  5b: Generate Sunlit WPD and send to .xlsx..."):
-                converter = Hdr2Wpd(pixel_to_world_map=coordinate_map_path)
+                converter = Hdr2Wpd(
+                    pixel_to_world_map=coordinate_map_path,
+                    aoi_dir=inputs.paths.aoi_dir,
+                    wpd_dir=inputs.paths.wpd_dir,
+                    image_dir=inputs.paths.image_dir,
+                )
                 converter.sunlight_sequence_wpd_extraction()
 
             with timer("  5c: Stamp images with results and combine into .apng..."):
@@ -230,12 +250,16 @@ class SunlightAccessWorkflow:
                     y_res=renderer.y_res,
                     latitude=inputs.building_latitude,
                     ffl_offset=inputs.ffl_offset,
-                    animation_format=inputs.animation_format
+                    sky_files_dir=inputs.paths.sky_dir,
+                    view_files_dir=inputs.paths.view_dir,
+                    image_dir=inputs.paths.image_dir,
+                    aoi_dir=inputs.paths.aoi_dir,
+                    animation_format=inputs.animation_format,
                 )
                 tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
 
         with timer("Phase 6: Final Reporting"):
             pass
 
-        timer.print_report(output_dir=config.OUTPUTS_DIR)
+        timer.print_report(output_dir=inputs.paths.outputs_dir)
         return True

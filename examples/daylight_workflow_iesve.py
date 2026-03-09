@@ -30,17 +30,9 @@ from archilume import smart_cleanup
 from archilume.workflows import IESVEDaylightWorkflow
 
 def run_daylight_analysis():
-    # 1. cleanup redundant files or retain .amb file for faster simulation re-run
-    smart_cleanup(
-        timestep_changed            = False,
-        resolution_changed          = True,
-        rendering_mode_changed      = False,
-        rendering_quality_changed   = False
-    )
-
     # 2. Run the standardized workflow
     inputs = IESVEDaylightWorkflow.InputsValidator(
-        project                     = "527DP",  # Optional: sub-folder in inputs/
+        project                     = "527DP",  # Required: project name under projects/ (e.g. projects/527DP/)
         octree_path                 = "527DP.oct",  # Must use 10KLx sky
         rendering_params            = "preview.rdp",
         iesve_room_data             = "aoi/iesve_room_data.csv",

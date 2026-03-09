@@ -9,18 +9,10 @@ __pycache__/
 *.key
 
 # Documentation
-docs/radiance_testpad.md
+docs/radiance_scratchpad.md
 
-# Ignore all content in inputs/, outputs/, archive/ but preserve directory structure
-inputs/**
-!inputs/.gitkeep
-
-outputs/**
-!outputs/**/
-!outputs/**/.gitkeep
-
-archive/**
-!archive/.gitkeep
+# All simulation project data lives here — never commit project files
+projects/
 
 # SSH configuration (contains private keys - keep these secret!)
 .ssh/

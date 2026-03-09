@@ -66,15 +66,20 @@ class SkyGenerator:
     # Required user input
     lat: float
 
-    # Fixed - not user configurable but accessible from instance
-    sky_file_dir: Path = field(init = False, default_factory=lambda: config.SKY_DIR)
-    TenK_cie_overcast_sky_file_path: Path = field(init=False, default_factory=lambda: config.SKY_DIR / "TenK_cie_overcast.rad")
+    # Required - directory where sky files will be written
+    sky_file_dir: Path
+
+    # Derived - set in __post_init__ from sky_file_dir
+    TenK_cie_overcast_sky_file_path: Path = field(init=False, default=None)
 
     def __post_init__(self):
         """
         Performs post-initialization setup:
         - Creates output directory if needed.
         """
+
+        self.sky_file_dir = Path(self.sky_file_dir)
+        self.TenK_cie_overcast_sky_file_path = self.sky_file_dir / "TenK_cie_overcast.rad"
 
         if not os.path.exists(self.sky_file_dir):
             try:

@@ -1212,6 +1212,7 @@ def print_timing_report(
 
 def iesve_aoi_to_room_boundaries_csv(
     iesve_room_data_path: Path,
+    output_dir: Path,
 ) -> Path:
     """
     Convert IESVE .aoi files into a room_boundaries CSV compatible with ViewGenerator.
@@ -1230,7 +1231,7 @@ def iesve_aoi_to_room_boundaries_csv(
     Returns:
         Path to the written CSV file
     """
-    output_path = config.AOI_DIR / f"{Path(iesve_room_data_path).stem}_boundaries.csv"
+    output_path = output_dir / f"{Path(iesve_room_data_path).stem}_boundaries.csv"
     aoi_dir = iesve_room_data_path.parent
 
     # Load IESVE room data - build lookup: Space ID -> (Space Name, Z height in meters)
@@ -1498,7 +1499,7 @@ def calc_centroid_of_points(df: pd.DataFrame, x_col: str = "x_coords", y_col: st
 # SMART CLEANUP UTILITIES
 # ============================================================================
 
-def clear_outputs_folder(retain_amb_files: bool = False, retain_octree: bool = False) -> None:
+def clear_outputs_folder(paths: "config.ProjectPaths", retain_amb_files: bool = False, retain_octree: bool = False) -> None:
     """
     Remove all files from the outputs folder while preserving directory structure.
 
@@ -1508,7 +1509,7 @@ def clear_outputs_folder(retain_amb_files: bool = False, retain_octree: bool = F
         retain_octree: If True, keeps the entire octree folder and its contents.
                       If False, removes octree files like other folders.
     """
-    outputs_dir = config.OUTPUTS_DIR
+    outputs_dir = paths.outputs_dir
 
     if not outputs_dir.exists():
         print(f"Outputs directory does not exist: {outputs_dir}")
@@ -1539,6 +1540,7 @@ def clear_outputs_folder(retain_amb_files: bool = False, retain_octree: bool = F
 
 
 def smart_cleanup(
+    paths: "config.ProjectPaths",
     timestep_changed: bool = False,
     resolution_changed: bool = False,
     rendering_mode_changed: bool = False,
@@ -1600,10 +1602,10 @@ def smart_cleanup(
         - .amb files are ALWAYS deleted when rendering_mode_changed or rendering_quality_changed is TRUE
     """
 
-    outputs_dir = config.OUTPUTS_DIR
-    image_dir = config.IMAGE_DIR
-    octree_dir = config.OCTREE_DIR
-    wpd_dir = config.OUTPUTS_DIR / "wpd"  # Post-processed working plane data
+    outputs_dir = paths.outputs_dir
+    image_dir = paths.image_dir
+    octree_dir = paths.octree_dir
+    wpd_dir = paths.wpd_dir
 
     if not outputs_dir.exists():
         print(f"Outputs directory does not exist: {outputs_dir}")
@@ -1676,7 +1678,7 @@ def smart_cleanup(
             print("        Ambient files can be reused (scene geometry unchanged)\n")
 
         # Delete sky files (new timesteps need new sky files)
-        sky_dir = config.SKY_DIR
+        sky_dir = paths.sky_dir
         if sky_dir.exists():
             for sky_file in sky_dir.glob("*.sky"):
                 sky_file.unlink()

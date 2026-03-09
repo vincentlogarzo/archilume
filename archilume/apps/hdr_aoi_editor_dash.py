@@ -22,9 +22,10 @@ except ImportError:
     from archilume.post.hdr2wpd import Hdr2Wpd
 
 # --- 1. Constants & Path Setup ---
-IMAGE_DIR = Path(config.IMAGE_DIR)
-SESSION_PATH = IMAGE_DIR / "aoi_session.json"
-CSV_PATH = IMAGE_DIR / "aoi_boundaries.csv"
+# These are set at launch time via --project CLI argument (see __main__ block below).
+IMAGE_DIR    = None
+SESSION_PATH = None
+CSV_PATH     = None
 DF_THRESHOLDS = {'BED': 0.5, 'LIVING': 1.0, 'CIRC': None}
 
 # Global Memory Caches
@@ -481,4 +482,12 @@ def save_to_disk(n_clicks, session_data):
     return html.Span("Successfully Saved to Disk!", style={'color': '#198754', 'fontWeight': 'bold'})
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="HDR AOI Editor (Dash)")
+    parser.add_argument("--project", required=True, help="Project name under projects/")
+    args = parser.parse_args()
+    paths        = config.get_project_paths(args.project)
+    IMAGE_DIR    = paths.image_dir
+    SESSION_PATH = paths.aoi_inputs_dir / "aoi_session.json"
+    CSV_PATH     = paths.aoi_inputs_dir / "aoi_boundaries.csv"
     app.run(debug=True)

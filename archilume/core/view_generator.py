@@ -89,10 +89,12 @@ class ViewGenerator:
     room_boundaries_csv_path: Path
     ffl_offset: float
 
+    # Required - directories where view and AOI files will be written
+    view_file_dir: Path
+    aoi_dir: Path
+
     # Fixed - not user configurable but accessible from instance
     processed_room_boundaries_csv_path: Path        = field(init=False)
-    view_file_dir: Path = field(init                = False, default_factory=lambda: config.VIEW_DIR)
-    aoi_dir: Path = field(init                 = False, default_factory=lambda: config.AOI_DIR)
     room_boundaries_df: pd.DataFrame | None         = field(init=False, default=None)
     bounding_box_coordinates: Any                   = field(init=False, default=None)
     x_coord_center: float | None                    = field(init=False, default=None)

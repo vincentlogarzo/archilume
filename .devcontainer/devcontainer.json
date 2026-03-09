@@ -23,11 +23,13 @@
         "ms-azuretools.vscode-docker",
         "analytic-signal.preview-tiff",
         "mechatroner.rainbow-csv",
-        "GrapeCity.gc-excelviewer"
+        "GrapeCity.gc-excelviewer",
+        "PKief.material-icon-theme"
       ],
       "settings": {
         "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
         "python.formatting.provider": "black",
+        "workbench.iconTheme": "material-icon-theme",
         "editor.formatOnSave": true,
         "workbench.editorAssociations": {
           "*.apng": "imagePreview.previewEditor",

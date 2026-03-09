@@ -33,9 +33,10 @@ class IESVEDaylightWorkflow:
             iesve_room_data:    Path | str,
             image_resolution:   int  = 2048,
             ffl_offset:         float = 0.0,
-            project:            Optional[str] = None,
+            project:            str = None,
         ):
-            base_dir = config.INPUTS_DIR / project if project else config.INPUTS_DIR
+            self.paths = config.get_project_paths(project)
+            base_dir = self.paths.inputs_dir
 
             self.image_resolution   = image_resolution
             self.ffl_offset         = ffl_offset
@@ -90,14 +91,18 @@ class IESVEDaylightWorkflow:
         Execute the IESVE daylight analysis pipeline.
         """
         timer = PhaseTimer()
+        inputs.paths.create_dirs()
 
         with timer("Phase 1: Prepare Camera Views"):
             room_boundaries_csv = utils.iesve_aoi_to_room_boundaries_csv(
-                iesve_room_data_path=inputs.iesve_room_data
+                iesve_room_data_path=inputs.iesve_room_data,
+                output_dir=inputs.paths.aoi_dir,
             )
             view_generator = ViewGenerator(
                 room_boundaries_csv_path=room_boundaries_csv,
-                ffl_offset=inputs.ffl_offset
+                ffl_offset=inputs.ffl_offset,
+                view_file_dir=inputs.paths.view_dir,
+                aoi_dir=inputs.paths.aoi_dir,
             )
             view_generator.create_plan_view_files()
 
@@ -107,13 +112,14 @@ class IESVEDaylightWorkflow:
                 rdp_path=inputs.rendering_params,
                 x_res=inputs.image_resolution,
                 view_files=view_generator.view_files,
+                image_dir=inputs.paths.image_dir,
             )
             renderer.daylight_rendering_pipeline()
 
         with timer("Phase 3: Post-processing"):
             with timer("  3a: Generate .aoi files"):
-                coordinate_map_path = utils.create_pixel_to_world_coord_map(config.IMAGE_DIR)
+                coordinate_map_path = utils.create_pixel_to_world_coord_map(inputs.paths.image_dir)
                 view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
-        timer.print_report(output_dir=config.OUTPUTS_DIR)
+        timer.print_report(output_dir=inputs.paths.outputs_dir)
         return True

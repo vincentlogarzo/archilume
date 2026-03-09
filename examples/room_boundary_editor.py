@@ -7,7 +7,7 @@ Two editors for different workflow stages:
 
   OBJ AOI Editor (pre-simulation):
         Draw room boundaries on a 3D OBJ mesh slice.
-        Run this before simulation to define rooms to be analysed.
+        Run this before simulation to define rooms to be analyse.
 
         Workflow:
             1. Launch editor
@@ -24,7 +24,7 @@ Two editors for different workflow stages:
         Workflow:
             1. Launch editor
             2. Navigate floors using ↑/↓ arrow keys
-            3. Adjust overlayed PDF architecutral plans scale and position 
+            3. Adjust overlaid PDF architectural plans scale and position 
             4. Draw new apartment boundary, or divide existing boundary, press s to save
             5. Export and archive results as CSV for analysis and reporting
 
@@ -42,13 +42,13 @@ from archilume.apps.obj_aoi_editor_matplotlib import ObjAoiEditor
 from archilume.apps.hdr_aoi_editor_matplotlib import HdrAoiEditor
 from pathlib import Path
 
-EDITOR = 'iesve'  # 'obj' or 'hdr' or 'iesve'
+EDITOR = 'hdr'  # 'obj' or 'hdr' or 'iesve'
 
 if __name__ == "__main__":
 
     if EDITOR == 'obj':
         editor = ObjAoiEditor(
-            project             = "527DM", # Optional: sub-folder within inputs/
+            project             = "527DM", # Project name under projects/ (e.g. projects/527DM/inputs/)
             obj_path            = "223181_AR_LOFTUS_BTR_stripped_cleaned_decimate.obj",
             initial_csv_path    = "87cowles_BLD_room_boundaries.csv",  # optional: pre-existing boundaries
             simplify_ratio      = None,    # 0.0-1.0 mesh decimation for large files (None = off)
@@ -58,15 +58,15 @@ if __name__ == "__main__":
 
     elif EDITOR == 'hdr':
         editor = HdrAoiEditor(
-            project     = "527DP", # Optional: sub-folder within inputs/
-            pdf_path    = "plans/SK01.09-PLAN - TYPICAL(P1).pdf",  # optional: auto-load PDF overlay
+            project     = "527DP", # Project name under projects/ (e.g. projects/527DP/inputs/)
+            pdf_path    = "plans/SK01.09-PLAN - TYPICAL(P1).pdf",  # optional: PDF from projects/527DP/inputs/plans/
         )
 
     elif EDITOR == 'iesve':
         editor = HdrAoiEditor(
-            project          = "1523A",                        # Optional: sub-folder within inputs/
-            pdf_path         = "plans/1523A_IFC_Plans.pdf",    # optional: auto-load PDF overlay
-            image_dir        = "pic",
+            project          = "1523A",                        # Project name under projects/ (e.g. projects/1523A/inputs/)
+            pdf_path         = "plans/1523A_IFC_Plans.pdf",    # optional: PDF from projects/1523A/inputs/plans/
+            image_dir        = "pic",                          # resolves to projects/1523A/inputs/pic/
             iesve_room_data  = "aoi/iesve_room_data.csv",      # optional: seed rooms from IESVE CSV (first launch only)
         )
 

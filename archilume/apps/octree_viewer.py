@@ -23,5 +23,6 @@ def view_octree(octree_path, x=900, y=900):
 
 if __name__ == "__main__":
     project = "527DP"
-    octree  = config.INPUTS_DIR / project / "527DP.oct"
+    paths   = config.get_project_paths(project)
+    octree  = paths.inputs_dir / "527DP.oct"
     view_octree(octree)

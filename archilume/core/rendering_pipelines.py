@@ -62,10 +62,10 @@ class DaylightRenderer:
     rdp_path: Path
     x_res: int
     view_files: List[Path]  # accepts a single Path or list; normalised to list in __post_init__
+    image_dir: Path
 
     # Optional with defaults
     y_res: Optional[int]        = field(default=None)
-    image_dir: Path             = field(default_factory=lambda: config.IMAGE_DIR)
 
     def __post_init__(self):
         # Normalise view_files to a sorted list of Paths
@@ -174,17 +174,17 @@ class DaylightRenderer:
 
         commands = [
             # Falsecolor legend
-            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s 4 -n 10 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / df_false_legend}',
+            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s 4 -n 10 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_false_legend}',
 
             # Contour legend
-            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {config.IMAGE_DIR / df_cntr_legend}',
+            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_cntr_legend}',
         ]
 
         utils.execute_new_radiance_commands(commands, number_of_workers=1)
 
         legend_tiffs = [
-            config.IMAGE_DIR / df_false_legend,
-            config.IMAGE_DIR / df_cntr_legend,
+            self.image_dir / df_false_legend,
+            self.image_dir / df_cntr_legend,
         ]
         for tiff in legend_tiffs:
             if tiff.exists() and tiff.stat().st_size >= 1000:
@@ -284,14 +284,16 @@ class SunlightRenderer:
         x_res (int): Horizontal resolution for medium quality rendering (must be positive)
         y_res (int): Vertical resolution for medium quality rendering (must be positive)
 
-    Optional Attributes (default from config):
-        skies_dir (Path): Directory containing solar condition sky files (default: config.SKY_DIR)
-        views_dir (Path): Directory containing architectural viewpoint files (default: config.VIEW_DIR)
+    Required Path Attributes:
+        skies_dir (Path): Directory containing solar condition sky files
+        views_dir (Path): Directory containing architectural viewpoint files
+        image_dir (Path): Output directory for rendered images
+
+    Optional Attributes:
         rendering_mode (str): Rendering backend - 'cpu' or 'gpu' (default: 'cpu')
         gpu_quality (str): GPU quality preset - 'draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed' (default: 'stand')
 
     Auto-Generated Attributes (populated during initialization):
-        image_dir (Path): Output directory for rendered images (default: config.IMAGE_DIR)
         sky_files (List[Path]): Discovered sky files from skies_dir (*.sky)
         view_files (List[Path]): Discovered view files from views_dir (*.vp)
         overcast_octree_command (str): Command for overcast sky octree generation
@@ -310,14 +312,16 @@ class SunlightRenderer:
     x_res: int
     y_res: int
 
-    # Optional fields with config defaults
-    skies_dir:                          Path        = field(default_factory=lambda: config.SKY_DIR)
-    views_dir:                          Path        = field(default_factory=lambda: config.VIEW_DIR)
+    # Required — project-scoped output directories
+    skies_dir:                          Path
+    views_dir:                          Path
+    image_dir:                          Path
+
+    # Optional with defaults
     rendering_mode:                     str         = 'cpu'
     gpu_quality:                        str         = 'stand'
 
     # Fields that will be populated after initialization
-    image_dir:                          Path        = field(init=False, default_factory=lambda: config.IMAGE_DIR)
     sky_files:                          List[Path]  = field(default_factory=list, init=False)
     view_files:                         List[Path]  = field(default_factory=list, init=False)
     overcast_octree_command:            str | None  = field(default=None, init=False)

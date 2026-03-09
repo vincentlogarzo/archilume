@@ -97,6 +97,52 @@ The core flow is: **Geometry → Octree → Sky + Views → Rendering → Post-P
 
 ## Project Structure
 
+### Simulation Projects
+
+Every simulation runs inside a named **project folder** under `projects/`. Each project is fully self-contained — you can work on multiple projects simultaneously without any file collisions.
+
+```text
+projects/
+└── <project_name>/
+    ├── inputs/           # Your source files: OBJ, MTL, IFC, CSV, AOI, PDF plans
+    │   ├── aoi/          # Editor-drawn room boundary .aoi files (auto-created)
+    │   └── plans/        # PDF floor plans for overlay in editors
+    ├── outputs/          # All simulation results (written by the pipeline)
+    │   ├── image/        # Rendered HDR, TIFF, PNG images and animations
+    │   ├── wpd/          # Illuminance working plane data and Excel reports
+    │   ├── aoi/          # Pipeline-generated AOI coordinate maps
+    │   ├── view/         # Radiance view parameter files (.vp)
+    │   ├── sky/          # Sky condition files (.sky, .rad)
+    │   ├── octree/       # Compiled octree files (.oct)
+    │   └── rad/          # Radiance geometry files (.rad)
+    └── archive/          # Timestamped .zip exports of outputs
+```
+
+All workflows and editors require a `project` name, which automatically resolves every path:
+
+```python
+from archilume.workflows import SunlightAccessWorkflow
+
+inputs = SunlightAccessWorkflow.InputsValidator(
+    project             = "cowles",   # resolves to projects/cowles/
+    room_boundaries_csv = "87cowles_BLD_room_boundaries.csv",
+    obj_paths           = ["87Cowles_BLD_withWindows.obj"],
+    # ... other parameters
+)
+```
+
+To migrate an existing flat `inputs/` + `outputs/` layout, run:
+
+```bash
+# Dry run — preview what will be copied
+python examples/migrate_to_projects.py
+
+# Apply migration
+python examples/migrate_to_projects.py --execute
+```
+
+### Repository Layout
+
 ```text
 archilume/
 ├── .devcontainer/                  # Docker dev container (Radiance + Accelerad)
@@ -134,12 +180,11 @@ archilume/
 │   ├── infra/                      # Cloud infrastructure
 │   │   └── gcp_vm_manager.py       #   GCP VM lifecycle management
 │   │
-│   ├── config.py                   # Paths, environment detection, tool resolution
+│   ├── config.py                   # ProjectPaths, tool paths, environment detection
 │   └── utils.py                    # Parallel execution, timing, geometry helpers
 │
-├── examples/                       # Workflow scripts and editor launchers
-├── inputs/                         # Input files (OBJ, MTL, IFC, CSV)
-├── outputs/                        # Rendered images, reports, animations
+├── examples/                       # Workflow scripts, editor launchers, migration util
+├── projects/                       # Per-project simulation data (inputs + outputs)
 └── tests/                          # Test suite
 ```
 
@@ -169,7 +214,7 @@ uv run python examples/room_boundaries_editor.py
 `archilume.config` manages all path resolution and environment detection:
 
 - **Tool paths** — Automatically finds Radiance and Accelerad binaries. Override with `RADIANCE_ROOT` and `ACCELERAD_ROOT` environment variables.
-- **Project directories** — `inputs/`, `outputs/`, and intermediate files are managed automatically.
+- **Project paths** — `config.get_project_paths("myproject")` returns a `ProjectPaths` object with every directory for that project. Workflows call `paths.create_dirs()` automatically at startup.
 - **Worker count** — Parallel operations respect `config.WORKERS` (defaults to CPU count).
 - **Platform awareness** — Detects Windows vs Linux, bundled vs system Radiance, GPU availability.
 

@@ -3,36 +3,29 @@ Archilume Configuration Module
 ==============================
 
 Centralized configuration for project paths and directories.
-This module provides consistent path references throughout the codebase.
+
+All simulation paths are scoped per-project via `get_project_paths(project_name)`,
+which returns a `ProjectPaths` instance containing every directory needed for a
+simulation run. Each project is fully self-contained under `projects/<project_name>/`.
+
+Tool-path constants (Radiance, Accelerad, GCloud) remain module-level globals.
 """
 
 # fmt: off
 # autopep8: off
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import multiprocessing
 import sys
-from pathlib import Path
 from typing import List
 
 # Root directory of the project
 PROJECT_ROOT        = Path(__file__).parent.parent
 
-# Input/Output directories
-INPUTS_DIR          = PROJECT_ROOT / "inputs"
-OUTPUTS_DIR         = PROJECT_ROOT / "outputs"
-EXAMPLES_DIR        = PROJECT_ROOT / "examples"
-ARCHIVE_DIR         = PROJECT_ROOT / "archive"
-
-# Output subdirectories
-IMAGE_DIR           = OUTPUTS_DIR / "image"
-WPD_DIR             = OUTPUTS_DIR / "wpd"
-AOI_DIR             = OUTPUTS_DIR / "aoi"
-VIEW_DIR            = OUTPUTS_DIR / "view"
-SKY_DIR             = OUTPUTS_DIR / "sky"
-OCTREE_DIR          = OUTPUTS_DIR / "octree"
-RAD_DIR             = OUTPUTS_DIR / "rad"
+# Top-level projects directory — each simulation project lives here
+PROJECTS_DIR        = PROJECT_ROOT / "projects"
 
 # ============================================================================
 # GCLOUD CLI PATH
@@ -109,5 +102,75 @@ WORKERS = {
     "wpd_processing"            : min(64, DEFAULT_MAX_WORKERS),
 }
 
-#TODO: determine if radiance binaries can be used in place in the devcontainer. Instead of installing on the local machine. That way a user would not need to install radiance on windows if using the dev container to work. 
- 
+#TODO: determine if radiance binaries can be used in place in the devcontainer. Instead of installing on the local machine. That way a user would not need to install radiance on windows if using the dev container to work.
+
+# ============================================================================
+# PER-PROJECT PATH MANAGEMENT
+# ============================================================================
+
+@dataclass(frozen=True)
+class ProjectPaths:
+    """All filesystem paths for a single named project.
+
+    Use `get_project_paths(project_name)` to construct an instance.
+    Call `create_dirs()` once at the start of a workflow run to ensure
+    all directories exist before writing to them.
+    """
+    project_name:   str
+    project_dir:    Path
+    inputs_dir:     Path   # projects/<name>/inputs/
+    outputs_dir:    Path   # projects/<name>/outputs/
+    archive_dir:    Path   # projects/<name>/archive/
+    aoi_inputs_dir: Path   # projects/<name>/inputs/aoi/   — editor-drawn .aoi files
+    plans_dir:      Path   # projects/<name>/inputs/plans/ — PDF floor plans
+    pic_dir:        Path   # projects/<name>/inputs/pic/   — input HDR/pic files
+    image_dir:      Path   # projects/<name>/outputs/image/
+    wpd_dir:        Path   # projects/<name>/outputs/wpd/
+    aoi_dir:        Path   # projects/<name>/outputs/aoi/  — pipeline coordinate maps
+    view_dir:       Path   # projects/<name>/outputs/view/
+    sky_dir:        Path   # projects/<name>/outputs/sky/
+    octree_dir:     Path   # projects/<name>/outputs/octree/
+    rad_dir:        Path   # projects/<name>/outputs/rad/
+
+    def create_dirs(self) -> None:
+        """Create all project directories. Call once at the start of a workflow run."""
+        for d in (
+            self.inputs_dir,
+            self.outputs_dir,
+            self.archive_dir,
+            self.aoi_inputs_dir,
+            self.plans_dir,
+            self.pic_dir,
+            self.image_dir,
+            self.wpd_dir,
+            self.aoi_dir,
+            self.view_dir,
+            self.sky_dir,
+            self.octree_dir,
+            self.rad_dir,
+        ):
+            d.mkdir(parents=True, exist_ok=True)
+
+
+def get_project_paths(project_name: str) -> ProjectPaths:
+    """Return all filesystem paths for the named project under projects/<project_name>/."""
+    project_dir = PROJECTS_DIR / project_name
+    inputs_dir  = project_dir / "inputs"
+    outputs_dir = project_dir / "outputs"
+    return ProjectPaths(
+        project_name   = project_name,
+        project_dir    = project_dir,
+        inputs_dir     = inputs_dir,
+        outputs_dir    = outputs_dir,
+        archive_dir    = project_dir / "archive",
+        aoi_inputs_dir = inputs_dir / "aoi",
+        plans_dir      = inputs_dir / "plans",
+        pic_dir        = inputs_dir / "pic",
+        image_dir      = outputs_dir / "image",
+        wpd_dir        = outputs_dir / "wpd",
+        aoi_dir        = outputs_dir / "aoi",
+        view_dir       = outputs_dir / "view",
+        sky_dir        = outputs_dir / "sky",
+        octree_dir     = outputs_dir / "octree",
+        rad_dir        = outputs_dir / "rad",
+    )
