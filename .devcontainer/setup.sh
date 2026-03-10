@@ -39,6 +39,10 @@ if [ ! -f "$WORKSPACE_PATH/pyproject.toml" ]; then
 fi
 echo "📂 Workspace path resolved to: $WORKSPACE_PATH"
 
+# Fix ownership of workspace directory (mounted volumes may be owned by a different UID)
+echo "🔑 Fixing workspace ownership..."
+sudo chown -R vscode:vscode "$WORKSPACE_PATH"
+
 EXTRACT_DIR=$(mktemp -d)
 cd "$EXTRACT_DIR"
 
