@@ -12,7 +12,8 @@ __pycache__/
 docs/radiance_scratchpad.md
 
 # All simulation project data lives here — never commit project files
-projects/
+projects/*
+!projects/.gitkeep
 
 # SSH configuration (contains private keys - keep these secret!)
 .ssh/

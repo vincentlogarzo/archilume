@@ -501,7 +501,7 @@ class ObjAoiEditor:
         obj_path: Union[Path, str],
         mtl_path: Optional[Path] = None,
         session_path: Optional[Path] = None,
-        initial_csv_path: Optional[Union[Path, str]] = None,
+        room_boundaries_csv: Optional[Union[Path, str]] = None,
         simplify_ratio: Optional[float] = None,
         detect_floors: bool = True,
         max_vertex_display: int = 5000,
@@ -513,7 +513,7 @@ class ObjAoiEditor:
             obj_path: OBJ file path to load
             mtl_path: Optional MTL file path (not currently used)
             session_path: Path for saving/loading editor sessions
-            initial_csv_path: Optional CSV file with initial room boundaries (used if no session exists)
+            room_boundaries_csv: Optional CSV file with initial room boundaries (used if no session exists)
             simplify_ratio: Optional mesh decimation ratio (0.0-1.0) for large meshes
             detect_floors: Whether to auto-detect floor levels (disable for very large meshes)
             max_vertex_display: Maximum vertices to display (downsample if exceeded)
@@ -525,11 +525,11 @@ class ObjAoiEditor:
         self.obj_path = base_dir / obj_path if not obj_path.is_absolute() else obj_path
         self.mtl_path = mtl_path
         self.session_path = session_path or (self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.json")
-        if initial_csv_path is not None:
-            initial_csv_path = Path(initial_csv_path)
-            self.initial_csv_path = base_dir / initial_csv_path if not initial_csv_path.is_absolute() else initial_csv_path
+        if room_boundaries_csv is not None:
+            room_boundaries_csv = Path(room_boundaries_csv)
+            self.room_boundaries_csv = base_dir / room_boundaries_csv if not room_boundaries_csv.is_absolute() else room_boundaries_csv
         else:
-            self.initial_csv_path = None
+            self.room_boundaries_csv = None
         self.csv_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.csv"
         self.simplify_ratio = simplify_ratio
         self.detect_floors = detect_floors
@@ -3549,9 +3549,9 @@ class ObjAoiEditor:
                     self.current_floor_idx = idx
                     self.current_z = self.slicer.floor_levels[idx]
             source = "session"
-        elif self.initial_csv_path and self.initial_csv_path.exists():
+        elif self.room_boundaries_csv and self.room_boundaries_csv.exists():
             # No session exists, load from initial CSV
-            self._load_from_csv(self.initial_csv_path)
+            self._load_from_csv(self.room_boundaries_csv)
             source = "initial CSV"
         else:
             return

@@ -50,7 +50,7 @@ if __name__ == "__main__":
         editor = ObjAoiEditor(
             project             = "527DM", # Project name under projects/ (e.g. projects/527DM/inputs/)
             obj_path            = "223181_AR_LOFTUS_BTR_stripped_cleaned_decimate.obj",
-            initial_csv_path    = "87cowles_BLD_room_boundaries.csv",  # optional: pre-existing boundaries
+            room_boundaries_csv = "87cowles_BLD_room_boundaries.csv",  # optional: pre-existing boundaries
             simplify_ratio      = None,    # 0.0-1.0 mesh decimation for large files (None = off)
             detect_floors       = True,    # False to skip auto floor detection on very large meshes
             max_vertex_display  = 5000,    # downsample snap-point display above this count

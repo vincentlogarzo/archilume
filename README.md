@@ -124,68 +124,58 @@ All workflows and editors require a `project` name, which automatically resolves
 from archilume.workflows import SunlightAccessWorkflow
 
 inputs = SunlightAccessWorkflow.InputsValidator(
-    project             = "cowles",   # resolves to projects/cowles/
-    room_boundaries_csv = "87cowles_BLD_room_boundaries.csv",
-    obj_paths           = ["87Cowles_BLD_withWindows.obj"],
+    project             = "ProjectXYZ",   # resolves to projects/ProjectXYZ/
+    room_boundaries_csv = "Model_room_boundaries.csv",
+    obj_paths           = ["3DModel_withWindows.obj"],
     # ... other parameters
 )
-```
-
-To migrate an existing flat `inputs/` + `outputs/` layout, run:
-
-```bash
-# Dry run — preview what will be copied
-python examples/migrate_to_projects.py
-
-# Apply migration
-python examples/migrate_to_projects.py --execute
 ```
 
 ### Repository Layout
 
 ```text
 archilume/
-├── .devcontainer/                  # Docker dev container (Radiance + Accelerad)
-├── archilume/                      # Core package
-│   ├── core/                       # Simulation engine
-│   │   ├── objs2octree.py          #   OBJ/MTL → Radiance octree
-│   │   ├── sky_generator.py        #   Sky condition generation
-│   │   ├── view_generator.py       #   View and AOI file generation
-│   │   ├── rendering_pipelines.py  #   SunlightRenderer & DaylightRenderer
-│   │   ├── mtl_converter.py        #   Wavefront MTL → Radiance materials
-│   │   └── radiance_materials.py   #   Radiance material primitives
+├── .devcontainer/                          # Docker dev container (Radiance + Accelerad)
+├── archilume/                              # Core package
+│   ├── core/                               # Simulation engine
+│   │   ├── objs2octree.py                  #   OBJ/MTL → Radiance octree
+│   │   ├── sky_generator.py                #   Sky condition generation
+│   │   ├── view_generator.py               #   View and AOI file generation
+│   │   ├── rendering_pipelines.py          #   SunlightRenderer & DaylightRenderer
+│   │   ├── mtl_converter.py                #   Wavefront MTL → Radiance materials
+│   │   └── radiance_materials.py           #   Radiance material primitives
 │   │
-│   ├── geo/                        # Geometry utilities
-│   │   ├── ifc_inspector.py        #   IFC model inspection
-│   │   ├── ifc_strip.py            #   IFC element extraction
-│   │   ├── obj2boundaries.py       #   OBJ → room boundary extraction
-│   │   ├── obj_cleaner.py          #   OBJ geometry cleanup
-│   │   └── obj_inspector.py        #   OBJ model inspection
+│   ├── geo/                                # Geometry utilities
+│   │   ├── ifc_inspector.py                #   IFC model inspection
+│   │   ├── ifc_strip.py                    #   IFC element extraction
+│   │   ├── obj2boundaries.py               #   OBJ → room boundary extraction
+│   │   ├── obj_cleaner.py                  #   OBJ geometry cleanup
+│   │   └── obj_inspector.py                #   OBJ model inspection
 │   │
-│   ├── post/                       # Post-processing
-│   │   ├── hdr2wpd.py              #   HDR → illuminance data extraction
-│   │   ├── tiff2animation.py       #   Annotated GIF/APNG from renders
-│   │   └── apng2mp4.py             #   APNG → MP4 conversion
+│   ├── post/                               # Post-processing
+│   │   ├── hdr2wpd.py                      #   HDR → illuminance data extraction
+│   │   ├── tiff2animation.py               #   Annotated GIF/APNG from renders
+│   │   └── apng2mp4.py                     #   APNG → MP4 conversion
 │   │
-│   ├── apps/                       # Interactive editors
-│   │   ├── obj_aoi_editor_matplotlib.py   # Room boundary editor (matplotlib)
-│   │   ├── hdr_aoi_editor_matplotlib.py   # HDR AOI editor (matplotlib)
-│   │   ├── hdr_aoi_editor_dash.py         # HDR AOI editor (Dash/Plotly)
-│   │   └── octree_viewer.py               # 3D octree viewer
+│   ├── apps/                               # Interactive editors
+│   │   ├── obj_aoi_editor_matplotlib.py    #   Room boundary editor (matplotlib)
+│   │   ├── hdr_aoi_editor_matplotlib.py    #   HDR AOI editor (matplotlib)
+│   │   ├── hdr_aoi_editor_dash.py          #   HDR AOI editor (Dash/Plotly)
+│   │   └── octree_viewer.py                #   3D octree viewer
 │   │
-│   ├── workflows/                  # Orchestrated pipelines
-│   │   ├── sunlight_access_workflow.py    # Full sunlight access pipeline
-│   │   └── iesve_daylight_workflow.py     # IESVE daylight factor pipeline
+│   ├── workflows/                          # Orchestrated pipelines
+│   │   ├── sunlight_access_workflow.py     #   Full sunlight access pipeline
+│   │   └── iesve_daylight_workflow.py      #   IESVE daylight factor pipeline
 │   │
-│   ├── infra/                      # Cloud infrastructure
-│   │   └── gcp_vm_manager.py       #   GCP VM lifecycle management
+│   ├── infra/                              # Cloud infrastructure
+│   │   └── gcp_vm_manager.py               #   GCP VM lifecycle management
 │   │
-│   ├── config.py                   # ProjectPaths, tool paths, environment detection
-│   └── utils.py                    # Parallel execution, timing, geometry helpers
+│   ├── config.py                           # ProjectPaths, tool paths, environment detection
+│   └── utils.py                            # Parallel execution, timing, geometry helpers
 │
-├── examples/                       # Workflow scripts, editor launchers, migration util
-├── projects/                       # Per-project simulation data (inputs + outputs)
-└── tests/                          # Test suite
+├── examples/                               # Workflow scripts, editor launchers, migration util
+├── projects/                               # Per-project simulation data (inputs + outputs)
+└── tests/                                  # Test suite
 ```
 
 ---
