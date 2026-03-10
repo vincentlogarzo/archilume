@@ -4246,12 +4246,27 @@ class HdrAoiEditor:
         tk.Radiobutton(frm_rb, text="IESVE simulation", variable=sv_mode, value="iesve",
                        command=_toggle_mode_fields).pack(side="left")
 
+        def _initial_dir(sv):
+            """Derive a sensible initialdir from the current field value, else inputs_dir."""
+            val = sv.get().strip()
+            if val:
+                p = Path(val)
+                if not p.is_absolute():
+                    p = proj_paths.inputs_dir / p
+                if p.is_file():
+                    return str(p.parent)
+                if p.is_dir():
+                    return str(p)
+            return str(proj_paths.inputs_dir)
+
         def _browse(sv, title, parent, filetypes=None, directory=False):
             """Open a file/directory picker, store the result, and refocus the dialog."""
+            idir = _initial_dir(sv)
             if directory:
-                path = filedialog.askdirectory(title=title, parent=parent)
+                path = filedialog.askdirectory(title=title, parent=parent, initialdir=idir)
             else:
-                path = filedialog.askopenfilename(title=title, filetypes=filetypes or [], parent=parent)
+                path = filedialog.askopenfilename(
+                    title=title, filetypes=filetypes or [], parent=parent, initialdir=idir)
             if path:
                 sv.set(path)
             parent.lift()
@@ -4259,7 +4274,9 @@ class HdrAoiEditor:
 
         def _browse_multiple(sv, title, parent, filetypes=None):
             """Open a multi-file picker, store paths joined by "; ", and refocus the dialog."""
-            paths = filedialog.askopenfilenames(title=title, filetypes=filetypes or [], parent=parent)
+            idir = _initial_dir(sv)
+            paths = filedialog.askopenfilenames(
+                title=title, filetypes=filetypes or [], parent=parent, initialdir=idir)
             if paths:
                 sv.set("; ".join(paths))
             parent.lift()
@@ -6151,7 +6168,11 @@ class HdrAoiEditor:
             'df_thresholds':  self.DF_THRESHOLDS,
             'rooms':          self.rooms,
             'df_stamps':      stamps_json,
-            'overlay_pdf_path':    str(self._overlay_pdf_path) if self._overlay_pdf_path else None,
+            'overlay_pdf_path':    (
+                str(self._overlay_pdf_path.relative_to(self.project_input_dir))
+                if self._overlay_pdf_path and self._overlay_pdf_path.is_relative_to(self.project_input_dir)
+                else (str(self._overlay_pdf_path) if self._overlay_pdf_path else None)
+            ),
             'overlay_page_idx':    self._overlay_page_idx,
             'aoi_level_idx':       self._aoi_level_idx,
             'overlay_visible':     self._overlay_visible,
@@ -6225,8 +6246,29 @@ class HdrAoiEditor:
                 self._overlay_cache_dpi = self._overlay_raster_dpi
 
             pdf_path_str = data.get('overlay_pdf_path')
-            if pdf_path_str and Path(pdf_path_str).exists():
-                self._overlay_pdf_path = Path(pdf_path_str)
+            resolved_pdf = None
+            if pdf_path_str:
+                p = Path(pdf_path_str)
+                # Try as-is (absolute or already-correct relative)
+                if p.is_absolute() and p.exists():
+                    resolved_pdf = p
+                elif not p.is_absolute():
+                    candidate = self.project_input_dir / p
+                    if candidate.exists():
+                        resolved_pdf = candidate
+            if resolved_pdf is None and self.project:
+                # Fall back to project.toml pdf_path (handles cross-platform path migration)
+                try:
+                    cfg = load_project_toml(self.project)
+                    toml_pdf = cfg.get('paths', {}).get('pdf_path', '')
+                    if toml_pdf:
+                        candidate = self.project_input_dir / toml_pdf
+                        if candidate.exists():
+                            resolved_pdf = candidate
+                except Exception:
+                    pass
+            if resolved_pdf is not None:
+                self._overlay_pdf_path = resolved_pdf
                 self._overlay_page_idx = data.get('overlay_page_idx', 0)
                 self._overlay_needs_rasterize = True
             self._aoi_level_idx = data.get('aoi_level_idx', 0)
