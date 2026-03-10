@@ -22,7 +22,8 @@ Controls:
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
     e             Toggle Edit Mode
-    d             Toggle Draw Mode (default) / room divider — multi-segment ortho split (edit mode)
+    d             Toggle Draw Mode (when not in edit mode)
+    dd            Enter divider mode — multi-segment ortho split (enters edit mode automatically)
     Esc           Exit draw mode / exit divider mode / deselect room
     Ctrl+Z        Undo — edit: vertex/edge/division; draw: delete/type/rename/create
     o             Toggle orthogonal lines (H/V snap)
@@ -57,7 +58,7 @@ Functionality:
         - Click on an edge to insert two new vertices straddling the
           click point (edit mode only)
         - Right-click a vertex to delete it
-        - Press d to enter room divider mode (edit mode only)
+        - Press dd (double-tap d) to enter room divider mode (activates edit mode automatically)
         - Press f to fit-zoom to the selected room boundary
         - Ctrl+Z undoes vertex edits (up to 50 levels)
         Press s or toggle e off to save and exit edit mode.
@@ -115,6 +116,7 @@ Functionality:
 import csv
 import hashlib
 import json
+import logging
 import subprocess
 import ctypes
 import ctypes.wintypes
@@ -129,7 +131,8 @@ import types
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from tkinter import Tk, filedialog, messagebox
+import tkinter as tk
+from tkinter import Tk, filedialog, messagebox, ttk
 from typing import List, Optional, Tuple, Union
 
 # Third-party imports
@@ -140,7 +143,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
-from matplotlib.widgets import PolygonSelector, TextBox, Button, RadioButtons
+from matplotlib.widgets import PolygonSelector, TextBox, Button, RadioButtons, Slider
 from matplotlib.patches import Polygon, FancyBboxPatch
 from matplotlib.path import Path as MplPath
 import matplotlib.patheffects as patheffects
@@ -149,6 +152,12 @@ import numpy as np
 # Archilume imports
 from archilume import config, utils, Hdr2Wpd
 from archilume.utils import rasterize_pdf_page, make_lines_only
+from archilume.apps.project_config import load_project_toml, save_project_toml, list_projects, get_last_project, set_last_project
+
+# Module-level logger.  Set to DEBUG via:
+#   logging.getLogger('archilume.hdr_editor').setLevel(logging.DEBUG)
+# or pass --debug to the CLI entry point.
+log = logging.getLogger('archilume.hdr_editor')
 
 
 def _load_pil_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -210,49 +219,25 @@ class HdrAoiEditor:
         project:                Optional[str]               = None,
         iesve_room_data:        Optional[Union[Path, str]]  = None,
     ):
-        # Resolve project paths — all dirs derive from the project when one is provided
+        # Auto-discover project when none is provided
+        if not project:
+            last = get_last_project()
+            available = list_projects()
+            if last and last in available:
+                project = last
+            elif len(available) == 1:
+                project = available[0]
+            # else: user must pick via the Project dialog after launch
+
+        # All directories derive from the project. When no project is
+        # available yet the editor opens with a blank canvas and the
+        # Project dialog is shown immediately in launch().
         self.project = project
+        self._iesve_room_data_path: Optional[Path] = None
         if project:
-            paths = config.get_project_paths(project)
-            self.project_input_dir = paths.inputs_dir
-            self.project_aoi_dir   = paths.aoi_inputs_dir   # inputs/aoi/
-            self.archive_dir       = paths.archive_dir
-            self.project_aoi_dir.mkdir(parents=True, exist_ok=True)
-            # Default image_dir to outputs/image/ when project is given.
-            # If caller explicitly passes a relative string (e.g. "pic" for IESVE mode),
-            # resolve it against inputs_dir; otherwise use the project outputs path directly.
-            if image_dir is None:
-                resolved_image_dir = paths.image_dir
-            else:
-                image_dir = Path(image_dir)
-                resolved_image_dir = self.project_input_dir / image_dir if not image_dir.is_absolute() else image_dir
-            self.image_dir = resolved_image_dir
+            self._init_project_paths(project, image_dir, pdf_path, iesve_room_data)
         else:
-            if image_dir is None:
-                raise ValueError("Either 'project' or 'image_dir' must be provided.")
-            if aoi_dir is None:
-                raise ValueError("Either 'project' or 'aoi_dir' must be provided.")
-            self.project_input_dir = Path(image_dir).parent
-            self.project_aoi_dir   = Path(aoi_dir)
-            self.archive_dir       = config.PROJECT_ROOT / "archive"
-            self.image_dir         = Path(image_dir)
-
-        if pdf_path is not None:
-            pdf_path = Path(pdf_path)
-            pdf_path = self.project_input_dir / pdf_path if not pdf_path.is_absolute() else pdf_path
-
-        if iesve_room_data is not None:
-            iesve_room_data = Path(iesve_room_data)
-            iesve_room_data = self.project_input_dir / iesve_room_data if not iesve_room_data.is_absolute() else iesve_room_data
-        self._iesve_room_data_path: Optional[Path]          = iesve_room_data
-
-        # Validate required paths before building any UI
-        if pdf_path is not None and not pdf_path.exists():
-            raise FileNotFoundError(f"pdf_path not found: {pdf_path}")
-        if iesve_room_data is not None and not iesve_room_data.exists():
-            raise FileNotFoundError(f"iesve_room_data not found: {iesve_room_data}")
-        if not self.image_dir.exists():
-            raise FileNotFoundError(f"image_dir not found: {self.image_dir}")
+            self._set_blank_state()
 
         # AOI dir: always the project_aoi_dir (inputs/aoi/) when project is set
         self.aoi_dir                                    = self.project_aoi_dir
@@ -377,11 +362,14 @@ class HdrAoiEditor:
         self._last_list_click_idx:  Optional[int]       = None   # for Shift+click range select
         self._room_list_flat_items: List[Tuple]         = []     # ordered items for range select
 
+        # Annotation font size multiplier (applied on top of zoom-dependent base sizes)
+        self._annotation_scale:     float               = 1.0
+
         # IESVE AOI level assignment state
         self._aoi_level_idx:        int                 = 0       # current FFL group index
 
         # PDF floor plan overlay state
-        self._overlay_pdf_path: Optional[Path]          = Path(pdf_path) if pdf_path else None
+        # _overlay_pdf_path is set by _init_project_paths / _set_blank_state
         self._overlay_pdf_info: Optional[dict]          = None
         self._overlay_page_idx: int                     = 0
         self._overlay_rgba:     Optional[np.ndarray]    = None   # cached rasterized page (H,W,4)
@@ -423,6 +411,72 @@ class HdrAoiEditor:
         self._divider_preview_line                      = None   # dashed Line2D to cursor
         self._divider_snap_pt:      Optional[tuple]     = None   # snapped vertex (x, y) or None
         self._divider_snap_marker                       = None   # highlight ring artist
+
+        # Double-key timing for dd → divider mode shortcut
+        self._last_d_press_time:    float               = 0.0
+
+        # Prevent auto-saves during the initial loading and rendering phase
+        self._loading:              bool                = True
+
+    # === PROJECT PATH SETUP ====================================================
+
+    def _init_project_paths(self, project: str,
+                            image_dir=None, pdf_path=None, iesve_room_data=None):
+        """Set all directory paths from a project name.
+
+        Every working directory the editor uses is derived from the project's
+        ``ProjectPaths``.  Optional constructor overrides (image_dir, pdf_path,
+        iesve_room_data) are resolved relative to ``inputs_dir``.
+        """
+        paths = config.get_project_paths(project)
+        self.project_input_dir = paths.inputs_dir
+        self.project_aoi_dir   = paths.aoi_inputs_dir
+        self.archive_dir       = paths.archive_dir
+        self.wpd_dir           = paths.wpd_dir
+        paths.create_dirs()
+
+        # image_dir: default to outputs/image/, or resolve a relative override
+        if image_dir is None:
+            self.image_dir = paths.image_dir
+        else:
+            image_dir = Path(image_dir)
+            self.image_dir = self.project_input_dir / image_dir if not image_dir.is_absolute() else image_dir
+
+        # PDF overlay
+        if pdf_path is not None:
+            pdf_path = Path(pdf_path)
+            pdf_path = self.project_input_dir / pdf_path if not pdf_path.is_absolute() else pdf_path
+            if not pdf_path.exists():
+                print(f"Warning: pdf_path not found: {pdf_path}")
+                pdf_path = None
+        self._overlay_pdf_path: Optional[Path] = pdf_path
+
+        # IESVE room data CSV
+        if iesve_room_data is not None:
+            iesve_room_data = Path(iesve_room_data)
+            iesve_room_data = self.project_input_dir / iesve_room_data if not iesve_room_data.is_absolute() else iesve_room_data
+            if not iesve_room_data.exists():
+                print(f"Warning: iesve_room_data not found: {iesve_room_data}")
+                iesve_room_data = None
+        self._iesve_room_data_path = iesve_room_data
+
+        if not self.image_dir.exists():
+            print(f"Warning: image_dir not found: {self.image_dir}")
+
+    def _set_blank_state(self):
+        """Initialise path attributes to safe defaults when no project is set.
+
+        The editor opens with a blank canvas; the user must select or create a
+        project via the Project button before any real work can happen.
+        """
+        _placeholder = config.PROJECTS_DIR / "_no_project"
+        self.project_input_dir = _placeholder
+        self.project_aoi_dir   = _placeholder / "aoi"
+        self.archive_dir       = _placeholder / "archive"
+        self.wpd_dir           = _placeholder / "wpd"
+        self.image_dir         = _placeholder / "image"
+        self._overlay_pdf_path = None
+        self._iesve_room_data_path = None
 
     # === LAYOUT HELPERS ========================================================
 
@@ -658,11 +712,21 @@ class HdrAoiEditor:
             print("Warning: no image files found, cannot project IESVE AOI vertices.")
             return 0
 
-        # Build Space ID → FFL lookup from CSV if provided
+        # Build Space ID → FFL lookup from CSV/Excel if provided
         ffl_lookup: dict = {}
         if csv_path is not None and csv_path.exists():
             try:
-                df_csv = pd.read_csv(csv_path, encoding='utf-8')
+                # Try reading as CSV first. If it's actually an Excel file (XLSX),
+                # read_csv will likely fail with UnicodeDecodeError or ParserError.
+                try:
+                    df_csv = pd.read_csv(csv_path, encoding='utf-8')
+                except (UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError):
+                    # Fallback for misnamed Excel files or different encodings
+                    try:
+                        df_csv = pd.read_excel(csv_path)
+                    except Exception:
+                        df_csv = pd.read_csv(csv_path, encoding='cp1252')
+
                 id_col  = 'Space ID'
                 ffl_col = 'Min. Height (m) (Real)'
                 if id_col in df_csv.columns and ffl_col in df_csv.columns:
@@ -670,7 +734,7 @@ class HdrAoiEditor:
                 else:
                     print(f"Warning: iesve_room_data missing '{id_col}' or '{ffl_col}' columns.")
             except Exception as exc:
-                print(f"Warning: could not read iesve_room_data CSV: {exc}")
+                print(f"Warning: could not read iesve_room_data: {exc}")
 
         # Get VIEW params from the first image file for initial projection
         first_entry = self.hdr_files[0]
@@ -792,6 +856,8 @@ class HdrAoiEditor:
         Returns:
             Sorted list of dicts with keys: hdr_path, tiff_paths, name (stem).
         """
+        if not self.image_dir.exists():
+            return []
         hdr_paths = sorted([*self.image_dir.glob("*.hdr"), *self.image_dir.glob("*.pic")])
         result = []
         for hdr_path in hdr_paths:
@@ -1014,22 +1080,27 @@ class HdrAoiEditor:
 
     def launch(self):
         """Open the interactive editor window."""
-        if not self.hdr_files:
-            raise FileNotFoundError(f"No .hdr files found in {self.image_dir}")
-
         # Close any previous editor window that was left open
         for fig_num in plt.get_fignums():
             fig = plt.figure(fig_num)
             if getattr(fig, '_archilume_editor', False):
                 plt.close(fig)
 
-        # Initialise daylight factor analysis (Phase 3 from daylight_workflow_iesve)
-        try:
-            coordinate_map_path = utils.create_pixel_to_world_coord_map(self.image_dir)
-            self._hdr2wpd = Hdr2Wpd(pixel_to_world_map=coordinate_map_path)
-            print(f"DF analysis ready (area_per_pixel={self._hdr2wpd.area_per_pixel} m2)")
-        except Exception as exc:
-            print(f"Warning: DF analysis unavailable ({exc}). Results will not be shown.")
+        # Initialise daylight factor analysis (requires a project with HDR files)
+        if self.project and self.image_dir.exists():
+            try:
+                coordinate_map_path = utils.create_pixel_to_world_coord_map(self.image_dir)
+                self._hdr2wpd = Hdr2Wpd(
+                    pixel_to_world_map=coordinate_map_path,
+                    aoi_dir=self.aoi_dir,
+                    wpd_dir=self.wpd_dir,
+                    image_dir=self.image_dir,
+                )
+                print(f"DF analysis ready (area_per_pixel={self._hdr2wpd.area_per_pixel} m2)")
+            except Exception as exc:
+                print(f"Warning: DF analysis unavailable ({exc}). Results will not be shown.")
+                self._hdr2wpd = None
+        else:
             self._hdr2wpd = None
 
         # Capture the pdf_path passed to __init__ before _load_session() can overwrite it.
@@ -1215,6 +1286,30 @@ class HdrAoiEditor:
         except Exception:
             pass
 
+        # All initial loading and rendering is complete. 
+        # Future changes will now trigger auto-saves.
+        if self.project:
+            set_last_project(self.project)
+        self._loading = False
+
+        # Force a full redraw once the Tk event loop is running so that the
+        # room list and HDR list panels are visible on first launch without
+        # requiring a user interaction to trigger them.
+        try:
+            self.fig.canvas.manager.window.after(
+                100, lambda: self.fig.canvas.draw()
+            )
+        except Exception:
+            pass
+
+        # If no project was resolved at startup, prompt the user immediately.
+        if not self.project:
+            try:
+                self.fig.canvas.manager.window.after(
+                    200, lambda: self._on_project_click(None))
+            except Exception:
+                pass
+
         try:
             plt.show()
         except KeyboardInterrupt:
@@ -1301,7 +1396,7 @@ class HdrAoiEditor:
             ("Left-click",    "Place vertex / drag"),   ("Shift+click", "Drag edge (edit mode)"),
             ("Right-click",   "Select existing room"),  ("Scroll",      "Zoom centred on cursor"),
             ("s",             "Save room / confirm edit"),
-            ("e",             "Toggle Edit Mode"),      ("d",           "Room divider (edit mode)"),
+            ("e",             "Toggle Edit Mode"),      ("dd",          "Enter divider mode (any mode)"),
             ("ctrl+z",        "Undo (edit/type/name/create/del)"),
             ("o",             "Toggle orthogonal lines"), ("f",         "Fit zoom to selected room"),
             ("r",             "Reset zoom"),              ("p",         "Toggle DF% stamp on/off"),
@@ -1420,80 +1515,105 @@ class HdrAoiEditor:
         row2_y = row1_y + tr_h + gap * 2
         row3_y = row2_y + tr_h + gap * 2
 
-        # Button width: 5 columns across to fit the Reset button
-        n_cols   = 5
+        # Button width: 6 columns across
+        n_cols   = 6
         btn_w    = 0.115
         btn_step = btn_w + gap
 
-        # Row 1: Toggle, Edit, Draw, Ortho
-        self.btn_image_toggle = self._make_button(
+        # Row 1: Project, Toggle, Edit, Draw, Ortho
+        proj_label = f'Project: {self.project}' if self.project else 'Project: (none)'
+        self.btn_project = self._make_button(
             tr_x, row1_y, btn_w, tr_h,
+            proj_label, self._on_project_click,
+            color='#E3F2FD', hovercolor='#BBDEFB')
+        self.btn_image_toggle = self._make_button(
+            tr_x + btn_step, row1_y, btn_w, tr_h,
             'Toggle Image Layers: HDR (Press T)', self._on_image_toggle_click)
         self.btn_edit_mode = self._make_button(
-            tr_x + btn_step, row1_y, btn_w, tr_h,
+            tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
             'Boundary Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
         self.btn_draw_mode = self._make_button(
-            tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
+            tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
             'Draw Mode: OFF (Press D)', self._on_draw_mode_toggle)
 
         ortho_label = 'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)'
         ortho_color = self._btn_on_color if self.ortho_mode else self._btn_color
         ortho_hover = self._btn_on_hover if self.ortho_mode else self._btn_hover
         self.btn_ortho = self._make_button(
-            tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
+            tr_x + 4 * btn_step, row1_y, btn_w, tr_h,
             ortho_label, self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
 
-        # Row 2: Export & Archive, Extract Archive, Reset Zoom, Place DF%
+        # Col 5 on Row 1: AOI level cycle
+        self.btn_aoi_level = self._make_button(
+            tr_x + 5 * btn_step, row1_y, btn_w, tr_h,
+            'AOI Level: -/-', self._on_aoi_level_cycle)
+        self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
+        self._update_aoi_level_label()
+
+        # Row 2 col 0: Annotation font-size slider (compact)
+        slider_ax = self._axes(tr_x, row2_y + tr_h * 0.25, btn_w * 0.55, tr_h * 0.55)
+        slider_ax.set_facecolor('#F5F5F5')
+        for spine in slider_ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color('#CCCCCC')
+            spine.set_linewidth(0.8)
+        self._annotation_scale_slider = Slider(
+            ax=slider_ax,
+            label='Label Size',
+            valmin=0.5,
+            valmax=2.0,
+            valinit=self._annotation_scale,
+            valstep=0.05,
+            color='#90CAF9',
+        )
+        self._annotation_scale_slider.label.set_fontsize(7)
+        self._annotation_scale_slider.valtext.set_fontsize(7)
+        self._annotation_scale_slider.on_changed(self._on_annotation_scale_change)
+
+        # Row 2: Export & Archive, Extract Archive, Reset Zoom, Place DF%  (cols 1–4)
         self.btn_export = self._make_button(
-            tr_x, row2_y, btn_w, tr_h,
+            tr_x + btn_step, row2_y, btn_w, tr_h,
             'Export & Archive', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
         self.btn_extract = self._make_button(
-            tr_x + btn_step, row2_y, btn_w, tr_h,
+            tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
             'Extract Archive', self._on_extract_click)
         self.btn_reset_zoom = self._make_button(
-            tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
+            tr_x + 3 * btn_step, row2_y, btn_w, tr_h,
             'Reset Zoom (Press R)', self._on_reset_zoom_click)
 
         place_label = 'Place DF% Point: ON (Press P)' if self.placement_mode else 'Place DF% Point: OFF (Press P)'
         place_color = self._btn_on_color if self.placement_mode else self._btn_color
         place_hover = self._btn_on_hover if self.placement_mode else self._btn_hover
         self.btn_placement = self._make_button(
-            tr_x + 3 * btn_step, row2_y, btn_w, tr_h,
+            tr_x + 4 * btn_step, row2_y, btn_w, tr_h,
             place_label, self._on_placement_toggle, color=place_color, hovercolor=place_hover)
 
-        # Row 3: PDF Overlay controls
+        # Row 3: PDF Overlay controls  (cols 1–6)
         self.btn_overlay_toggle = self._make_button(
-            tr_x, row3_y, btn_w, tr_h,
+            tr_x + btn_step, row3_y, btn_w, tr_h,
             'Floor Plan: OFF', self._on_overlay_toggle)
         self.btn_overlay_page = self._make_button(
-            tr_x + btn_step, row3_y, btn_w, tr_h,
+            tr_x + 2 * btn_step, row3_y, btn_w, tr_h,
             'Cycle Floor Plans: -/-', self._on_overlay_page_cycle)
         self.btn_overlay_align = self._make_button(
-            tr_x + 2 * btn_step, row3_y, btn_w, tr_h,
+            tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
             'Plan Alignment Edit Mode: OFF', self._on_overlay_align_toggle)
         self.btn_overlay_dpi = self._make_button(
-            tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
+            tr_x + 4 * btn_step, row3_y, btn_w, tr_h,
             f'PDF Res: {self._overlay_raster_dpi} DPI', self._on_overlay_dpi_click)
 
-        # 5th Column on Row 3: Reset Level Alignment
+        # Col 5 on Row 3: Reset Level Alignment
         self.btn_overlay_reset = self._make_button(
-            tr_x + 4 * btn_step, row3_y, btn_w, tr_h,
+            tr_x + 5 * btn_step, row3_y, btn_w, tr_h,
             'Reset Level Alignment', self._on_overlay_reset_click,
             color='#FFEBEE', hovercolor='#FFCDD2') # Subtle red tint for "reset" action
         self.btn_overlay_reset.ax.set_visible(False) # Only show when Align mode is ON
 
-        # 6th Column on Row 3: IESVE AOI level cycle — only shown when iesve_room_data provided
-        self.btn_aoi_level = self._make_button(
-            tr_x + 5 * btn_step, row3_y, btn_w, tr_h,
-            'AOI Level: -/-', self._on_aoi_level_cycle)
-        self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
-        self._update_aoi_level_label()
-
         # Create DPI RadioButtons (initially hidden)
-        # Position it vertically above the main DPI button
+        # Position it vertically above the main DPI button (col 4)
         radio_h = 0.20  # increased from 0.12 for more space
         radio_y = row3_y - radio_h - gap
-        self.ax_dpi_radio = self._axes(tr_x + 3 * btn_step, radio_y, btn_w, radio_h)
+        self.ax_dpi_radio = self._axes(tr_x + 4 * btn_step, radio_y, btn_w, radio_h)
         self.ax_dpi_radio.set_facecolor('#FFFFFF') # White background for better contrast
         self.ax_dpi_radio.set_zorder(1000) # Ensure it's on top
         self.ax_dpi_radio.set_navigate(False)
@@ -1834,9 +1954,15 @@ class HdrAoiEditor:
             self.ax.set_xlim(0, W)
             self.ax.set_ylim(H, 0)
         else:
-            # Blank canvas
+            # Blank canvas — no images loaded yet
             self.ax.set_xlim(0, 1000)
             self.ax.set_ylim(1000, 0)
+            self.ax.text(
+                500, 500,
+                "No images loaded.\nUse the Project button to open or create a project.",
+                ha='center', va='center', fontsize=13, color='#888888',
+                transform=self.ax.transData, zorder=10,
+            )
 
         # Rebuild snap vertex + edge pools from current-HDR room vertices
         all_verts, edge_starts, edge_ends = [], [], []
@@ -1933,19 +2059,26 @@ class HdrAoiEditor:
         values are recovered before converting to DF%.
         """
         if self._hdr2wpd is None or not self.hdr_files:
+            log.debug("_load_current_df_image SKIPPED: hdr2wpd=%s, hdr_files=%d",
+                      'None' if self._hdr2wpd is None else 'OK', len(self.hdr_files))
             self._df_image = None
             return
         hdr_path = self.hdr_files[self.current_hdr_idx]['hdr_path']
         key = str(hdr_path)
         if key in self._df_image_cache:
             self._df_image = self._df_image_cache[key]
+            log.debug("_load_current_df_image: cache hit for %s → %s", hdr_path.name, self._df_image.shape)
             return
+        log.debug("_load_current_df_image: loading %s (iesve=%s)", hdr_path.name, self._iesve_room_data_path is not None)
         if self._iesve_room_data_path is not None:
             self._df_image = self._load_iesve_df_image(hdr_path)
         else:
             self._df_image = Hdr2Wpd.load_df_image(hdr_path)
         if self._df_image is not None:
             self._df_image_cache[key] = self._df_image
+            log.debug("_load_current_df_image: loaded %s → %s", hdr_path.name, self._df_image.shape)
+        else:
+            log.warning("_load_current_df_image: FAILED to load DF image from %s", hdr_path.name)
 
     @staticmethod
     def _load_iesve_df_image(hdr_path: Path) -> Optional[np.ndarray]:
@@ -1997,8 +2130,18 @@ class HdrAoiEditor:
         """
         self._room_df_results.clear()
         if self._df_image is None or self._hdr2wpd is None:
+            log.debug("_compute_all_room_df_results SKIPPED: df_image=%s, hdr2wpd=%s",
+                      'None' if self._df_image is None else self._df_image.shape,
+                      'None' if self._hdr2wpd is None else 'OK')
             return
+        current_hdr = self.current_hdr_name
+        rooms_on_hdr = [(i, r) for i, r in enumerate(self.rooms)
+                        if r.get('hdr_file') == current_hdr and len(r.get('vertices', [])) >= 3]
+        log.debug("_compute_all_room_df_results: HDR='%s', %d rooms on this HDR, df_image=%s",
+                  current_hdr, len(rooms_on_hdr), self._df_image.shape)
         any_new = False
+        computed = 0
+        skipped_type = 0
         for i, room in enumerate(self.rooms):
             if not self._is_room_on_current_hdr(room):
                 continue
@@ -2008,12 +2151,24 @@ class HdrAoiEditor:
             eff_type = self._effective_room_type(room)
             threshold = self._threshold_for_type(eff_type)
             if threshold is None:
+                skipped_type += 1
+                log.debug("  Room %d '%s': eff_type=%r → no threshold, skipped",
+                          i, room.get('name', ''), eff_type)
                 continue
             had_cache = bool(room.get('df_cache'))
-            lines = self._compute_room_df(room, verts, (threshold,))
+            try:
+                lines = self._compute_room_df(room, verts, (threshold,))
+            except Exception:
+                log.exception("  Room %d '%s': _compute_room_df FAILED", i, room.get('name', ''))
+                continue
             self._room_df_results[i] = lines
+            computed += 1
+            log.debug("  Room %d '%s': type=%s threshold=%g → %s",
+                      i, room.get('name', ''), eff_type, threshold, lines)
             if not had_cache and room.get('df_cache'):
                 any_new = True
+        log.debug("_compute_all_room_df_results: %d computed, %d skipped (no type), %d total results",
+                  computed, skipped_type, len(self._room_df_results))
         # Persist newly computed DF caches to the session JSON
         if any_new:
             self._save_session()
@@ -2028,15 +2183,26 @@ class HdrAoiEditor:
         children = self._get_children(room.get('name', ''))
         child_verts_list = [c['vertices'] for c in children if len(c.get('vertices', [])) >= 3]
 
+        # 1. Start with vertex coordinates (rounded to 2 decimal places)
         verts_hash = self._vertices_hash(verts)
         if child_verts_list:
             child_hashes = tuple(self._vertices_hash(cv) for cv in child_verts_list)
-            verts_hash = hash((verts_hash, child_hashes))
+            # Combine into a stable string instead of using unstable hash()
+            verts_hash = f"P:{verts_hash}|C:{child_hashes}"
+            
+        # 2. Add the HDR file's modification time to the hash. 
+        # If the simulation is re-run, this hash will change and force a refresh.
+        hdr_path = self.hdr_files[self.current_hdr_idx]['hdr_path']
+        try:
+            mtime = os.path.getmtime(hdr_path)
+            verts_hash = f"M:{mtime}|{verts_hash}"
+        except Exception:
+            pass
 
         _DF_DISPLAY_FMT = 2  # bump to invalidate cached display_lines
         cache = room.get('df_cache')
         if (cache
-                and cache.get('vertices_hash') == verts_hash
+                and str(cache.get('vertices_hash')) == str(verts_hash)
                 and tuple(cache.get('thresholds', [])) == thresholds_key):
             if cache.get('display_fmt') == _DF_DISPLAY_FMT:
                 return cache['display_lines']
@@ -2094,9 +2260,15 @@ class HdrAoiEditor:
 
     def _draw_all_room_polygons(self):
         """Draw all room polygons for the current view."""
+        drawn = 0
+        df_drawn = 0
         for i, room in enumerate(self.rooms):
             if self._is_room_on_current_hdr(room):
                 self._draw_room_polygon(room, i, is_current_floor=True)
+                drawn += 1
+                if i in self._room_df_results:
+                    df_drawn += 1
+        log.debug("_draw_all_room_polygons: %d polygons drawn, %d with DF results", drawn, df_drawn)
 
     def _draw_room_polygon(self, room: dict, idx: int, is_current_floor: bool):
         """Draw a single room polygon with its label."""
@@ -2164,41 +2336,48 @@ class HdrAoiEditor:
         # DIV sub-rooms, auto-typed as CIRC on creation) to reduce visual clutter.
         is_circ = room.get('room_type', '') == 'CIRC'
         if not is_circ:
-            centroid = self._polygon_label_point(verts)
+            pole = self._polygon_label_point(verts)
             label    = room.get('name', '')
             if not is_current_floor:
                 hf = room.get('hdr_file', '')
                 label += f"\n({hf})"
 
+            df_lines = self._room_df_results.get(idx, [])
+            n_df = len(df_lines) if (is_current_floor and df_lines) else 0
+            line_step = self._df_line_step()
+            name_anchor = self._compute_label_anchor(pole, verts, n_df, line_step)
+
             fs_name = self._zoom_fontsize()
             label_text = self.ax.text(
-                centroid[0], centroid[1], label,
+                name_anchor[0], name_anchor[1], label,
                 color='red', fontsize=fs_name,
                 ha='center', va='center', clip_on=True,
                 path_effects=[patheffects.withStroke(linewidth=fs_name * 0.06, foreground='black')],
             )
             label_text.set_clip_path(self.ax.patch)
+            label_text._label_pole   = pole
+            label_text._label_verts  = verts
+            label_text._label_n_df   = n_df
             self._room_label_cache[idx] = label_text
 
-        # DF results as smaller subtext below the room name (only if room type is set,
-        # and not suppressed for CIRC rooms)
-        df_lines = self._room_df_results.get(idx, [])
-        if df_lines and is_current_floor and not is_circ:
-            line_step = self._df_line_step()
-            for line_i, line in enumerate(df_lines):
-                dy = 1.2 * line_step + line_i * line_step * 0.7
-                fs_df = self._zoom_fontsize(base=6.5)
-                df_text = self.ax.text(
-                    centroid[0], centroid[1] + dy, line,
-                    color='red', fontsize=fs_df,
-                    ha='center', va='center', clip_on=True, alpha=0.85,
-                    path_effects=[patheffects.withStroke(linewidth=fs_df * 0.06, foreground='black')],
-                )
-                df_text.set_clip_path(self.ax.patch)
-                # Store centroid + line index for zoom repositioning
-                df_text._df_centroid = centroid
-                df_text._df_line_i  = line_i
-                self._df_text_cache.append(df_text)
+            # DF results as smaller subtext below the room name
+            if df_lines and is_current_floor:
+                for line_i, line in enumerate(df_lines):
+                    dy = 1.2 * line_step + line_i * line_step * 0.7
+                    fs_df = self._zoom_fontsize(base=6.5)
+                    df_text = self.ax.text(
+                        name_anchor[0], name_anchor[1] + dy, line,
+                        color='red', fontsize=fs_df,
+                        ha='center', va='center', clip_on=True, alpha=0.85,
+                        path_effects=[patheffects.withStroke(linewidth=fs_df * 0.06, foreground='black')],
+                    )
+                    df_text.set_clip_path(self.ax.patch)
+                    # Store pole + verts + line index for repositioning on zoom/scale change
+                    df_text._df_pole   = pole
+                    df_text._df_verts  = verts
+                    df_text._df_n_df   = n_df
+                    df_text._df_line_i = line_i
+                    self._df_text_cache.append(df_text)
 
     def _update_room_visuals(self):
         """Update room colours without a full redraw (for hover/selection changes)."""
@@ -2369,6 +2548,42 @@ class HdrAoiEditor:
         t = max(0.0, min(1.0, ((px - ax)*dx + (py - ay)*dy) / seg_len_sq))
         proj_x, proj_y = ax + t*dx, ay + t*dy
         return np.hypot(px - proj_x, py - proj_y), proj_x, proj_y
+
+    @staticmethod
+    def _compute_label_anchor(pole, verts, n_df: int, line_step: float) -> np.ndarray:
+        """Return the y-adjusted anchor so the full text block (name + DF lines) fits inside the polygon.
+
+        The name label is placed at the returned point with va='center'.
+        DF lines extend downward from anchor_y + 1.2*line_step + i*0.7*line_step.
+
+        Strategy:
+          1. Compute the total vertical span of the block in data units.
+          2. Start with the pole of inaccessibility as anchor.
+          3. Shift the anchor up by half the block height so the block is centred at the pole.
+          4. Clamp anchor_y so the full block stays inside the polygon's bounding box.
+        """
+        pts = np.array(verts, dtype=float)
+        ymin, ymax = pts[:, 1].min(), pts[:, 1].max()
+
+        # Vertical extents of the full block (name centred at anchor, DF lines below)
+        # name half-height: approximately 0.5 * line_step (using name base ≈ df base * 1.23)
+        name_half = line_step * 0.6
+        if n_df > 0:
+            df_total = 1.2 * line_step + (n_df - 1) * line_step * 0.7 + line_step * 0.5
+        else:
+            df_total = 0.0
+        block_h = name_half + df_total  # total height below the name centre
+
+        # Centre the block at the pole: shift name anchor up so block is centred on pole
+        half_block = (name_half + df_total) / 2.0
+        anchor_y = pole[1] - half_block + name_half
+
+        # Clamp so block stays within the polygon bounding box (with a small margin)
+        margin = line_step * 0.3
+        anchor_y = max(ymin + name_half + margin, anchor_y)
+        anchor_y = min(ymax - df_total - margin, anchor_y)
+
+        return np.array([pole[0], anchor_y])
 
     @staticmethod
     def _polygon_label_point(verts) -> np.ndarray:
@@ -3005,11 +3220,22 @@ class HdrAoiEditor:
         elif event.key == 'o':
             self._on_ortho_toggle(None)
         elif event.key == 'd':
-            if self.edit_mode:
+            now = time.monotonic()
+            double_d = (now - self._last_d_press_time) < 0.4
+            self._last_d_press_time = now
+            if double_d:
+                # dd — enter edit mode (if not already) then toggle divider mode
+                self._last_d_press_time = 0.0  # consume so a third d doesn't re-trigger
+                if self.draw_mode:
+                    self._exit_draw_mode()
+                if not self.edit_mode:
+                    self._on_edit_mode_toggle(None)
                 if self.divider_mode:
                     self._exit_divider_mode(cancelled=True)
                 else:
                     self._enter_divider_mode()
+            elif self.edit_mode:
+                pass  # single d in edit mode does nothing — use dd for divider
             else:
                 if self.draw_mode:
                     self._exit_draw_mode()
@@ -3165,6 +3391,10 @@ class HdrAoiEditor:
                 # divided by the figure's dots-per-inch scaling factor.
                 self.fig.set_size_inches(width / self.fig.dpi, height / self.fig.dpi, forward=False)
                 canvas.resize(width, height)
+            # Re-populate list panels so they are visible on first render after
+            # the event loop and window geometry are fully established.
+            self._update_room_list()
+            self._update_hdr_list()
             canvas.draw_idle()
         except Exception:
             pass
@@ -3521,10 +3751,10 @@ class HdrAoiEditor:
         scales up when zoomed in. Clamps to [4, 20].
         """
         if self._reference_view_w <= 1:
-            return base
+            return base * self._annotation_scale
         view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
         scale  = self._reference_view_w / max(view_w, 1.0)
-        return max(4.0, min(20.0, base * scale))
+        return max(4.0, min(20.0, base * scale * self._annotation_scale))
 
     def _df_line_step(self) -> float:
         """Return zoom-aware vertical spacing (in data coords) between DF result lines.
@@ -3549,24 +3779,35 @@ class HdrAoiEditor:
         return fs_data * 1.6                   # 1.6× line height for comfortable spacing
 
     def _apply_zoom_fontsizes(self):
-        """Reapply zoom-dependent font sizes and stroke widths to all cached text."""
+        """Reapply zoom-dependent font sizes, stroke widths, and positions to all cached text."""
         fs = self._zoom_fontsize()
-        stroke_name = [patheffects.withStroke(linewidth=fs * 0.06, foreground='black')]
-        for label in self._room_label_cache.values():
-            if label is not None:
-                label.set_fontsize(fs)
-                label.set_path_effects(stroke_name)
         fs_df = self._zoom_fontsize(base=6.5)
-        stroke_df = [patheffects.withStroke(linewidth=fs_df * 0.06, foreground='black')]
         line_step = self._df_line_step()
+        stroke_name = [patheffects.withStroke(linewidth=fs * 0.06, foreground='black')]
+        stroke_df   = [patheffects.withStroke(linewidth=fs_df * 0.06, foreground='black')]
+
+        for label in self._room_label_cache.values():
+            if label is None:
+                continue
+            label.set_fontsize(fs)
+            label.set_path_effects(stroke_name)
+            pole  = getattr(label, '_label_pole', None)
+            verts = getattr(label, '_label_verts', None)
+            n_df  = getattr(label, '_label_n_df', 0)
+            if pole is not None and verts is not None:
+                anchor = self._compute_label_anchor(pole, verts, n_df, line_step)
+                label.set_position(anchor)
+
         for dt in self._df_text_cache:
             dt.set_fontsize(fs_df)
             dt.set_path_effects(stroke_df)
-            # Reposition based on current zoom-aware line step
-            centroid = getattr(dt, '_df_centroid', None)
-            line_i   = getattr(dt, '_df_line_i', None)
-            if centroid is not None and line_i is not None:
-                dt.set_position((centroid[0], centroid[1] + 1.2 * line_step + line_i * line_step * 0.7))
+            pole   = getattr(dt, '_df_pole', None)
+            verts  = getattr(dt, '_df_verts', None)
+            n_df   = getattr(dt, '_df_n_df', 0)
+            line_i = getattr(dt, '_df_line_i', None)
+            if pole is not None and verts is not None and line_i is not None:
+                anchor = self._compute_label_anchor(pole, verts, n_df, line_step)
+                dt.set_position((anchor[0], anchor[1] + 1.2 * line_step + line_i * line_step * 0.7))
 
     def _zoom_linewidth(self, base: float = 1.5) -> float:
         """Return linewidth that stays visually constant regardless of zoom.
@@ -3593,6 +3834,12 @@ class HdrAoiEditor:
             elif ptype == 'other':
                 patch.set_linewidth(lw_other)
 
+
+    def _on_annotation_scale_change(self, val: float):
+        """Slider callback: update annotation scale and refresh all label sizes."""
+        self._annotation_scale = val
+        self._apply_zoom_fontsizes()
+        self.fig.canvas.draw_idle()
 
     def _on_reset_zoom_click(self, event):
         """Reset zoom to the full image extent."""
@@ -3793,6 +4040,545 @@ class HdrAoiEditor:
         tf['page_idx'] = self._overlay_page_idx
         self._save_session()
         self._render_section(force_full=True)
+
+    # === PROJECT MANAGEMENT ====================================================
+
+    def _on_project_click(self, event):
+        """Open the Project dialog in a tkinter Toplevel window.
+
+        Re-uses the matplotlib TkAgg backend's Tk root so there is only one
+        Tk interpreter.  This avoids StringVar update issues that arise when
+        a second Tk() instance is created alongside matplotlib's own root.
+        """
+        # Grab the existing Tk root that matplotlib's TkAgg backend owns.
+        tk_root = self.fig.canvas.manager.window
+        dlg = tk.Toplevel(tk_root)
+        dlg.title("Open or Create Project")
+        dlg.minsize(600, 0)
+        dlg.resizable(True, False)
+        dlg.transient(tk_root)
+
+        # Position the dialog on the same screen as the editor window
+        dlg.update_idletasks()
+        root_x = tk_root.winfo_x()
+        root_y = tk_root.winfo_y()
+        root_w = tk_root.winfo_width()
+        root_h = tk_root.winfo_height()
+        dlg_w = dlg.winfo_reqwidth()
+        dlg_h = dlg.winfo_reqheight()
+        x = root_x + (root_w - dlg_w) // 2
+        y = root_y + (root_h - dlg_h) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        # ── State variables (master=dlg keeps them on the same Tk interp) ─
+        sv_name       = tk.StringVar(master=dlg, value=self.project or "")
+        sv_mode       = tk.StringVar(master=dlg, value="hdr")
+        sv_pdf        = tk.StringVar(master=dlg)
+        sv_image_dir  = tk.StringVar(master=dlg)
+        sv_iesve_csv  = tk.StringVar(master=dlg)
+        sv_aoi_files  = tk.StringVar(master=dlg)  # semicolon-separated .aoi file paths
+        sv_octree     = tk.StringVar(master=dlg)   # .oct scene file (Archilume only)
+        sv_rdp        = tk.StringVar(master=dlg)   # .rdp render params file (Archilume only)
+        sv_coord_map  = tk.StringVar(master=dlg)   # pixel-to-world coordinate map (Archilume only)
+
+        # ── Mode-specific widget lists ─────────────────────────────────────
+        _iesve_widgets = []     # enabled only when IESVE is selected
+        _archilume_widgets = [] # enabled only when Archilume is selected
+
+        def _toggle_mode_fields():
+            is_iesve = sv_mode.get() == "iesve"
+            for w in _iesve_widgets:
+                try:
+                    w.config(state="normal" if is_iesve else "disabled")
+                except tk.TclError:
+                    pass
+            for w in _archilume_widgets:
+                try:
+                    w.config(state="normal" if not is_iesve else "disabled")
+                except tk.TclError:
+                    pass
+
+        def _load_into_form(name):
+            cfg = load_project_toml(name)
+            proj_paths = config.get_project_paths(name)
+            sv_name.set(name)
+            sv_mode.set(cfg.get("project", {}).get("mode", "hdr"))
+            toml_paths = cfg.get("paths", {})
+
+            # Resolve relative paths from project.toml against inputs_dir,
+            # returning paths relative to inputs_dir for concise display.
+            inputs = proj_paths.inputs_dir
+
+            def _resolve(rel):
+                if not rel:
+                    return ""
+                p = Path(rel)
+                if p.is_absolute():
+                    if not p.exists():
+                        return ""
+                    try:
+                        return str(p.relative_to(proj_paths.project_dir))
+                    except ValueError:
+                        return str(p)
+                resolved = inputs / p
+                if not resolved.exists():
+                    return ""
+                return str(p)
+
+            def _rel(absolute_path):
+                """Convert an absolute path to a relative one from the project root."""
+                try:
+                    return str(absolute_path.relative_to(proj_paths.project_dir))
+                except ValueError:
+                    return str(absolute_path)
+
+            # Resolve from toml, falling back to auto-discovery in project dirs
+            pdf_val = _resolve(toml_paths.get("pdf_path", ""))
+            if not pdf_val and proj_paths.plans_dir.exists():
+                pdfs = sorted(proj_paths.plans_dir.glob("*.pdf"))
+                if pdfs:
+                    pdf_val = _rel(pdfs[0])
+            sv_pdf.set(pdf_val)
+
+            csv_val = _resolve(toml_paths.get("iesve_room_data", ""))
+            if not csv_val and proj_paths.aoi_inputs_dir.exists():
+                csvs = sorted(proj_paths.aoi_inputs_dir.glob("*.csv"))
+                if csvs:
+                    csv_val = _rel(csvs[0])
+            sv_iesve_csv.set(csv_val)
+
+            sv_image_dir.set(_resolve(toml_paths.get("image_dir", "")))
+
+            # Octree and render params — resolve from toml or auto-discover in inputs/
+            oct_val = _resolve(toml_paths.get("octree", ""))
+            if not oct_val and proj_paths.inputs_dir.exists():
+                octs = sorted(proj_paths.inputs_dir.glob("*.oct"))
+                if octs:
+                    oct_val = _rel(octs[0])
+            sv_octree.set(oct_val)
+
+            rdp_val = _resolve(toml_paths.get("rdp", ""))
+            if not rdp_val and proj_paths.inputs_dir.exists():
+                rdps = sorted(proj_paths.inputs_dir.glob("*.rdp"))
+                if rdps:
+                    rdp_val = _rel(rdps[0])
+            sv_rdp.set(rdp_val)
+
+            coord_map_val = _resolve(toml_paths.get("coordinate_map", ""))
+            if not coord_map_val and proj_paths.aoi_dir.exists():
+                maps = sorted(proj_paths.aoi_dir.glob("pixel_to_world_coordinate_map.txt"))
+                if maps:
+                    coord_map_val = _rel(maps[0])
+            sv_coord_map.set(coord_map_val)
+
+            # Auto-discover AOI files in the project's inputs/aoi/ directory
+            aoi_dir = proj_paths.aoi_inputs_dir
+            if aoi_dir.exists():
+                aoi_files = sorted(aoi_dir.glob("*.aoi"))
+                sv_aoi_files.set("; ".join(_rel(f) for f in aoi_files) if aoi_files else "")
+            else:
+                sv_aoi_files.set("")
+
+            _selected_from_dropdown[0] = True
+            _toggle_mode_fields()
+
+        # ── Top section: existing projects dropdown ────────────────────────
+        frm_top = tk.Frame(dlg, padx=6, pady=6)
+        frm_top.pack(fill="x", padx=10, pady=(10, 4))
+
+        _CREATE_NEW = "— Create new project —"
+        existing = list_projects()
+        cb_values = [_CREATE_NEW] + existing
+        tk.Label(frm_top, text="Select project:").pack(side="left", padx=(0, 6))
+        cb_project = ttk.Combobox(frm_top, values=cb_values, state="readonly", width=30)
+        cb_project.pack(side="left", fill="x", expand=True)
+        if self.project and self.project in existing:
+            cb_project.set(self.project)
+
+        # Track whether the user selected from the dropdown (vs typed a new name)
+        _selected_from_dropdown = [False]
+
+        def _set_form_state(enabled):
+            """Enable or disable all form widgets."""
+            state = "normal" if enabled else "disabled"
+            for child in frm.winfo_children():
+                try:
+                    child.config(state=state)
+                except tk.TclError:
+                    pass
+            if enabled:
+                _toggle_mode_fields()
+
+        def _on_cb_select(e):
+            sel = cb_project.get()
+            if sel == _CREATE_NEW:
+                _selected_from_dropdown[0] = False
+                # Clear all fields for a fresh project
+                sv_name.set("")
+                sv_mode.set("hdr")
+                sv_pdf.set("")
+                sv_aoi_files.set("")
+                sv_iesve_csv.set("")
+                sv_octree.set("")
+                sv_rdp.set("")
+                sv_coord_map.set("")
+                sv_image_dir.set("")
+                _set_form_state(True)
+            elif sel:
+                _selected_from_dropdown[0] = True
+                _load_into_form(sel)
+                _set_form_state(True)
+        cb_project.bind("<<ComboboxSelected>>", _on_cb_select)
+
+        # ── Form section ───────────────────────────────────────────────────
+        frm = tk.LabelFrame(dlg, text="Project Settings", padx=6, pady=6)
+        frm.pack(fill="x", padx=10, pady=4)
+        frm.columnconfigure(1, weight=1)
+
+        tk.Label(frm, text="Project name:").grid(row=0, column=0, sticky="w", pady=2)
+        tk.Entry(frm, textvariable=sv_name).grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
+
+        tk.Label(frm, text="Results source:").grid(row=1, column=0, sticky="w", pady=2)
+        frm_rb = tk.Frame(frm)
+        frm_rb.grid(row=1, column=1, columnspan=2, sticky="w")
+        tk.Radiobutton(frm_rb, text="Archilume simulation", variable=sv_mode, value="hdr",
+                       command=_toggle_mode_fields).pack(side="left")
+        tk.Radiobutton(frm_rb, text="IESVE simulation", variable=sv_mode, value="iesve",
+                       command=_toggle_mode_fields).pack(side="left")
+
+        def _browse(sv, title, parent, filetypes=None, directory=False):
+            """Open a file/directory picker, store the result, and refocus the dialog."""
+            if directory:
+                path = filedialog.askdirectory(title=title, parent=parent)
+            else:
+                path = filedialog.askopenfilename(title=title, filetypes=filetypes or [], parent=parent)
+            if path:
+                sv.set(path)
+            parent.lift()
+            parent.focus_force()
+
+        def _browse_multiple(sv, title, parent, filetypes=None):
+            """Open a multi-file picker, store paths joined by "; ", and refocus the dialog."""
+            paths = filedialog.askopenfilenames(title=title, filetypes=filetypes or [], parent=parent)
+            if paths:
+                sv.set("; ".join(paths))
+            parent.lift()
+            parent.focus_force()
+
+        tk.Label(frm, text="PDF path (optional):").grid(row=2, column=0, sticky="w", pady=2)
+        tk.Entry(frm, textvariable=sv_pdf).grid(row=2, column=1, sticky="ew", pady=2)
+        tk.Button(frm, text="Browse…",
+                  command=lambda: _browse(sv_pdf, "Select PDF", dlg,
+                                          filetypes=[("PDF", "*.pdf")])
+                  ).grid(row=2, column=2, padx=4, pady=2)
+
+        tk.Label(frm, text="AOI files (required):").grid(row=3, column=0, sticky="w", pady=2)
+        tk.Entry(frm, textvariable=sv_aoi_files).grid(row=3, column=1, sticky="ew", pady=2)
+        tk.Button(frm, text="Browse…",
+                  command=lambda: _browse_multiple(sv_aoi_files, "Select .aoi files", dlg,
+                                                   filetypes=[("AOI files", "*.aoi"), ("All files", "*.*")])
+                  ).grid(row=3, column=2, padx=4, pady=2)
+
+        # Row 4: Room boundaries CSV — always available (both modes)
+        tk.Label(frm, text="Room boundaries CSV (optional):").grid(row=4, column=0, sticky="w", pady=2)
+        tk.Entry(frm, textvariable=sv_iesve_csv).grid(row=4, column=1, sticky="ew", pady=2)
+        tk.Button(frm, text="Browse…",
+                  command=lambda: _browse(sv_iesve_csv, "Select room boundaries CSV", dlg,
+                                          filetypes=[("CSV", "*.csv")])
+                  ).grid(row=4, column=2, padx=4, pady=2)
+
+        # Row 5: Octree file — Archilume only
+        lbl_oct = tk.Label(frm, text="Octree .oct (Archilume):")
+        ent_oct = tk.Entry(frm, textvariable=sv_octree)
+        btn_oct = tk.Button(frm, text="Browse…",
+                            command=lambda: _browse(sv_octree, "Select octree file", dlg,
+                                                    filetypes=[("Octree", "*.oct"), ("All files", "*.*")]))
+        lbl_oct.grid(row=5, column=0, sticky="w", pady=2)
+        ent_oct.grid(row=5, column=1, sticky="ew", pady=2)
+        btn_oct.grid(row=5, column=2, padx=4, pady=2)
+
+        # Row 6: Render params file — Archilume only
+        lbl_rdp = tk.Label(frm, text="Render params .rdp (Archilume):")
+        ent_rdp = tk.Entry(frm, textvariable=sv_rdp)
+        btn_rdp = tk.Button(frm, text="Browse…",
+                            command=lambda: _browse(sv_rdp, "Select render params file", dlg,
+                                                    filetypes=[("Render params", "*.rdp"), ("All files", "*.*")]))
+        lbl_rdp.grid(row=6, column=0, sticky="w", pady=2)
+        ent_rdp.grid(row=6, column=1, sticky="ew", pady=2)
+        btn_rdp.grid(row=6, column=2, padx=4, pady=2)
+
+        # Row 7: Coordinate map — Archilume only (auto-generated if not provided)
+        lbl_cmap = tk.Label(frm, text="Coordinate map (Archilume):")
+        ent_cmap = tk.Entry(frm, textvariable=sv_coord_map)
+        btn_cmap = tk.Button(frm, text="Browse…",
+                             command=lambda: _browse(sv_coord_map, "Select coordinate map file", dlg,
+                                                     filetypes=[("Text files", "*.txt"), ("All files", "*.*")]))
+        lbl_cmap.grid(row=7, column=0, sticky="w", pady=2)
+        ent_cmap.grid(row=7, column=1, sticky="ew", pady=2)
+        btn_cmap.grid(row=7, column=2, padx=4, pady=2)
+
+        _archilume_widgets.extend([lbl_oct, ent_oct, btn_oct,
+                                   lbl_rdp, ent_rdp, btn_rdp,
+                                   lbl_cmap, ent_cmap, btn_cmap])
+
+        # Row 8: Image dir — IESVE only (Archilume uses outputs/image/ automatically)
+        lbl_imgdir = tk.Label(frm, text="Image dir (IESVE only):")
+        ent_imgdir = tk.Entry(frm, textvariable=sv_image_dir)
+        btn_imgdir = tk.Button(frm, text="Browse…",
+                               command=lambda: _browse(sv_image_dir, "Select image dir", dlg,
+                                                       directory=True))
+        lbl_imgdir.grid(row=8, column=0, sticky="w", pady=2)
+        ent_imgdir.grid(row=8, column=1, sticky="ew", pady=2)
+        btn_imgdir.grid(row=8, column=2, padx=4, pady=2)
+
+        _iesve_widgets.extend([lbl_imgdir, ent_imgdir, btn_imgdir])
+
+        # Start with form disabled until user picks from dropdown
+        if self.project and self.project in existing:
+            _load_into_form(self.project)
+            _set_form_state(True)
+        else:
+            _toggle_mode_fields()
+            _set_form_state(False)
+
+        # ── Buttons ────────────────────────────────────────────────────────
+        frm_btns = tk.Frame(dlg)
+        frm_btns.pack(pady=(6, 10))
+
+        def _apply():
+            name = sv_name.get().strip()
+            if not name:
+                messagebox.showwarning("Project name required", "Please enter a project name.", parent=dlg)
+                return
+            # Check if this project already exists and was NOT selected from the listbox
+            existing_project = (config.PROJECTS_DIR / name).exists()
+            selected_from_list = _selected_from_dropdown[0] and cb_project.get() == name
+            if existing_project and not selected_from_list:
+                overwrite = messagebox.askyesno(
+                    "Project already exists",
+                    f"A project named '{name}' already exists.\n\n"
+                    "Do you want to open it and update its settings?",
+                    parent=dlg,
+                )
+                if not overwrite:
+                    return
+
+            mode       = sv_mode.get()
+            pdf        = sv_pdf.get().strip() or None
+            aoi_files  = sv_aoi_files.get().strip() or None
+            room_csv   = sv_iesve_csv.get().strip() or None
+            octree     = sv_octree.get().strip() or None if mode == "hdr" else None
+            rdp        = sv_rdp.get().strip() or None if mode == "hdr" else None
+            coord_map  = sv_coord_map.get().strip() or None if mode == "hdr" else None
+            image_dir  = sv_image_dir.get().strip() or None if mode == "iesve" else None
+
+            # Scaffold the full project directory structure
+            paths = config.get_project_paths(name)
+            paths.create_dirs()
+
+            # Copy selected files into the project inputs directory
+            def _copy_into(src_str, dest_dir):
+                """Copy a file into dest_dir if it doesn't already live there.
+                Returns the relative path from inputs_dir, or the original if already inside."""
+                src = Path(src_str)
+                if not src.is_absolute():
+                    src = paths.inputs_dir / src
+                if not src.exists():
+                    return src_str
+                dest = dest_dir / src.name
+                if src.resolve() != dest.resolve():
+                    shutil.copy2(src, dest)
+                # Return path relative to inputs_dir for storage in project.toml
+                try:
+                    return str(dest.relative_to(paths.inputs_dir))
+                except ValueError:
+                    return str(dest)
+
+            rel_pdf = ""
+            if pdf:
+                rel_pdf = _copy_into(pdf, paths.plans_dir)
+
+            rel_room_csv = ""
+            if room_csv:
+                rel_room_csv = _copy_into(room_csv, paths.aoi_inputs_dir)
+
+            if aoi_files:
+                for aoi_str in aoi_files.split("; "):
+                    aoi_str = aoi_str.strip()
+                    if aoi_str:
+                        _copy_into(aoi_str, paths.aoi_inputs_dir)
+
+            rel_octree = ""
+            if octree:
+                rel_octree = _copy_into(octree, paths.inputs_dir)
+
+            rel_rdp = ""
+            if rdp:
+                rel_rdp = _copy_into(rdp, paths.inputs_dir)
+
+            rel_coord_map = ""
+            if coord_map:
+                # The coordinate map is a generated output — store as-is
+                # (relative to project_dir), never copy it into inputs.
+                rel_coord_map = coord_map
+
+            rel_image_dir = ""
+            if image_dir:
+                rel_image_dir = image_dir
+
+            cfg = {
+                "project": {"name": name, "mode": mode},
+                "paths":   {
+                    "pdf_path":        rel_pdf,
+                    "image_dir":       rel_image_dir,
+                    "iesve_room_data": rel_room_csv,
+                    "octree":          rel_octree,
+                    "rdp":             rel_rdp,
+                    "coordinate_map":  rel_coord_map,
+                },
+            }
+            save_project_toml(name, cfg)
+            dlg.destroy()
+            self._reload_project(name, mode, rel_pdf, rel_image_dir, rel_room_csv,
+                                    coordinate_map=rel_coord_map)
+
+        tk.Button(frm_btns, text="Launch / Apply", width=16,
+                  command=_apply, bg="#BBDEFB").pack(side="left", padx=6)
+        tk.Button(frm_btns, text="Cancel", width=10,
+                  command=dlg.destroy).pack(side="left", padx=6)
+
+        # Pre-fill from current project if one is loaded
+        if self.project:
+            _load_into_form(self.project)
+
+    def _reload_project(self, name: str, mode: str, pdf_path, image_dir, iesve_room_data,
+                        coordinate_map=None):
+        """Reinitialise the editor in-place with a new project configuration."""
+        log.debug("_reload_project: name=%r, mode=%r, image_dir=%r, coordinate_map=%r",
+                  name, mode, image_dir, coordinate_map)
+
+        paths = config.get_project_paths(name)
+        paths.create_dirs()
+
+        # Update project identity
+        self.project            = name
+        set_last_project(name)
+        self.project_input_dir  = paths.inputs_dir
+        self.project_aoi_dir    = paths.aoi_inputs_dir
+        self.archive_dir        = paths.archive_dir
+        self.wpd_dir            = paths.wpd_dir
+        self.aoi_dir            = paths.aoi_inputs_dir
+        self.session_path       = paths.aoi_inputs_dir / "aoi_session.json"
+        self.csv_path           = paths.aoi_inputs_dir / "aoi_boundaries.csv"
+
+        # Resolve image_dir
+        if mode == "iesve" and image_dir:
+            p = Path(image_dir)
+            self.image_dir = paths.inputs_dir / p if not p.is_absolute() else p
+        else:
+            self.image_dir = paths.image_dir
+
+        # Resolve PDF path
+        if pdf_path:
+            p = Path(pdf_path)
+            resolved_pdf = paths.inputs_dir / p if not p.is_absolute() else p
+            self._overlay_pdf_path = resolved_pdf if resolved_pdf.exists() else None
+        else:
+            self._overlay_pdf_path = None
+        self._overlay_pdf_info   = None
+        self._overlay_rgba       = None
+        self._overlay_cache_pdf  = None
+        self._overlay_cache_dpi  = None
+        self._overlay_page_idx   = 0
+        self._overlay_visible    = False
+
+        # Resolve IESVE room data
+        if iesve_room_data:
+            p = Path(iesve_room_data)
+            resolved_iesve = paths.inputs_dir / p if not p.is_absolute() else p
+            self._iesve_room_data_path = resolved_iesve if resolved_iesve.exists() else None
+        else:
+            self._iesve_room_data_path = None
+
+        # Reset editor state
+        self.rooms                  = []
+        self.current_polygon_vertices = []
+        self.selected_room_idx      = None
+        self.selected_parent        = None
+        self.parent_options         = []
+        self.current_hdr_idx        = 0
+        self.image_variants         = []
+        self.current_variant_idx    = 0
+        self._edit_undo_stack       = []
+        self._draw_undo_stack       = []
+        self._image_cache           = {}
+        self._df_stamps             = {}
+        self._df_image              = None
+        self._df_image_cache        = {}
+        self._room_df_results       = {}
+        self._overlay_transforms    = {}
+        self._aoi_level_idx         = 0
+
+        # Update toolbar button label
+        proj_label = f'Project: {self.project}'
+        self.btn_project.label.set_text(proj_label)
+        self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
+
+        # Rescan files and reload session
+        self.hdr_files = self._scan_hdr_files()
+        self._rebuild_image_variants()
+
+        # Re-initialise daylight factor analysis for the new project
+        try:
+            if coordinate_map:
+                p = Path(coordinate_map)
+                coordinate_map_path = paths.project_dir / p if not p.is_absolute() else p
+            else:
+                coordinate_map_path = utils.create_pixel_to_world_coord_map(self.image_dir)
+            log.debug("_reload_project: coord_map_path=%s, exists=%s",
+                      coordinate_map_path, coordinate_map_path.exists())
+            self._hdr2wpd = Hdr2Wpd(
+                pixel_to_world_map=coordinate_map_path,
+                aoi_dir=self.aoi_dir,
+                wpd_dir=self.wpd_dir,
+                image_dir=self.image_dir,
+            )
+            log.debug("_reload_project: hdr2wpd OK, area_per_pixel=%s", self._hdr2wpd.area_per_pixel)
+            print(f"DF analysis ready for {self.project} (area_per_pixel={self._hdr2wpd.area_per_pixel} m2)")
+        except Exception:
+            log.exception("_reload_project: DF analysis init FAILED")
+            self._hdr2wpd = None
+
+        self._load_session()
+        # If session had no rooms but .aoi files exist, load them directly
+        if not self.rooms and self.aoi_dir.exists() and list(self.aoi_dir.glob('*.aoi')):
+            self._load_from_aoi_files(self.aoi_dir)
+            if self.rooms:
+                self._save_session()
+                print(f"Loaded {len(self.rooms)} rooms from .aoi files in {self.aoi_dir}")
+        typed = sum(1 for r in self.rooms if self._threshold_for_type(self._effective_room_type(r)) is not None)
+        log.debug("_reload_project: %d rooms loaded, %d with DF-eligible type, hdr2wpd=%s, hdr_files=%d",
+                  len(self.rooms), typed,
+                  'None' if self._hdr2wpd is None else 'OK', len(self.hdr_files))
+        self._check_project_health()
+        self._render_section(reset_view=True, force_full=True)
+        self._update_room_list()
+        self._update_hdr_list()
+        self.fig.canvas.draw_idle()
+
+    def _check_project_health(self):
+        """Show status hints when referenced project files are missing."""
+        issues = []
+        if not self.hdr_files:
+            issues.append(f"No .hdr/.pic images found in {self.image_dir}. Add rendered images and reload.")
+        if self._overlay_pdf_path and not self._overlay_pdf_path.exists():
+            issues.append(f"PDF not found: {self._overlay_pdf_path}. Update in Project settings.")
+        if self._iesve_room_data_path and not self._iesve_room_data_path.exists():
+            issues.append(f"IESVE room data CSV not found: {self._iesve_room_data_path}. Update in Project settings.")
+        if not issues:
+            return
+        msg = " | ".join(issues)
+        self._update_status(msg, 'orange')
 
     def _on_aoi_level_cycle(self, event):
         """Cycle to the next FFL group and reassign those rooms to the current .pic level."""
@@ -4837,7 +5623,14 @@ class HdrAoiEditor:
             if t > 1e-6 and -1e-10 <= u <= 1.0 + 1e-10:
                 if t < best_t:
                     best_t  = t
-                    best_pt = (float(ax_ + u * edge_dx), float(ay_ + u * edge_dy))
+                    u_clamped = max(0.0, min(1.0, u))
+                    # Snap to vertex if hit is very close to an endpoint
+                    if u_clamped < 1e-6:
+                        best_pt = (ax_, ay_)
+                    elif u_clamped > 1.0 - 1e-6:
+                        best_pt = (bx_, by_)
+                    else:
+                        best_pt = (float(ax_ + u_clamped * edge_dx), float(ay_ + u_clamped * edge_dy))
 
         return best_pt
 
@@ -4902,13 +5695,25 @@ class HdrAoiEditor:
         from *tip* outward (direction tip−anchor) and returns the first hit.
         Falls back to the reverse direction if the outward ray misses.
         """
-        # Check if tip is already on boundary
+        # Check if tip is already on boundary — project tip exactly onto the edge
         n = len(polygon_verts)
         for i in range(n):
             a = polygon_verts[i]
             b = polygon_verts[(i + 1) % n]
             if self._point_on_segment(tip, a, b, tol=3.0):
-                return (float(tip[0]), float(tip[1]))
+                ax_, ay_ = float(a[0]), float(a[1])
+                bx_, by_ = float(b[0]), float(b[1])
+                edge_dx, edge_dy = bx_ - ax_, by_ - ay_
+                edge_len_sq = edge_dx ** 2 + edge_dy ** 2
+                if edge_len_sq < 1e-20:
+                    return (ax_, ay_)
+                u = ((float(tip[0]) - ax_) * edge_dx + (float(tip[1]) - ay_) * edge_dy) / edge_len_sq
+                u = max(0.0, min(1.0, u))
+                if u < 1e-6:
+                    return (ax_, ay_)
+                elif u > 1.0 - 1e-6:
+                    return (bx_, by_)
+                return (ax_ + u * edge_dx, ay_ + u * edge_dy)
 
         # Ray outward from tip (direction = tip − anchor)
         direction = (float(tip[0]) - float(anchor[0]),
@@ -5330,12 +6135,13 @@ class HdrAoiEditor:
 
     def _save_session(self):
         """Save all room boundaries, DF stamps, and DF cache to JSON."""
+        if getattr(self, '_loading', False):
+            return
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         # Convert stamp tuples to lists for JSON serialisation
         stamps_json = {hdr: [list(s) for s in stamps]
                        for hdr, stamps in self._df_stamps.items() if stamps}
         data = {
-            'image_dir':      str(self.image_dir),
             'current_hdr_idx':     self.current_hdr_idx,
             'current_variant_idx': self.current_variant_idx,
             'df_thresholds':  self.DF_THRESHOLDS,
@@ -5350,6 +6156,7 @@ class HdrAoiEditor:
             'overlay_raster_dpi':  self._overlay_raster_dpi,
             'overlay_cache_pdf':   self._overlay_cache_pdf,
             'overlay_cache_dpi':   self._overlay_cache_dpi,
+            'annotation_scale':    self._annotation_scale,
             'window_settings':     self.window_settings,
         }
         # Write to a temp file alongside the target, then atomically rename it
@@ -5370,7 +6177,10 @@ class HdrAoiEditor:
         if self.session_path.exists():
             with open(self.session_path, 'r') as f:
                 data = json.load(f)
-            self.rooms = data.get('rooms', [])
+
+            # Fix image_dir if the session was copied from another project
+            if 'rooms' in data:
+                self.rooms = data['rooms']
             # Restore stamped DF readings (lists back to tuples).
             # Old sessions have 3-element stamps (x, y, df_val); new ones have 5
             # (x, y, df_val, px, py). Both are handled transparently by _draw_df_stamps.
@@ -5395,6 +6205,7 @@ class HdrAoiEditor:
             self._overlay_raster_dpi = data.get('overlay_raster_dpi', 150)
             self._overlay_cache_pdf  = data.get('overlay_cache_pdf')
             self._overlay_cache_dpi  = data.get('overlay_cache_dpi')
+            self._annotation_scale   = data.get('annotation_scale', 1.0)
 
             # Fix DPI mismatch: if the cached raster was built at a different DPI
             # than the current raster DPI, compensate all saved scale values so the
@@ -5415,7 +6226,7 @@ class HdrAoiEditor:
                 self._overlay_page_idx = data.get('overlay_page_idx', 0)
                 self._overlay_needs_rasterize = True
             self._aoi_level_idx = data.get('aoi_level_idx', 0)
-            # If iesve_room_data is set but session has no rooms or rooms lack 'ffl'
+            # If iesve_room_data is set but session has no rooms or rooms lack 'ffl' 
             # keys, the session predates IESVE AOI support or was saved before rooms
             # were loaded — (re-)load from IESVE AOI files.
             if (self._iesve_room_data_path is not None
@@ -5727,7 +6538,7 @@ class HdrAoiEditor:
 
             # Phase 2: Write outputs
             progress['phase'] = 'writing'
-            output_dir = config.WPD_DIR
+            output_dir = self.wpd_dir
             output_dir.mkdir(parents=True, exist_ok=True)
 
             # Excel summary (one row per room)
@@ -5899,7 +6710,7 @@ class HdrAoiEditor:
         self.fig.canvas.draw_idle()
 
     @staticmethod
-    def _render_single_overlay(tiff_path, rooms_data, output_dir, stamps=None):
+    def _render_single_overlay(tiff_path, rooms_data, output_dir, stamps=None, annotation_scale: float = 1.0):
         """Render room boundary overlays onto a single TIFF and save.
 
         Designed to run in a ThreadPoolExecutor (I/O + PIL drawing).
@@ -5909,13 +6720,14 @@ class HdrAoiEditor:
             rooms_data: list of (name, vertices, df_display_lines) tuples.
             output_dir: directory to save the overlay TIFF.
             stamps: list of (x, y, df_val[, px, py]) stamped DF readings.
+            annotation_scale: multiplier applied to annotation font sizes.
         """
         if not tiff_path.exists():
             return
         img = Image.open(tiff_path).convert('RGB')
         draw = ImageDraw.Draw(img)
 
-        font_size = max(12, int(img.height * 0.012))
+        font_size = max(12, int(img.height * 0.012 * annotation_scale))
         font_size_small = max(10, int(font_size * 0.8))
         font = _load_pil_font(font_size, bold=True)
         font_sm = _load_pil_font(font_size_small, bold=False)
@@ -6018,9 +6830,10 @@ class HdrAoiEditor:
             for tiff_path in entry.get('tiff_paths', []):
                 jobs.append((tiff_path, rooms_on_hdr, output_dir, stamps))
 
+        annotation_scale = self._annotation_scale
         max_workers = min(len(jobs), 4) if jobs else 1
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(self._render_single_overlay, tiff_path, rooms_data, out_dir, stamps)
+            futures = [pool.submit(self._render_single_overlay, tiff_path, rooms_data, out_dir, stamps, annotation_scale)
                        for tiff_path, rooms_data, out_dir, stamps in jobs]
             for future in as_completed(futures):
                 future.result()  # propagate exceptions
@@ -6035,6 +6848,7 @@ class HdrAoiEditor:
         session_dpi: int,
         output_dir: Path,
         pdf_opacity: float = 0.6,
+        annotation_scale: float = 1.0,
     ):
         """Render one level's PDF underlay composite and save.
 
@@ -6057,6 +6871,7 @@ class HdrAoiEditor:
             pdf_opacity:    Opacity of the PDF layer (0–1). Should match the
                             session's _overlay_alpha so the export looks identical
                             to the on-screen viewer. Default 0.6.
+            annotation_scale: multiplier applied to annotation font sizes.
         """
         EXPORT_DPI = 300
 
@@ -6107,7 +6922,7 @@ class HdrAoiEditor:
         draw = ImageDraw.Draw(composited)
         out_h = composited.size[1]
 
-        font_size = max(16, int(out_h * 0.018))
+        font_size = max(16, int(out_h * 0.018 * annotation_scale))
         font_size_small = max(13, int(font_size * 0.8))
         font = _load_pil_font(font_size, bold=True)
         font_sm = _load_pil_font(font_size_small, bold=False)
@@ -6228,10 +7043,11 @@ class HdrAoiEditor:
             jobs.append((df_false_path, rooms_on_hdr, stamps, pdf_path,
                          pdf_transform, session_dpi, output_dir, pdf_opacity))
 
+        annotation_scale = self._annotation_scale
         max_workers = min(len(jobs), 4) if jobs else 1
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
-                pool.submit(self._render_pdf_underlay, *job)
+                pool.submit(self._render_pdf_underlay, *job, annotation_scale=annotation_scale)
                 for job in jobs
             ]
             for future in as_completed(futures):
@@ -6343,3 +7159,24 @@ class HdrAoiEditor:
 
         self._update_status(f"Exported CSV ({len(self.rooms)} rooms)", 'green')
         print(f"Exported room boundaries CSV to {output_path}")
+
+def launch(project: Optional[str] = None, debug: bool = False):
+    """Launch the HDR AOI Editor UI.
+
+    Args:
+        project: Project name (auto-discovered if omitted).
+        debug:   Enable verbose DEBUG logging to the console.
+    """
+    if debug:
+        logging.basicConfig(level=logging.DEBUG,
+                            format='%(name)s %(levelname)s: %(message)s')
+    editor = HdrAoiEditor(project=project)
+    editor.launch()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Archilume HDR AOI Editor")
+    parser.add_argument("--project", help="Project name")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+    launch(project=args.project, debug=args.debug)
