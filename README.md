@@ -158,10 +158,10 @@ archilume/
 │   │   └── apng2mp4.py                     #   APNG → MP4 conversion
 │   │
 │   ├── apps/                               # Interactive editors
-│   │   ├── obj_aoi_editor_matplotlib.py    #   Room boundary editor (matplotlib)
-│   │   ├── hdr_aoi_editor_matplotlib.py    #   HDR AOI editor (matplotlib)
-│   │   ├── hdr_aoi_editor_dash.py          #   HDR AOI editor (Dash/Plotly)
-│   │   └── octree_viewer.py                #   3D octree viewer
+L161- │   │   ├── obj_aoi_editor_matplotlib.py    #   Room boundary editor (matplotlib)
+L162- │   │   ├── hdr_aoi_editor_matplotlib.py    #   HDR AOI editor (matplotlib)
+L163- │   │   └── octree_viewer.py                #   3D octree viewer
+
 │   │
 │   ├── workflows/                          # Orchestrated pipelines
 │   │   ├── sunlight_access_workflow.py     #   Full sunlight access pipeline

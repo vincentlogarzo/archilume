@@ -38,6 +38,7 @@ View Rotation:
 
 # Archilume imports
 from archilume import config
+from archilume.apps.project_config import list_projects, get_last_project, set_last_project
 
 # Standard library imports
 import csv
@@ -498,7 +499,7 @@ class ObjAoiEditor:
 
     def __init__(
         self,
-        obj_path: Union[Path, str],
+        obj_path: Optional[Union[Path, str]] = None,
         mtl_path: Optional[Path] = None,
         session_path: Optional[Path] = None,
         room_boundaries_csv: Optional[Union[Path, str]] = None,
@@ -510,7 +511,7 @@ class ObjAoiEditor:
         """Initialize the boundary editor.
 
         Args:
-            obj_path: OBJ file path to load
+            obj_path: Optional OBJ file path to load. If None and project is given, attempts to find one.
             mtl_path: Optional MTL file path (not currently used)
             session_path: Path for saving/loading editor sessions
             room_boundaries_csv: Optional CSV file with initial room boundaries (used if no session exists)
@@ -519,8 +520,34 @@ class ObjAoiEditor:
             max_vertex_display: Maximum vertices to display (downsample if exceeded)
             project: Optional project name under projects/ (e.g. "myproject" → projects/myproject/inputs/)
         """
-        base_dir = config.get_project_paths(project).inputs_dir if project else config.PROJECT_ROOT / "inputs"
+        # Resolve project paths — all dirs derive from the project when one is provided
+        if not project:
+            # 1. Try last used project
+            project = get_last_project()
+            # 2. If nothing last used, try auto-discovering if there is exactly one project
+            if not project:
+                projs = list_projects()
+                if len(projs) == 1:
+                    project = projs[0]
+                    print(f"Auto-selected only available project: {project}")
 
+        paths = config.get_project_paths(project) if project else None
+        base_dir = paths.inputs_dir if paths else config.PROJECT_ROOT / "inputs"
+
+        if obj_path is None and paths:
+            # Try to find an OBJ in the project inputs
+            objs = list(paths.inputs_dir.glob("*.obj"))
+            if objs:
+                obj_path = objs[0]
+                print(f"Auto-selected OBJ: {obj_path}")
+
+        if obj_path is None:
+            # We still don't have an OBJ, but we can't initialize without one.
+            # We'll allow __init__ to complete but launch() will need to handle this
+            # or we can raise here. Raising is safer for this class.
+            raise ValueError("obj_path is required (and could not be auto-discovered in project).")
+
+        self.project = project
         obj_path = Path(obj_path)
         self.obj_path = base_dir / obj_path if not obj_path.is_absolute() else obj_path
         self.mtl_path = mtl_path
@@ -738,6 +765,10 @@ class ObjAoiEditor:
         print("Scroll: zoom | Right-click: select room | s: save | d: delete | q: quit")
         print("Up/Down: next/prev floor | r: reset zoom | S: save session")
         print("========================\n")
+
+        if self.project:
+            set_last_project(self.project)
+
         plt.show()
 
     # -------------------------------------------------------------------------
@@ -3679,3 +3710,25 @@ class ObjAoiEditor:
             renamed_count += 1
 
         return renamed_count
+
+def launch(project: Optional[str] = None, obj_path: Optional[Union[Path, str]] = None):
+    """Launch the OBJ AOI Editor UI."""
+    if project and not obj_path:
+        # Try to find an OBJ in the project inputs if not specified
+        paths = config.get_project_paths(project)
+        objs = list(paths.inputs_dir.glob("*.obj"))
+        if objs:
+            obj_path = objs[0]
+            print(f"Auto-selected OBJ: {obj_path}")
+    
+    editor = ObjAoiEditor(project=project, obj_path=obj_path)
+    editor.launch()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Archilume OBJ AOI Editor")
+    parser.add_argument("--project", help="Project name")
+    parser.add_argument("--obj", help="OBJ file path (relative to project inputs or absolute)")
+    args = parser.parse_args()
+    
+    launch(project=args.project, obj_path=args.obj)

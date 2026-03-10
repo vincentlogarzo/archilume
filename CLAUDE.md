@@ -107,7 +107,7 @@ Always use SI units (metres, millimetres, kilograms, lux, etc.) in all discussio
 - **Rendering classes**: Prefer `SunlightRenderer`/`DaylightRenderer` over calling Radiance binaries directly.
 - **Cleanup**: Use `utils.smart_cleanup()` to clear previous results based on changed parameters.
 - **Verification**: Check HDR outputs exist in `outputs/image/` before proceeding to post-processing.
-- **Imports**: All `import` statements must be placed at the top of the module. Never place imports inside functions or methods. Before adding an import, check if it already exists in the file.
+- **Imports**: All `import` statements must be placed at the top of the module. Never place imports inside functions or methods. Before adding an import, check if it already exists in the file. This applies equally to `import x as y` aliases — if you need `tk.Toplevel` etc., add `import tkinter as tk` at the top rather than inside the function. A partial existing import (e.g. `from tkinter import Tk`) does **not** satisfy the need for the full module namespace — add the missing top-level import instead of placing it inline.
 
 ## Development Environment
 
