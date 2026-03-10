@@ -143,7 +143,7 @@ class DaylightRenderer:
 
         commands = [
             # Falsecolor visualisation
-            rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 10 -l 'DF %' -lw 0 | ra_tiff - {falsecolor}",
+            rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 20 -l 'DF %' -lw 0 | ra_tiff - {falsecolor}",
 
             # Contour HDR
             rf"pcomb -s 0.01 {hdr_path} | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 0 -lh 0 > {contour}",
@@ -174,7 +174,7 @@ class DaylightRenderer:
 
         commands = [
             # Falsecolor legend
-            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s 4 -n 10 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_false_legend}',
+            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s 4 -n 20 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_false_legend}',
 
             # Contour legend
             rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_cntr_legend}',
