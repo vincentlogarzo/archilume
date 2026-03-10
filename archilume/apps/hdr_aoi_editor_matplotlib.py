@@ -4475,7 +4475,11 @@ class HdrAoiEditor:
         if mode == "iesve" and image_dir:
             p = Path(image_dir)
             self.image_dir = paths.inputs_dir / p if not p.is_absolute() else p
+        elif mode == "iesve":
+            # IESVE mode without custom image_dir: default to inputs/pic/
+            self.image_dir = paths.pic_dir
         else:
+            # Archilume mode: default to outputs/image/
             self.image_dir = paths.image_dir
 
         # Resolve PDF path

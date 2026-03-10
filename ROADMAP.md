@@ -70,7 +70,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 - **Image-Based Setup:** Transition from 10-minute setup scripts to pre-built Docker images on GCP Artifact Registry. Bake in: apt deps, Radiance, Accelerad, uv, Python venv, and repository (git pull on start).
 - **Service Account Auth:** Authenticate Docker on VM via service account attached to the instance, eliminating the need for `gcloud` CLI inside the container.
-- **DevContainer Compatibility:** Solve the issue where `GCPVMManager` cannot write SSH config files to the host when running inside a DevContainer.
+- **DevContainer :** Issue where dev container cannot use compatible GPU on machine. 
 - **Permission Debugging:** Re-evaluate and fix permissions errors encountered during container builds inside the VM environment.
 
 ---

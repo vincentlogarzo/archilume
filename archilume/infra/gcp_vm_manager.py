@@ -46,12 +46,13 @@ _FAMILY_GHZ: dict[str, str] = {
 
 
 class GCPVMManager:
-    def __init__(self):
+    def __init__(self, project_name: str | None = None):
         # Check if gcloud exists at the configured path
         if not GCLOUD_EXECUTABLE.exists():
             self._install_gcloud()
         self._ensure_authenticated()
         self.cfg = self._load_config()
+        self.archilume_project = project_name
 
     def _install_gcloud(self):
         """Attempt to install the Google Cloud CLI if not found."""
@@ -986,17 +987,28 @@ class GCPVMManager:
         return flags, f"{username}@{ip}"
 
     def copy_inputs_to_vm(self, vm_name: str) -> None:
-        """Copy inputs folder to VM. Uses tar.gz for aoi folder (many small files) for speed."""
-        local_inputs = Path.cwd() / "inputs"
+        """Copy project inputs folder to VM and scaffold the outputs directory.
+
+        Uses tar.gz for the aoi subfolder (many small files) for speed.
+        """
+        if not self.archilume_project:
+            print("  ℹ️  No project selected, skipping inputs copy...")
+            return
+
+        from archilume.config import get_project_paths
+        paths = get_project_paths(self.archilume_project)
+        local_inputs = paths.inputs_dir
         if not local_inputs.exists():
             print("  ℹ️  No local inputs folder found, skipping...")
             return
 
-        print("  📂 Copying inputs data to VM...")
-        remote_inputs = f"{REMOTE_WORKSPACE}/inputs"
+        print(f"  📂 Copying inputs data to VM (project: {self.archilume_project})...")
+        remote_project = f"{REMOTE_WORKSPACE}/projects/{self.archilume_project}"
+        remote_inputs = f"{remote_project}/inputs"
+        # Scaffold inputs/aoi and outputs dirs on VM
         self._ssh(vm_name,
-            f"sudo mkdir -p {remote_inputs}/aoi && "
-            f"sudo chmod -R a+rwx {remote_inputs}"
+            f"sudo mkdir -p {remote_inputs}/aoi {remote_project}/outputs && "
+            f"sudo chmod -R a+rwx {remote_project}"
         )
 
         ssh_flags, remote_host = self._scp_cmd(vm_name)
@@ -1098,10 +1110,15 @@ class GCPVMManager:
             return False, out.strip()
         return True, ""
 
-    def _download_outputs_from_vm(self, vm_name: str, zone: str) -> bool:
-        """Download outputs directory from VM to local archive. Returns True on success."""
-        remote_outputs = f"{REMOTE_WORKSPACE}/outputs"
-        base_flags = [f"--zone={zone}", f"--project={self.project}"]
+    def _download_outputs_from_vm(self, vm_name: str, zone: str = "") -> bool:
+        """Download outputs directory from VM into the project's archive folder. Returns True on success."""
+        if not self.archilume_project:
+            print("  ℹ️  No project selected, skipping outputs download...")
+            return True
+
+        from archilume.config import get_project_paths
+        paths = get_project_paths(self.archilume_project)
+        remote_outputs = f"{REMOTE_WORKSPACE}/projects/{self.archilume_project}/outputs"
 
         # Check if remote outputs directory exists and has content
         out, code = self._ssh_capture(vm_name, f"ls -A {remote_outputs} 2>/dev/null")
@@ -1109,9 +1126,9 @@ class GCPVMManager:
             print(f"  No outputs found on {vm_name}, skipping download.")
             return True
 
-        # Create local archive directory
+        # Download into projects/{name}/archive/{vm_name}_{ts}/
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        local_dest = ARCHIVE_DIR / f"{vm_name}_{ts}"
+        local_dest = paths.archive_dir / f"{vm_name}_{ts}"
         local_dest.mkdir(parents=True, exist_ok=True)
 
         print(f"  📥 Downloading outputs from {vm_name} to {local_dest}...")

@@ -34,7 +34,7 @@ def run_daylight_analysis():
     inputs = IESVEDaylightWorkflow.InputsValidator(
         project                     = "527DP",  # Required: project name under projects/ (e.g. projects/527DP/)
         octree_path                 = "527DP.oct",  # Must use 10KLx sky
-        rendering_params            = "preview.rdp",
+        rendering_params            = "Preview.rdp",
         iesve_room_data             = "aoi/iesve_room_data.csv",
         image_resolution            = 2048,
         ffl_offset                  = 0.0,  # Camera height above floor (m)
