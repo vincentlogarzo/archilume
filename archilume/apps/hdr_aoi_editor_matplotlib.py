@@ -426,7 +426,10 @@ class HdrAoiEditor:
 
         Every working directory the editor uses is derived from the project's
         ``ProjectPaths``.  Optional constructor overrides (image_dir, pdf_path,
-        iesve_room_data) are resolved relative to ``inputs_dir``.
+        iesve_room_data) are resolved relative to ``inputs_dir``.  When an
+        override is not provided (None), the value is read from project.toml so
+        that the PDF overlay and room-data paths are always populated on startup
+        without requiring the user to open the Project dialog first.
         """
         paths = config.get_project_paths(project)
         self.project_input_dir = paths.inputs_dir
@@ -434,6 +437,20 @@ class HdrAoiEditor:
         self.archive_dir       = paths.archive_dir
         self.wpd_dir           = paths.wpd_dir
         paths.create_dirs()
+
+        # Fill missing constructor args from project.toml.
+        # Toml paths are stored relative to project_dir (e.g. "inputs/plans/foo.pdf"),
+        # so resolve them against project_dir — not inputs_dir — to avoid double-prefix.
+        toml_cfg   = load_project_toml(project)
+        toml_paths = toml_cfg.get("paths", {})
+        log.debug("_init_project_paths: toml_paths=%s", toml_paths)
+        if pdf_path is None and toml_paths.get("pdf_path"):
+            pdf_path = paths.project_dir / toml_paths["pdf_path"]
+            log.debug("_init_project_paths: pdf_path from toml = %r", pdf_path)
+        if iesve_room_data is None and toml_paths.get("iesve_room_data"):
+            iesve_room_data = paths.project_dir / toml_paths["iesve_room_data"]
+        if image_dir is None and toml_paths.get("image_dir"):
+            image_dir = paths.project_dir / toml_paths["image_dir"]
 
         # image_dir: default to outputs/image/, or resolve a relative override
         if image_dir is None:
@@ -449,6 +466,7 @@ class HdrAoiEditor:
             if not pdf_path.exists():
                 print(f"Warning: pdf_path not found: {pdf_path}")
                 pdf_path = None
+        log.debug("_init_project_paths: resolved _overlay_pdf_path = %s", pdf_path)
         self._overlay_pdf_path: Optional[Path] = pdf_path
 
         # IESVE room data CSV
@@ -1106,14 +1124,22 @@ class HdrAoiEditor:
         # Capture the pdf_path passed to __init__ before _load_session() can overwrite it.
         # An explicit constructor argument always takes priority over the session-stored path.
         _init_pdf_path = self._overlay_pdf_path
+        log.debug("PDF overlay: _init_pdf_path (from _init_project_paths) = %s", _init_pdf_path)
 
         # Load existing session to get window settings before creating the figure
         self._load_session()
+        log.debug("PDF overlay: after _load_session — _overlay_pdf_path=%s, _overlay_visible=%s, _overlay_rgba=%s",
+                  self._overlay_pdf_path, self._overlay_visible,
+                  'set' if self._overlay_rgba is not None else 'None')
 
         # Re-apply constructor pdf_path if one was explicitly provided
         if _init_pdf_path is not None:
             self._overlay_pdf_path = _init_pdf_path
             self._overlay_needs_rasterize = True
+            log.debug("PDF overlay: re-applied _init_pdf_path = %s", _init_pdf_path)
+        else:
+            log.debug("PDF overlay: no _init_pdf_path to re-apply, keeping session value = %s",
+                      self._overlay_pdf_path)
 
         # Setup matplotlib figure — wide to match ~2.6:1 floor plan aspect ratio
         plt.rcParams['savefig.directory'] = str(self.image_dir)
@@ -1258,18 +1284,29 @@ class HdrAoiEditor:
             self._style_toggle_button(self.btn_overlay_toggle, False)
 
         # Deferred PDF overlay rasterization (from session restore or __init__ pdf_path)
+        log.debug("PDF overlay: pre-rasterize check — _overlay_pdf_path=%s, _overlay_rgba=%s, "
+                  "_overlay_needs_rasterize=%s, _overlay_visible=%s",
+                  self._overlay_pdf_path,
+                  'set' if self._overlay_rgba is not None else 'None',
+                  getattr(self, '_overlay_needs_rasterize', False),
+                  self._overlay_visible)
         if getattr(self, '_overlay_needs_rasterize', False) or (
                 self._overlay_pdf_path is not None and self._overlay_rgba is None):
+            log.debug("PDF overlay: starting rasterization of %s", self._overlay_pdf_path)
             try:
                 from archilume.utils import get_pdf_info
                 self._overlay_pdf_info = get_pdf_info(self._overlay_pdf_path)
                 self._rasterize_overlay_page()
+                log.debug("PDF overlay: rasterization complete, _overlay_rgba=%s",
+                          'set' if self._overlay_rgba is not None else 'None')
                 self._update_overlay_page_label()
                 self._render_section(force_full=True)
             except Exception as e:
                 traceback.print_exc()
                 print(f"Warning: could not load PDF overlay: {e}")
             self._overlay_needs_rasterize = False
+        else:
+            log.debug("PDF overlay: rasterization skipped (pdf_path is None or rgba already set)")
 
         self._update_room_list()
         self._update_hdr_list()
