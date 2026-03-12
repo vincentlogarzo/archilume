@@ -1008,11 +1008,17 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
         if hdr_file_path is None:
             raise FileNotFoundError(f"No HDR files found in {image_dir}")
 
-        print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
-
         # Double-check that the file actually exists on disk
         if not hdr_file_path.exists():
             raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
+
+        # Fast cache: if mapping file exists and is newer than the HDR, reuse it
+        output_file = hdr_file_path.parent.parent / "aoi" / "pixel_to_world_coordinate_map.txt"
+        if output_file.exists() and output_file.stat().st_mtime >= hdr_file_path.stat().st_mtime:
+            print(f"Pixel-to-world coordinate mapping unchanged, reusing: {output_file}")
+            return output_file
+
+        print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
 
         # Step 2: Extract image dimensions
 
@@ -1089,26 +1095,16 @@ def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
         # This file will be used later for spatial analysis (e.g., AOI stamping)
 
 
-        output_file = hdr_file_path.parent.parent / "aoi" / "pixel_to_world_coordinate_map.txt"
+        # output_file was already set in the early cache check above
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write the mapping file
+        # Write header-only mapping file (all downstream consumers only read
+        # these 4 header lines — per-pixel data is a trivial formula).
         with open(output_file, 'w') as f:
-            # Write view_line as first header line
             f.write(f"# VIEW: {view_line}\n")
-            # Write image dimensions as second header line
             f.write(f"# Image dimensions in pixels: width={width}, height={height}\n")
-            # Write world dimensions as third header line
             f.write(f"# World dimensions in meters: width={vh:.6f}, height={vv:.6f}\n")
-            # Write column header line
-            f.write("# pixel_x pixel_y world_x world_y\n")
-
-            # Map each pixel to world coordinates (pixel 0,0 = top-left, world coords centered on viewpoint)
-            for py in range(height):
-                for px in range(width):
-                    world_x = vp_x + (px - width/2) * world_units_per_pixel_x
-                    world_y = vp_y + (height/2 - py) * world_units_per_pixel_y  # Y-axis flipped
-                    f.write(f"{px} {py} {world_x:.6f} {world_y:.6f}\n")
+            f.write(f"# pixel_x pixel_y world_x world_y\n")
 
         print(f"Pixel-to-world coordinate mapping saved to: {output_file}")
 
