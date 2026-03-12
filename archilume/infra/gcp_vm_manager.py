@@ -23,8 +23,7 @@ from pathlib import Path
 from archilume.config import GCLOUD_EXECUTABLE
 
 CONFIG_PATH = Path.home() / ".archilume_gcp_config.json"
-ARCHIVE_DIR = Path.cwd() / "archive"
-PRICING_CACHE_PATH = ARCHIVE_DIR / ".gcp_pricing_cache.json"
+_PRICING_CACHE_FILENAME = ".gcp_pricing_cache.json"
 SSH_KEY_PATH = Path.home() / ".ssh" / "google_cloud_vm_key"
 SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 SSH_HOST_ALIAS = "gcp-vm"
@@ -53,6 +52,16 @@ class GCPVMManager:
         self._ensure_authenticated()
         self.cfg = self._load_config()
         self.archilume_project = project_name
+
+    def _all_project_cache_paths(self) -> list[Path]:
+        """Return pricing cache paths for every project's archive directory."""
+        from archilume.config import PROJECTS_DIR
+        paths = []
+        if PROJECTS_DIR.is_dir():
+            for p in sorted(PROJECTS_DIR.iterdir()):
+                if p.is_dir():
+                    paths.append(p / "archive" / _PRICING_CACHE_FILENAME)
+        return paths
 
     def _install_gcloud(self):
         """Attempt to install the Google Cloud CLI if not found."""
@@ -554,39 +563,39 @@ class GCPVMManager:
     # ------------------------------------------------------------------
 
     def _load_pricing_cache(self) -> dict | None:
-        """Load cached pricing data if it exists and is less than 7 days old."""
-        if not PRICING_CACHE_PATH.exists():
-            return None
-
-        try:
-            cache = json.loads(PRICING_CACHE_PATH.read_text())
-            cache_date = cache.get("date")
-            if cache_date:
-                age_days = (datetime.now() - datetime.strptime(cache_date, "%Y-%m-%d")).days
-                if age_days < 7:
-                    return cache.get("data")
-        except Exception:
-            pass
+        """Search all project archive dirs for a valid (< 7 days old) pricing cache."""
+        for cache_path in self._all_project_cache_paths():
+            if not cache_path.exists():
+                continue
+            try:
+                cache = json.loads(cache_path.read_text())
+                cache_date = cache.get("date")
+                if cache_date:
+                    age_days = (datetime.now() - datetime.strptime(cache_date, "%Y-%m-%d")).days
+                    if age_days < 7:
+                        return cache.get("data")
+            except Exception:
+                continue
 
         return None
 
     def _save_pricing_cache(self, pricing: dict, machines: list[dict], exchange_rate: float):
-        """Save pricing data to cache with the current date (refreshed weekly)."""
-        try:
-            # Ensure archive directory exists
-            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-
-            cache = {
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "data": {
-                    "pricing": pricing,
-                    "machines": machines,
-                    "exchange_rate": exchange_rate
-                }
+        """Save pricing data to all project archive directories."""
+        cache = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "data": {
+                "pricing": pricing,
+                "machines": machines,
+                "exchange_rate": exchange_rate
             }
-            PRICING_CACHE_PATH.write_text(json.dumps(cache, indent=2))
-        except Exception:
-            pass  # Silently fail if cache write fails
+        }
+        payload = json.dumps(cache, indent=2)
+        for cache_path in self._all_project_cache_paths():
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(payload)
+            except Exception:
+                pass  # Silently skip projects with write errors
 
     def _fetch_usd_to_aud(self) -> float:
         """Fetch live USD→AUD rate from frankfurter.app (no API key required)."""
@@ -1111,7 +1120,7 @@ class GCPVMManager:
         return True, ""
 
     def _download_outputs_from_vm(self, vm_name: str, zone: str = "") -> bool:
-        """Download outputs directory from VM into the project's archive folder. Returns True on success."""
+        """Download outputs directory from VM, overwriting the local outputs folder. Returns True on success."""
         if not self.archilume_project:
             print("  ℹ️  No project selected, skipping outputs download...")
             return True
@@ -1126,17 +1135,21 @@ class GCPVMManager:
             print(f"  No outputs found on {vm_name}, skipping download.")
             return True
 
-        # Download into projects/{name}/archive/{vm_name}_{ts}/
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        local_dest = paths.archive_dir / f"{vm_name}_{ts}"
+        # Overwrite local outputs dir directly
+        local_dest = paths.outputs_dir
         local_dest.mkdir(parents=True, exist_ok=True)
 
         print(f"  📥 Downloading outputs from {vm_name} to {local_dest}...")
         ssh_flags, remote_host = self._scp_cmd(vm_name)
-        result = subprocess.run(
-            ["scp", "-r"] + ssh_flags + [f"{remote_host}:{remote_outputs}/", str(local_dest) + "/"]
-        )
-        if result.returncode != 0:
+        # Use tar on the remote to stream contents directly into local_dest,
+        # avoiding the nested-directory issue that scp -r causes with trailing slashes.
+        ssh_base = ["ssh"] + ssh_flags + [remote_host]
+        tar_remote = f"tar -C {remote_outputs} -czf - ."
+        tar_local = ["tar", "-C", str(local_dest), "-xzf", "-"]
+        tar_proc = subprocess.run(ssh_base + [tar_remote], stdout=subprocess.PIPE)
+        extract = subprocess.run(tar_local, input=tar_proc.stdout)
+        failed = tar_proc.returncode != 0 or extract.returncode != 0
+        if failed:
             print(f"  ⚠️  Failed to download outputs")
             return False
 

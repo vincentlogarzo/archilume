@@ -699,6 +699,9 @@ class ObjAoiEditor:
         except (ValueError, KeyError):
             pass
 
+        # Disable the default matplotlib toolbar (the "base bar" with pan/zoom/home/save)
+        plt.rcParams['toolbar'] = 'None'
+
         self.fig = plt.figure(figsize=(14, 8), facecolor='#F5F5F0')
 
         # Adjust subplot parameters to ensure content fits within the figure

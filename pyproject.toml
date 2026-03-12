@@ -5,8 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "cairosvg>=2.8.2",
     "dash>=4.0.0",
+    "dash-bootstrap-components>=2.0.4",
+    "dash-iconify>=0.1.2",
     "ifcopenshell>=0.8.3.post1",
+    "lxml>=6.0.2",
     "numpy>=2.3.2",
     "opencv-python>=4.11.0.86",
     "openpyxl>=3.1.5",
@@ -18,6 +22,9 @@ dependencies = [
     "pyradiance>=1.2.0",
     "pyvista>=0.46.4",
     "scikit-image>=0.25.2",
+    "svg2png>=1.2",
+    "svglib>=1.6.0",
+    "svgpathtools>=1.7.2",
     "vtk>=9.6.0",
 ]
 

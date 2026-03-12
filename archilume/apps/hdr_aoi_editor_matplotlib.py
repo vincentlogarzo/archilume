@@ -498,6 +498,328 @@ class HdrAoiEditor:
 
     # === LAYOUT HELPERS ========================================================
 
+    # ph:folder-open-light SVG path (viewBox 0 0 256 256)
+    _FOLDER_ICON_SVG = (
+        "M243.36 111.81A14 14 0 0 0 232 106h-18V88a14 14 0 0 0-14-14h-70"
+        "l-28.26-21.2a14.06 14.06 0 0 0-8.4-2.8H40a14 14 0 0 0-14 14v144"
+        "a6 6 0 0 0 6 6h179.1a6 6 0 0 0 5.69-4.1l28.49-85.47"
+        "a14 14 0 0 0-1.92-12.62"
+        "M40 62h53.34a2 2 0 0 1 1.2.4l29.86 22.4A6 6 0 0 0 128 86h72"
+        "a2 2 0 0 1 2 2v18H69.77a14 14 0 0 0-13.28 9.57L38 171V64"
+        "a2 2 0 0 1 2-2"
+        "m193.9 58.63L206.78 202H40.33l27.54-82.63"
+        "a2 2 0 0 1 1.9-1.37H232a2 2 0 0 1 1.9 2.63"
+    )
+
+    # fluent-mdl2:report-document SVG path (viewBox 0 0 2048 2048, fill-based)
+    _EXPORT_ICON_SVG = (
+        "M1792 549v1499H256V0h987zm-512-37h293l-293-293zm384 1408V640h-512V128H384v1792z"
+        "m-768-512h256v384H896zm-384-256h256v640H512zm768-256h256v896h-256z"
+    )
+
+    # emojione-monotone:file-cabinet SVG paths (viewBox 0 0 64 64, fill-based, three paths)
+    _EXTRACT_ICON_SVG = (
+        "m28.547 23.8l-4.367-.863c-.467-.092-.848.215-.848.682v3.09c0 .467.381.924.848 1.016"
+        "l4.367.861c.467.092.85-.215.85-.682v-3.09c-.001-.467-.383-.922-.85-1.014",
+        "m61.77 8.201l-.001-.004l-.001-.002l-.002-.004l-.006-.008c-.276-.51-.735-.863-1.264-.969"
+        "L34.468 2.017a.9.9 0 0 0-.459.029l-20.685 6.87l-.023.008l-.098.033c-.013.003-.021.012-.033.016"
+        "a1.53 1.53 0 0 0-.988 1.456v25.304l-4.271-1.452l-.638 4.845l-3.418-.683"
+        "C2.835 38.246 2 38.991 2 39.975v16.059c0 .863.66 1.67 1.504 1.838l20.514 4.097"
+        "q.167.03.324.031c.859 0 1.532-.687 1.532-1.563v-.065l4.881-2.223"
+        "c3.615.723 6.948 1.392 8.958 1.806c.835.171 1.346.2 2.546-.239"
+        "c4.358-1.598 16.996-6.203 16.996-6.203c1.828-.699 2.747-1.884 2.73-3.512L62 9.052"
+        "c0-.286-.076-.564-.23-.851"
+        "M9.422 36.737l11.656 3.964l-5.418.101l-6.6-1.318z"
+        "M17.46 33.3l-1.831 3.606l-.03-.01l-.189-3.819z"
+        "m-.703-3.418v-15.72l20.238 4.066v15.719z"
+        "m2.248 4.402l7.894 6.31l-.405.007l-9.12-3.102z"
+        "m5.052 25.815L3.818 56.033v-15.72l20.238 4.065z"
+        "m3.214-5.929l-1.396.125v-9.916c0-.874-.646-1.664-1.505-1.838l-.273-.055l2.939-.055l3.031 10.465z"
+        "m1.58-12.018l3 2.399l-1.878 1.479z"
+        "m3.136 8.703l-.66-.148l-.805-2.777l1.592-1.254z"
+        "m.254-8.336l-11.022-8.81l11.254 1.223z"
+        "m7.511 15.567l-6.15-1.234l3.112-1.418l.418.084c.426.084.772-.196.772-.626V38.831"
+        "c0-.43-.347-.849-.772-.933l-2.912-.582l.062-2.034l2.676.535"
+        "q.166.032.323.032c.859 0 1.532-.686 1.532-1.562V18.229c0-.874-.646-1.665-1.505-1.84"
+        "l-20.513-4.097c-1.021-.198-1.856.548-1.856 1.531v16.059c0 .521.232 1.008.599 1.356"
+        "L14 31.071V10.866l25.753 5.07z"
+        "m1.547-43.888L17.268 9.543L34.35 3.871l23.683 4.77z"
+        "M60.167 50.01c.006.585-.174 1.252-1.541 1.776l-16.356 5.97V15.813l17.912-5.95z",
+        "m9.947 56.135l4.367.863c.467.092.85-.215.85-.682v-3.09c0-.467-.383-.924-.85-1.016"
+        "l-4.367-.86c-.467-.092-.85.213-.85.68v3.092c.001.464.383.921.85 1.013",
+    )
+
+    # fa-regular:edit SVG path (viewBox 0 0 576 512, fill-based)
+    _EDIT_ICON_SVG = (
+        "m402.3 344.9l32-32c5-5 13.7-1.5 13.7 5.7V464c0 26.5-21.5 48-48 48H48"
+        "c-26.5 0-48-21.5-48-48V112c0-26.5 21.5-48 48-48h273.5c7.1 0 10.7 8.6 5.7 13.7"
+        "l-32 32c-1.5 1.5-3.5 2.3-5.7 2.3H48v352h352V350.5c0-2.1.8-4.1 2.3-5.6"
+        "m156.6-201.8L296.3 405.7l-90.4 10c-26.2 2.9-48.5-19.2-45.6-45.6l10-90.4"
+        "L432.9 17.1c22.9-22.9 59.9-22.9 82.7 0l43.2 43.2c22.9 22.9 22.9 60 .1 82.8"
+        "M460.1 174L402 115.9L216.2 301.8l-7.3 65.3l65.3-7.3z"
+        "m64.8-79.7l-43.2-43.2c-4.1-4.1-10.8-4.1-14.8 0L436 82l58.1 58.1l30.9-30.9"
+        "c4-4.2 4-10.8-.1-14.9"
+    )
+
+    # boxicons:perpendicular-filled SVG path (viewBox 0 0 24 24, fill-based)
+    _ORTHO_ICON_SVG = "M13 5h-2v12H5v2h14v-2h-6z"
+
+    # glyphs:save SVG paths (viewBox 0 0 80 80, stroke-based, two paths)
+    _SAVE_ICON_SVG = (
+        "M53.172 13.172A4 4 0 0 0 50.343 12H16a4 4 0 0 0-4 4v48a4 4 0 0 0 4 4h48"
+        "a4 4 0 0 0 4-4V29.657a4 4 0 0 0-1.172-2.829z",
+        "M60 68V45a1 1 0 0 0-1-1H21a1 1 0 0 0-1 1v23m28-56v15a1 1 0 0 1-1 1H21"
+        "a1 1 0 0 1-1-1V12",
+    )
+
+    # material-symbols-light:delete-outline SVG path (viewBox 0 0 24 24, fill-based)
+    _DELETE_ICON_SVG = (
+        "M7.616 20q-.672 0-1.144-.472T6 18.385V6H5V5h4v-.77h6V5h4v1h-1v12.385"
+        "q0 .69-.462 1.153T16.384 20zM17 6H7v12.385q0 .269.173.442t.443.173h8.769"
+        "q.23 0 .423-.192t.192-.424zM9.808 17h1V8h-1zm3.384 0h1V8h-1zM7 6v13z"
+    )
+
+    # heroicons-outline:switch-vertical SVG path (viewBox 0 0 24 24, stroke-based)
+    _CYCLE_ICON_SVG = "M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+
+    # carbon:zoom-fit SVG paths (viewBox 0 0 32 32, fill-based, two paths)
+    _ZOOM_FIT_ICON_SVG = (
+        "M21.448 20A10.86 10.86 0 0 0 24 13a11 11 0 1 0-11 11a10.86 10.86 0 0 0 7-2.552"
+        "L27.586 29L29 27.586ZM13 22a9 9 0 1 1 9-9a9.01 9.01 0 0 1-9 9",
+        "M10 12H8v-2a2 2 0 0 1 2-2h2v2h-2Zm8 0h-2v-2h-2V8h2a2 2 0 0 1 2 2z"
+        "m-6 6h-2a2 2 0 0 1-2-2v-2h2v2h2Zm4 0h-2v-2h2v-2h2v2a2 2 0 0 1-2 2",
+    )
+
+    # mdi:floor-plan SVG path (viewBox 0 0 24 24, fill-based)
+    _FLOORPLAN_ICON_SVG = (
+        "M10 5v5H9V5H5v8h4v-1h1v5H9v-3H5v5h7v-2h1v2h6v-2h2v4H3V3h18v12h-2v-5h-6v5h-1V9h7V5z"
+    )
+
+    # game-icons:resize SVG path (viewBox 0 0 512 512, fill-based)
+    _RESIZE_ICON_SVG = (
+        "m29 30l1 90h36V66h26V30zm99 0v36h72V30zm108 0v36h72V30zm108 0v36h72V30z"
+        "m102 0v78h36V30zm-206 80v36h100.543l-118 118H30v218h218V289.457l118-118V272h36V110z"
+        "m206 34v72h36v-72zM30 156v72h36v-72zm416 96v72h36v-72zm0 108v72h36v-72z"
+        "m-166 86v36h72v-36zm108 0v36h72v-36z"
+    )
+
+    # oui:crosshairs SVG path (viewBox 0 0 16 16, fill-based)
+    _CROSSHAIRS_ICON_SVG = (
+        "M5.822 1.874a.5.5 0 1 1 .335.942a5.52 5.52 0 0 0-3.34 3.341a.5.5 0 1 1-.943-.335"
+        "a6.52 6.52 0 0 1 3.948-3.948"
+        "M1.864 10.15a.5.5 0 1 1 .944-.33a5.52 5.52 0 0 0 3.365 3.37a.5.5 0 0 1-.333.943"
+        "a6.52 6.52 0 0 1-3.976-3.983"
+        "m8.302 3.981a.5.5 0 1 1-.333-.943a5.52 5.52 0 0 0 3.347-3.332a.5.5 0 1 1 .941.337"
+        "a6.52 6.52 0 0 1-3.955 3.938"
+        "m3.968-8.285a.5.5 0 1 1-.943.331A5.52 5.52 0 0 0 9.85 2.82a.5.5 0 0 1 .337-.942"
+        "a6.52 6.52 0 0 1 3.946 3.968"
+        "M8.5 3.5a.5.5 0 0 1-1 0V.997a.5.5 0 0 1 1 0z"
+        "m-4.997 4a.5.5 0 0 1 0 1H1a.5.5 0 0 1 0-1z"
+        "M7.5 12.497a.5.5 0 0 1 1 0V15a.5.5 0 1 1-1 0z"
+        "M12.497 8.5a.5.5 0 0 1 0-1H15a.5.5 0 1 1 0 1z"
+        "M8 9a1 1 0 1 1 0-2a1 1 0 0 1 0 2"
+    )
+
+    # fluent:layer-20-regular SVG path (viewBox 0 0 20 20)
+    _LAYER_ICON_SVG = (
+        "M10.505 3.117a1 1 0 0 0-1.011 0l-6.01 3.52a1 1 0 0 0 .003 1.726l6.009 3.502"
+        "a1 1 0 0 0 1.007 0l6.009-3.502a1 1 0 0 0 .001-1.727z"
+        "M9.494 4.276a1 1 0 0 1 1.01 0l5.504 3.223l-5.505 3.209a1 1 0 0 1-1.007 0L3.99 7.499z"
+        "M3.07 9.65l6.438 3.623a1 1 0 0 0 .98 0l6.438-3.623a1 1 0 0 1-.415 1.26"
+        "l-6.01 3.502a1 1 0 0 1-1.006 0l-6.01-3.502a1 1 0 0 1-.415-1.26"
+        "m0 2.453l6.438 3.622a1 1 0 0 0 .98 0l6.438-3.622a1 1 0 0 1-.415 1.26"
+        "l-6.01 3.502a1 1 0 0 1-1.006 0l-6.01-3.502a1 1 0 0 1-.415-1.26"
+    )
+
+    def _draw_icon_image(self, ax):
+        """Draw the ph:folder-open-light SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 25
+        ax.set_xlim(-pad, 256 + pad)
+        ax.set_ylim(256 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._FOLDER_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_layer_icon(self, ax):
+        """Draw the fluent:layer-20-regular SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 2
+        ax.set_xlim(-pad, 20 + pad)
+        ax.set_ylim(20 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._LAYER_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_export_icon(self, ax):
+        """Draw the fluent-mdl2:report-document SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 50
+        ax.set_xlim(-pad, 2048 + pad)
+        ax.set_ylim(2048 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._EXPORT_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    @staticmethod
+    def _svg_to_mpl_path(svg_d):
+        """Convert an SVG path string to a matplotlib Path object."""
+        from svgpathtools import parse_path, CubicBezier, QuadraticBezier, Line, Arc
+        from matplotlib.path import Path
+
+        verts, codes = [], []
+
+        def move(pt):
+            verts.append(pt); codes.append(Path.MOVETO)
+
+        def line(pt):
+            verts.append(pt); codes.append(Path.LINETO)
+
+        def curve4(c1, c2, end):
+            verts.extend([c1, c2, end])
+            codes.extend([Path.CURVE4, Path.CURVE4, Path.CURVE4])
+
+        for seg in parse_path(svg_d):
+            start = (seg.start.real, seg.start.imag)
+            end   = (seg.end.real,   seg.end.imag)
+            if not verts or start != (verts[-1][0], verts[-1][1]):
+                move(start)
+            if isinstance(seg, Line):
+                line(end)
+            elif isinstance(seg, CubicBezier):
+                curve4((seg.control1.real, seg.control1.imag),
+                       (seg.control2.real, seg.control2.imag), end)
+            elif isinstance(seg, QuadraticBezier):
+                c1 = seg.start + 2/3 * (seg.control - seg.start)
+                c2 = seg.end   + 2/3 * (seg.control - seg.end)
+                curve4((c1.real, c1.imag), (c2.real, c2.imag), end)
+            elif isinstance(seg, Arc):
+                for t in range(1, 17):
+                    p = seg.point(t / 16)
+                    line((p.real, p.imag))
+
+        return Path(verts, codes)
+
+    def _draw_extract_icon(self, ax):
+        """Draw the emojione-monotone:file-cabinet SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 2
+        ax.set_xlim(-pad, 64 + pad)
+        ax.set_ylim(64 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        for svg_d in self._EXTRACT_ICON_SVG:
+            ax.add_patch(PathPatch(self._svg_to_mpl_path(svg_d),
+                                   transform=ax.transData, facecolor='#333333',
+                                   edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_edit_icon(self, ax):
+        """Draw the fa-regular:edit SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 20
+        ax.set_xlim(-pad, 576 + pad)
+        ax.set_ylim(512 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._EDIT_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_ortho_icon(self, ax):
+        """Draw the boxicons:perpendicular-filled SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 1
+        ax.set_xlim(-pad, 24 + pad)
+        ax.set_ylim(24 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._ORTHO_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_save_icon(self, ax):
+        """Draw the glyphs:save SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 5
+        ax.set_xlim(-pad, 80 + pad)
+        ax.set_ylim(80 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        for svg_d in self._SAVE_ICON_SVG:
+            ax.add_patch(PathPatch(self._svg_to_mpl_path(svg_d),
+                                   transform=ax.transData, facecolor='none',
+                                   edgecolor='#333333', linewidth=2.5,
+                                   capstyle='round', joinstyle='round',
+                                   zorder=4, clip_on=False))
+
+    def _draw_delete_icon(self, ax):
+        """Draw the material-symbols-light:delete-outline SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 1
+        ax.set_xlim(-pad, 24 + pad)
+        ax.set_ylim(24 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._DELETE_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_floorplan_icon(self, ax):
+        """Draw the mdi:floor-plan SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 1
+        ax.set_xlim(-pad, 24 + pad)
+        ax.set_ylim(24 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._FLOORPLAN_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_cycle_icon(self, ax):
+        """Draw the heroicons-outline:switch-vertical SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 1
+        ax.set_xlim(-pad, 24 + pad)
+        ax.set_ylim(24 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._CYCLE_ICON_SVG),
+                               transform=ax.transData, facecolor='none',
+                               edgecolor='#333333', linewidth=2.0,
+                               capstyle='round', joinstyle='round',
+                               zorder=4, clip_on=False))
+
+    def _draw_zoom_fit_icon(self, ax):
+        """Draw the carbon:zoom-fit SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 1
+        ax.set_xlim(-pad, 32 + pad)
+        ax.set_ylim(32 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        for svg_d in self._ZOOM_FIT_ICON_SVG:
+            ax.add_patch(PathPatch(self._svg_to_mpl_path(svg_d),
+                                   transform=ax.transData, facecolor='#333333',
+                                   edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_resize_icon(self, ax):
+        """Draw the game-icons:resize SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 20
+        ax.set_xlim(-pad, 512 + pad)
+        ax.set_ylim(512 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._RESIZE_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_crosshairs_icon(self, ax):
+        """Draw the oui:crosshairs SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 0.5
+        ax.set_xlim(-pad, 16 + pad)
+        ax.set_ylim(16 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._CROSSHAIRS_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
     def _axes(self, x, y, w, h):
         """Create figure axes at (x, y) measured from top-left corner.
 
@@ -711,17 +1033,16 @@ class HdrAoiEditor:
         Reads the IESVE .aoi format (no pixel coords, no z-height) from
         self.aoi_dir and uses iesve_room_data CSV to look up the FFL (finished
         floor level) for each room by Space ID. World coordinates are projected
-        to pixel coordinates using the VIEW header of the first .pic/.hdr file.
+        to pixel coordinates using the VIEW header of the matched .pic/.hdr file.
 
         Each room dict gains two extra keys beyond the standard set:
             'ffl'            - finished floor level in metres (float)
             'world_vertices' - original world X/Y pairs, preserved for
                                re-projection when the user cycles AOI levels
 
-        All rooms are initially assigned to the first HDR entry. The user then
-        uses the AOI Level cycle button to reassign each FFL group to the
-        correct .pic level, at which point vertices are re-projected using that
-        level's VIEW header and hdr_file is updated.
+        Only rooms whose FFL (converted to millimetres) matches a 'plan_ffl_XXXXX'
+        token in an available HDR filename are loaded. Rooms whose level has no
+        corresponding HDR are silently skipped.
 
         Returns the number of rooms loaded.
         """
@@ -754,16 +1075,34 @@ class HdrAoiEditor:
             except Exception as exc:
                 print(f"Warning: could not read iesve_room_data: {exc}")
 
-        # Get VIEW params from the first image file for initial projection
-        first_entry = self.hdr_files[0]
-        view_params = self._read_view_params(first_entry['hdr_path'])
-        if view_params is None:
-            print(f"Warning: no VIEW params in {first_entry['hdr_path'].name}, cannot project.")
-            return 0
-        vp_x, vp_y, vh_val, vv_val, img_w, img_h = view_params
+        # Build ffl_mm (int) → HDR entry map by extracting 'plan_ffl_XXXXX' tokens
+        # from each HDR filename. Only FFL groups with a matching HDR will be loaded.
+        ffl_mm_to_entry: dict = {}
+        for entry in self.hdr_files:
+            m = re.search(r'plan_ffl_(\d+)', entry['name'])
+            if m:
+                ffl_mm_to_entry[int(m.group(1))] = entry
+
+        # Pre-build view params cache for matched HDR entries
+        view_cache: dict = {}  # ffl_mm → (entry, view_params tuple)
+        for ffl_mm, entry in ffl_mm_to_entry.items():
+            vp = self._read_view_params(entry['hdr_path'])
+            if vp is not None:
+                view_cache[ffl_mm] = (entry, vp)
+
+        # Fall back: if no HDR filenames contain 'plan_ffl_XXXXX', load all rooms
+        # against the first HDR (preserves behaviour for non-standard naming).
+        use_ffl_filter = bool(ffl_mm_to_entry)
+        if not use_ffl_filter:
+            first_entry = self.hdr_files[0]
+            fallback_vp = self._read_view_params(first_entry['hdr_path'])
+            if fallback_vp is None:
+                print(f"Warning: no VIEW params in {first_entry['hdr_path'].name}, cannot project.")
+                return 0
 
         aoi_files = sorted(self.aoi_dir.glob('*.aoi'))
         count = 0
+        skipped = 0
         for aoi_path in aoi_files:
             with open(aoi_path, 'r') as f:
                 lines = [l.strip() for l in f.readlines()]
@@ -777,6 +1116,18 @@ class HdrAoiEditor:
             space_id  = zone_match.group(1)
             room_name = zone_match.group(2).strip()
             ffl       = ffl_lookup.get(space_id, 0.0)
+
+            # Resolve matched HDR entry and view params for this room's FFL
+            if use_ffl_filter:
+                ffl_mm = int(round(ffl * 1000))
+                cached = view_cache.get(ffl_mm)
+                if cached is None:
+                    skipped += 1
+                    continue  # No HDR for this level — skip
+                entry, (vp_x, vp_y, vh_val, vv_val, img_w, img_h) = cached
+            else:
+                entry = first_entry
+                vp_x, vp_y, vh_val, vv_val, img_w, img_h = fallback_vp
 
             world_verts = []
             for line in lines[3:]:
@@ -797,31 +1148,15 @@ class HdrAoiEditor:
                 'vertices':       pixels,
                 'world_vertices': world_verts,
                 'ffl':            ffl,
-                'hdr_file':       first_entry['name'],
+                'hdr_file':       entry['name'],
             })
             count += 1
 
-        # Auto-distribute FFL groups across HDR levels (sorted by height → sorted
-        # HDR entries).  Each group is re-projected using the target level's VIEW
-        # params so rooms appear on the correct image from the start.
-        ffl_groups = sorted({r['ffl'] for r in self.rooms if 'ffl' in r})
-        if len(ffl_groups) > 1 and len(self.hdr_files) >= len(ffl_groups):
-            ffl_to_entry = dict(zip(ffl_groups, self.hdr_files))
-            view_cache: dict = {}
-            for ffl_val, entry in ffl_to_entry.items():
-                vp = self._read_view_params(entry['hdr_path'])
-                if vp is not None:
-                    view_cache[ffl_val] = (entry, vp)
-            for room in self.rooms:
-                cached = view_cache.get(room.get('ffl'))
-                if cached and 'world_vertices' in room:
-                    entry, (vx, vy, vh_v, vv_v, w, h) = cached
-                    room['vertices'] = self._world_to_pixels(
-                        room['world_vertices'], vx, vy, vh_v, vv_v, w, h)
-                    room['hdr_file'] = entry['name']
-            assigned = [f"{ffl} m -> {ffl_to_entry[ffl]['name']}" for ffl in ffl_groups if ffl in view_cache]
-            print(f"Auto-assigned {len(assigned)} FFL groups: {', '.join(assigned)}")
-
+        if skipped:
+            print(f"Skipped {skipped} IESVE AOI rooms with no matching HDR level.")
+        assigned = [f"{ffl_mm / 1000:.3f} m -> {e['name']}" for ffl_mm, (e, _) in view_cache.items()]
+        if assigned:
+            print(f"Matched {len(assigned)} FFL group(s) to HDR: {', '.join(assigned)}")
         print(f"Loaded {count} IESVE AOI rooms from {self.aoi_dir}")
         return count
 
@@ -1145,6 +1480,10 @@ class HdrAoiEditor:
         plt.rcParams['savefig.directory'] = str(self.image_dir)
         plt.rcParams['keymap.save']       = []  # disable 's' / 'ctrl+s' save-figure hotkey
         plt.rcParams['keymap.fullscreen'] = []  # disable 'f' fullscreen hotkey
+        
+        # Disable the default matplotlib toolbar (the "base bar" with pan/zoom/home/save)
+        plt.rcParams['toolbar'] = 'None'
+
         # Small initial size (matplotlib figsize API requires inches); window is
         # immediately maximised so this value is only used for the brief render before
         # _force_resize_update corrects it to the actual screen dimensions.
@@ -1152,6 +1491,15 @@ class HdrAoiEditor:
         self.fig._archilume_editor = True
         self.fig.canvas.manager.set_window_title(self._WINDOW_TITLE)
         self.fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
+
+        # Make window fully transparent while initial rendering uses the small
+        # (8,5) figure size. _force_resize_update will restore opacity once the
+        # maximised geometry and annotation positions are finalised.  Using alpha
+        # rather than withdraw() avoids conflicts with the 'zoomed' window state.
+        try:
+            self.fig.canvas.manager.window.attributes('-alpha', 0.0)
+        except Exception:
+            pass
 
         # Restore window position and maximization state with safety check
         try:
@@ -1277,36 +1625,21 @@ class HdrAoiEditor:
 
         # Sync overlay button label and style with loaded state
         if self._overlay_visible:
-            self.btn_overlay_toggle.label.set_text('Floor Plan: ON')
+            self._floorplan_tooltip.set_text('Floor Plan: ON')
             self._style_toggle_button(self.btn_overlay_toggle, True)
         else:
-            self.btn_overlay_toggle.label.set_text('Floor Plan: OFF')
+            self._floorplan_tooltip.set_text('Floor Plan: OFF')
             self._style_toggle_button(self.btn_overlay_toggle, False)
 
-        # Deferred PDF overlay rasterization (from session restore or __init__ pdf_path)
-        log.debug("PDF overlay: pre-rasterize check — _overlay_pdf_path=%s, _overlay_rgba=%s, "
-                  "_overlay_needs_rasterize=%s, _overlay_visible=%s",
-                  self._overlay_pdf_path,
-                  'set' if self._overlay_rgba is not None else 'None',
-                  getattr(self, '_overlay_needs_rasterize', False),
-                  self._overlay_visible)
-        if getattr(self, '_overlay_needs_rasterize', False) or (
-                self._overlay_pdf_path is not None and self._overlay_rgba is None):
-            log.debug("PDF overlay: starting rasterization of %s", self._overlay_pdf_path)
-            try:
-                from archilume.utils import get_pdf_info
-                self._overlay_pdf_info = get_pdf_info(self._overlay_pdf_path)
-                self._rasterize_overlay_page()
-                log.debug("PDF overlay: rasterization complete, _overlay_rgba=%s",
-                          'set' if self._overlay_rgba is not None else 'None')
-                self._update_overlay_page_label()
-                self._render_section(force_full=True)
-            except Exception as e:
-                traceback.print_exc()
-                print(f"Warning: could not load PDF overlay: {e}")
+        # PDF overlay rasterization is deferred to a background thread so it
+        # doesn't block the editor launch.  _force_resize_update will show the
+        # window once the main render is done; the overlay appears shortly after.
+        self._deferred_overlay_needed = (
+            getattr(self, '_overlay_needs_rasterize', False)
+            or (self._overlay_pdf_path is not None and self._overlay_rgba is None)
+        )
+        if self._deferred_overlay_needed:
             self._overlay_needs_rasterize = False
-        else:
-            log.debug("PDF overlay: rasterization skipped (pdf_path is None or rgba already set)")
 
         self._update_room_list()
         self._update_hdr_list()
@@ -1328,16 +1661,6 @@ class HdrAoiEditor:
         if self.project:
             set_last_project(self.project)
         self._loading = False
-
-        # Force a full redraw once the Tk event loop is running so that the
-        # room list and HDR list panels are visible on first launch without
-        # requiring a user interaction to trigger them.
-        try:
-            self.fig.canvas.manager.window.after(
-                100, lambda: self.fig.canvas.draw()
-            )
-        except Exception:
-            pass
 
         # If no project was resolved at startup, prompt the user immediately.
         if not self.project:
@@ -1405,7 +1728,6 @@ class HdrAoiEditor:
         action_bot_y = self._setup_action_buttons(status_y)
         self._setup_room_list_panel(action_bot_y)
         self._setup_bottom_toolbar()
-        self._setup_colour_key_legend()
 
     # Layout constants shared across sub-methods
     _PL     = 0.02    # panel left
@@ -1508,22 +1830,58 @@ class HdrAoiEditor:
         return status_y
 
     def _setup_action_buttons(self, status_y: float) -> float:
-        """Create Save / Clear / Delete button row below status. Returns bottom y."""
+        """Create Save / Delete button row below status. Returns bottom y."""
         gap    = self._GAP
         prnt_x = self._PRNT_X
         prnt_w = self._PRNT_W
         btn_y  = status_y + self._SUB_H + gap
         btn_h  = self._INP_H
-        n_btns = 3
-        btn_w  = (prnt_w - gap * (n_btns - 1)) / n_btns
+        icon_w = btn_h  # square icon buttons
 
-        for i, (attr, label, cb) in enumerate([
-            ('btn_save',   'Save',   self._on_save_click),
-            ('btn_clear',  'Clear',  self._on_clear_click),
-            ('btn_delete', 'Delete', self._on_delete_click),
-        ]):
-            setattr(self, attr, self._make_button(
-                prnt_x + i * (btn_w + gap), btn_y, btn_w, btn_h, label, cb))
+        # Save — square icon button (fluent:save-28-regular)
+        self.btn_save = self._make_button(
+            prnt_x, btn_y, icon_w, btn_h, '', self._on_save_click)
+        self._draw_save_icon(self.btn_save.ax)
+
+        # Delete — square icon button (material-symbols-light:delete-outline)
+        delete_x = prnt_x + prnt_w - icon_w
+        self.btn_delete = self._make_button(
+            delete_x, btn_y, icon_w, btn_h, '', self._on_delete_click)
+        self._draw_delete_icon(self.btn_delete.ax)
+
+        # Tooltips for save/delete icon buttons
+        self._save_tooltip = self.fig.text(
+            0, 0, 'Save Room (S)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+        self._delete_tooltip = self.fig.text(
+            0, 0, 'Delete room',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_action_tooltip(event):
+            for btn, tip in ((self.btn_save, self._save_tooltip),
+                              (self.btn_delete, self._delete_tooltip)):
+                if event.inaxes == btn.ax:
+                    ax = btn.ax
+                    tip.set_position((ax.get_position().x1 + 0.005, ax.get_position().y0))
+                    tip.set_visible(True)
+                    self.fig.canvas.draw_idle()
+                    return
+
+        def _hide_action_tooltip(event):
+            for tip in (self._save_tooltip, self._delete_tooltip):
+                if tip.get_visible():
+                    tip.set_visible(False)
+                    self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_action_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_action_tooltip)
+
         return btn_y + btn_h
 
     def _setup_room_list_panel(self, action_bot_y: float):
@@ -1533,7 +1891,7 @@ class HdrAoiEditor:
         list_w  = 0.270
         list_y  = self._ROW_Y
         label_h = 0.020
-        self._make_label(list_x, list_y, list_w, label_h, "SAVED ROOMS:")
+        self._make_label(list_x, list_y, list_w, label_h, "ROOM BROWSER:")
         list_top = list_y + label_h + gap * 0.5
         list_h   = action_bot_y - list_top
         self.ax_list = self._axes(list_x, list_top, list_w, list_h)
@@ -1557,38 +1915,145 @@ class HdrAoiEditor:
         btn_w    = 0.115
         btn_step = btn_w + gap
 
-        # Row 1: Project, Toggle, Edit, Draw, Ortho
-        proj_label = f'Project: {self.project}' if self.project else 'Project: (none)'
+        # Row 1: Project (square icon button), Toggle, Edit, Draw, Ortho
         self.btn_project = self._make_button(
-            tr_x, row1_y, btn_w, tr_h,
-            proj_label, self._on_project_click,
+            tr_x, row1_y, tr_h, tr_h,
+            '', self._on_project_click,
             color='#E3F2FD', hovercolor='#BBDEFB')
+        self._draw_icon_image(self.btn_project.ax)
+
+        # Tooltip for the project button
+        self._tooltip = self.fig.text(
+            0, 0, 'Open / Create Project',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_tooltip(event):
+            if event.inaxes == self.btn_project.ax:
+                ax = self.btn_project.ax
+                # Position tooltip just to the right of the button
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._tooltip.set_position((x, y))
+                self._tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_tooltip(event):
+            if self._tooltip.get_visible():
+                self._tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_tooltip)
+
+        # Toggle image layers — square icon button (fluent:layer-20-regular)
         self.btn_image_toggle = self._make_button(
-            tr_x + btn_step, row1_y, btn_w, tr_h,
-            'Toggle Image Layers: HDR (Press T)', self._on_image_toggle_click)
+            tr_x + btn_step, row1_y, tr_h, tr_h,
+            '', self._on_image_toggle_click)
+        self._draw_layer_icon(self.btn_image_toggle.ax)
+
+        # Tooltip for the image toggle button
+        self._layer_tooltip = self.fig.text(
+            0, 0, 'Toggle image layers (Press T)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_layer_tooltip(event):
+            if event.inaxes == self.btn_image_toggle.ax:
+                ax = self.btn_image_toggle.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._layer_tooltip.set_position((x, y))
+                self._layer_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_layer_tooltip(event):
+            if self._layer_tooltip.get_visible():
+                self._layer_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_layer_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_layer_tooltip)
+
+        # Boundary Edit Mode — square icon button (fa-regular:edit)
         self.btn_edit_mode = self._make_button(
-            tr_x + 2 * btn_step, row1_y, btn_w, tr_h,
-            'Boundary Edit Mode: OFF (Press E)', self._on_edit_mode_toggle)
+            tr_x + 2 * btn_step, row1_y, tr_h, tr_h,
+            '', self._on_edit_mode_toggle)
+        self._draw_edit_icon(self.btn_edit_mode.ax)
+
+        self._edit_tooltip = self.fig.text(
+            0, 0, 'Boundary Edit Mode: OFF (Press E)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_edit_tooltip(event):
+            if event.inaxes == self.btn_edit_mode.ax:
+                ax = self.btn_edit_mode.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._edit_tooltip.set_position((x, y))
+                self._edit_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_edit_tooltip(event):
+            if self._edit_tooltip.get_visible():
+                self._edit_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_edit_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_edit_tooltip)
+
         self.btn_draw_mode = self._make_button(
             tr_x + 3 * btn_step, row1_y, btn_w, tr_h,
             'Draw Mode: OFF (Press D)', self._on_draw_mode_toggle)
 
-        ortho_label = 'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)'
+        # Ortho Lines — square icon button (boxicons:perpendicular-filled)
         ortho_color = self._btn_on_color if self.ortho_mode else self._btn_color
         ortho_hover = self._btn_on_hover if self.ortho_mode else self._btn_hover
         self.btn_ortho = self._make_button(
-            tr_x + 4 * btn_step, row1_y, btn_w, tr_h,
-            ortho_label, self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
+            tr_x + 4 * btn_step, row1_y, tr_h, tr_h,
+            '', self._on_ortho_toggle, color=ortho_color, hovercolor=ortho_hover)
+        self._draw_ortho_icon(self.btn_ortho.ax)
+
+        self._ortho_tooltip = self.fig.text(
+            0, 0, 'Ortho Lines: OFF (Press O)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_ortho_tooltip(event):
+            if event.inaxes == self.btn_ortho.ax:
+                ax = self.btn_ortho.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._ortho_tooltip.set_position((x, y))
+                self._ortho_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_ortho_tooltip(event):
+            if self._ortho_tooltip.get_visible():
+                self._ortho_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_ortho_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_ortho_tooltip)
 
         # Col 5 on Row 1: AOI level cycle
         self.btn_aoi_level = self._make_button(
             tr_x + 5 * btn_step, row1_y, btn_w, tr_h,
-            'AOI Level: -/-', self._on_aoi_level_cycle)
+            'Change AOI Level: -/-', self._on_aoi_level_cycle)
         self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
         self._update_aoi_level_label()
 
         # Row 2 col 0: Annotation font-size slider (compact)
-        slider_ax = self._axes(tr_x, row2_y + tr_h * 0.25, btn_w * 0.55, tr_h * 0.55)
+        slider_ax = self._axes(tr_x + btn_step * 0.25, row2_y + tr_h * 0.25, btn_w * 0.55, tr_h * 0.55)
         slider_ax.set_facecolor('#F5F5F5')
         for spine in slider_ax.spines.values():
             spine.set_visible(True)
@@ -1607,34 +2072,218 @@ class HdrAoiEditor:
         self._annotation_scale_slider.valtext.set_fontsize(7)
         self._annotation_scale_slider.on_changed(self._on_annotation_scale_change)
 
-        # Row 2: Export & Archive, Extract Archive, Reset Zoom, Place DF%  (cols 1–4)
+        # Row 2: Export & Archive (square icon), Extract Archive, Reset Zoom, Place DF%  (cols 1–4)
         self.btn_export = self._make_button(
-            tr_x + btn_step, row2_y, btn_w, tr_h,
-            'Export & Archive', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
-        self.btn_extract = self._make_button(
-            tr_x + 2 * btn_step, row2_y, btn_w, tr_h,
-            'Extract Archive', self._on_extract_click)
-        self.btn_reset_zoom = self._make_button(
-            tr_x + 3 * btn_step, row2_y, btn_w, tr_h,
-            'Reset Zoom (Press R)', self._on_reset_zoom_click)
+            tr_x + btn_step, row2_y, tr_h, tr_h,
+            '', self._on_export_report, color='#C8E6C9', hovercolor='#A5D6A7')
+        self._draw_export_icon(self.btn_export.ax)
 
-        place_label = 'Place DF% Point: ON (Press P)' if self.placement_mode else 'Place DF% Point: OFF (Press P)'
+        # Tooltip for the export button
+        self._export_tooltip = self.fig.text(
+            0, 0, 'Export & Archive',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_export_tooltip(event):
+            if event.inaxes == self.btn_export.ax:
+                ax = self.btn_export.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._export_tooltip.set_position((x, y))
+                self._export_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_export_tooltip(event):
+            if self._export_tooltip.get_visible():
+                self._export_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_export_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_export_tooltip)
+
+        # Extract Archive — square icon button (glyphs:filing-cabinet)
+        self.btn_extract = self._make_button(
+            tr_x + 2 * btn_step, row2_y, tr_h, tr_h,
+            '', self._on_extract_click)
+        self._draw_extract_icon(self.btn_extract.ax)
+
+        self._extract_tooltip = self.fig.text(
+            0, 0, 'Extract Archive',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_extract_tooltip(event):
+            if event.inaxes == self.btn_extract.ax:
+                ax = self.btn_extract.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._extract_tooltip.set_position((x, y))
+                self._extract_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_extract_tooltip(event):
+            if self._extract_tooltip.get_visible():
+                self._extract_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_extract_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_extract_tooltip)
+        # Reset Zoom — square icon button (carbon:zoom-fit)
+        self.btn_reset_zoom = self._make_button(
+            tr_x + 3 * btn_step, row2_y, tr_h, tr_h,
+            '', self._on_reset_zoom_click)
+        self._draw_zoom_fit_icon(self.btn_reset_zoom.ax)
+
+        self._zoom_tooltip = self.fig.text(
+            0, 0, 'Reset Zoom (Press R)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_zoom_tooltip(event):
+            if event.inaxes == self.btn_reset_zoom.ax:
+                ax = self.btn_reset_zoom.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._zoom_tooltip.set_position((x, y))
+                self._zoom_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_zoom_tooltip(event):
+            if self._zoom_tooltip.get_visible():
+                self._zoom_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_zoom_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_zoom_tooltip)
+
+        # Place DF% — square icon button (oui:crosshairs)
         place_color = self._btn_on_color if self.placement_mode else self._btn_color
         place_hover = self._btn_on_hover if self.placement_mode else self._btn_hover
         self.btn_placement = self._make_button(
-            tr_x + 4 * btn_step, row2_y, btn_w, tr_h,
-            place_label, self._on_placement_toggle, color=place_color, hovercolor=place_hover)
+            tr_x + 4 * btn_step, row2_y, tr_h, tr_h,
+            '', self._on_placement_toggle, color=place_color, hovercolor=place_hover)
+        self._draw_crosshairs_icon(self.btn_placement.ax)
+
+        self._placement_tooltip = self.fig.text(
+            0, 0, 'Place DF% Point: OFF (Press P)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_placement_tooltip(event):
+            if event.inaxes == self.btn_placement.ax:
+                ax = self.btn_placement.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._placement_tooltip.set_position((x, y))
+                self._placement_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_placement_tooltip(event):
+            if self._placement_tooltip.get_visible():
+                self._placement_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_placement_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_placement_tooltip)
 
         # Row 3: PDF Overlay controls  (cols 1–6)
+        # Floor Plan toggle — square icon button (mdi:floor-plan)
         self.btn_overlay_toggle = self._make_button(
-            tr_x + btn_step, row3_y, btn_w, tr_h,
-            'Floor Plan: OFF', self._on_overlay_toggle)
+            tr_x + btn_step, row3_y, tr_h, tr_h,
+            '', self._on_overlay_toggle)
+        self._draw_floorplan_icon(self.btn_overlay_toggle.ax)
+
+        self._floorplan_tooltip = self.fig.text(
+            0, 0, 'Floor Plan: OFF',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_floorplan_tooltip(event):
+            if event.inaxes == self.btn_overlay_toggle.ax:
+                ax = self.btn_overlay_toggle.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._floorplan_tooltip.set_position((x, y))
+                self._floorplan_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_floorplan_tooltip(event):
+            if self._floorplan_tooltip.get_visible():
+                self._floorplan_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_floorplan_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_floorplan_tooltip)
+
+        # Cycle Floor Plans — square icon button (heroicons-outline:switch-vertical)
         self.btn_overlay_page = self._make_button(
-            tr_x + 2 * btn_step, row3_y, btn_w, tr_h,
-            'Cycle Floor Plans: -/-', self._on_overlay_page_cycle)
+            tr_x + 2 * btn_step, row3_y, tr_h, tr_h,
+            '', self._on_overlay_page_cycle)
+        self._draw_cycle_icon(self.btn_overlay_page.ax)
+
+        self._cycle_tooltip = self.fig.text(
+            0, 0, 'Change floor plan: -/-',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_cycle_tooltip(event):
+            if event.inaxes == self.btn_overlay_page.ax:
+                ax = self.btn_overlay_page.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._cycle_tooltip.set_position((x, y))
+                self._cycle_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_cycle_tooltip(event):
+            if self._cycle_tooltip.get_visible():
+                self._cycle_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_cycle_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_cycle_tooltip)
+
+        # Plan Alignment — square icon button (game-icons:resize)
         self.btn_overlay_align = self._make_button(
-            tr_x + 3 * btn_step, row3_y, btn_w, tr_h,
-            'Plan Alignment Edit Mode: OFF', self._on_overlay_align_toggle)
+            tr_x + 3 * btn_step, row3_y, tr_h, tr_h,
+            '', self._on_overlay_align_toggle)
+        self._draw_resize_icon(self.btn_overlay_align.ax)
+
+        self._align_tooltip = self.fig.text(
+            0, 0, 'Resize plan mode: OFF',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_align_tooltip(event):
+            if event.inaxes == self.btn_overlay_align.ax:
+                ax = self.btn_overlay_align.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._align_tooltip.set_position((x, y))
+                self._align_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_align_tooltip(event):
+            if self._align_tooltip.get_visible():
+                self._align_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_align_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_align_tooltip)
         self.btn_overlay_dpi = self._make_button(
             tr_x + 4 * btn_step, row3_y, btn_w, tr_h,
             f'PDF Res: {self._overlay_raster_dpi} DPI', self._on_overlay_dpi_click)
@@ -1690,29 +2339,6 @@ class HdrAoiEditor:
         self._progress_bar_patch = None
         self._progress_text = None
 
-    def _setup_colour_key_legend(self):
-        """Create the colour-key legend (far right, vertical stack)."""
-        ax_legend = self._axes(0.88, 0.02, 0.11, 0.14)
-        ax_legend.axis('off')
-        ax_legend.set_facecolor('#F0F0EC')
-        ax_legend.text(0.05, 0.95, "LEGEND", fontsize=7, fontweight='bold', color='#404040',
-                       va='top', transform=ax_legend.transAxes)
-        items = [
-            ('red',     0.6, 'Room boundary'),
-            ('yellow',  0.5, 'Selected'),
-            ('cyan',    0.5, 'Being edited'),
-            ('magenta', 0.5, 'Hover (edit mode)'),
-        ]
-        n = len(items)
-        for i, (color, alpha, label) in enumerate(items):
-            y0 = 0.78 - i * (0.75 / max(n - 1, 1))
-            rect = FancyBboxPatch((0.05, y0 - 0.04), 0.08, 0.08,
-                                  boxstyle='round,pad=0.01',
-                                  facecolor=color, edgecolor=color, alpha=alpha,
-                                  transform=ax_legend.transAxes, clip_on=False)
-            ax_legend.add_patch(rect)
-            ax_legend.text(0.18, y0, label, fontsize=6, color='#404040',
-                           va='center', transform=ax_legend.transAxes)
 
     # === HDR NAVIGATION ========================================================
 
@@ -1806,22 +2432,7 @@ class HdrAoiEditor:
         self._render_section(force_full=True)
 
     def _update_image_toggle_label(self):
-        """Update the toggle button label to show the active variant."""
-        if not self.image_variants:
-            self.btn_image_toggle.label.set_text('Toggle Image Layers: (none)')
-            return
-        idx  = self.current_variant_idx % len(self.image_variants)
-        path = self.image_variants[idx]
-        # Show a short label: HDR stem or TIFF suffix portion
-        if path.suffix.lower() == '.hdr':
-            label = 'Toggle Image Layers: HDR (Press T)'
-        else:
-            # e.g. model_plan_ffl_25300_df_false → show "df_false"
-            hdr_stem = self.hdr_files[self.current_hdr_idx]['name']
-            suffix   = path.stem[len(hdr_stem):]  # e.g. "_df_false"
-            suffix   = suffix.lstrip('_')
-            label    = f'Toggle Image Layers: {suffix} (Press T)'
-        self.btn_image_toggle.label.set_text(label)
+        """Button is now icon-only; nothing to update."""
         self.fig.canvas.draw_idle()
 
     # === ROOM DATA MANAGEMENT ==================================================
@@ -3175,7 +3786,7 @@ class HdrAoiEditor:
                 elif self.edit_mode:
                     # Exit edit mode without saving
                     self.edit_mode = False
-                    self.btn_edit_mode.label.set_text('Edit Mode: OFF (Press E)')
+                    self._edit_tooltip.set_text('Boundary Edit Mode: OFF (Press E)')
                     self._style_toggle_button(self.btn_edit_mode, False)
                     self._reset_hover_state()
                     self._edit_undo_stack.clear()
@@ -3258,7 +3869,7 @@ class HdrAoiEditor:
             self._on_ortho_toggle(None)
         elif event.key == 'd':
             now = time.monotonic()
-            double_d = (now - self._last_d_press_time) < 0.4
+            double_d = (now - self._last_d_press_time) < 0.6
             self._last_d_press_time = now
             if double_d:
                 # dd — enter edit mode (if not already) then toggle divider mode
@@ -3427,12 +4038,28 @@ class HdrAoiEditor:
                 # set_size_inches is a matplotlib API requirement; values are pixel dimensions
                 # divided by the figure's dots-per-inch scaling factor.
                 self.fig.set_size_inches(width / self.fig.dpi, height / self.fig.dpi, forward=False)
-                canvas.resize(width, height)
-            # Re-populate list panels so they are visible on first render after
-            # the event loop and window geometry are fully established.
-            self._update_room_list()
-            self._update_hdr_list()
-            canvas.draw_idle()
+                # Synchronous draw commits the new geometry so that ax.transData
+                # is fully updated before _apply_zoom_fontsizes reads it.
+                # Without this, transData still reflects the tiny (8,5) initial
+                # figure and _df_line_step returns a stale value.
+                canvas.draw()
+            # Recompute annotation positions with the now-current transData.
+            self._apply_zoom_fontsizes()
+            # Synchronous draw renders the corrected positions immediately.
+            canvas.draw()
+            # Restore window opacity now that geometry and annotations are
+            # finalised.  The window was made transparent before the initial
+            # render to prevent the user seeing stale annotation spacing.
+            try:
+                self.fig.canvas.manager.window.attributes('-alpha', 1.0)
+            except Exception:
+                pass
+            # Kick off deferred PDF overlay rasterization in a background thread
+            # so it doesn't block startup.  The overlay appears shortly after the
+            # window becomes visible.
+            if getattr(self, '_deferred_overlay_needed', False):
+                self._deferred_overlay_needed = False
+                self._start_deferred_overlay()
         except Exception:
             pass
 
@@ -3468,9 +4095,9 @@ class HdrAoiEditor:
         if not ctrl:
             self._deselect_room()
 
-    def _select_room(self, idx: int):
+    def _select_room(self, idx: int, update_list: bool = True):
         """Select a room by index and populate the name textbox and parent."""
-        self._deselect_room()
+        self._deselect_room(update_list=False)
         self.selected_room_idx = idx
         room = self.rooms[idx]
         self.name_textbox.set_val(room.get('name', ''))
@@ -3491,10 +4118,11 @@ class HdrAoiEditor:
             self.name_label_text.set_text("Room Name:")
 
         self._update_status(f"Selected: {room.get('name', 'unnamed')}", 'orange')
-        self._update_room_list()
+        if update_list:
+            self._update_room_list()
         self._render_section()
 
-    def _deselect_room(self):
+    def _deselect_room(self, update_list: bool = True):
         """Deselect any selected room and clear multi-selection."""
         changed = self.selected_room_idx is not None or self.multi_selected_room_idxs
         self.multi_selected_room_idxs.clear()
@@ -3505,7 +4133,8 @@ class HdrAoiEditor:
             self._update_room_type_buttons()
         if changed:
             self._update_status("Ready to draw", 'blue')
-            self._update_room_list()
+            if update_list:
+                self._update_room_list()
             self.fig.canvas.draw_idle()
 
     def _select_all_rooms(self):
@@ -3985,7 +4614,7 @@ class HdrAoiEditor:
             self._exit_draw_mode()
 
         self.edit_mode = not self.edit_mode
-        self.btn_edit_mode.label.set_text(
+        self._edit_tooltip.set_text(
             'Boundary Edit Mode: ON (Press E)' if self.edit_mode else 'Boundary Edit Mode: OFF (Press E)')
         self._style_toggle_button(self.btn_edit_mode, self.edit_mode)
 
@@ -4018,7 +4647,7 @@ class HdrAoiEditor:
     def _on_ortho_toggle(self, event):
         """Toggle orthogonal lines mode."""
         self.ortho_mode = not self.ortho_mode
-        self.btn_ortho.label.set_text(
+        self._ortho_tooltip.set_text(
             'Ortho Lines: ON (Press O)' if self.ortho_mode else 'Ortho Lines: OFF (Press O)')
         self._style_toggle_button(self.btn_ortho, self.ortho_mode)
         state = "ON" if self.ortho_mode else "OFF"
@@ -4033,7 +4662,7 @@ class HdrAoiEditor:
         Existing stamps remain visible regardless of this toggle.
         """
         self.placement_mode = not self.placement_mode
-        self.btn_placement.label.set_text(
+        self._placement_tooltip.set_text(
             'Place DF% Point: ON (Press P)' if self.placement_mode else 'Place DF% Point: OFF (Press P)')
         self._style_toggle_button(self.btn_placement, self.placement_mode)
         state = "ON" if self.placement_mode else "OFF"
@@ -4056,8 +4685,8 @@ class HdrAoiEditor:
         ylim = self.ax.get_ylim()
 
         self._overlay_visible = not self._overlay_visible
-        label = 'Floor Plan: ON' if self._overlay_visible else 'Floor Plan: OFF'
-        self.btn_overlay_toggle.label.set_text(label)
+        self._floorplan_tooltip.set_text(
+            'Floor Plan: ON' if self._overlay_visible else 'Floor Plan: OFF')
         self._style_toggle_button(self.btn_overlay_toggle, self._overlay_visible)
         self._save_session()
         self._do_full_render(xlim, ylim, reset_view=False)
@@ -4577,9 +5206,9 @@ class HdrAoiEditor:
         self._overlay_transforms    = {}
         self._aoi_level_idx         = 0
 
-        # Update toolbar button label
-        proj_label = f'Project: {self.project}'
-        self.btn_project.label.set_text(proj_label)
+        # Update toolbar button (icon-only, no text)
+        self.btn_project.label.set_text('')
+        self._draw_icon_image(self.btn_project.ax)
         self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
 
         # Rescan files and reload session
@@ -4684,12 +5313,12 @@ class HdrAoiEditor:
             return
         ffl_groups = self._aoi_ffl_groups()
         if not ffl_groups:
-            self.btn_aoi_level.label.set_text('AOI Level: -/-')
+            self.btn_aoi_level.label.set_text('Change AOI Level: -/-')
         else:
             n   = len(ffl_groups)
             idx = self._aoi_level_idx % n
             ffl = ffl_groups[idx]
-            self.btn_aoi_level.label.set_text(f'AOI Level: {idx + 1}/{n} ({ffl} m)')
+            self.btn_aoi_level.label.set_text(f'Change AOI Level: {idx + 1}/{n} ({ffl} m)')
         self.fig.canvas.draw_idle()
 
     # === OVERLAY BLITTING OPTIMIZATIONS ========================================
@@ -4774,12 +5403,12 @@ class HdrAoiEditor:
             self._align_points_overlay = []
             self._align_points_hdr = []
             self._clear_align_markers()
-            self.btn_overlay_align.label.set_text('Align Floor Plan: ON')
+            self._align_tooltip.set_text('Resize plan mode: ON')
             self._style_toggle_button(self.btn_overlay_align, True)
             self._update_status("ALIGN: Click first point on overlay", 'cyan')
         else:
             self._clear_align_markers()
-            self.btn_overlay_align.label.set_text('Align Floor Plan: OFF')
+            self._align_tooltip.set_text('Resize plan mode: OFF')
             self._style_toggle_button(self.btn_overlay_align, False)
             self._update_status("Alignment finished", 'green')
             self._end_overlay_blit(save=True)
@@ -4912,10 +5541,58 @@ class HdrAoiEditor:
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _start_deferred_overlay(self):
+        """Rasterize the PDF overlay in a background thread, then apply it on the main thread."""
+        pdf_path = self._overlay_pdf_path
+        if pdf_path is None:
+            return
+
+        def _bg_rasterize():
+            try:
+                from archilume.utils import get_pdf_info
+                info = get_pdf_info(pdf_path)
+                # use_bg_thread=True: only rasterizes + caches to disk, does not
+                # touch self._overlay_rgba or call _save_session (thread-unsafe).
+                self._overlay_pdf_info = info
+                self._rasterize_overlay_page(use_bg_thread=True)
+                # Schedule the UI update back on the main (Tk) thread
+                try:
+                    self.fig.canvas.manager.window.after(0, _apply_overlay)
+                except Exception:
+                    pass
+            except Exception as e:
+                traceback.print_exc()
+                print(f"Warning: could not load PDF overlay: {e}")
+
+        def _apply_overlay():
+            """Load the now-cached overlay and refresh the canvas (main thread)."""
+            try:
+                # Re-run on the main thread with use_bg_thread=False so it picks
+                # up the .npy cache (instant), sets self._overlay_rgba, and saves
+                # the session — all thread-safe on the Tk main loop.
+                self._rasterize_overlay_page()
+                self._update_overlay_page_label()
+                # Add the overlay artist directly without a full re-render.
+                # Remove any stale overlay first, then draw the new one in-place.
+                if self._overlay_handle is not None:
+                    try:
+                        self._overlay_handle.remove()
+                    except ValueError:
+                        pass
+                    self._overlay_handle = None
+                if self._overlay_visible and self._overlay_rgba is not None:
+                    self._render_overlay(self._image_width, self._image_height)
+                self.fig.canvas.draw_idle()
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=_bg_rasterize, daemon=True)
+        thread.start()
+
     def _rasterize_overlay_page(self, page_idx: Optional[int] = None, use_bg_thread: bool = False):
         """Rasterize a PDF page and apply transparency, using a persistent multi-page cache.
-        
-        If page_idx is provided and use_bg_thread is True, it performs a silent 
+
+        If page_idx is provided and use_bg_thread is True, it performs a silent
         background cache generation. Otherwise, it updates the active overlay image.
         """
         if self._overlay_pdf_path is None:
@@ -4967,10 +5644,10 @@ class HdrAoiEditor:
     def _update_overlay_page_label(self):
         """Update the page cycle button label."""
         if self._overlay_pdf_info is None:
-            self.btn_overlay_page.label.set_text('Cycle Floor Plans: -/-')
+            self._cycle_tooltip.set_text('Change floor plan: -/-')
         else:
             n = self._overlay_pdf_info['page_count']
-            self.btn_overlay_page.label.set_text(f'Cycle Floor Plans: {self._overlay_page_idx + 1}/{n}')
+            self._cycle_tooltip.set_text(f'Change floor plan: {self._overlay_page_idx + 1}/{n}')
         self.fig.canvas.draw_idle()
 
     def _make_overlay_manual(self, hdr_name: str):
@@ -5190,7 +5867,7 @@ class HdrAoiEditor:
         # Exit align mode
         self._align_mode = False
         self._clear_align_markers()
-        self.btn_overlay_align.label.set_text('Align Floor Plan: OFF')
+        self._align_tooltip.set_text('Resize plan mode: OFF')
         self._style_toggle_button(self.btn_overlay_align, False)
         self.btn_overlay_reset.ax.set_visible(False)
         self._save_session()
@@ -5936,7 +6613,7 @@ class HdrAoiEditor:
 
         # Exit edit mode and save (per requirement)
         self.edit_mode = False
-        self.btn_edit_mode.label.set_text('Edit Mode: OFF (Press E)')
+        self._edit_tooltip.set_text('Boundary Edit Mode: OFF (Press E)')
         self._style_toggle_button(self.btn_edit_mode, False)
         self._reset_hover_state()
         self._create_polygon_selector()
@@ -6186,6 +6863,7 @@ class HdrAoiEditor:
                         self._deselect_room()
                     else:
                         self._select_room(room_idx)
+                    return
                 self._update_room_list()
                 return
 
@@ -6467,7 +7145,7 @@ class HdrAoiEditor:
 
         n_rooms = len(self.rooms)
         self._update_status(f"Exporting {n_rooms} rooms...", 'orange')
-        self.btn_export.label.set_text('Exporting...')
+        self._export_tooltip.set_text('Exporting...')
         self._show_progress(0.0, f"0 / {n_rooms} rooms")
         self.fig.canvas.draw_idle()
 
@@ -6692,7 +7370,7 @@ class HdrAoiEditor:
                 else:
                     self._update_status("Export complete (archive failed)", 'orange')
                 self._show_progress(1.0, "Complete")
-            self.btn_export.label.set_text('Export & Archive')
+            self._export_tooltip.set_text('Export & Archive')
             self.fig.canvas.draw_idle()
             hide = self.fig.canvas.new_timer(interval=4000)
             hide.single_shot = True

@@ -2,6 +2,12 @@
 
 This file tracks planned features, optimizations, and known issues for the Archilume framework.
 
+## 🚨 TOP PRIORITY: Bugs & Blocking Issues
+
+- **[BUG] Windows Post-Processing Pipeline Failure (`DaylightRenderer`):** The HDR post-processing commands in `_postprocess_hdr` and `_generate_legends` (in `archilume/core/rendering_pipelines.py`) use Unix-style shell pipes (`pcomb | falsecolor | ra_tiff`) which fail silently on Windows. The `rpict` rendering step completes, but no falsecolor or contour TIFFs/PNGs are produced. The size check (`>= 1000 bytes`) masks the failure. Fix: decompose each piped command chain into intermediate temp files so each step runs as a discrete shell call, compatible with both `cmd.exe`/PowerShell and Linux shells.
+
+---
+
 ## 🔴 HIGH PRIORITY: Core Workflow & Output Improvements
 
 - **Grid Resolution:** Support grid size input in millimeters. Auto-calculate `x_res`, `y_res` from room extents.
@@ -127,6 +133,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 ### IESVE .pic Compatibility
 
 - **Migrate Post-Processing into Room Boundary Editor:** For this to be viable, the `df_cnt` (contour) and `df_false` (falsecolor) conversion steps currently handled in the rendering pipeline would need to be surfaced within `room_boundaries_editor.py`, so the editor can produce annotated outputs independently.
+- **[TEST & FIX] PDF Page Shifting in HDR Editor:** The feature to swap PDF pages/levels for the underlay in the HDR editor is fragile and unresponsive. Test and debug the page shifting functionality to ensure smooth, reliable switching between levels when using PDF underlays.
 
 ### Notes
 

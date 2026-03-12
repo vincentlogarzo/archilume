@@ -32,9 +32,9 @@ from archilume.workflows import IESVEDaylightWorkflow
 def run_daylight_analysis():
     # 2. Run the standardized workflow
     inputs = IESVEDaylightWorkflow.InputsValidator(
-        project                     = "527DP",  # Required: project name under projects/ (e.g. projects/527DP/)
-        octree_path                 = "527DP.oct",  # Must use 10KLx sky
-        rendering_params            = "Preview.rdp",
+        project                     = "527DP_demo",  # Required: project name under projects/ (e.g. projects/527DP/)
+        octree_path                 = "L7_Lightwell_260226.oct",  # Must use 10KLx sky
+        rendering_params            = "preview.rdp",
         iesve_room_data             = "aoi/iesve_room_data.csv",
         image_resolution            = 2048,
         ffl_offset                  = 0.0,  # Camera height above floor (m)
