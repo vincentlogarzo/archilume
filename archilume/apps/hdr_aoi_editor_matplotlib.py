@@ -258,6 +258,7 @@ class HdrAoiEditor:
         self.csv_path                                   = self.project_aoi_dir / "aoi_boundaries.csv"
 
         # Scan HDR files in image_dir
+        log.debug("__init__: image_dir=%s  exists=%s", self.image_dir, self.image_dir.exists())
         self.hdr_files:             List[dict]          = self._scan_hdr_files()
         self.current_hdr_idx:       int                 = 0
 
@@ -382,6 +383,7 @@ class HdrAoiEditor:
 
         # IESVE AOI level assignment state
         self._aoi_level_idx:        int                 = 0       # current FFL group index
+        self._aoi_level_map:        dict                = {}      # pic_name → assigned FFL value
 
         # PDF floor plan overlay state
         # _overlay_pdf_path is set by _init_project_paths / _set_blank_state
@@ -460,15 +462,20 @@ class HdrAoiEditor:
         toml_paths = toml_cfg.get("paths", {})
         log.debug("_init_project_paths: toml_paths=%s", toml_paths)
         if pdf_path is None and toml_paths.get("pdf_path"):
-            pdf_path = paths.project_dir / toml_paths["pdf_path"]
+            pdf_path = paths.inputs_dir / toml_paths["pdf_path"]
             log.debug("_init_project_paths: pdf_path from toml = %r", pdf_path)
         if iesve_room_data is None and toml_paths.get("iesve_room_data"):
-            iesve_room_data = paths.project_dir / toml_paths["iesve_room_data"]
+            iesve_room_data = paths.inputs_dir / toml_paths["iesve_room_data"]
+        project_mode = toml_cfg.get("project", {}).get("mode", "hdr")
         if image_dir is None and toml_paths.get("image_dir"):
-            image_dir = paths.project_dir / toml_paths["image_dir"]
+            p = Path(toml_paths["image_dir"])
+            image_dir = p if p.is_absolute() else paths.project_dir / p
 
-        # image_dir: default to outputs/image/, or resolve a relative override
-        if image_dir is None:
+        # image_dir: IESVE projects always use inputs/pic/ (files are copied there
+        # at project creation); Archilume projects default to outputs/image/.
+        if project_mode == "iesve":
+            self.image_dir = paths.pic_dir
+        elif image_dir is None:
             self.image_dir = paths.image_dir
         else:
             image_dir = Path(image_dir)
@@ -1052,8 +1059,17 @@ class HdrAoiEditor:
         return ax, txt
 
     def _is_room_on_current_hdr(self, room: dict) -> bool:
-        """Check whether a room belongs to the currently displayed HDR file."""
-        return room.get('hdr_file') == self.current_hdr_name
+        """Check whether a room belongs to the currently displayed HDR file.
+
+        For IESVE rooms (those with an 'ffl' key), visibility is controlled by
+        ``_aoi_level_map`` which records which FFL group is assigned to each pic.
+        A room is visible only when its FFL matches the FFL assigned to the
+        current pic.  For non-IESVE rooms the original hdr_file check applies.
+        """
+        hdr_name = self.current_hdr_name
+        if 'ffl' in room and hdr_name in self._aoi_level_map:
+            return room['ffl'] == self._aoi_level_map[hdr_name]
+        return room.get('hdr_file') == hdr_name
 
     def _reset_hover_state(self):
         """Clear all hover and drag tracking variables."""
@@ -2593,15 +2609,15 @@ class HdrAoiEditor:
         btn_step = btn_w + gap
         bb_x   = self._CANVAS_X  # align with canvas left edge
 
-        # 1. PDF Resolution — pinned just above canvas top-left
-        above_canvas_y = self._CANVAS_Y + tr_h*2  # flush above canvas top edge
+        # 1. PDF Resolution — below canvas, first row
+        below_canvas_y = self._CANVAS_Y + self._CANVAS_H + gap
         self.btn_overlay_dpi = self._make_button(
-            bb_x, above_canvas_y, btn_w, tr_h,
+            bb_x, below_canvas_y, btn_w, tr_h,
             f'PDF Res: {self._overlay_raster_dpi} DPI', self._on_overlay_dpi_click)
 
-        # DPI RadioButtons (initially hidden) — positioned below PDF Res button
+        # DPI RadioButtons (initially hidden) — positioned above the PDF Res button
         radio_h = 0.20
-        radio_y = above_canvas_y + tr_h + gap  # below the button in top-left coords
+        radio_y = below_canvas_y - radio_h - gap  # above the button
         self.ax_dpi_radio = self._axes(bb_x, radio_y, btn_w, radio_h)
         self.ax_dpi_radio.set_facecolor('#FFFFFF')
         self.ax_dpi_radio.set_zorder(1000)
@@ -2622,17 +2638,17 @@ class HdrAoiEditor:
         self._dpi_radio.on_clicked(self._on_dpi_radio_select)
         self._toggle_dpi_dropdown(False)
 
-        # 2. Change AOI Level — next to PDF Res, above canvas
+        # 2. Change AOI Level — below canvas, second row (stacked under PDF Res)
+        below_row2_y = below_canvas_y + tr_h + gap
         self.btn_aoi_level = self._make_button(
-            bb_x + btn_step, above_canvas_y, btn_w, tr_h,
+            bb_x, below_row2_y, btn_w, tr_h,
             'Change AOI Level: -/-', self._on_aoi_level_cycle)
         self.btn_aoi_level.ax.set_visible(self._iesve_room_data_path is not None)
         self._update_aoi_level_label()
 
         # 3. Reset Level Alignment (conditional — only visible when Resize mode ON)
-        reset_x = bb_x + 2 * btn_step
         self.btn_overlay_reset = self._make_button(
-            reset_x, above_canvas_y, btn_w, tr_h,
+            bb_x + btn_step, below_canvas_y, btn_w, tr_h,
             'Reset Level Alignment', self._on_overlay_reset_click,
             color='#FFEBEE', hovercolor='#FFCDD2')
         self.btn_overlay_reset.ax.set_visible(False)
@@ -2700,6 +2716,13 @@ class HdrAoiEditor:
                 self._overlay_page_idx = page_idx
                 self._rasterize_overlay_page()
             self._update_overlay_page_label()
+        # Sync AOI level index and label to the FFL assigned to this pic
+        ffl_groups = self._aoi_ffl_groups()
+        if ffl_groups:
+            assigned_ffl = self._aoi_level_map.get(self.current_hdr_name)
+            if assigned_ffl is not None and assigned_ffl in ffl_groups:
+                self._aoi_level_idx = ffl_groups.index(assigned_ffl)
+        self._update_aoi_level_label()
         self._update_hdr_list()
         self._update_room_list()
         self._render_section(reset_view=True, force_full=True)
@@ -4147,9 +4170,9 @@ class HdrAoiEditor:
                     self._debounce_blit_save()
             else:
                 if event.key == 'up':
-                    self._on_next_hdr_click(None)
-                elif event.key == 'down':
                     self._on_prev_hdr_click(None)
+                elif event.key == 'down':
+                    self._on_next_hdr_click(None)
                 # left/right do nothing in normal mode as requested
         elif event.key == 't':
             self._on_image_toggle_click(None)
@@ -4422,7 +4445,7 @@ class HdrAoiEditor:
         n = len(self.multi_selected_room_idxs)
         self._update_status(f"Multi-select: {n} room(s) on current HDR", 'blue')
         self._update_room_list()
-        self.fig.canvas.draw_idle()
+        self._render_section(force_full=True)
 
     # === DF STAMPS =============================================================
 
@@ -4974,13 +4997,13 @@ class HdrAoiEditor:
         btn_w = 0.115
         gap = self._GAP
         btn_step = btn_w + gap
-        above_y = self._CANVAS_Y - tr_h  # flush above canvas top edge (top-left origin)
-        above_mpl_y = 1.0 - above_y - tr_h   # convert to matplotlib bottom-left
-        self.btn_overlay_dpi.ax.set_position((cx, above_mpl_y, btn_w, tr_h))
-        self.btn_aoi_level.ax.set_position((cx + btn_step, above_mpl_y, btn_w, tr_h))
+        below_y = self._CANVAS_Y + self._CANVAS_H + gap  # below canvas (top-left origin)
+        below_mpl_y = 1.0 - below_y - tr_h   # convert to matplotlib bottom-left
+        self.btn_overlay_dpi.ax.set_position((cx, below_mpl_y, btn_w, tr_h))
+        below_row2_mpl_y = below_mpl_y - tr_h - gap
+        self.btn_aoi_level.ax.set_position((cx, below_row2_mpl_y, btn_w, tr_h))
         # btn_edit_mode and btn_ortho are in the left sidebar — no repositioning needed
-        reset_x = cx + 2 * btn_step
-        self.btn_overlay_reset.ax.set_position((reset_x, above_mpl_y, btn_w, tr_h))
+        self.btn_overlay_reset.ax.set_position((cx + btn_step, below_mpl_y, btn_w, tr_h))
 
         # Reposition progress bar to match canvas width
         prog_y = bb_y + tr_h + gap * 0.5
@@ -5090,6 +5113,9 @@ class HdrAoiEditor:
                     w.config(state="normal" if not is_iesve else "disabled")
                 except tk.TclError:
                     pass
+            lbl_room_csv.config(
+                text="IESVE room data CSV:" if is_iesve else "Room boundaries CSV (optional):"
+            )
 
         def _load_into_form(name):
             cfg = load_project_toml(name)
@@ -5141,7 +5167,13 @@ class HdrAoiEditor:
                     csv_val = _rel(csvs[0])
             sv_iesve_csv.set(csv_val)
 
-            sv_image_dir.set(_resolve(toml_paths.get("image_dir", "")))
+            img_val = _resolve(toml_paths.get("image_dir", ""))
+            if not img_val and proj_paths.pic_dir.exists():
+                pics = sorted([*proj_paths.pic_dir.glob("*.pic"),
+                               *proj_paths.pic_dir.glob("*.hdr")])
+                if pics:
+                    img_val = "; ".join(_rel(f) for f in pics)
+            sv_image_dir.set(img_val)
 
             # Octree and render params — resolve from toml or auto-discover in inputs/
             oct_val = _resolve(toml_paths.get("octree", ""))
@@ -5295,13 +5327,16 @@ class HdrAoiEditor:
                                                    filetypes=[("AOI files", "*.aoi"), ("All files", "*.*")])
                   ).grid(row=3, column=2, padx=4, pady=2)
 
-        # Row 4: Room boundaries CSV — always available (both modes)
-        tk.Label(frm, text="Room boundaries CSV (optional):").grid(row=4, column=0, sticky="w", pady=2)
-        tk.Entry(frm, textvariable=sv_iesve_csv).grid(row=4, column=1, sticky="ew", pady=2)
-        tk.Button(frm, text="Browse…",
-                  command=lambda: _browse(sv_iesve_csv, "Select room boundaries CSV", dlg,
-                                          filetypes=[("CSV", "*.csv")])
-                  ).grid(row=4, column=2, padx=4, pady=2)
+        # Row 4: IESVE room data CSV — IESVE mode only
+        lbl_room_csv = tk.Label(frm, text="Room boundaries CSV (optional):")
+        ent_room_csv = tk.Entry(frm, textvariable=sv_iesve_csv)
+        btn_room_csv = tk.Button(frm, text="Browse…",
+                                 command=lambda: _browse(sv_iesve_csv, "Select IESVE room data CSV", dlg,
+                                                         filetypes=[("CSV", "*.csv")]))
+        lbl_room_csv.grid(row=4, column=0, sticky="w", pady=2)
+        ent_room_csv.grid(row=4, column=1, sticky="ew", pady=2)
+        btn_room_csv.grid(row=4, column=2, padx=4, pady=2)
+        _iesve_widgets.extend([lbl_room_csv, ent_room_csv, btn_room_csv])
 
         # Row 5: Octree file — Archilume only
         lbl_oct = tk.Label(frm, text="Octree .oct (Archilume):")
@@ -5326,12 +5361,12 @@ class HdrAoiEditor:
         _archilume_widgets.extend([lbl_oct, ent_oct, btn_oct,
                                    lbl_rdp, ent_rdp, btn_rdp])
 
-        # Row 7: Image dir — IESVE only (Archilume uses outputs/image/ automatically)
-        lbl_imgdir = tk.Label(frm, text="Image dir (IESVE only):")
+        # Row 7: Pic files — IESVE only (Archilume uses outputs/image/ automatically)
+        lbl_imgdir = tk.Label(frm, text="Pic files (IESVE only):")
         ent_imgdir = tk.Entry(frm, textvariable=sv_image_dir)
         btn_imgdir = tk.Button(frm, text="Browse…",
-                               command=lambda: _browse(sv_image_dir, "Select image dir", dlg,
-                                                       directory=True))
+                               command=lambda: _browse_multiple(sv_image_dir, "Select .pic files", dlg,
+                                                                filetypes=[("Pic files", "*.pic"), ("HDR files", "*.hdr"), ("All files", "*.*")]))
         lbl_imgdir.grid(row=7, column=0, sticky="w", pady=2)
         ent_imgdir.grid(row=7, column=1, sticky="ew", pady=2)
         btn_imgdir.grid(row=7, column=2, padx=4, pady=2)
@@ -5372,9 +5407,9 @@ class HdrAoiEditor:
             pdf        = sv_pdf.get().strip() or None
             aoi_files  = sv_aoi_files.get().strip() or None
             room_csv   = sv_iesve_csv.get().strip() or None
-            octree     = sv_octree.get().strip() or None if mode == "hdr" else None
-            rdp        = sv_rdp.get().strip() or None if mode == "hdr" else None
-            image_dir  = sv_image_dir.get().strip() or None if mode == "iesve" else None
+            octree     = (sv_octree.get().strip() or None) if mode == "hdr" else None
+            rdp        = (sv_rdp.get().strip() or None) if mode == "hdr" else None
+            image_dir  = (sv_image_dir.get().strip() or None) if mode == "iesve" else None
 
             # Scaffold the full project directory structure
             paths = config.get_project_paths(name)
@@ -5422,7 +5457,17 @@ class HdrAoiEditor:
 
             rel_image_dir = ""
             if image_dir:
-                rel_image_dir = image_dir
+                paths.pic_dir.mkdir(parents=True, exist_ok=True)
+                for pic_str in image_dir.split("; "):
+                    pic_str = pic_str.strip()
+                    if not pic_str:
+                        continue
+                    src = Path(pic_str)
+                    if src.is_file():
+                        dest = paths.pic_dir / src.name
+                        if src.resolve() != dest.resolve():
+                            shutil.copy2(src, dest)
+                # images now live in inputs/pic/ — no custom image_dir needed
 
             cfg = {
                 "project": {"name": name, "mode": mode},
@@ -5446,6 +5491,9 @@ class HdrAoiEditor:
         # Pre-fill from current project if one is loaded
         if self.project:
             _load_into_form(self.project)
+
+        # Initialise field visibility/labels for the default mode
+        _toggle_mode_fields()
 
     def _reload_project(self, name: str, mode: str, pdf_path, image_dir, iesve_room_data,
                         coordinate_map=None):
@@ -5518,6 +5566,7 @@ class HdrAoiEditor:
         self._room_df_results       = {}
         self._overlay_transforms    = {}
         self._aoi_level_idx         = 0
+        self._aoi_level_map         = {}
 
         # Update toolbar button (icon-only, no text)
         self.btn_project.label.set_text('')
@@ -5599,37 +5648,53 @@ class HdrAoiEditor:
         return ffls
 
     def _reassign_aoi_level(self):
-        """Re-project rooms in the current FFL group using the current .pic's VIEW header
-        and assign them to the current HDR file."""
+        """Re-project rooms in the selected FFL group onto the current .pic and
+        record the mapping.  Room ``hdr_file`` values are left untouched for
+        other pics — visibility is controlled via ``_aoi_level_map`` instead."""
         ffl_groups = self._aoi_ffl_groups()
         if not ffl_groups or not self.hdr_files:
             return
         target_ffl = ffl_groups[self._aoi_level_idx]
         entry      = self.hdr_files[self.current_hdr_idx]
+        hdr_name   = entry['name']
         view_params = self._read_view_params(entry['hdr_path'])
         if view_params is None:
             self._update_status(f"No VIEW params in {entry['name']}", 'orange')
             return
         vp_x, vp_y, vh_val, vv_val, img_w, img_h = view_params
+
+        # Record which FFL this pic shows
+        self._aoi_level_map[hdr_name] = target_ffl
+
+        # Re-project matching rooms and assign them to this pic
         for room in self.rooms:
-            if room.get('ffl') == target_ffl and 'world_vertices' in room:
+            if 'ffl' not in room or 'world_vertices' not in room:
+                continue
+            if room['ffl'] == target_ffl:
                 room['vertices'] = self._world_to_pixels(
                     room['world_vertices'], vp_x, vp_y, vh_val, vv_val, img_w, img_h)
-                room['hdr_file'] = entry['name']
+                room['hdr_file'] = hdr_name
                 room.pop('df_cache', None)
         self._update_status(
-            f"Assigned FFL {target_ffl} m rooms → {entry['name']}", 'green')
+            f"Assigned FFL {target_ffl} m rooms → {hdr_name}", 'green')
 
     def _update_aoi_level_label(self):
-        """Update the AOI level cycle button label."""
+        """Update the AOI level cycle button label to reflect the FFL assigned
+        to the currently displayed pic."""
         if not hasattr(self, 'btn_aoi_level'):
             return
         ffl_groups = self._aoi_ffl_groups()
         if not ffl_groups:
             self.btn_aoi_level.label.set_text('Change AOI Level: -/-')
         else:
-            n   = len(ffl_groups)
-            idx = self._aoi_level_idx % n
+            n = len(ffl_groups)
+            # Show the FFL currently mapped to this pic (if any)
+            hdr_name = self.current_hdr_name
+            assigned_ffl = self._aoi_level_map.get(hdr_name)
+            if assigned_ffl is not None and assigned_ffl in ffl_groups:
+                idx = ffl_groups.index(assigned_ffl)
+            else:
+                idx = self._aoi_level_idx % n
             ffl = ffl_groups[idx]
             self.btn_aoi_level.label.set_text(f'Change AOI Level: {idx + 1}/{n} ({ffl} m)')
         self.fig.canvas.draw_idle()
@@ -5668,9 +5733,8 @@ class HdrAoiEditor:
         if self._overlay_handle is None:
             return
 
-        # Update the artist's extent from stored transforms
-        hdr_name = self.current_hdr_name
-        tf = self._overlay_transforms.get(hdr_name, {})
+        # Use the same effective-transform lookup as _render_overlay
+        tf = self._get_effective_overlay_transform()
         sx = tf.get('scale_x', 1.0)
         sy = tf.get('scale_y', 1.0)
         rot = tf.get('rotation_90', 0) % 4
@@ -6971,6 +7035,10 @@ class HdrAoiEditor:
                 self.name_preview_text.set_text("")
             self.fig.canvas.draw_idle()
 
+    def _invalidate_tree_cache(self):
+        """Mark the cached layer tree as stale so it is rebuilt on next update."""
+        self._tree_cache_valid = False
+
     def _update_room_list(self):
         """Refresh the hierarchical tree view in the right sidebar."""
         self.ax_list.clear()
@@ -6985,7 +7053,14 @@ class HdrAoiEditor:
         self._tree_collapse_all_box = None
         self._tree_expand_all_box = None
 
-        self._tree_flat_items = self._build_layer_tree()
+        # Rebuild tree only when structure changes (rooms, HDR list, collapse state)
+        tree_key = (len(self.rooms), len(self.hdr_files), self.current_hdr_idx,
+                    frozenset(self._tree_collapsed),
+                    tuple(r.get('hdr_file', '') for r in self.rooms))
+        if not getattr(self, '_tree_cache_valid', False) or getattr(self, '_tree_cache_key', None) != tree_key:
+            self._tree_flat_items = self._build_layer_tree()
+            self._tree_cache_valid = True
+            self._tree_cache_key = tree_key
 
         if not self._tree_flat_items:
             self.ax_list.set_ylim(0, 1)
@@ -7168,6 +7243,14 @@ class HdrAoiEditor:
         """Render the hierarchical tree with icons, connectors, chevrons, and gear buttons."""
         from matplotlib.patches import PathPatch, Rectangle
 
+        # -- Pre-compute aspect ratio once for all icons --
+        fig = self.ax_list.get_figure()
+        bbox = self.ax_list.get_position()
+        fig_w, fig_h = fig.get_size_inches()
+        ax_w_in = bbox.width * fig_w
+        ax_h_in = bbox.height * fig_h
+        self._tree_aspect = ax_h_in / ax_w_in if ax_w_in > 0 else 1.0
+
         # -- Collapse All / Expand All SVG icons (top-right corner) --
         header_h = 0.025
         icon_btn_size = 0.022
@@ -7228,14 +7311,14 @@ class HdrAoiEditor:
             y_cursor = row_bot
 
         # ================================================================
-        # Pass 2: draw continuous vertical connector lines
+        # Pass 2: collect connector line segments, then draw in two batch calls
         # ================================================================
-        # For each indent level, find contiguous runs of siblings and draw
-        # a single vertical line spanning from the first to the last sibling.
-        # Then draw a horizontal tick from the vertical line to each row.
         line_color = '#90A4AE'
         line_lw = 0.7
         n_vis = len(visible_slice)
+        vert_xs, vert_ys = [], []   # vertical segments (NaN-separated)
+        tick_xs, tick_ys = [], []   # horizontal ticks  (NaN-separated)
+        _nan = float('nan')
         for row_i in range(n_vis):
             item = visible_slice[row_i]
             indent = item['indent']
@@ -7244,7 +7327,6 @@ class HdrAoiEditor:
             line_x = self._TREE_INDENT_X.get(indent, 0.04 + indent * 0.04) - 0.02
             row_top, row_bot, row_mid, row_h = row_geom[row_i]
 
-            # Find connection point: previous sibling's mid, or parent's bottom
             prev_at_same = None
             parent_k = None
             for k in range(row_i - 1, -1, -1):
@@ -7256,23 +7338,26 @@ class HdrAoiEditor:
                     prev_at_same = k
                     break
             if prev_at_same is not None:
-                seg_top = row_geom[prev_at_same][2]  # previous sibling mid
+                seg_top = row_geom[prev_at_same][2]
             elif parent_k is not None:
-                seg_top = row_geom[parent_k][1]  # parent row_bot (below text)
+                seg_top = row_geom[parent_k][1]
             else:
                 seg_top = row_top
 
-            self.ax_list.plot(
-                [line_x, line_x], [row_mid, seg_top],
-                color=line_color, linewidth=line_lw, solid_capstyle='round',
-                transform=self.ax_list.transAxes, clip_on=True, zorder=1)
-
-            # Horizontal tick
+            vert_xs.extend([line_x, line_x, _nan])
+            vert_ys.extend([row_mid, seg_top, _nan])
             tick_end = line_x + 0.02
-            self.ax_list.plot(
-                [line_x, tick_end], [row_mid, row_mid],
-                color=line_color, linewidth=line_lw, solid_capstyle='round',
-                transform=self.ax_list.transAxes, clip_on=True, zorder=1)
+            tick_xs.extend([line_x, tick_end, _nan])
+            tick_ys.extend([row_mid, row_mid, _nan])
+
+        if vert_xs:
+            self.ax_list.plot(vert_xs, vert_ys, color=line_color, linewidth=line_lw,
+                              solid_capstyle='round', transform=self.ax_list.transAxes,
+                              clip_on=True, zorder=1)
+        if tick_xs:
+            self.ax_list.plot(tick_xs, tick_ys, color=line_color, linewidth=line_lw,
+                              solid_capstyle='round', transform=self.ax_list.transAxes,
+                              clip_on=True, zorder=1)
 
         # ================================================================
         # Pass 3: draw row content (highlights, chevrons, icons, text, gear)
@@ -7305,13 +7390,7 @@ class HdrAoiEditor:
             if icon_key and icon_key in self._TREE_ICON_MAP:
                 attr, vb, default_color = self._TREE_ICON_MAP[icon_key]
                 svg_d = getattr(self, attr)
-                # Compute aspect-corrected icon width in axes-X coords
-                fig = self.ax_list.get_figure()
-                bbox = self.ax_list.get_position()
-                fig_w, fig_h = fig.get_size_inches()
-                ax_w_in = bbox.width * fig_w
-                ax_h_in = bbox.height * fig_h
-                aspect = ax_h_in / ax_w_in if ax_w_in > 0 else 1.0
+                aspect = self._tree_aspect
                 icon_width_x = icon_size * aspect  # stretched width in axes X
                 icon_cx = indent_x + icon_width_x * 0.5
                 # Background rectangle to mask connector lines behind the icon
@@ -7364,13 +7443,6 @@ class HdrAoiEditor:
                               transform=self.ax_list.transAxes, clip_on=True,
                               zorder=6)
 
-            # -- Right-edge opaque mask (hides text that overflows past gear area) --
-            mask_x = gear_x - 0.01  # slight bleed to the left for clean fade
-            self.ax_list.add_patch(Rectangle(
-                (mask_x, row_bot), 1.0 - mask_x, row_h,
-                facecolor=self._PANE_BG, edgecolor='none',
-                transform=self.ax_list.transAxes, clip_on=True, zorder=7))
-
             # -- Gear icon (right side) — only on layer rows, not rooms or HDR --
             show_gear = itype in ('tiff', 'pdf', 'room_group')
             if show_gear:
@@ -7385,15 +7457,25 @@ class HdrAoiEditor:
             # -- Hit boxes --
             self._tree_hit_boxes.append((row_bot, row_top, cx, gear_x, item))
 
-        # Scrollbar
+        # -- Single right-edge mask covering the full scrollable area --
+        mask_x = gear_x - 0.01
+        self.ax_list.add_patch(Rectangle(
+            (mask_x, 0.0), 1.0 - mask_x, 1.0 - pad_top,
+            facecolor=self._PANE_BG, edgecolor='none',
+            transform=self.ax_list.transAxes, clip_on=True, zorder=7))
+
+        # Scrollbar — to the right of gear icons, above mask, below header
         if total > visible_count:
+            sb_w = 0.02
+            sb_x = 1.0 - sb_w      # flush against right edge of pane
+            sb_top = 1.0 - pad_top  # start below header row
             pct = self.room_list_scroll_offset / max(1, max_offset)
-            ind_h = visible_count / total
-            ind_y = (1.0 - ind_h) * (1.0 - pct)
+            ind_h = (visible_count / total) * sb_top
+            ind_y = pad_bot + (sb_top - pad_bot - ind_h) * (1.0 - pct)
             self.ax_list.add_patch(FancyBboxPatch(
-                (0.95, ind_y), 0.04, ind_h, boxstyle='round,pad=0.005',
+                (sb_x, ind_y), sb_w, ind_h, boxstyle='round,pad=0.003',
                 facecolor='#AAAAAA', edgecolor='none',
-                transform=self.ax_list.transAxes, clip_on=True))
+                transform=self.ax_list.transAxes, clip_on=True, zorder=10))
 
     def _tree_collapse_all(self):
         """Collapse all collapsible nodes in the tree."""
@@ -7401,11 +7483,13 @@ class HdrAoiEditor:
             nk = item.get('node_key')
             if nk is not None and item.get('has_children'):
                 self._tree_collapsed.add(nk)
+        self._invalidate_tree_cache()
         self._update_room_list()
 
     def _tree_expand_all(self):
         """Expand all collapsed nodes in the tree."""
         self._tree_collapsed.clear()
+        self._invalidate_tree_cache()
         self._update_room_list()
 
     def _on_gear_click(self, item):
@@ -7444,6 +7528,7 @@ class HdrAoiEditor:
                         self._tree_collapsed.discard(node_key)
                     else:
                         self._tree_collapsed.add(node_key)
+                    self._invalidate_tree_cache()
                     self._update_room_list()
                 return
 
@@ -7539,6 +7624,7 @@ class HdrAoiEditor:
             ),
             'overlay_page_idx':    self._overlay_page_idx,
             'aoi_level_idx':       self._aoi_level_idx,
+            'aoi_level_map':       self._aoi_level_map,
             'overlay_visible':     self._overlay_visible,
             'overlay_transforms':  self._overlay_transforms,
             'overlay_alpha':       self._overlay_alpha,
@@ -7636,6 +7722,7 @@ class HdrAoiEditor:
                 self._overlay_page_idx = data.get('overlay_page_idx', 0)
                 self._overlay_needs_rasterize = True
             self._aoi_level_idx = data.get('aoi_level_idx', 0)
+            self._aoi_level_map = data.get('aoi_level_map', {})
             # If iesve_room_data is set but session has no rooms or rooms lack 'ffl' 
             # keys, the session predates IESVE AOI support or was saved before rooms
             # were loaded — (re-)load from IESVE AOI files.
@@ -7647,6 +7734,8 @@ class HdrAoiEditor:
                 n = self._load_from_iesve_aoi()
                 if n == 0:
                     return
+                self._aoi_level_idx = 0
+                self._reassign_aoi_level()
                 self._save_session()
             # df_thresholds from old sessions are ignored — now fixed per room type
             source = "session"
@@ -7669,6 +7758,9 @@ class HdrAoiEditor:
                 n = self._load_from_iesve_aoi()
                 if n == 0:
                     return
+                # Only show first FFL group on the current .pic; hide the rest
+                self._aoi_level_idx = 0
+                self._reassign_aoi_level()
                 source = "IESVE AOI files"
                 self._save_session()  # persist so conversion never runs again
             else:
