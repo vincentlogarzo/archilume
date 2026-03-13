@@ -870,20 +870,21 @@ class GCPVMManager:
             FAIL_MARKER = "/tmp/archilume_setup_failed"
             WRAPPER = "/tmp/archilume_run_setup.sh"
 
-            # Write the wrapper script onto the VM (avoids all quoting issues)
-            wrapper_contents = (
-                "#!/bin/bash\n"
-                f"rm -f {DONE_MARKER} {FAIL_MARKER}\n"
-                "cd /mnt/disks/localssd/workspace\n"
-                "git clone https://github.com/vincentlogarzo/archilume.git\n"
-                "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace\n"
-                f"bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh > {SETUP_LOG} 2>&1\n"
-                f"if [ $? -eq 0 ]; then touch {DONE_MARKER}; else touch {FAIL_MARKER}; fi\n"
-            )
+            # Write the wrapper script onto the VM using printf (avoids heredoc/quoting issues on Windows)
+            lines = [
+                "#!/bin/bash",
+                f"rm -f {DONE_MARKER} {FAIL_MARKER}",
+                "cd /mnt/disks/localssd/workspace",
+                "git clone https://github.com/vincentlogarzo/archilume.git",
+                "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace",
+                f"bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh > {SETUP_LOG} 2>&1",
+                f"if [ $? -eq 0 ]; then touch {DONE_MARKER}; else touch {FAIL_MARKER}; fi",
+            ]
+            printf_arg = "\\n".join(lines) + "\\n"
             self._run_step(
                 "[6/6] Writing setup wrapper script...",
                 vm_name,
-                f"cat > {WRAPPER} << 'ENDOFSCRIPT'\n{wrapper_contents}ENDOFSCRIPT\nchmod +x {WRAPPER}"
+                f"printf '{printf_arg}' > {WRAPPER} && chmod +x {WRAPPER}"
             )
             self._run_step(
                 "      Launching setup in background (may take 10-20 min)...",
