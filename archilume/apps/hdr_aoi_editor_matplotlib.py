@@ -250,8 +250,17 @@ class HdrAoiEditor:
         else:
             self._set_blank_state()
 
-        # AOI dir: always the project_aoi_dir (inputs/aoi/) when project is set
-        self.aoi_dir                                    = self.project_aoi_dir
+        # AOI dir: Archilume uses outputs/aoi/ (simulation results),
+        # IESVE uses inputs/aoi/ (user-provided files)
+        if project:
+            toml_cfg = load_project_toml(project)
+            mode = toml_cfg.get("project", {}).get("mode", "archilume")
+            if mode in ("archilume", "hdr"):
+                self.aoi_dir = config.get_project_paths(project).aoi_dir
+            else:
+                self.aoi_dir = self.project_aoi_dir
+        else:
+            self.aoi_dir = self.project_aoi_dir
 
         # Session and CSV paths live in the protected project input aoi directory
         self.session_path                               = session_path or (self.project_aoi_dir / "aoi_session.json")
@@ -1058,6 +1067,18 @@ class HdrAoiEditor:
                       color='#404040', **kwargs)
         return ax, txt
 
+    @staticmethod
+    def _room_matches_hdr(room: dict, hdr_name: str) -> bool:
+        """Return True if *room* belongs to the image named *hdr_name*.
+
+        Rooms with an empty/missing ``hdr_file`` are treated as matching any
+        HDR — they were created before explicit HDR binding was in place.
+        """
+        room_hdr = room.get('hdr_file', '')
+        if not room_hdr:
+            return True
+        return room_hdr == hdr_name
+
     def _is_room_on_current_hdr(self, room: dict) -> bool:
         """Check whether a room belongs to the currently displayed HDR file.
 
@@ -1065,11 +1086,14 @@ class HdrAoiEditor:
         ``_aoi_level_map`` which records which FFL group is assigned to each pic.
         A room is visible only when its FFL matches the FFL assigned to the
         current pic.  For non-IESVE rooms the original hdr_file check applies.
+        Returns False when no image files are loaded.
         """
+        if not self.hdr_files:
+            return False
         hdr_name = self.current_hdr_name
         if 'ffl' in room and hdr_name in self._aoi_level_map:
             return room['ffl'] == self._aoi_level_map[hdr_name]
-        return room.get('hdr_file') == hdr_name
+        return self._room_matches_hdr(room, hdr_name)
 
     def _reset_hover_state(self):
         """Clear all hover and drag tracking variables."""
@@ -2754,7 +2778,7 @@ class HdrAoiEditor:
         """Return names of apartment-level rooms (no parent) for the given HDR file."""
         return [
             room['name'] for room in self.rooms
-            if room.get('parent') is None and room.get('hdr_file') == hdr_name
+            if room.get('parent') is None and self._room_matches_hdr(room, hdr_name)
         ]
 
     def _get_children(self, parent_name: str) -> List[dict]:
@@ -3101,7 +3125,7 @@ class HdrAoiEditor:
             return
         current_hdr = self.current_hdr_name
         rooms_on_hdr = [(i, r) for i, r in enumerate(self.rooms)
-                        if r.get('hdr_file') == current_hdr and len(r.get('vertices', [])) >= 3]
+                        if self._room_matches_hdr(r, current_hdr) and len(r.get('vertices', [])) >= 3]
         log.debug("_compute_all_room_df_results: HDR='%s', %d rooms on this HDR, df_image=%s",
                   current_hdr, len(rooms_on_hdr), self._df_image.shape)
         any_new = False
@@ -5483,8 +5507,21 @@ class HdrAoiEditor:
             dlg.destroy()
             self._reload_project(name, mode, rel_pdf, rel_image_dir, rel_room_csv)
 
+        def _reveal_in_explorer():
+            name = sv_name.get().strip()
+            if not name:
+                messagebox.showinfo("No project", "Enter or select a project first.", parent=dlg)
+                return
+            project_dir = config.PROJECTS_DIR / name
+            if not project_dir.exists():
+                messagebox.showinfo("Not found", f"Project directory does not exist yet:\n{project_dir}", parent=dlg)
+                return
+            os.startfile(str(project_dir))
+
         tk.Button(frm_btns, text="Launch / Apply", width=16,
                   command=_apply, bg="#BBDEFB").pack(side="left", padx=6)
+        tk.Button(frm_btns, text="Reveal in Explorer", width=16,
+                  command=_reveal_in_explorer).pack(side="left", padx=6)
         tk.Button(frm_btns, text="Cancel", width=10,
                   command=dlg.destroy).pack(side="left", padx=6)
 
@@ -5511,7 +5548,11 @@ class HdrAoiEditor:
         self.project_aoi_dir    = paths.aoi_inputs_dir
         self.archive_dir        = paths.archive_dir
         self.wpd_dir            = paths.wpd_dir
-        self.aoi_dir            = paths.aoi_inputs_dir
+        # AOI dir: outputs/aoi/ for Archilume, inputs/aoi/ for IESVE
+        if mode == "hdr":
+            self.aoi_dir = paths.aoi_dir
+        else:
+            self.aoi_dir = paths.aoi_inputs_dir
         self.session_path       = paths.aoi_inputs_dir / "aoi_session.json"
         self.csv_path           = paths.aoi_inputs_dir / "aoi_boundaries.csv"
 
@@ -7153,7 +7194,7 @@ class HdrAoiEditor:
 
             # 3. Room Boundaries group + room sub-tree
             hdr_rooms = [(i, r) for i, r in enumerate(self.rooms)
-                         if r.get('hdr_file') == hdr_name]
+                         if self._is_room_on_current_hdr(r)]
             room_group_key = ('room_group', hdr_name)
             apartments = [(i, r) for i, r in hdr_rooms if r.get('parent') is None]
             children_by_parent = {}
@@ -8327,7 +8368,7 @@ class HdrAoiEditor:
                  r.get('df_cache', {}).get('display_lines', []),
                  r.get('room_type', '') == 'CIRC')
                 for r in self.rooms
-                if r.get('hdr_file') == hdr_name
+                if self._room_matches_hdr(r, hdr_name)
                 and len(r.get('vertices', [])) >= 3
             ]
             if not rooms_on_hdr:
@@ -8527,7 +8568,7 @@ class HdrAoiEditor:
                  r.get('df_cache', {}).get('display_lines', []),
                  r.get('room_type', '') == 'CIRC')
                 for r in self.rooms
-                if r.get('hdr_file') == hdr_name
+                if self._room_matches_hdr(r, hdr_name)
                 and len(r.get('vertices', [])) >= 3
             ]
             if not rooms_on_hdr:
