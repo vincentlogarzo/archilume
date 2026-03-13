@@ -2016,7 +2016,7 @@ class HdrAoiEditor:
                                             '(None)', self._on_parent_cycle, fontsize=8)
         self.btn_parent.ax.set_visible(False)
 
-        _, self.name_label_text = self._make_label(name_x, row_y, field_w, lbl_h, "Apartment Name:")
+        _, self.name_label_text = self._make_label(name_x, row_y, field_w, lbl_h, "Room Name:")
         ax_name = self._axes(name_x, row_y + lbl_h + gap, field_w, inp_h)
         self.name_textbox = TextBox(ax_name, '', initial='')
         self.name_textbox.on_text_change(self._on_name_changed)
@@ -2729,7 +2729,7 @@ class HdrAoiEditor:
         self._update_image_toggle_label()
         self.selected_parent = None
         self.btn_parent.label.set_text('(None)')
-        self.name_label_text.set_text("Apartment Name:")
+        self.name_label_text.set_text("Room Name:")
         self._update_status(f"HDR: {self.current_hdr_name}", 'green')
         # Restore per-HDR overlay page assignment
         if self._overlay_pdf_path is not None and self._overlay_pdf_info is not None:
@@ -2849,8 +2849,8 @@ class HdrAoiEditor:
         self._update_parent_options()
         if not self.parent_options:
             self.selected_parent = None
-            self.btn_parent.label.set_text('(None - New Apartment)')
-            self.name_label_text.set_text("Apartment Name (Space ID):")
+            self.btn_parent.label.set_text('(None - New Room)')
+            self.name_label_text.set_text("Room Name (Space ID):")
         else:
             options = [None] + self.parent_options
             try:
@@ -2860,8 +2860,8 @@ class HdrAoiEditor:
                 next_idx = 0
             self.selected_parent = options[next_idx]
             if self.selected_parent is None:
-                self.btn_parent.label.set_text('(None - New Apartment)')
-                self.name_label_text.set_text("Apartment Name (Space ID):")
+                self.btn_parent.label.set_text('(None - New Room)')
+                self.name_label_text.set_text("Room Name (Space ID):")
             else:
                 self.btn_parent.label.set_text(self.selected_parent)
                 self.name_label_text.set_text("Room Name:")
@@ -4426,7 +4426,7 @@ class HdrAoiEditor:
         self.room_type = room.get('room_type')
         self._update_room_type_buttons()
 
-        # Auto-populate parent apartment selector
+        # Auto-populate parent Room selector
         parent = room.get('parent')
         if parent:
             # Sub-room: show its parent
@@ -4434,7 +4434,7 @@ class HdrAoiEditor:
             self.btn_parent.label.set_text(parent)
             self.name_label_text.set_text("Room Name:")
         else:
-            # This IS a parent apartment — set it as the active parent
+            # This IS a parent Room — set it as the active parent
             self.selected_parent = room.get('name', '')
             self.btn_parent.label.set_text(self.selected_parent)
             self.name_label_text.set_text("Room Name:")
@@ -8280,6 +8280,7 @@ class HdrAoiEditor:
         font_sm = _load_pil_font(font_size_small, bold=False)
 
         red = (255, 0, 0)
+        white = (255, 255, 255)
         black = (0, 0, 0)
         outline_w = max(1, font_size // 12)
 
@@ -8288,7 +8289,7 @@ class HdrAoiEditor:
                 for oy in range(-outline_w, outline_w + 1):
                     if ox or oy:
                         draw.text((x + ox, y + oy), text, fill=black, font=fnt)
-            draw.text((x, y), text, fill=red, font=fnt)
+            draw.text((x, y), text, fill=white, font=fnt)
 
         def _dashed_polygon(pts_closed, fill, dash=8, gap=6):
             """Draw a dashed polyline along pts_closed using alternating draw/skip segments."""
@@ -8475,6 +8476,7 @@ class HdrAoiEditor:
         font_sm = _load_pil_font(font_size_small, bold=False)
 
         red = (255, 0, 0)
+        white = (255, 255, 255)
         black = (0, 0, 0)
         outline_w = max(1, font_size // 10)
         line_w = max(2, int(round(font_size // 7)))
@@ -8487,7 +8489,7 @@ class HdrAoiEditor:
                 for ddy in range(-outline_w, outline_w + 1):
                     if ddx or ddy:
                         draw.text((x + ddx, y + ddy), text, fill=black, font=fnt)
-            draw.text((x, y), text, fill=red, font=fnt)
+            draw.text((x, y), text, fill=white, font=fnt)
 
         def _dashed_polygon(pts_closed, fill, dash=8, gap=6):
             for i in range(len(pts_closed) - 1):

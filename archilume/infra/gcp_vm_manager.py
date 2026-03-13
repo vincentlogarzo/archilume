@@ -862,7 +862,7 @@ class GCPVMManager:
             )
 
             self._run_step(
-                "[6/6] Cloning repository and running setup (this may take 10+ minutes)...",
+                "[6/6] Cloning repository and running setup (this may take a few minutes)...",
                 vm_name,
                 "cd /mnt/disks/localssd/workspace && "
                 "git clone https://github.com/vincentlogarzo/archilume.git && "

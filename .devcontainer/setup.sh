@@ -41,7 +41,7 @@ echo "📂 Workspace path resolved to: $WORKSPACE_PATH"
 
 # Fix ownership of workspace directory (mounted volumes may be owned by a different UID)
 echo "🔑 Fixing workspace ownership..."
-sudo chown -R vscode:vscode "$WORKSPACE_PATH"
+sudo chown -R "$(id -u):$(id -g)" "$WORKSPACE_PATH"
 
 EXTRACT_DIR=$(mktemp -d)
 cd "$EXTRACT_DIR"
