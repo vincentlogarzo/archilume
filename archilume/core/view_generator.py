@@ -21,7 +21,6 @@ from typing import Any
 
 # Third-party imports
 import pandas as pd
-import numpy as np
 
 # CSV parsing constants
 REQUIRED_COORDINATE_COLUMNS = ["x_coords", "y_coords", "z_coords"]
@@ -339,25 +338,46 @@ class ViewGenerator:
             logging.error(f"Error reading the CSV: {e}")
             return
 
-        # Load coordinate map if provided
-        coord_map_df = None
-        world_coords = None
+        # Load coordinate map parameters if provided
+        coord_map_params = None
         if coordinate_map_path is not None and Path(coordinate_map_path).exists():
             try:
                 logging.info(f"Loading coordinate map from: {coordinate_map_path}")
-                coord_map_df = pd.read_csv(
-                    coordinate_map_path,
-                    sep=r'\s+',  # whitespace delimiter
-                    comment='#',  # skip header comments
-                    names=['pixel_x', 'pixel_y', 'world_x', 'world_y']
-                )
-                # Extract world coordinates as numpy array for nearest neighbor lookup
-                world_coords = coord_map_df[['world_x', 'world_y']].values
-                logging.info(f"Loaded {len(coord_map_df)} coordinate mappings")
+                with open(coordinate_map_path, 'r') as f:
+                    lines = f.readlines()
+
+                vp_x = vp_y = vh = vv = img_width = img_height = None
+                for line in lines:
+                    line = line.strip()
+                    m = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', line)
+                    if m:
+                        vp_x, vp_y = float(m.group(1)), float(m.group(2))
+                    m = re.search(r'-vh\s+([\d.-]+)', line)
+                    if m:
+                        vh = float(m.group(1))
+                    m = re.search(r'-vv\s+([\d.-]+)', line)
+                    if m:
+                        vv = float(m.group(1))
+                    m = re.search(r'width=(\d+)', line)
+                    if m:
+                        img_width = int(m.group(1))
+                    m = re.search(r'height=(\d+)', line)
+                    if m:
+                        img_height = int(m.group(1))
+
+                if all(v is not None for v in [vp_x, vp_y, vh, vv, img_width, img_height]):
+                    coord_map_params = {
+                        'vp_x': vp_x, 'vp_y': vp_y,
+                        'wu_per_px_x': vh / img_width,
+                        'wu_per_px_y': vv / img_height,
+                        'width': img_width, 'height': img_height,
+                    }
+                    logging.info(f"Loaded coordinate map parameters: {coord_map_params}")
+                else:
+                    logging.error("Could not parse all required parameters from coordinate map")
             except Exception as e:
                 logging.error(f"Error loading coordinate map: {e}")
-                coord_map_df = None
-                world_coords = None
+                coord_map_params = None
 
         # Group the DataFrame by the 'apartment_no' and 'room' columns
         grouped = df.groupby(["apartment_no", "room"])
@@ -402,7 +422,7 @@ class ViewGenerator:
             header_line4 = f"CENTRAL x,y: {centroid_x:.4f} {centroid_y:.4f}"
 
             # Update header to indicate pixel columns if coordinate map is available
-            if world_coords is not None:
+            if coord_map_params is not None:
                 header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y pixel_x pixel_y positions"
             else:
                 header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y positions"
@@ -417,20 +437,10 @@ class ViewGenerator:
                 line = f"{world_x:.4f} {world_y:.4f}"
 
                 # Add pixel coordinates if coordinate map is available
-                if world_coords is not None and coord_map_df is not None:
-                    # Find nearest neighbor using simple numpy distance calculation
-                    # Calculate Euclidean distance: sqrt((x2-x1)^2 + (y2-y1)^2)
-                    distances = np.sqrt(
-                        (world_coords[:, 0] - world_x)**2 +
-                        (world_coords[:, 1] - world_y)**2
-                    )
-                    index_nearest = np.argmin(distances)
-
-                    # Get corresponding pixel coordinates
-                    pixel_x = int(coord_map_df.iloc[index_nearest]['pixel_x'])
-                    pixel_y = int(coord_map_df.iloc[index_nearest]['pixel_y'])
-
-                    # Append pixel coordinates to line
+                if coord_map_params is not None:
+                    p = coord_map_params
+                    pixel_x = int((world_x - p['vp_x']) / p['wu_per_px_x'] + p['width'] / 2)
+                    pixel_y = int(p['height'] / 2 - (world_y - p['vp_y']) / p['wu_per_px_y'])
                     line += f" {pixel_x} {pixel_y}"
 
                 xy_coord_lines.append(line)
