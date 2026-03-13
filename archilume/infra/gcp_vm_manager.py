@@ -857,19 +857,47 @@ class GCPVMManager:
 
             self._run_step("[5/6] Installing Git and Docker...", vm_name,
                 "sudo apt-get update -y && "
-                "sudo apt-get install -y git docker.io && "
+                "sudo apt-get install -y git docker.io tmux && "
                 f"sudo usermod -aG docker {username}"
             )
 
-            self._run_step(
-                "[6/6] Cloning repository and running setup (this may take a few minutes)...",
-                vm_name,
+            # Step 6: run setup detached in tmux so SSH timeouts don't kill it.
+            # The script writes a marker file on success or failure so we can poll.
+            SETUP_LOG = "/tmp/archilume_setup.log"
+            DONE_MARKER = "/tmp/archilume_setup_done"
+            FAIL_MARKER = "/tmp/archilume_setup_failed"
+            setup_cmd = (
+                f"rm -f {DONE_MARKER} {FAIL_MARKER} && "
                 "cd /mnt/disks/localssd/workspace && "
                 "git clone https://github.com/vincentlogarzo/archilume.git && "
                 "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace && "
-                "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
-                "source ~/.bashrc"
+                f"bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh > {SETUP_LOG} 2>&1 "
+                f"&& touch {DONE_MARKER} || touch {FAIL_MARKER}"
             )
+            self._run_step(
+                "[6/6] Cloning repository and launching setup in background (may take 10-20 min)...",
+                vm_name,
+                f"tmux new-session -d -s setup 'bash -c \"{setup_cmd}\"'"
+            )
+
+            # Poll until setup finishes (max 30 min)
+            print("  Waiting for setup to complete", end="", flush=True)
+            poll_interval = 20
+            max_polls = 90  # 90 × 20s = 30 min
+            for _ in range(max_polls):
+                time.sleep(poll_interval)
+                print(".", end="", flush=True)
+                _, done_code = self._ssh_capture(vm_name, f"test -f {DONE_MARKER}")
+                _, fail_code = self._ssh_capture(vm_name, f"test -f {FAIL_MARKER}")
+                if done_code == 0:
+                    print(" done!")
+                    break
+                if fail_code == 0:
+                    log, _ = self._ssh_capture(vm_name, f"tail -50 {SETUP_LOG}")
+                    raise RuntimeError(f"Setup script failed. Last 50 lines of log:\n{log}")
+            else:
+                log, _ = self._ssh_capture(vm_name, f"tail -50 {SETUP_LOG}")
+                raise RuntimeError(f"Setup timed out after 30 minutes. Last 50 lines of log:\n{log}")
 
         except RuntimeError as e:
             print(f"\n  ERROR: {e}")

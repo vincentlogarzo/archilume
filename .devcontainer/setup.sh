@@ -16,7 +16,8 @@ sudo rm -f /etc/apt/sources.list.d/yarn.list
 sudo apt-get update
 sudo apt-get install -y \
   libgl1 libgomp1 libglib2.0-0 libtiff6 libtiff-tools xfonts-base \
-  libgeos-dev libproj-dev python3-dev build-essential
+  libgeos-dev libproj-dev python3-dev build-essential \
+  libcairo2-dev pkg-config
 
 # Create symlink for ra_tiff compatibility (expects libtiff5, we have libtiff6)
 sudo ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/libtiff.so.5
