@@ -454,7 +454,9 @@ class GCPVMManager:
             f"    User {username}\n"
             f"    IdentityFile {SSH_KEY_PATH}\n"
             f"    StrictHostKeyChecking accept-new\n"
-            f"    ConnectTimeout 5\n"
+            f"    ConnectTimeout 30\n"
+            f"    ServerAliveInterval 60\n"
+            f"    ServerAliveCountMax 10\n"
         )
 
         self._upsert_ssh_config_block(SSH_CONFIG_PATH, SSH_HOST_ALIAS, container_block)
@@ -862,22 +864,31 @@ class GCPVMManager:
             )
 
             # Step 6: run setup detached in tmux so SSH timeouts don't kill it.
-            # The script writes a marker file on success or failure so we can poll.
+            # Write a wrapper script to the VM, then launch it in a detached tmux session.
             SETUP_LOG = "/tmp/archilume_setup.log"
             DONE_MARKER = "/tmp/archilume_setup_done"
             FAIL_MARKER = "/tmp/archilume_setup_failed"
-            setup_cmd = (
-                f"rm -f {DONE_MARKER} {FAIL_MARKER} && "
-                "cd /mnt/disks/localssd/workspace && "
-                "git clone https://github.com/vincentlogarzo/archilume.git && "
-                "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace && "
-                f"bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh > {SETUP_LOG} 2>&1 "
-                f"&& touch {DONE_MARKER} || touch {FAIL_MARKER}"
+            WRAPPER = "/tmp/archilume_run_setup.sh"
+
+            # Write the wrapper script onto the VM (avoids all quoting issues)
+            wrapper_contents = (
+                "#!/bin/bash\n"
+                f"rm -f {DONE_MARKER} {FAIL_MARKER}\n"
+                "cd /mnt/disks/localssd/workspace\n"
+                "git clone https://github.com/vincentlogarzo/archilume.git\n"
+                "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace\n"
+                f"bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh > {SETUP_LOG} 2>&1\n"
+                f"if [ $? -eq 0 ]; then touch {DONE_MARKER}; else touch {FAIL_MARKER}; fi\n"
             )
             self._run_step(
-                "[6/6] Cloning repository and launching setup in background (may take 10-20 min)...",
+                "[6/6] Writing setup wrapper script...",
                 vm_name,
-                f"tmux new-session -d -s setup 'bash -c \"{setup_cmd}\"'"
+                f"cat > {WRAPPER} << 'ENDOFSCRIPT'\n{wrapper_contents}ENDOFSCRIPT\nchmod +x {WRAPPER}"
+            )
+            self._run_step(
+                "      Launching setup in background (may take 10-20 min)...",
+                vm_name,
+                f"tmux new-session -d -s setup '{WRAPPER}'"
             )
 
             # Poll until setup finishes (max 30 min)
