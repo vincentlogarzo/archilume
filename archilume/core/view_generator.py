@@ -358,12 +358,13 @@ class ViewGenerator:
                     m = re.search(r'-vv\s+([\d.-]+)', line)
                     if m:
                         vv = float(m.group(1))
-                    m = re.search(r'width=(\d+)', line)
-                    if m:
-                        img_width = int(m.group(1))
-                    m = re.search(r'height=(\d+)', line)
-                    if m:
-                        img_height = int(m.group(1))
+                    if 'Image dimensions in pixels' in line:
+                        m = re.search(r'width=(\d+)', line)
+                        if m:
+                            img_width = int(m.group(1))
+                        m = re.search(r'height=(\d+)', line)
+                        if m:
+                            img_height = int(m.group(1))
 
                 if all(v is not None for v in [vp_x, vp_y, vh, vv, img_width, img_height]):
                     coord_map_params = {
