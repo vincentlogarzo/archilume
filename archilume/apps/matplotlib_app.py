@@ -19,6 +19,7 @@ Controls:
     Left-click    Select room (default) / place vertex (draw mode) / drag vertex (edit mode)
     Shift+click   Drag entire edge in edit mode (moves both endpoints together)
     Right-click   Delete hovered vertex (edit mode) / undo divider point (divider mode)
+                  / remove DF stamp / copy viewport to clipboard (full quality)
     Scroll        Zoom centred on cursor
     s             Save room / confirm edit
     e             Toggle Edit Mode
@@ -122,6 +123,7 @@ import subprocess
 import ctypes
 import ctypes.wintypes
 import os
+import copy
 import re
 import shutil
 import sys
@@ -451,6 +453,7 @@ class HdrAoiEditor:
         self.project_aoi_dir   = paths.aoi_inputs_dir
         self.archive_dir       = paths.archive_dir
         self.wpd_dir           = paths.wpd_dir
+        self.output_image_dir  = paths.image_dir
         paths.create_dirs()
 
         # Fill missing constructor args from project.toml.
@@ -512,6 +515,7 @@ class HdrAoiEditor:
         self.project_aoi_dir   = _placeholder / "aoi"
         self.archive_dir       = _placeholder / "archive"
         self.wpd_dir           = _placeholder / "wpd"
+        self.output_image_dir  = _placeholder / "image"
         self.image_dir         = _placeholder / "image"
         self._overlay_pdf_path = None
         self._iesve_room_data_path = None
@@ -1104,6 +1108,17 @@ class HdrAoiEditor:
         if not self.hdr_files:
             return False
         hdr_name = self.current_hdr_name
+        if 'ffl' in room and hdr_name in self._aoi_level_map:
+            return room['ffl'] == self._aoi_level_map[hdr_name]
+        return self._room_matches_hdr(room, hdr_name)
+
+    def _export_room_matches_hdr(self, room: dict, hdr_name: str) -> bool:
+        """Like _is_room_on_current_hdr but accepts an explicit hdr_name.
+
+        For IESVE rooms (those with an 'ffl' key), matches via the
+        _aoi_level_map so that each pic only gets its own level's rooms.
+        Falls back to _room_matches_hdr for non-IESVE rooms.
+        """
         if 'ffl' in room and hdr_name in self._aoi_level_map:
             return room['ffl'] == self._aoi_level_map[hdr_name]
         return self._room_matches_hdr(room, hdr_name)
@@ -1983,7 +1998,7 @@ class HdrAoiEditor:
         controls = [
             ("\u2191/\u2193", "Navigate HDR files"),   ("t",           "Toggle image (HDR / TIFFs)"),
             ("Left-click",    "Place vertex / drag"),   ("Shift+click", "Drag edge (edit mode)"),
-            ("Right-click",   "Select existing room"),  ("Scroll",      "Zoom centred on cursor"),
+            ("Right-click",   "Select existing room / copy to clipboard"),  ("Scroll",      "Zoom centred on cursor"),
             ("s",             "Save room / confirm edit"),
             ("e",             "Toggle Edit Mode"),      ("dd",          "Enter divider mode (any mode)"),
             ("ctrl+z",        "Undo (edit/type/name/create/del)"),
@@ -3816,10 +3831,13 @@ class HdrAoiEditor:
                     self._update_status("Cannot remove - polygon must have at least 3 vertices", 'red')
             return
 
-        # Right-click in default mode (not edit, not divider): remove nearest DF stamp
+        # Right-click in default mode (not edit, not divider): remove nearest DF stamp,
+        # or show context menu if no stamp was hit
         if event.button == 3 and not self.edit_mode and not self.divider_mode:
             if event.xdata is not None and event.ydata is not None:
-                self._remove_df_stamp(event.xdata, event.ydata)
+                if self._remove_df_stamp(event.xdata, event.ydata):
+                    return
+            self._show_canvas_context_menu(event)
             return
 
         # Left-click in align mode: collect alignment points
@@ -4239,7 +4257,18 @@ class HdrAoiEditor:
         if event.key in ('backspace', 'delete', 'escape'):
             if event.key == 'escape':
                 if self._align_mode:
-                    self._on_overlay_align_toggle(None)  # exit align mode
+                    # Discard unsaved transform changes and exit align mode
+                    if hasattr(self, '_align_transforms_snapshot'):
+                        self._overlay_transforms = self._align_transforms_snapshot
+                        del self._align_transforms_snapshot
+                    self._align_mode = False
+                    self._clear_align_markers()
+                    self._align_tooltip.set_text('Resize plan mode: OFF')
+                    self._style_toggle_button(self.btn_overlay_align, False)
+                    self.btn_overlay_reset.ax.set_visible(False)
+                    self._end_overlay_blit(save=False)
+                    self._render_section(force_full=True)
+                    self._update_status("Resize cancelled — changes discarded", 'orange')
                 elif self.divider_mode:
                     self._exit_divider_mode(cancelled=True)
                 elif self.draw_mode:
@@ -4305,7 +4334,8 @@ class HdrAoiEditor:
                         tf['offset_y'] = tf.get('offset_y', 0.0) - step
                     elif event.key == 'down':
                         tf['offset_y'] = tf.get('offset_y', 0.0) + step
-                    
+                    self._propagate_overlay_transform(hdr)
+
                     # Fast update using blitting instead of force_full=True
                     self._update_overlay_blit()
 
@@ -4413,7 +4443,8 @@ class HdrAoiEditor:
             tf['scale_y'] = new_sy
             tf['offset_x'] = cx - ow * new_sx / 2.0
             tf['offset_y'] = cy - oh * new_sy / 2.0
-            
+            self._propagate_overlay_transform(hdr)
+
             # Fast update using blitting
             self._update_overlay_blit()
 
@@ -4592,12 +4623,15 @@ class HdrAoiEditor:
 
     # === DF STAMPS =============================================================
 
-    def _remove_df_stamp(self, x: float, y: float):
-        """Remove the nearest DF stamp within 40 pixels of (x, y)."""
+    def _remove_df_stamp(self, x: float, y: float) -> bool:
+        """Remove the nearest DF stamp within 40 pixels of (x, y).
+
+        Returns True if a stamp was removed, False otherwise.
+        """
         hdr = self.current_hdr_name
         stamps = self._df_stamps.get(hdr, [])
         if not stamps:
-            return
+            return False
         # Convert click to display coords for pixel-accurate distance
         disp_click = self.ax.transData.transform((x, y))
         best_idx, best_dist = None, float('inf')
@@ -4612,6 +4646,8 @@ class HdrAoiEditor:
             self._df_cursor_bg = None
             self._save_session()
             self._render_section(force_full=True)
+            return True
+        return False
 
     def _draw_df_stamps(self):
         """Draw all stamped DF readings for the current HDR."""
@@ -5715,6 +5751,7 @@ class HdrAoiEditor:
         self.project_aoi_dir    = paths.aoi_inputs_dir
         self.archive_dir        = paths.archive_dir
         self.wpd_dir            = paths.wpd_dir
+        self.output_image_dir   = paths.image_dir
         # AOI dir: outputs/aoi/ for Archilume, inputs/aoi/ for IESVE
         if mode == "hdr":
             self.aoi_dir = paths.aoi_dir
@@ -5970,7 +6007,22 @@ class HdrAoiEditor:
         """Schedule a debounced session save after overlay movement.
 
         Reuses a single timer instead of creating/destroying one per event.
+        While in resize plan mode, only end the blit without saving — the
+        session is saved when the user exits resize plan mode.
         """
+        if self._align_mode:
+            # Still end the blit (update canvas) but don't persist yet
+            timer = self._blit_save_timer
+            if timer is not None:
+                timer.stop()
+                timer.start()
+            else:
+                timer = self.fig.canvas.new_timer(interval=500)
+                timer.single_shot = True
+                timer.add_callback(lambda: self._end_overlay_blit(save=False))
+                self._blit_save_timer = timer
+                timer.start()
+            return
         timer = self._blit_save_timer
         if timer is not None:
             timer.stop()
@@ -6007,6 +6059,8 @@ class HdrAoiEditor:
                 self._on_edit_mode_toggle(None)
             if self.draw_mode:
                 self._exit_draw_mode()
+            # Snapshot transforms so Escape can discard unsaved changes
+            self._align_transforms_snapshot = copy.deepcopy(self._overlay_transforms)
             self._align_points_overlay = []
             self._align_points_hdr = []
             self._clear_align_markers()
@@ -6017,8 +6071,11 @@ class HdrAoiEditor:
             self._clear_align_markers()
             self._align_tooltip.set_text('Resize plan mode: OFF')
             self._style_toggle_button(self.btn_overlay_align, False)
-            self._update_status("Alignment finished", 'green')
-            self._end_overlay_blit(save=True)
+            self._update_status("Alignment saved", 'green')
+            self._end_overlay_blit(save=False)
+            if hasattr(self, '_align_transforms_snapshot'):
+                del self._align_transforms_snapshot
+            self._save_session()
         self.fig.canvas.draw_idle()
 
     def _on_overlay_reset_click(self, event):
@@ -6079,7 +6136,10 @@ class HdrAoiEditor:
         # Hide dropdown after selection
         self._toggle_dpi_dropdown(False)
 
-        self._save_session()
+        # Do NOT save session here — _rasterize_overlay_page will save after
+        # updating _overlay_cache_dpi to match _overlay_raster_dpi.  Saving
+        # before rasterization completes leaves cache_dpi stale, which causes
+        # a spurious double-rescale of transforms on the next session load.
         if self._overlay_pdf_path is not None:
             # Capture current view limits before re-rasterization/full render
             xlim = self.ax.get_xlim()
@@ -6088,6 +6148,10 @@ class HdrAoiEditor:
             # force_full=True triggers _do_full_render with these limits
             self._do_full_render(xlim, ylim, reset_view=False)
         else:
+            # No PDF to rasterize — safe to save session now since no
+            # cache_dpi update is pending.
+            self._overlay_cache_dpi = self._overlay_raster_dpi
+            self._save_session()
             self.fig.canvas.draw_idle()
 
     def _toggle_dpi_dropdown(self, visible: bool):
@@ -6112,8 +6176,10 @@ class HdrAoiEditor:
         res  = dpi if dpi is not None else self._overlay_raster_dpi
         pdf_path = self._overlay_pdf_path
         
-        # Create a 6-char hash of the absolute path to handle duplicate filenames in different folders
-        pdf_hash = hashlib.md5(str(pdf_path.absolute()).encode()).hexdigest()[:6]
+        # Create a 6-char hash of the resolved path to handle duplicate filenames
+        # in different folders.  resolve() normalises drive-letter casing on
+        # Windows so the hash is stable across sessions.
+        pdf_hash = hashlib.md5(str(pdf_path.resolve()).encode()).hexdigest()[:6]
 
         cache_dir = self.project_aoi_dir / ".overlay_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)        
@@ -6240,17 +6306,23 @@ class HdrAoiEditor:
                 dpi=self._overlay_raster_dpi,
             )
             processed = make_lines_only(rgba, white_threshold=240)
-            
+
             # Atomic Save: Save to temp file then rename to prevent partial-read crashes
             tmp_path = cache_path.with_suffix(".tmp.npy")
             np.save(str(tmp_path), processed)
             os.replace(str(tmp_path), str(cache_path))
-            
+
             if not use_bg_thread:
                 self._overlay_rgba = processed
-                self._overlay_cache_pdf = str(self._overlay_pdf_path)
-                self._overlay_cache_dpi = self._overlay_raster_dpi
-                self._save_session()
+
+        # Always sync cache metadata and save session after loading the
+        # overlay (whether from cache or fresh rasterization).  Previously
+        # cache hits skipped this, leaving _overlay_cache_dpi stale — which
+        # caused a spurious double-rescale of transforms on the next load.
+        if not use_bg_thread:
+            self._overlay_cache_pdf = str(self._overlay_pdf_path)
+            self._overlay_cache_dpi = self._overlay_raster_dpi
+            self._save_session()
 
         # If we just loaded/created the main active page, trigger pre-fetch for its neighbors
         if not use_bg_thread:
@@ -6291,6 +6363,31 @@ class HdrAoiEditor:
                 tf[k] = eff_tf[k]
         tf['is_manual'] = True
         return tf
+
+    def _propagate_overlay_transform(self, source_hdr: str):
+        """Copy spatial transform from *source_hdr* to all HDRs on the same PDF page.
+
+        Only scale, offset, and rotation are propagated — page_idx is left
+        untouched so each HDR keeps its own page assignment.  This ensures
+        that resizing or moving the PDF overlay on one level applies to every
+        level that shares the same floor plan page.
+        """
+        src_tf = self._overlay_transforms.get(source_hdr, {})
+        src_page = src_tf.get('page_idx', self._overlay_page_idx)
+        propagate_keys = ('scale_x', 'scale_y', 'offset_x', 'offset_y', 'rotation_90', 'is_manual')
+
+        for entry in self.hdr_files:
+            name = entry['name']
+            if name == source_hdr:
+                continue
+            other_tf = self._overlay_transforms.get(name, {})
+            other_page = other_tf.get('page_idx', self._overlay_page_idx)
+            if other_page != src_page:
+                continue
+            dest_tf = self._overlay_transforms.setdefault(name, {})
+            for k in propagate_keys:
+                if k in src_tf:
+                    dest_tf[k] = src_tf[k]
 
     def _get_effective_overlay_transform(self, hdr_idx: Optional[int] = None) -> dict:
         """Return the transform for the given HDR level, inheriting from below if needed.
@@ -6474,6 +6571,7 @@ class HdrAoiEditor:
         tf['offset_x'] = new_ox
         tf['offset_y'] = new_oy
         tf['is_manual'] = True
+        self._propagate_overlay_transform(hdr)
 
         # Exit align mode
         self._align_mode = False
@@ -6481,6 +6579,8 @@ class HdrAoiEditor:
         self._align_tooltip.set_text('Resize plan mode: OFF')
         self._style_toggle_button(self.btn_overlay_align, False)
         self.btn_overlay_reset.ax.set_visible(False)
+        if hasattr(self, '_align_transforms_snapshot'):
+            del self._align_transforms_snapshot
         self._save_session()
         self._render_section(force_full=True)
         self._update_status("Alignment applied (2-point)", 'green')
@@ -6492,7 +6592,9 @@ class HdrAoiEditor:
         hdr = self.current_hdr_name
         tf = self._overlay_transforms.setdefault(hdr, {})
         tf['rotation_90'] = (tf.get('rotation_90', 0) + 1) % 4
-        self._save_session()
+        self._propagate_overlay_transform(hdr)
+        if not self._align_mode:
+            self._save_session()
         self._render_section(force_full=True)
         self._update_status(f"Overlay rotated to {tf['rotation_90'] * 90}\u00b0", 'cyan')
 
@@ -8532,6 +8634,302 @@ class HdrAoiEditor:
         img.save(out_path)
         print(f"Overlay saved: {out_path}")
 
+    def _show_canvas_context_menu(self, event):
+        """Show a right-click context menu on the canvas with a 'Copy image to clipboard' option."""
+        try:
+            root = self.fig.canvas.manager.window
+        except AttributeError:
+            return
+
+        menu = tk.Menu(root, tearoff=0)
+        menu.add_command(
+            label="Copy image to clipboard",
+            command=lambda: self._on_context_copy_image(menu),
+        )
+
+        # Position the menu at the mouse screen coordinates
+        try:
+            screen_x = root.winfo_pointerx()
+            screen_y = root.winfo_pointery()
+        except Exception:
+            screen_x = root.winfo_rootx() + int(event.x)
+            screen_y = root.winfo_rooty() + int(self.fig.get_size_inches()[1] * self.fig.dpi - event.y)
+        menu.tk_popup(screen_x, screen_y)
+
+    def _on_context_copy_image(self, menu):
+        """Handle the 'Copy image to clipboard' context menu action."""
+        try:
+            menu.destroy()
+        except Exception:
+            pass
+
+        # Show a loading indicator on the canvas
+        self._update_status("Copying viewport to clipboard\u2026", 'cyan')
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+
+        # Use after() to let the UI update before the blocking render
+        try:
+            self.fig.canvas.manager.window.after(50, self._copy_viewport_to_clipboard)
+        except AttributeError:
+            self._copy_viewport_to_clipboard()
+
+    def _copy_viewport_to_clipboard(self):
+        """Render the current viewport at full quality and copy to the Windows clipboard.
+
+        Uses the same rendering pipeline as _render_pdf_underlay (HDR/PIC
+        tonemapping, PDF overlay compositing, room boundaries, annotations)
+        but crops to the current axes viewport so the clipboard image matches
+        exactly what the user sees on screen.
+        """
+        import subprocess
+        import tempfile
+
+        try:
+            idx = self.current_hdr_idx
+            entry = self.hdr_files[idx]
+            hdr_name = entry['name']
+
+            # --- Determine base image path ---
+            df_false_path = next(
+                (p for p in entry.get('tiff_paths', []) if '_df_false' in p.stem),
+                None
+            )
+            if df_false_path is None or not df_false_path.exists():
+                hdr_fallback = entry.get('hdr_path')
+                if hdr_fallback is not None and hdr_fallback.exists():
+                    df_false_path = hdr_fallback
+                else:
+                    self._update_status("No base image for clipboard export", 'red')
+                    return
+
+            # --- Load base image ---
+            if df_false_path.suffix.lower() in ('.hdr', '.pic'):
+                raw = imageio.imread(str(df_false_path)).astype(np.float32)
+                if raw.ndim == 2:
+                    raw = np.stack([raw, raw, raw], axis=-1)
+                p99 = np.percentile(raw, 99)
+                if p99 > 0:
+                    raw = raw / p99
+                raw = np.clip(raw ** (1.0 / 2.2), 0.0, 1.0)
+                base_img = Image.fromarray((raw * 255).astype(np.uint8), 'RGB')
+            else:
+                base_img = Image.open(df_false_path).convert('RGB')
+            hdr_w, hdr_h = base_img.size
+
+            # --- Composite PDF overlay ---
+            pdf_path = self._overlay_pdf_path if (
+                self._overlay_pdf_path is not None
+                and self._overlay_pdf_path.exists()
+                and self._overlay_visible
+            ) else None
+            tf = self._get_effective_overlay_transform(hdr_idx=idx)
+
+            if pdf_path is not None and tf and 'scale_x' in tf:
+                page_idx = tf.get('page_idx', self._overlay_page_idx)
+                sx = tf.get('scale_x', 1.0)
+                sy = tf.get('scale_y', 1.0)
+                ox = tf.get('offset_x', 0.0)
+                oy = tf.get('offset_y', 0.0)
+                rot = tf.get('rotation_90', 0) % 4
+
+                pdf_rgba = rasterize_pdf_page(pdf_path, page_idx, dpi=self._overlay_raster_dpi)
+                if rot > 0:
+                    pdf_rgba = np.rot90(pdf_rgba, k=rot)
+                pdf_h_px, pdf_w_px = pdf_rgba.shape[:2]
+
+                pdf_canvas = Image.new('RGBA', (hdr_w, hdr_h), (255, 255, 255, 0))
+                pdf_pil = Image.fromarray(pdf_rgba[:, :, :3]).convert('RGBA')
+
+                dest_w = max(1, int(round(pdf_w_px * sx)))
+                dest_h = max(1, int(round(pdf_h_px * sy)))
+                if dest_w != pdf_w_px or dest_h != pdf_h_px:
+                    pdf_pil = pdf_pil.resize((dest_w, dest_h), Image.LANCZOS)
+
+                pdf_canvas.paste(pdf_pil, (int(round(ox)), int(round(oy))))
+
+                alpha_val = int(round(self._overlay_alpha * 255))
+                pdf_arr = np.array(pdf_canvas)
+                pdf_arr[:, :, 3] = np.where(pdf_arr[:, :, 3] > 0, alpha_val, 0).astype(np.uint8)
+                pdf_canvas = Image.fromarray(pdf_arr, 'RGBA')
+                composited = Image.alpha_composite(base_img.convert('RGBA'), pdf_canvas).convert('RGB')
+            else:
+                composited = base_img
+
+            # --- Crop to current viewport ---
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            # ylim is inverted for image axes (top < bottom)
+            x0 = max(0, int(round(min(xlim))))
+            x1 = min(hdr_w, int(round(max(xlim))))
+            y0 = max(0, int(round(min(ylim))))
+            y1 = min(hdr_h, int(round(max(ylim))))
+            composited = composited.crop((x0, y0, x1, y1))
+            _, crop_h = composited.size
+
+            # --- Draw room boundaries and annotations ---
+            draw = ImageDraw.Draw(composited)
+
+            annotation_scale = self._annotation_scale
+            fs_large = max(4, int(crop_h * 0.025 * annotation_scale))
+            fs_small = max(3, int(fs_large * 6.5 / 8.5))
+            font_large      = _load_pil_font(fs_large, bold=True)
+            font_large_norm = _load_pil_font(fs_large, bold=False)
+            font_small      = _load_pil_font(fs_small, bold=False)
+
+            red   = (255, 0, 0)
+            white = (255, 255, 255)
+            black = (0, 0, 0)
+            line_w = max(1, int(round(crop_h * 0.003)))
+
+            def _cv(hdr_x, hdr_y):
+                """Convert HDR coords to cropped image coords."""
+                return int(round(hdr_x - x0)), int(round(hdr_y - y0))
+
+            def _stroked_text(x, y, text, fnt, fill, stroke_fg, stroke_lw):
+                sw = max(1, int(round(stroke_lw)))
+                for ddx in range(-sw, sw + 1):
+                    for ddy in range(-sw, sw + 1):
+                        if ddx or ddy:
+                            draw.text((x + ddx, y + ddy), text, fill=stroke_fg, font=fnt)
+                draw.text((x, y), text, fill=fill, font=fnt)
+
+            def _dashed_polygon(pts_closed, fill, dash=8, gap=6):
+                for i in range(len(pts_closed) - 1):
+                    lx0, ly0 = pts_closed[i]
+                    lx1, ly1 = pts_closed[i + 1]
+                    seg_len = ((lx1 - lx0) ** 2 + (ly1 - ly0) ** 2) ** 0.5
+                    if seg_len == 0:
+                        continue
+                    ddx, ddy = (lx1 - lx0) / seg_len, (ly1 - ly0) / seg_len
+                    pos, drawing = 0.0, True
+                    while pos < seg_len:
+                        step = dash if drawing else gap
+                        end = min(pos + step, seg_len)
+                        if drawing:
+                            draw.line(
+                                [(int(lx0 + ddx * pos), int(ly0 + ddy * pos)),
+                                 (int(lx0 + ddx * end), int(ly0 + ddy * end))],
+                                fill=fill, width=line_w)
+                        pos, drawing = end, not drawing
+
+            def _pct_colour(df_lines):
+                if not df_lines:
+                    return black
+                m = re.search(r'\((\d+(?:\.\d+)?)%\)', df_lines[0])
+                if m is None:
+                    return black
+                pct = float(m.group(1))
+                if pct >= 90:
+                    return black
+                elif pct >= 50:
+                    return (233, 113, 50)
+                else:
+                    return (238, 0, 0)
+
+            def _estimate_block_width(lines):
+                if not lines:
+                    return 0
+                max_chars = max(len(ln) for ln in lines)
+                return int(max_chars * fs_large * 0.55)
+
+            line_step_px = int(round(fs_small * 1.6))
+
+            rooms_on_hdr = [
+                (r.get('name', ''), r['vertices'],
+                 r.get('df_cache', {}).get('display_lines', []),
+                 r.get('room_type', '') == 'CIRC')
+                for r in self.rooms
+                if self._export_room_matches_hdr(r, hdr_name)
+                and len(r.get('vertices', [])) >= 3
+            ]
+
+            for name, verts, df_lines, is_circ in rooms_on_hdr:
+                pts = [_cv(v[0], v[1]) for v in verts]
+                pts.append(pts[0])
+                if is_circ:
+                    _dashed_polygon(pts, fill=red)
+                else:
+                    draw.line(pts, fill=red, width=line_w)
+
+                if is_circ:
+                    continue
+
+                n_df = len(df_lines)
+                all_lines = list(df_lines) + [name] if n_df > 0 else [name]
+                n_total = n_df + 1 if n_df > 0 else 1
+                name_step_px = int(round(line_step_px * 0.7))
+
+                pole = HdrAoiEditor._polygon_label_point(verts)
+                block_w_hdr = _estimate_block_width(all_lines)
+                anchor = HdrAoiEditor._compute_label_anchor(
+                    pole, verts, n_total,
+                    line_step_px,
+                    name_step_px,
+                    block_w_hdr,
+                )
+                ax_pt, ay_pt = _cv(anchor[0], anchor[1])
+
+                bracket_colour = _pct_colour(df_lines)
+
+                if df_lines:
+                    for line_i, line in enumerate(df_lines):
+                        dy = line_i * line_step_px
+                        if line_i % 2 == 0:
+                            text_colour = bracket_colour
+                            no_outline = (text_colour == black)
+                            fnt = font_large if no_outline else font_large_norm
+                            stroke_fg = white if no_outline else black
+                            stroke_lw = fs_large * 0.015 if no_outline else fs_large * 0.03
+                        else:
+                            text_colour = white
+                            fnt = font_small
+                            stroke_fg = black
+                            stroke_lw = fs_small * 0.03
+                        _stroked_text(ax_pt, ay_pt + dy, line, fnt, text_colour, stroke_fg, stroke_lw)
+
+                if n_df > 0:
+                    name_dy = (n_df - 1) * line_step_px + name_step_px
+                else:
+                    name_dy = 0
+                _stroked_text(ax_pt, ay_pt + name_dy, name, font_small, white, black, fs_small * 0.03)
+
+            # DF stamps
+            stamps = self._df_stamps.get(hdr_name, [])
+            for stamp in (stamps or []):
+                sx_stamp, sy_stamp, df_val = stamp[0], stamp[1], stamp[2]
+                ix, iy = _cv(sx_stamp, sy_stamp)
+                r = max(3, fs_large // 4)
+                draw.ellipse((ix - r, iy - r, ix + r, iy + r), fill=(0, 255, 255))
+                px_lbl = stamp[3] if len(stamp) > 3 else int(round(sx_stamp))
+                py_lbl = stamp[4] if len(stamp) > 4 else int(round(sy_stamp))
+                _stroked_text(ix + r + 2, iy - fs_small // 2,
+                              f"DF: {df_val:.2f}%\npx({px_lbl},{py_lbl})",
+                              font_small, white, black, fs_small * 0.03)
+
+            # --- Copy to Windows clipboard via PowerShell ---
+            tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+            tmp_path = tmp.name
+            tmp.close()
+            composited.convert('RGB').save(tmp_path, format='PNG')
+            subprocess.run(
+                ['powershell', '-NoProfile', '-Command',
+                 f'Add-Type -AssemblyName System.Windows.Forms;'
+                 f'[System.Windows.Forms.Clipboard]::SetImage('
+                 f'[System.Drawing.Image]::FromFile("{tmp_path}"))'],
+                capture_output=True, timeout=10,
+            )
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+            self._update_status("Viewport copied to clipboard", 'green')
+
+        except Exception as e:
+            self._update_status(f"Clipboard export failed: {e}", 'red')
+            traceback.print_exc()
+
     def _export_overlay_images(self, progress: dict):
         """Render room boundary overlays onto each TIFF using ThreadPoolExecutor."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -8601,7 +8999,17 @@ class HdrAoiEditor:
         """
         EXPORT_DPI = 300
 
-        base_img = Image.open(df_false_path).convert('RGB')
+        if df_false_path.suffix.lower() in ('.hdr', '.pic'):
+            raw = imageio.imread(str(df_false_path)).astype(np.float32)
+            if raw.ndim == 2:
+                raw = np.stack([raw, raw, raw], axis=-1)
+            p99 = np.percentile(raw, 99)
+            if p99 > 0:
+                raw = raw / p99
+            raw = np.clip(raw ** (1.0 / 2.2), 0.0, 1.0)
+            base_img = Image.fromarray((raw * 255).astype(np.uint8), 'RGB')
+        else:
+            base_img = Image.open(df_false_path).convert('RGB')
         hdr_w, hdr_h = base_img.size
 
         # --- Composite PDF onto df_false base ---
@@ -8646,28 +9054,36 @@ class HdrAoiEditor:
             scale_up = 1.0
 
         draw = ImageDraw.Draw(composited)
-        out_h = composited.size[1]
+        out_w, out_h = composited.size
 
-        font_size = max(16, int(out_h * 0.018 * annotation_scale))
-        font_size_small = max(13, int(font_size * 0.8))
-        font = _load_pil_font(font_size, bold=True)
-        font_sm = _load_pil_font(font_size_small, bold=False)
+        # Font sizes mirroring on-screen bases (8.5 for area result, 6.5 for
+        # threshold / room name).  Use a fixed proportion of the output image
+        # height so the annotation-to-image ratio matches what is seen
+        # on-screen at default zoom, regardless of export DPI or HDR size.
+        fs_large = max(4, int(out_h * 0.025 * annotation_scale))    # base 8.5
+        fs_small = max(3, int(fs_large * 6.5 / 8.5))                # base 6.5
+        font_large      = _load_pil_font(fs_large, bold=True)
+        font_large_norm = _load_pil_font(fs_large, bold=False)
+        font_small      = _load_pil_font(fs_small, bold=False)
 
-        red = (255, 0, 0)
+        red   = (255, 0, 0)
         white = (255, 255, 255)
         black = (0, 0, 0)
-        outline_w = max(1, font_size // 10)
-        line_w = max(2, int(round(font_size // 7)))
+        line_w = max(1, int(round(out_h * 0.003)))
+        # Vertical spacing between annotation lines (pixels, ~1.6× font height)
+        line_step_px = int(round(fs_small * 1.6))
 
         def _sv(hdr_x, hdr_y):
             return int(round(hdr_x * scale_up)), int(round(hdr_y * scale_up))
 
-        def _outlined_text(x, y, text, fnt):
-            for ddx in range(-outline_w, outline_w + 1):
-                for ddy in range(-outline_w, outline_w + 1):
+        def _stroked_text(x, y, text, fnt, fill, stroke_fg, stroke_lw):
+            """Draw text with a stroke outline, matching the on-screen path_effects."""
+            sw = max(1, int(round(stroke_lw)))
+            for ddx in range(-sw, sw + 1):
+                for ddy in range(-sw, sw + 1):
                     if ddx or ddy:
-                        draw.text((x + ddx, y + ddy), text, fill=black, font=fnt)
-            draw.text((x, y), text, fill=white, font=fnt)
+                        draw.text((x + ddx, y + ddy), text, fill=stroke_fg, font=fnt)
+            draw.text((x, y), text, fill=fill, font=fnt)
 
         def _dashed_polygon(pts_closed, fill, dash=8, gap=6):
             for i in range(len(pts_closed) - 1):
@@ -8688,6 +9104,28 @@ class HdrAoiEditor:
                             fill=fill, width=line_w)
                     pos, drawing = end, not drawing
 
+        def _pct_colour(df_lines):
+            """Parse percentage from first DF line and return colour matching on-screen logic."""
+            if not df_lines:
+                return black
+            m = re.search(r'\((\d+(?:\.\d+)?)%\)', df_lines[0])
+            if m is None:
+                return black
+            pct = float(m.group(1))
+            if pct >= 90:
+                return black                    # '#000000'
+            elif pct >= 50:
+                return (233, 113, 50)           # '#E97132'
+            else:
+                return (238, 0, 0)              # '#EE0000'
+
+        def _estimate_block_width(lines):
+            """Estimate annotation block width in pixels (0.55 em per char at largest font)."""
+            if not lines:
+                return 0
+            max_chars = max(len(ln) for ln in lines)
+            return int(max_chars * fs_large * 0.55)
+
         for name, verts, df_lines, is_circ in rooms_data:
             pts = [_sv(v[0], v[1]) for v in verts]
             pts.append(pts[0])
@@ -8699,32 +9137,69 @@ class HdrAoiEditor:
             if is_circ:
                 continue
 
-            centroid = HdrAoiEditor._polygon_label_point(verts)
-            cx, cy = _sv(centroid[0], centroid[1])
+            # --- Annotation layout matching on-screen order ---
+            # Layout (top to bottom):
+            #   line 0: area result  "X.XX m² (##%)"  — large font, coloured
+            #   line 1: DF target    "@ Y% DF"        — small font, white
+            #   line 2: room name                      — small font, white
+            n_df = len(df_lines)
+            all_lines = list(df_lines) + [name] if n_df > 0 else [name]
+            n_total = n_df + 1 if n_df > 0 else 1
+            name_step_px = int(round(line_step_px * 0.7))
 
-            bbox = draw.textbbox((0, 0), name, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            _outlined_text(cx - tw // 2, cy - th // 2, name, font)
+            # Compute anchor in HDR pixel coords, then scale to export pixels
+            pole = HdrAoiEditor._polygon_label_point(verts)
+            block_w_hdr = _estimate_block_width(all_lines) / scale_up
+            anchor = HdrAoiEditor._compute_label_anchor(
+                pole, verts, n_total,
+                line_step_px / scale_up,
+                name_step_px / scale_up,
+                block_w_hdr,
+            )
+            ax, ay = _sv(anchor[0], anchor[1])
 
-            y_offset = cy + th
-            for line in df_lines:
-                bbox_s = draw.textbbox((0, 0), line, font=font_sm)
-                tw_s = bbox_s[2] - bbox_s[0]
-                th_s = bbox_s[3] - bbox_s[1]
-                _outlined_text(cx - tw_s // 2, y_offset, line, font_sm)
-                y_offset += th_s + 2
+            bracket_colour = _pct_colour(df_lines)
+
+            # Draw DF result lines
+            if df_lines:
+                for line_i, line in enumerate(df_lines):
+                    dy = line_i * line_step_px
+                    if line_i % 2 == 0:
+                        # Area result line — large font, coloured
+                        text_colour = bracket_colour
+                        no_outline = (text_colour == black)
+                        fnt = font_large if no_outline else font_large_norm
+                        stroke_fg = white if no_outline else black
+                        stroke_lw = fs_large * 0.015 if no_outline else fs_large * 0.03
+                    else:
+                        # Threshold line — small font, white
+                        text_colour = white
+                        fnt = font_small
+                        stroke_fg = black
+                        stroke_lw = fs_small * 0.03
+                    _stroked_text(ax, ay + dy, line, fnt, text_colour, stroke_fg, stroke_lw)
+
+            # Room name — last line
+            if n_df > 0:
+                name_dy = (n_df - 1) * line_step_px + name_step_px
+            else:
+                name_dy = 0
+            name_stroke_lw = fs_small * 0.03
+            _stroked_text(ax, ay + name_dy, name, font_small, white, black, name_stroke_lw)
 
         for stamp in (stamps or []):
             sx_stamp, sy_stamp, df_val = stamp[0], stamp[1], stamp[2]
             ix, iy = _sv(sx_stamp, sy_stamp)
-            r = max(3, font_size // 4)
+            r = max(3, fs_large // 4)
             draw.ellipse((ix - r, iy - r, ix + r, iy + r), fill=(0, 255, 255))
             px_lbl = stamp[3] if len(stamp) > 3 else int(round(sx_stamp))
             py_lbl = stamp[4] if len(stamp) > 4 else int(round(sy_stamp))
-            _outlined_text(ix + r + 2, iy - font_size_small // 2,
-                           f"DF: {df_val:.2f}%\npx({px_lbl},{py_lbl})", font_sm)
+            _stroked_text(ix + r + 2, iy - fs_small // 2,
+                          f"DF: {df_val:.2f}%\npx({px_lbl},{py_lbl})",
+                          font_small, white, black, fs_small * 0.03)
 
-        out_path = output_dir / f"{df_false_path.stem.split('_df_false')[0]}_pdf_aoi_overlay.png"
+        base_stem = df_false_path.stem.split('_df_false')[0] if '_df_false' in df_false_path.stem else df_false_path.stem
+        out_path = output_dir / f"{base_stem}_pdf_aoi_overlay.png"
         if out_path.exists():
             out_path.unlink()
         composited.save(out_path, dpi=(EXPORT_DPI, EXPORT_DPI))
@@ -8732,7 +9207,8 @@ class HdrAoiEditor:
 
     def _export_pdf_underlay_images(self):
         """Dispatch per-level PDF underlay renders concurrently via ThreadPoolExecutor."""
-        output_dir = self.image_dir
+        output_dir = self.output_image_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
         session_dpi = self._overlay_raster_dpi
         pdf_opacity = self._overlay_alpha  # match the viewer's current overlay transparency
         pdf_path = self._overlay_pdf_path if (
@@ -8748,7 +9224,7 @@ class HdrAoiEditor:
                  r.get('df_cache', {}).get('display_lines', []),
                  r.get('room_type', '') == 'CIRC')
                 for r in self.rooms
-                if self._room_matches_hdr(r, hdr_name)
+                if self._export_room_matches_hdr(r, hdr_name)
                 and len(r.get('vertices', [])) >= 3
             ]
             if not rooms_on_hdr:
@@ -8758,9 +9234,14 @@ class HdrAoiEditor:
                 (p for p in entry.get('tiff_paths', []) if '_df_false' in p.stem),
                 None
             )
+            # Fall back to the raw HDR/PIC file when no df_false PNG exists
             if df_false_path is None or not df_false_path.exists():
-                print(f"PDF underlay export: no df_false image found for {hdr_name}, skipping")
-                continue
+                hdr_fallback = entry.get('hdr_path')
+                if hdr_fallback is not None and hdr_fallback.exists():
+                    df_false_path = hdr_fallback
+                else:
+                    print(f"PDF underlay export: no base image found for {hdr_name}, skipping")
+                    continue
 
             tf = self._get_effective_overlay_transform(hdr_idx=idx)
             # Pass a copy so the thread holds no reference into mutable editor state

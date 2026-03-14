@@ -22,7 +22,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 - **Path Support:** Add support for file paths with spaces (quote all f-strings).
 - **Duplicate Handling:** Handle duplicate room names in CSV by auto-appending suffixes.
-- **Unit Scaling:** Support OBJ files exported in millimeters (auto-detect and convert to meters).
+- **Unit Scaling:** Support OBJ files exported in millimeters (auto-detect and convert to meters). Currently caught using the inputs validator class prior to simulation runs. 
 - **Boundary Auto-Gen:** Add option to auto-generate room boundaries from floor plans if CSV is missing.
 
 ## 🟡 MEDIUM PRIORITY: Rendering Pipeline Optimizations

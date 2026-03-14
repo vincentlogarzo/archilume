@@ -49,28 +49,35 @@ def hdr2png_falsecolour(
     contour_tiff = d / f"{stem}_df_cntr.tiff"
     false_tiff   = d / f"{stem}_df_false.tiff"
 
+    # Use POSIX paths (forward slashes) for Radiance CLI compatibility on Windows
+    src  = hdr_path.as_posix()
+    ft   = false_tiff.as_posix()
+    ch   = contour_hdr.as_posix()
+    ct   = contour_tiff.as_posix()
+    dm   = dimmed.as_posix()
+
     contour_scale  = scale / 2
     contour_levels = max(1, n_levels // 5)
 
     cmds = [
         # Falsecolour visualisation
-        rf"pcomb -s 0.01 {hdr_path} | falsecolor -s {scale} -n {n_levels} -pal spec -l 'DF %' -lw 0 | ra_tiff - {false_tiff}",
+        f'pcomb -s 0.01 {src} | falsecolor -s {scale} -n {n_levels} -pal spec -l "DF %" -lw 0 | ra_tiff - {ft}',
 
         # Contour HDR
-        rf"pcomb -s 0.01 {hdr_path} | falsecolor -cl -s {contour_scale} -n {contour_levels} -l 'DF %' -lw 0 -lh 0 > {contour_hdr}",
+        f'pcomb -s 0.01 {src} | falsecolor -cl -s {contour_scale} -n {contour_levels} -l "DF %" -lw 0 -lh 0 > {ch}',
 
         # Dimmed background
-        rf"pfilt -e 0.5 {hdr_path} > {dimmed}",
+        f"pfilt -e 0.5 {src} > {dm}",
     ]
     utils.execute_new_radiance_commands(cmds, number_of_workers=workers)
 
     # Contour composite depends on dimmed + contour_hdr being written first
     composite_cmd = (
-        rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' "
-        rf"-e 'ro=if(cond-.01,ri(2),ri(1))' "
-        rf"-e 'go=if(cond-.01,gi(2),gi(1))' "
-        rf"-e 'bo=if(cond-.01,bi(2),bi(1))' "
-        rf"{dimmed} {contour_hdr} | ra_tiff - {contour_tiff}"
+        f'pcomb -e "cond=ri(2)+gi(2)+bi(2)" '
+        f'-e "ro=if(cond-.01,ri(2),ri(1))" '
+        f'-e "go=if(cond-.01,gi(2),gi(1))" '
+        f'-e "bo=if(cond-.01,bi(2),bi(1))" '
+        f"{dm} {ch} | ra_tiff - {ct}"
     )
     utils.execute_new_radiance_commands(composite_cmd, number_of_workers=workers)
 
@@ -107,9 +114,12 @@ def _generate_legends(
     legend_false_tiff = image_dir / 'df_false_legend.tiff'
     legend_cntr_tiff  = image_dir / 'df_cntr_legend.tiff'
 
+    lft = legend_false_tiff.as_posix()
+    lct = legend_cntr_tiff.as_posix()
+
     cmds = [
-        rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s {scale} -n {n_levels} -pal spec -l "DF %" -lw 400 -lh 1600 | ra_tiff - {legend_false_tiff}',
-        rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s {contour_scale} -n {contour_levels} -l "DF %" -lw 400 -lh 1600 | ra_tiff - {legend_cntr_tiff}',
+        f'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s {scale} -n {n_levels} -pal spec -l "DF %" -lw 400 -lh 1600 | ra_tiff - {lft}',
+        f'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s {contour_scale} -n {contour_levels} -l "DF %" -lw 400 -lh 1600 | ra_tiff - {lct}',
     ]
     utils.execute_new_radiance_commands(cmds, number_of_workers=workers)
 

@@ -22,6 +22,7 @@ dependencies = [
     "pyradiance>=1.2.0",
     "pyvista>=0.46.4",
     "scikit-image>=0.25.2",
+    "selenium>=4.41.0",
     "svg2png>=1.2",
     "svglib>=1.6.0",
     "svgpathtools>=1.7.2",
