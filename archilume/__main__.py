@@ -7,7 +7,7 @@ To run:
 
 import argparse
 
-from archilume.apps.hdr_aoi_editor_matplotlib import launch
+from archilume.apps.matplotlib_app import launch
 
 
 def main():

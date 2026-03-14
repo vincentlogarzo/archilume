@@ -1,0 +1,76 @@
+# =============================================================================
+# .dockerignore
+# =============================================================================
+#
+# WHAT IS THIS?
+# Like .gitignore but for Docker. When you run `docker build`, Docker sends
+# everything in the build context (the `.` directory) to the Docker daemon.
+# .dockerignore tells Docker what to exclude from that transfer.
+#
+# WHY DOES IT MATTER?
+# Without this, `docker build` would send your entire .venv (potentially
+# hundreds of MB), all simulation outputs, and cached files to Docker —
+# even if they're never used in the build. This slows down every build.
+#
+# It also prevents secrets and local config from accidentally being
+# baked into the image.
+# =============================================================================
+
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment — rebuilt inside the image, never copy from host
+.venv/
+venv/
+env/
+
+# Simulation outputs — large files, not needed in the image
+outputs/
+inputs/
+intermediates/
+
+# Windows Accelerad binaries — Linux image doesn't use these
+.devcontainer/accelerad_07_beta_Windows/
+
+# Git history — not needed at runtime (saves ~MB)
+.git/
+.gitignore
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test results and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environment files — NEVER bake secrets into images
+.env
+*.env
+.env.local
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Project data — persisted on the host via bind mount, not baked into image
+projects/
+
+# Large data files unlikely to be needed in the base image
+*.oct
+*.hdr
+*.tiff
+*.tif
+*.gif
+*.apng

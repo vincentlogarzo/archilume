@@ -1421,6 +1421,7 @@ class HdrAoiEditor:
                 'hdr_path': hdr_path,
                 'tiff_paths': tiff_paths,
                 'name': stem,
+                'suffix': hdr_path.suffix,  # '.hdr' or '.pic'
             })
 
         # Build legend map: key → Path for files matching '*_legend.png'
@@ -3385,6 +3386,10 @@ class HdrAoiEditor:
         # DIV sub-rooms, auto-typed as CIRC on creation) to reduce visual clutter.
         is_circ = room.get('room_type', '') == 'CIRC'
         if not is_circ:
+            _cur_variant = (self.image_variants[self.current_variant_idx]
+                            if self.image_variants else None)
+            is_falsecolour = (_cur_variant is not None
+                              and '_df_false' in _cur_variant.stem)
             pole = self._polygon_label_point(verts)
             label    = room.get('name', '')
             if not is_current_floor:
@@ -3427,8 +3432,9 @@ class HdrAoiEditor:
                     no_outline = (text_colour == '#000000')
                     stroke_col = 'white' if no_outline else 'black'
                     stroke_lw = fs_df * 0.06 if no_outline else fs_df * 0.12
-                    path_fx = [patheffects.withStroke(linewidth=stroke_lw, foreground=stroke_col)]
-                    fw = 'bold' if no_outline else 'normal'
+                    path_fx = ([] if is_falsecolour
+                               else [patheffects.withStroke(linewidth=stroke_lw, foreground=stroke_col)])
+                    fw = 'bold' if (no_outline or is_falsecolour) else 'normal'
                     df_text = self.ax.text(
                         anchor[0], anchor[1] + dy, line,
                         color=text_colour, fontsize=fs_df, fontweight=fw, fontfamily='DejaVu Sans',
@@ -3452,11 +3458,13 @@ class HdrAoiEditor:
             else:
                 name_dy = 0
             fs_name = self._zoom_fontsize(base=6.5)
+            _name_path_fx = ([] if is_falsecolour
+                             else [patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')])
             label_text = self.ax.text(
                 anchor[0], anchor[1] + name_dy, label,
-                color='white', fontsize=fs_name, fontweight='normal', fontfamily='DejaVu Sans',
+                color='white', fontsize=fs_name, fontweight='bold' if is_falsecolour else 'normal', fontfamily='DejaVu Sans',
                 ha='left', va='center', clip_on=True,
-                path_effects=[patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')],
+                path_effects=_name_path_fx,
             )
             label_text.set_clip_path(self.ax.patch)
             label_text._label_pole      = pole
@@ -4909,13 +4917,18 @@ class HdrAoiEditor:
         fs_name = self._zoom_fontsize(base=6.5)
         line_step = self._df_line_step()
         name_step = line_step * 0.7   # tighter gap between last DF line and room name
-        stroke_name = [patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')]
+        _cur_variant = (self.image_variants[self.current_variant_idx]
+                        if self.image_variants else None)
+        is_falsecolour = (_cur_variant is not None and '_df_false' in _cur_variant.stem)
+        stroke_name = ([] if is_falsecolour
+                       else [patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')])
 
         for label in self._room_label_cache.values():
             if label is None:
                 continue
             label.set_fontsize(fs_name)
             label.set_path_effects(stroke_name)
+            label.set_fontweight('bold' if is_falsecolour else 'normal')
             pole      = getattr(label, '_label_pole', None)
             verts     = getattr(label, '_label_verts', None)
             n_df      = getattr(label, '_label_n_df', 0)
@@ -4938,9 +4951,10 @@ class HdrAoiEditor:
             dt.set_fontsize(fs_df)
             stroke_col = 'white' if no_outline else 'black'
             stroke_lw = fs_df * 0.06 if no_outline else fs_df * 0.12
-            path_fx = [patheffects.withStroke(linewidth=stroke_lw, foreground=stroke_col)]
+            path_fx = ([] if is_falsecolour
+                       else [patheffects.withStroke(linewidth=stroke_lw, foreground=stroke_col)])
             dt.set_path_effects(path_fx)
-            dt.set_fontweight('bold' if no_outline else 'normal')
+            dt.set_fontweight('bold' if (no_outline or is_falsecolour) else 'normal')
             pole      = getattr(dt, '_df_pole', None)
             verts     = getattr(dt, '_df_verts', None)
             n_df      = getattr(dt, '_df_n_df', 0)
@@ -7310,7 +7324,7 @@ class HdrAoiEditor:
             hdr_key = ('hdr', hdr_name)
             flat.append({
                 'type': 'hdr', 'indent': 0,
-                'label': f"{hdr_name}.hdr",
+                'label': f"{hdr_name}{entry.get('suffix', '.hdr')}",
                 'data': {'hdr_idx': hdr_i},
                 'is_last': is_last_hdr,
                 'icon_key': None,

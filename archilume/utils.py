@@ -3,10 +3,12 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
+import psutil
 from PIL import Image
 import numpy as np
 import pandas as pd
@@ -1856,4 +1858,83 @@ def get_pdf_info(pdf_path: Path) -> dict:
     count = doc.page_count
     doc.close()
     return {"page_count": count, "pages": pages}
+
+
+def start_cpu_logger(log_path: Path) -> threading.Event:
+    """Start a background CPU/memory logger using psutil.
+
+    Logs CPU, memory, and top process stats every 30 seconds to *log_path*.
+
+    Args:
+        log_path: File path where the log will be written.
+
+    Returns:
+        A stop event — pass it to :func:`stop_cpu_logger` to halt logging.
+    """
+    stop_event = threading.Event()
+
+    def _log_loop():
+        psutil.cpu_percent(percpu=True)  # prime — first call always returns 0.0
+        with open(log_path, "w") as f:
+            while not stop_event.wait(timeout=30.0):
+                ts = time.strftime("%H:%M:%S")
+                cpu_total = psutil.cpu_percent(interval=None)
+                per_core  = psutil.cpu_percent(percpu=True)
+                freq      = psutil.cpu_freq()
+                load1, load5, load15 = psutil.getloadavg()
+                vm = psutil.virtual_memory()
+                sw = psutil.swap_memory()
+                procs = sorted(
+                    psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]),
+                    key=lambda p: p.info.get("cpu_percent") or 0.0,
+                    reverse=True,
+                )[:5]
+
+                f.write(f"=== {ts} ===\n")
+                freq_str = f"{freq.current:.0f} MHz" if freq else "n/a"
+                f.write(f"CPU total: {cpu_total:.1f}%  freq: {freq_str}  "
+                        f"load avg: {load1:.2f} {load5:.2f} {load15:.2f}\n")
+                core_str = "  ".join(f"C{i}:{v:.0f}%" for i, v in enumerate(per_core))
+                f.write(f"Cores: {core_str}\n")
+                cached  = getattr(vm, "cached", None)
+                buffers = getattr(vm, "buffers", None)
+                mem_str = (
+                    f"Mem: used {vm.used/1e6:.0f} MB / {vm.total/1e6:.0f} MB  "
+                    f"avail {vm.available/1e6:.0f} MB"
+                )
+                if cached is not None:
+                    mem_str += f"  cached {cached/1e6:.0f} MB"
+                if buffers is not None:
+                    mem_str += f"  buffers {buffers/1e6:.0f} MB"
+                f.write(mem_str + "\n")
+                f.write(f"Swap: used {sw.used/1e6:.0f} MB / {sw.total/1e6:.0f} MB\n")
+                f.write(f"{'PID':>7}  {'CPU%':>6}  {'MEM MB':>8}  NAME\n")
+                for p in procs:
+                    try:
+                        rss = (p.info["memory_info"].rss if p.info.get("memory_info") else 0) / 1e6
+                        f.write(
+                            f"{p.info['pid']:>7}  {p.info['cpu_percent']:>6.1f}  "
+                            f"{rss:>8.1f}  {p.info['name']}\n"
+                        )
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                f.write("\n")
+                f.flush()
+
+    thread = threading.Thread(target=_log_loop, daemon=True, name="cpu_logger")
+    thread.start()
+    stop_event._thread = thread  # type: ignore[attr-defined]
+    print(f"CPU logger started -> {log_path}")
+    return stop_event
+
+
+def stop_cpu_logger(stop_event: threading.Event | None) -> None:
+    """Stop the background CPU/memory logger started by :func:`start_cpu_logger`."""
+    if stop_event is None:
+        return
+    stop_event.set()
+    thread = getattr(stop_event, "_thread", None)
+    if thread is not None:
+        thread.join(timeout=5)
+    print("CPU logger stopped")
 

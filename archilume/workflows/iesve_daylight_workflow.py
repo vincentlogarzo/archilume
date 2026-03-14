@@ -3,13 +3,10 @@ from pathlib import Path
 from typing import Optional
 import sys
 
-from archilume import (
-    ViewGenerator,
-    DaylightRenderer,
-    utils,
-    PhaseTimer,
-    config
-)
+from archilume import utils, config
+from archilume.utils import PhaseTimer
+from archilume.core.view_generator import ViewGenerator
+from archilume.core.rendering_pipelines import DaylightRenderer
 
 
 @dataclass
@@ -17,7 +14,7 @@ class IESVEDaylightWorkflow:
     """
     Orchestrates a daylight factor analysis pipeline using pre-built IESVE octree models.
 
-    Only works with 10K lux (10,000 lux) overcast sky octrees from IESVE.
+    Only works with 10K lux (10,000 lux) overcast sky octree's from IESVE.
     The octree must include the sky definition. DF values are derived by
     scaling rendered irradiance (pcomb -s 0.01) against the 10K lux reference.
     """
@@ -31,9 +28,9 @@ class IESVEDaylightWorkflow:
             octree_path:        Path | str,
             rendering_params:   Path | str,
             iesve_room_data:    Path | str,
+            project:            str,
             image_resolution:   int  = 2048,
             ffl_offset:         float = 0.0,
-            project:            str = None,
         ):
             self.paths = config.get_project_paths(project)
             base_dir = self.paths.inputs_dir

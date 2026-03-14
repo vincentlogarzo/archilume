@@ -11,6 +11,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 # Archilume imports
 from archilume import utils, config
 from archilume.utils import PhaseTimer
+from archilume.post.hdr2png_falsecolour import hdr2png_falsecolour
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -21,8 +22,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import time
 import subprocess
-import threading
-import psutil
 from PIL import Image
 import platform
 
@@ -58,11 +57,11 @@ class DaylightRenderer:
     """
 
     # Required
-    octree_path: Path
-    rdp_path: Path
-    x_res: int
-    view_files: List[Path]  # accepts a single Path or list; normalised to list in __post_init__
-    image_dir: Path
+    octree_path     : Path
+    rdp_path        : Path
+    x_res           : int
+    view_files      : List[Path]
+    image_dir       : Path
 
     # Optional with defaults
     y_res: Optional[int]        = field(default=None)
@@ -100,7 +99,7 @@ class DaylightRenderer:
         rendered_hdrs = []
 
         # Start CPU usage logger
-        cpu_logger = self._start_cpu_logger()
+        cpu_logger = utils.start_cpu_logger(self.image_dir / "cpu_log.txt")
 
         # Step 1: Render each view sequentially, all cores per view
         octree_base_name = self.octree_path.stem
@@ -120,152 +119,13 @@ class DaylightRenderer:
             rendered_hdrs.append(hdr_path)
 
         # Stop CPU usage logger
-        self._stop_cpu_logger(cpu_logger)
+        utils.stop_cpu_logger(cpu_logger)
 
-        # Step 2: Post-process each rendered HDR
+        # Step 2: Post-process each rendered HDR (legends generated once inside)
         for hdr_path in rendered_hdrs:
-            self._postprocess_hdr(hdr_path)
-
-        # Step 3: Generate legends (once)
-        self._generate_legends()
+            hdr2png_falsecolour(hdr_path, self.image_dir)
 
         print(f"\nDaylight pipeline complete. {len(rendered_hdrs)} view(s) rendered to {self.image_dir}")
-
-    def _postprocess_hdr(self, hdr_path: Path) -> None:
-        """Generate falsecolor and contour overlay outputs for a single HDR."""
-        stem = hdr_path.stem
-        d = self.image_dir
-
-        dimmed          = d / f"{stem}_dimmed_temp.hdr"
-        contour         = d / f'{stem}_df_cntr.hdr'
-        contour_tiff    = d / f'{stem}_df_cntr.tiff'
-        falsecolor      = d / f'{stem}_df_false.tiff'
-
-        commands = [
-            # Falsecolor visualisation
-            rf"pcomb -s 0.01 {hdr_path} | falsecolor -s 4 -n 20 -pal spec -l 'DF %' -lw 0 | ra_tiff - {falsecolor}",
-
-            # Contour HDR
-            rf"pcomb -s 0.01 {hdr_path} | falsecolor -cl -s 2 -n 4 -l 'DF %' -lw 0 -lh 0 > {contour}",
-
-            # Dimmed background (written to file to avoid bash process substitution)
-            rf"pfilt -e 0.5 {hdr_path} > {dimmed}",
-
-            # Contour overlay: composite contour over dimmed background → tiff
-            rf"pcomb -e 'cond=ri(2)+gi(2)+bi(2)' -e 'ro=if(cond-.01,ri(2),ri(1))' -e 'go=if(cond-.01,gi(2),gi(1))' -e 'bo=if(cond-.01,bi(2),bi(1))' {dimmed} {contour} | ra_tiff - {contour_tiff}",
-        ]
-
-        utils.execute_new_radiance_commands(commands, number_of_workers=1)
-
-        # Convert output TIFFs to PNG
-        for tiff in (falsecolor, contour_tiff):
-            if tiff.exists() and tiff.stat().st_size >= 1000:
-                Image.open(tiff).save(tiff.with_suffix('.png'), format='PNG', optimize=True, compress_level=9)
-
-        for tmp in (dimmed, contour, falsecolor, contour_tiff):
-            if tmp.exists():
-                tmp.unlink()
-
-    def _generate_legends(self) -> None:
-        """Generate standalone falsecolor and contour legend TIFF images."""
-
-        df_false_legend = 'df_false_legend.tiff'
-        df_cntr_legend  = 'df_cntr_legend.tiff'
-
-        commands = [
-            # Falsecolor legend
-            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -s 4 -n 20 -pal spec -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_false_legend}',
-
-            # Contour legend
-            rf'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | falsecolor -cl -s 2 -n 4 -l "DF %" -lw 400 -lh 1600 | ra_tiff - {self.image_dir / df_cntr_legend}',
-        ]
-
-        utils.execute_new_radiance_commands(commands, number_of_workers=1)
-
-        legend_tiffs = [
-            self.image_dir / df_false_legend,
-            self.image_dir / df_cntr_legend,
-        ]
-        for tiff in legend_tiffs:
-            if tiff.exists() and tiff.stat().st_size >= 1000:
-                Image.open(tiff).save(tiff.with_suffix('.png'), format='PNG', optimize=True, compress_level=9)
-                tiff.unlink()
-
-    def _start_cpu_logger(self) -> threading.Event | None:
-        """Start a background CPU/memory logger using psutil. Returns a stop event."""
-        log_path = self.image_dir / "cpu_log.txt"
-        stop_event = threading.Event()
-
-        def _log_loop():
-            # Prime per-cpu percent (first call returns 0.0)
-            psutil.cpu_percent(percpu=True)
-            with open(log_path, "w") as f:
-                while not stop_event.wait(timeout=30.0):
-                    ts = time.strftime("%H:%M:%S")
-                    cpu_total = psutil.cpu_percent(interval=None)
-                    per_core = psutil.cpu_percent(percpu=True)
-                    freq = psutil.cpu_freq()
-                    load1, load5, load15 = psutil.getloadavg()
-                    vm = psutil.virtual_memory()
-                    sw = psutil.swap_memory()
-                    procs = sorted(
-                        psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]),
-                        key=lambda p: p.info.get("cpu_percent") or 0.0,
-                        reverse=True,
-                    )[:5]
-
-                    f.write(f"=== {ts} ===\n")
-                    # CPU summary
-                    freq_str = f"{freq.current:.0f} MHz" if freq else "n/a"
-                    f.write(f"CPU total: {cpu_total:.1f}%  freq: {freq_str}  "
-                            f"load avg: {load1:.2f} {load5:.2f} {load15:.2f}\n")
-                    # Per-core
-                    core_str = "  ".join(f"C{i}:{v:.0f}%" for i, v in enumerate(per_core))
-                    f.write(f"Cores: {core_str}\n")
-                    # Memory (cached/buffers are Linux-only psutil fields)
-                    cached = getattr(vm, "cached", None)
-                    buffers = getattr(vm, "buffers", None)
-                    mem_str = (
-                        f"Mem: used {vm.used/1e6:.0f} MB / {vm.total/1e6:.0f} MB  "
-                        f"avail {vm.available/1e6:.0f} MB"
-                    )
-                    if cached is not None:
-                        mem_str += f"  cached {cached/1e6:.0f} MB"
-                    if buffers is not None:
-                        mem_str += f"  buffers {buffers/1e6:.0f} MB"
-                    f.write(mem_str + "\n")
-                    f.write(
-                        f"Swap: used {sw.used/1e6:.0f} MB / {sw.total/1e6:.0f} MB\n"
-                    )
-                    # Top processes
-                    f.write(f"{'PID':>7}  {'CPU%':>6}  {'MEM MB':>8}  NAME\n")
-                    for p in procs:
-                        try:
-                            rss = (p.info["memory_info"].rss if p.info.get("memory_info") else 0) / 1e6
-                            f.write(
-                                f"{p.info['pid']:>7}  {p.info['cpu_percent']:>6.1f}  "
-                                f"{rss:>8.1f}  {p.info['name']}\n"
-                            )
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            pass
-                    f.write("\n")
-                    f.flush()
-
-        thread = threading.Thread(target=_log_loop, daemon=True, name="cpu_logger")
-        thread.start()
-        stop_event._thread = thread  # type: ignore[attr-defined]
-        print(f"CPU logger started -> {log_path}")
-        return stop_event
-
-    def _stop_cpu_logger(self, stop_event: threading.Event | None) -> None:
-        """Stop the background CPU/memory logger."""
-        if stop_event is None:
-            return
-        stop_event.set()
-        thread = getattr(stop_event, "_thread", None)
-        if thread is not None:
-            thread.join(timeout=5)
-        print("CPU logger stopped")
 
 
 @dataclass
@@ -296,14 +156,14 @@ class SunlightRenderer:
     Auto-Generated Attributes (populated during initialization):
         sky_files (List[Path]): Discovered sky files from skies_dir (*.sky)
         view_files (List[Path]): Discovered view files from views_dir (*.vp)
-        overcast_octree_command (str): Command for overcast sky octree generation
-        rpict_daylight_overture_commands (List[str]): Overture rendering commands
-        rpict_daylight_med_qual_commands (List[str]): Medium quality rendering commands
+        overcast_octree_cmd (str): Command for overcast sky octree generation
+        rpict_daylight_overture_cmds (List[str]): Overture rendering commands
+        rpict_daylight_med_qual_cmds (List[str]): Medium quality rendering commands
         temp_octree_with_sky_paths (List[Path]): Temporary octree file paths
-        oconv_commands (List[str]): Octree compilation commands
-        rpict_direct_sun_commands (List[str]): Direct sun rendering commands
-        pcomb_commands (List[str]): Image composite commands
-        ra_tiff_commands (List[str]): TIFF conversion commands
+        oconv_cmds (List[str]): Octree compilation commands
+        rpict_direct_sun_cmds (List[str]): Direct sun rendering commands
+        pcomb_cmds (List[str]): Image composite commands
+        ra_tiff_cmds (List[str]): TIFF conversion commands
     """
 
     # Required fields - no defaults
@@ -322,16 +182,16 @@ class SunlightRenderer:
     gpu_quality:                        str         = 'stand'
 
     # Fields that will be populated after initialization
-    sky_files:                          List[Path]  = field(default_factory=list, init=False)
-    view_files:                         List[Path]  = field(default_factory=list, init=False)
-    overcast_octree_command:            str | None  = field(default=None, init=False)
-    rpict_daylight_overture_commands:   List[str]   = field(default_factory=list, init=False)
-    rpict_daylight_med_qual_commands:   List[str]   = field(default_factory=list, init=False)
-    temp_octree_with_sky_paths:         List[Path]  = field(default_factory=list, init=False)
-    oconv_commands:                     List[str]   = field(default_factory=list, init=False)
-    rpict_direct_sun_commands:          List[str]   = field(default_factory=list, init=False)
-    pcomb_commands:                     List[str]   = field(default_factory=list, init=False)
-    ra_tiff_commands:                   List[str]   = field(default_factory=list, init=False)
+    sky_files:                      List[Path]  = field(default_factory=list, init=False)
+    view_files:                     List[Path]  = field(default_factory=list, init=False)
+    overcast_octree_cmd:            str | None  = field(default=None, init=False)
+    rpict_daylight_overture_cmds:   List[str]   = field(default_factory=list, init=False)
+    rpict_daylight_med_qual_cmds:   List[str]   = field(default_factory=list, init=False)
+    temp_octree_with_sky_paths:     List[Path]  = field(default_factory=list, init=False)
+    oconv_cmds:                     List[str]   = field(default_factory=list, init=False)
+    rpict_direct_sun_cmds:          List[str]   = field(default_factory=list, init=False)
+    pcomb_cmds:                     List[str]   = field(default_factory=list, init=False)
+    ra_tiff_cmds:                   List[str]   = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """
@@ -389,18 +249,18 @@ class SunlightRenderer:
         # --- Phase 0: Prepare commands ---
         with timer("    Command preparation"):
             # Generate overcast sky rendering commands
-            (self.overcast_octree_command, self.rpict_daylight_overture_commands,
-             self.rpict_daylight_med_qual_commands) = self._generate_overcast_sky_rendering_commands()
+            (self.overcast_octree_cmd, self.rpict_daylight_overture_cmds,
+             self.rpict_daylight_med_qual_cmds) = self._generate_overcast_sky_rendering_commands()
 
             # Generate sunny sky rendering commands
-            (self.temp_octree_with_sky_paths, self.oconv_commands, self.rpict_direct_sun_commands,
-             self.pcomb_ra_tiff_commands) = self._generate_sunny_sky_rendering_commands()
+            (self.temp_octree_with_sky_paths, self.oconv_cmds, self.rpict_direct_sun_cmds,
+             self.pcomb_ra_tiff_cmds) = self._generate_sunny_sky_rendering_commands()
 
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
         with timer("    Overcast octree creation"):
             utils.execute_new_radiance_commands(
-                self.overcast_octree_command, number_of_workers=config.WORKERS["overcast_octree"])
+                self.overcast_octree_cmd, number_of_workers=config.WORKERS["overcast_octree"])
 
         # --- Phase 2: Render overcast sky conditions (GPU or CPU) ---
         with timer(f"    Overcast rendering ({self.rendering_mode.upper()})"):
@@ -420,13 +280,13 @@ class SunlightRenderer:
             utils.copy_files(self.skyless_octree_path,
                              self.temp_octree_with_sky_paths)
             utils.execute_new_radiance_commands(
-                self.oconv_commands, number_of_workers=config.WORKERS["oconv_compile"])
+                self.oconv_cmds, number_of_workers=config.WORKERS["oconv_compile"])
             utils.delete_files(self.temp_octree_with_sky_paths)
 
         # --- Phase 4: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
         with timer("    Sunlight rendering"):
             utils.execute_new_radiance_commands(
-                self.rpict_direct_sun_commands, number_of_workers=config.WORKERS["rpict_direct_sun"])
+                self.rpict_direct_sun_cmds, number_of_workers=config.WORKERS["rpict_direct_sun"])
 
         # Wait for GPU/CPU overcast rendering to complete before combining
         phase_name = "    GPU rendering (total)" if self.rendering_mode == 'gpu' else "    Indirect diffuse rendering"
@@ -435,7 +295,7 @@ class SunlightRenderer:
 
         with timer("    HDR combination & TIFF conversion"):
             utils.execute_new_radiance_commands(
-                self.pcomb_ra_tiff_commands, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
+                self.pcomb_ra_tiff_cmds, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
 
         # --- Phase 5: Convert TIFF files to PNG format ---
         with timer("    TIFF to PNG conversion"):
@@ -476,9 +336,9 @@ class SunlightRenderer:
 
         Returns:
             tuple[str, list[str], list[str]]: A 3-tuple containing:
-                - overcast_octree_command (str): Command to combine octree with overcast sky file.
+                - overcast_octree_cmd (str): Command to combine octree with overcast sky file.
                 - rpict_low_qual_commands (list[str]): Commands for low quality rendering (512x512, ambient file warming).
-                - rpict_med_qual_commands (list[str]): Commands for medium quality rendering (using instance x_res/y_res).
+                - rpict_med_qual_cmds (list[str]): Commands for medium quality rendering (using instance x_res/y_res).
 
         Note:
             # example radiance command warming up the ambient file:
@@ -490,9 +350,9 @@ class SunlightRenderer:
         octree_base_name = self.skyless_octree_path.stem.replace(
             '_skyless', '')
         octree_with_overcast_sky_path = self.skyless_octree_path.parent / f"{octree_base_name}_{self.overcast_sky_file_path.stem}.oct"
-        overcast_octree_command = rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}"
+        overcast_octree_cmd = rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}"
 
-        rpict_overture_commands, rpict_med_qual_commands = [], []
+        rpict_overture_cmds, rpict_med_qual_cmds = [], []
 
         for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
             
@@ -505,24 +365,24 @@ class SunlightRenderer:
             # constructed commands that will be executed in parallel from each other until all are complete.
             if IS_LINUX:
                 # Use rtpict on Linux for multi-processor rendering
-                rpict_overture_command = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
-                rpict_med_qual_command = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
+                rpict_overture_cmd = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
+                rpict_med_qual_cmd = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
             else:
                 # Use standard rpict on Windows/other platforms
-                rpict_overture_command = rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
-                rpict_med_qual_command = rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
+                rpict_overture_cmd = rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
+                rpict_med_qual_cmd = rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
 
-            rpict_overture_commands.append(rpict_overture_command)
-            rpict_med_qual_commands.append(rpict_med_qual_command)
+            rpict_overture_cmds.append(rpict_overture_cmd)
+            rpict_med_qual_cmds.append(rpict_med_qual_cmd)
 
         # Log summary before exit
         logger.info(
-            f"Generated {len(rpict_overture_commands)} low-quality and "
-            f"{len(rpict_med_qual_commands)} medium-quality overcast rendering commands "
+            f"Generated {len(rpict_overture_cmds)} low-quality and "
+            f"{len(rpict_med_qual_cmds)} medium-quality overcast rendering commands "
             f"for {len(self.view_files)} views at resolution {self.x_res}x{self.y_res}"
         )
 
-        return overcast_octree_command, rpict_overture_commands, rpict_med_qual_commands
+        return overcast_octree_cmd, rpict_overture_cmds, rpict_med_qual_cmds
 
     def _generate_sunny_sky_rendering_commands(self, ab: int = 0, ad: int = 128, ar: int = 64, as_val: int = 64, ps: int = 1, lw: float = 0.005) -> tuple[list[Path], list[str], list[str], list[str]]:
         """
@@ -544,17 +404,17 @@ class SunlightRenderer:
         Returns:
             tuple: A 4-tuple containing:
                 - temp_octree_with_sky_paths (list[Path]): Temporary octree file paths for oconv input.
-                - oconv_commands (list[str]): Commands to combine octree with sky files.
-                - rpict_commands (list[str]): Commands to render scenes from different viewpoints.
-                - pcomb_commands (list[str]): Commands to combine indirect and direct hdr files.
-                - ra_tiff_commands (list[str]): Commands to convert HDR output to tiff format with 8-bit flowting points precision.
+                - oconv_cmds (list[str]): Commands to combine octree with sky files.
+                - rpict_cmds (list[str]): Commands to render scenes from different viewpoints.
+                - pcomb_cmds (list[str]): Commands to combine indirect and direct hdr files.
+                - ra_tiff_cmds (list[str]): Commands to convert HDR output to tiff format with 8-bit flowting points precision.
 
         Note:
             Output files are named using the pattern: {octree_base}_{view_name}_{sky_name}.{ext}
             Duplicate oconv commands are automatically removed while preserving order.
         """
 
-        rpict_commands, oconv_commands, temp_octree_with_sky_paths, pcomb_ra_tiff_commands = [], [], [], []
+        rpict_cmds, oconv_cmds, temp_octree_with_sky_paths, pcomb_ra_tiff_cmds = [], [], [], []
 
         octree_base_name = self.skyless_octree_path.stem.replace(
             '_skyless', '')
@@ -570,28 +430,28 @@ class SunlightRenderer:
 
             # constructed commands that will be executed in parallel from each other untill all are complete.
             temp_octree_with_sky_path = self.skyless_octree_path.parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
-            oconv_command, rpict_command, pcomb_ra_tiff_command = [
+            oconv_cmd, rpict_cmd, pcomb_ra_tiff_cmd = [
                 rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}",
                 rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
                 rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | pfilt -1 | ra_tiff -e -4 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
             ]
 
             temp_octree_with_sky_paths.append(temp_octree_with_sky_path)
-            oconv_commands.append(oconv_command)
-            rpict_commands.append(rpict_command)
-            pcomb_ra_tiff_commands.append(pcomb_ra_tiff_command)
+            oconv_cmds.append(oconv_cmd)
+            rpict_cmds.append(rpict_cmd)
+            pcomb_ra_tiff_cmds.append(pcomb_ra_tiff_cmd)
 
         # get rid of duplicate oconv commands while retaining list order
-        oconv_commands = list(dict.fromkeys(oconv_commands))
+        oconv_cmds = list(dict.fromkeys(oconv_cmds))
 
         # Log summary before exit
         logger.info(
-            f"Generated sunny sky rendering commands: {len(oconv_commands)} oconv, "
-            f"{len(rpict_commands)} rpict, {len(pcomb_ra_tiff_commands)} pcomb_ra_tiff"
+            f"Generated sunny sky rendering commands: {len(oconv_cmds)} oconv, "
+            f"{len(rpict_cmds)} rpict, {len(pcomb_ra_tiff_cmds)} pcomb_ra_tiff"
             f"for {len(self.sky_files)} sky files {len(self.view_files)} views at resolution {self.x_res}x{self.y_res}"
         )
 
-        return temp_octree_with_sky_paths, oconv_commands, rpict_commands, pcomb_ra_tiff_commands
+        return temp_octree_with_sky_paths, oconv_cmds, rpict_cmds, pcomb_ra_tiff_cmds
 
     def _render_overcast_gpu(self, octree_base_name: str, overcast_sky_name: str, gpu_quality: str) -> tuple:
         """Handle GPU-based overcast rendering with file checking. Returns (executor, future)."""
@@ -631,7 +491,7 @@ class SunlightRenderer:
 
     def _launch_gpu_rendering(self, octree_name: str, gpu_quality: str, octree_base_name: str, overcast_sky_name: str):
         """Launch asynchronous GPU rendering via PowerShell/Accelerad."""
-        batch_command = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\core\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res}'
+        batch_cmd = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\core\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res}'
 
         project_root = os.getcwd()
         env = os.environ.copy()
@@ -640,7 +500,7 @@ class SunlightRenderer:
         print(
             f"Launching GPU rendering in background): Quality={gpu_quality}, Resolution={self.x_res}")
         gpu_process = subprocess.Popen(
-            batch_command, shell=True, env=env, cwd=project_root)
+            batch_cmd, shell=True, env=env, cwd=project_root)
 
         def wait_for_gpu_completion():
             """Wait for GPU process and verify outputs."""
@@ -694,14 +554,14 @@ class SunlightRenderer:
 
             # Run overture commands with calculated parallelism
             utils.execute_new_radiance_commands(
-                self.rpict_daylight_overture_commands,
+                self.rpict_daylight_overture_cmds,
                 number_of_workers=max_parallel_renders)
 
             # Run medium quality commands with calculated parallelism in background
             executor = ThreadPoolExecutor(max_workers=1)
             future = executor.submit(
                 utils.execute_new_radiance_commands,
-                self.rpict_daylight_med_qual_commands,
+                self.rpict_daylight_med_qual_cmds,
                 number_of_workers=max_parallel_renders)
 
         return executor, future

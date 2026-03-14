@@ -1,13 +1,23 @@
 {
   "name": "Archilume Development Container",
-  "image": "mcr.microsoft.com/devcontainers/python:3.12",
 
-  "features": {
-    "ghcr.io/devcontainers/features/git:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+  // Build from our Dockerfile instead of pulling a pre-built image directly.
+  // context: ".." means the build context is the repo root (so COPY pyproject.toml works).
+  // dockerfile: path to the Dockerfile, relative to the devcontainer.json location.
+  //
+  // OPTION: To use a pre-built image from a registry instead (faster for team onboarding),
+  // replace the "build" block with:
+  //   "image": "ghcr.io/<your-org>/archilume-dev:latest"
+  // and remove the "build" block entirely.
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
   },
 
-  "postCreateCommand": "bash .devcontainer/setup.sh",
+  // postCreateCommand runs AFTER the container is created, every time.
+  // Since our Dockerfile already installs everything, we don't need setup.sh.
+  // This is now just a lightweight verification step.
+  "postCreateCommand": "python --version && oconv 2>&1 | head -1 || echo 'Radiance ready'",
 
   "customizations": {
     "vscode": {
@@ -42,20 +52,24 @@
 
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:/usr/local/radiance/bin:${containerEnv:HOME}/.local/bin:${containerEnv:HOME}/google-cloud-sdk/bin",
-    "RAYPATH": "/usr/local/radiance/lib",
+    "RAYPATH": "/usr/local/accelerad/lib:/usr/local/radiance/lib",
     "UV_LINK_MODE": "copy",
     "CLAUDE_API_KEY": "${localEnv:CLAUDE_API_KEY}",
-    "TZ": "${localEnv:TZ}"
+    "TZ": "${localEnv:TZ}",
+    // X11 display forwarding — routes GUI windows from the container back to
+    // the Windows host via VcXsrv. Users must have VcXsrv running on Windows
+    // with "Disable access control" checked before opening the container.
+    // VcXsrv download: https://sourceforge.net/projects/vcxsrv/
+    "DISPLAY": "${localEnv:DISPLAY}"
   },
 
   "mounts": [
-    // GitHub CLI config mount - only if directory exists
-    // "source=${localEnv:HOME}${localEnv:USERPROFILE}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
-
-    // Mount host ~/.ssh into the container so SSH keys and config are shared
-    // with the Windows host. On WSL this is the same as C:\Users\<you>\.ssh\
-    // Commented out due to mount path resolution issues on Windows WSL
-    // "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
+    // Projects folder: bind-mount a folder from the Windows host into the
+    // container at /workspace/projects. Users drop input files here (HDR,
+    // PDFs, IFC) and the app reads/writes project data to the same location.
+    // The host path uses USERPROFILE (Windows: C:\Users\<name>).
+    // Create the folder on Windows first: mkdir %USERPROFILE%\archilume-projects
+    "source=${localEnv:USERPROFILE}/archilume-projects,target=/workspace/projects,type=bind,consistency=cached"
   ],
 
   "forwardPorts": [],
