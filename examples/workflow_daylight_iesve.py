@@ -40,6 +40,12 @@ def run_daylight_analysis():
         ffl_offset                  = 0.0,  # Camera height above floor (m)
     )
 
+    smart_cleanup(
+        inputs.paths,
+        resolution_changed          = True,
+        rendering_quality_changed   = True,
+    )
+
     workflow = IESVEDaylightWorkflow()
     workflow.run(inputs)
 

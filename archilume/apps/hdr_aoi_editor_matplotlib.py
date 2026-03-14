@@ -144,10 +144,11 @@ import imageio.v2 as imageio
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 from matplotlib.widgets import PolygonSelector, TextBox, Button, RadioButtons, Slider
-from matplotlib.patches import Polygon, FancyBboxPatch
+from matplotlib.patches import Polygon, FancyBboxPatch, Arc, PathPatch
 from matplotlib.path import Path as MplPath
 import matplotlib.patheffects as patheffects
 from matplotlib.transforms import Affine2D
+from matplotlib import font_manager as _fm
 import numpy as np
 
 # Archilume imports  (Hdr2Wpd deferred — pulls in pandas/openpyxl/skimage)
@@ -171,40 +172,13 @@ def _get_Hdr2Wpd():
     return _Hdr2Wpd
 
 
-def _load_pil_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Load a Unicode-capable TrueType font at *size* points.
-
-    Resolution order:
-      1. Matplotlib's bundled DejaVu Sans (always present, cross-platform).
-      2. System DejaVu / Arial as fallback in case font_manager returns a path
-         that PIL cannot open (very rare).
-      3. PIL bitmap default as last resort.
-    """
-    from matplotlib import font_manager as _fm
+def _load_pil_font(size: int, bold: bool = False) -> Union[ImageFont.FreeTypeFont, ImageFont.ImageFont]:
     style = 'bold' if bold else 'normal'
-    candidates = []
+    font_path = _fm.findfont(_fm.FontProperties(family='DejaVu Sans', weight=style))
     try:
-        candidates.append(_fm.findfont(_fm.FontProperties(family='DejaVu Sans', weight=style)))
-    except Exception:
-        pass
-    # Common system paths as insurance
-    if bold:
-        candidates += [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-        ]
-    else:
-        candidates += [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-        ]
-    for path in candidates:
-        try:
-            return ImageFont.truetype(path, size)
-        except (OSError, IOError, TypeError):
-            pass
-    return ImageFont.load_default()
+        return ImageFont.truetype(font_path, size)
+    except (OSError, IOError, TypeError):
+        return ImageFont.load_default()
 
 
 class HdrAoiEditor:
@@ -245,6 +219,17 @@ class HdrAoiEditor:
         # Project dialog is shown immediately in launch().
         self.project = project
         self._iesve_room_data_path: Optional[Path] = None
+
+        # Path attributes — always set by _init_project_paths or _set_blank_state below.
+        # Declared here so Pylance can resolve them without branch-path analysis.
+        _placeholder = config.PROJECTS_DIR / "_no_project"
+        self.project_input_dir: Path = _placeholder
+        self.project_aoi_dir:   Path = _placeholder / "aoi"
+        self.archive_dir:       Path = _placeholder / "archive"
+        self.wpd_dir:           Path = _placeholder / "wpd"
+        self.image_dir:         Path = _placeholder / "image"
+        self._overlay_pdf_path: Optional[Path] = None
+
         if project:
             self._init_project_paths(project, image_dir, pdf_path, iesve_room_data)
         else:
@@ -444,6 +429,10 @@ class HdrAoiEditor:
         # Prevent auto-saves during the initial loading and rendering phase
         self._loading:              bool                = True
 
+        # Attributes assigned lazily outside __init__ — declared here for Pylance
+        self._overlay_needs_rasterize: bool             = False
+        self._last_win_capture:     float               = 0.0
+
     # === PROJECT PATH SETUP ====================================================
 
     def _init_project_paths(self, project: str,
@@ -498,7 +487,7 @@ class HdrAoiEditor:
                 print(f"Warning: pdf_path not found: {pdf_path}")
                 pdf_path = None
         log.debug("_init_project_paths: resolved _overlay_pdf_path = %s", pdf_path)
-        self._overlay_pdf_path: Optional[Path] = pdf_path
+        self._overlay_pdf_path = pdf_path
 
         # IESVE room data CSV
         if iesve_room_data is not None:
@@ -966,6 +955,30 @@ class HdrAoiEditor:
         ax.add_patch(PathPatch(self._svg_to_mpl_path(self._RESIZE_ICON_SVG),
                                transform=ax.transData, facecolor='#333333',
                                edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_restart_icon(self, ax):
+        """Draw the meteor-icons:power icon onto the button axes.
+
+        SVG: M12 2v10  M6 4a10 10 0 1 0 12 0  (24×24 viewbox, stroked)
+        Arc: start (6,4)→(18,4), r=10, large-arc CCW → centre (12,12).
+        Drawn as parametric line segments to stay within the axes bounds.
+        """
+        pad = 1
+        ax.set_xlim(-pad, 24 + pad)
+        ax.set_ylim(24 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.axis('off')
+        lw = 1.8
+        color = '#333333'
+        # Vertical stem: (12,2) to (12,12)
+        ax.plot([12, 12], [2, 12], color=color, linewidth=lw,
+                solid_capstyle='round', zorder=4, clip_on=False)
+        # Arc: centre (12,12), r=10. Gap at top — angles 53°..127° (CCW) are excluded.
+        # Draw the remaining ~286° sweep as parametric points.
+        t = np.linspace(np.radians(127), np.radians(53) + 2 * np.pi, 120)
+        ax.plot(12 + 10 * np.cos(t), 12 - 10 * np.sin(t),
+                color=color, linewidth=lw, solid_capstyle='round',
+                zorder=4, clip_on=False)
 
     def _draw_crosshairs_icon(self, ax):
         """Draw the oui:crosshairs SVG icon onto the button axes."""
@@ -2124,15 +2137,32 @@ class HdrAoiEditor:
         step = self._SB_STEP
         tr_h = sb_w  # square buttons
 
-        # Grey background strip for the left sidebar — full height
-        self.ax_left_sidebar_bg = self._axes(0.0, 0.0, sb_w + 2 * sb_x, 1.0)
-        self.ax_left_sidebar_bg.set_facecolor('#E8E8E3')
+        # Rounded-rect background for the left sidebar — matches the browser pane style
+        lsb_w = sb_w + 2 * sb_x   # total width of the sidebar strip in figure coords
+        self.ax_left_sidebar_bg = self._axes(0.0, 0.0, lsb_w, 1.0)
+        self.ax_left_sidebar_bg.set_facecolor('none')
+        self.ax_left_sidebar_bg.set_xlim(0, 1)
+        self.ax_left_sidebar_bg.set_ylim(0, 1)
         self.ax_left_sidebar_bg.tick_params(left=False, bottom=False,
                                             labelleft=False, labelbottom=False)
         for spine in self.ax_left_sidebar_bg.spines.values():
             spine.set_visible(False)
         self.ax_left_sidebar_bg.set_zorder(0)
         self.ax_left_sidebar_bg.set_navigate(False)
+        fig_w, fig_h = self.fig.get_size_inches()
+        fig_dpi = self.fig.dpi
+        ax_w_px = lsb_w * fig_w * fig_dpi
+        ax_h_px = fig_h * fig_dpi
+        corner_px = 4
+        rx = corner_px / ax_w_px
+        ry = corner_px / ax_h_px
+        rr_path = self._rounded_rect_path(0.04, 0.005, 0.92, 0.99, rx, ry)
+        lsb_box = PathPatch(
+            rr_path,
+            facecolor='#FAFAF8', edgecolor='#CCCCCC', linewidth=0.4,
+            transform=self.ax_left_sidebar_bg.transAxes, clip_on=False,
+            zorder=0)
+        self.ax_left_sidebar_bg.add_patch(lsb_box)
 
         # 0. Menu — toggle right sidebar panel
         self.btn_menu = self._make_button(
@@ -2502,8 +2532,38 @@ class HdrAoiEditor:
         self.fig.canvas.mpl_connect('axes_enter_event', _show_ortho_tooltip)
         self.fig.canvas.mpl_connect('axes_leave_event', _hide_ortho_tooltip)
 
-        # 12. Label Size slider (vertical, below last icon button)
-        slider_y = sb_top + 12 * step
+        # 12. Restart Editor — pinned to the bottom of the sidebar
+        self.btn_restart = self._make_button(
+            sb_x, 1.0 - tr_h - gap, tr_h, tr_h,
+            '', self._on_restart_click)
+        self._draw_restart_icon(self.btn_restart.ax)
+
+        self._restart_tooltip = self.fig.text(
+            0, 0, 'Restart Editor',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
+
+        def _show_restart_tooltip(event):
+            if event.inaxes == self.btn_restart.ax:
+                ax = self.btn_restart.ax
+                x = ax.get_position().x1 + 0.005
+                y = ax.get_position().y0
+                self._restart_tooltip.set_position((x, y))
+                self._restart_tooltip.set_visible(True)
+                self.fig.canvas.draw_idle()
+
+        def _hide_restart_tooltip(event):
+            if self._restart_tooltip.get_visible():
+                self._restart_tooltip.set_visible(False)
+                self.fig.canvas.draw_idle()
+
+        self.fig.canvas.mpl_connect('axes_enter_event', _show_restart_tooltip)
+        self.fig.canvas.mpl_connect('axes_leave_event', _hide_restart_tooltip)
+
+        # 13. Label Size slider (vertical, below last icon button)
+        slider_y = sb_top + 13 * step
         slider_ax = self._axes(sb_x, slider_y, sb_w, 0.12)
         slider_ax.set_facecolor('#F5F5F5')
         for spine in slider_ax.spines.values():
@@ -3334,39 +3394,76 @@ class HdrAoiEditor:
             df_lines = self._room_df_results.get(idx, [])
             n_df = len(df_lines) if (is_current_floor and df_lines) else 0
             line_step = self._df_line_step()
-            name_anchor = self._compute_label_anchor(pole, verts, n_df, line_step)
+            name_step = line_step * 0.7   # tighter gap between last DF line and room name
+            # Total lines: n_df lines + 1 room name (name is last)
+            n_total = n_df + 1 if n_df > 0 else 1
+            all_lines = list(df_lines) + [label] if (n_df > 0 and is_current_floor) else [label]
+            block_w = self._annotation_block_width_data(all_lines)
+            anchor = self._compute_label_anchor(pole, verts, n_total, line_step, name_step, block_w)
 
-            fs_name = self._zoom_fontsize()
-            label_text = self.ax.text(
-                name_anchor[0], name_anchor[1], label,
-                color='white', fontsize=fs_name, fontweight='bold',
-                ha='center', va='center', clip_on=True,
-                path_effects=[patheffects.withStroke(linewidth=fs_name * 0.20, foreground='black')],
-            )
-            label_text.set_clip_path(self.ax.patch)
-            label_text._label_pole   = pole
-            label_text._label_verts  = verts
-            label_text._label_n_df   = n_df
-            self._room_label_cache[idx] = label_text
+            # Layout order (top to bottom):
+            #   line 0: area result  "X.XX m² (##%)"   — base 8.5, coloured
+            #   line 1: DF target    "@ Y% DF"         — base 6.5, white
+            #   line 2: room name                       — base 6.5, white, bold
+            # When no DF results, just the room name at position 0.
 
-            # DF results as smaller subtext below the room name
             if df_lines and is_current_floor:
+                # Parse percentage for colour thresholds
+                _pct_match = re.search(r'\((\d+(?:\.\d+)?)%\)', df_lines[0]) if df_lines else None
+                _pct_val   = float(_pct_match.group(1)) if _pct_match else None
+                if _pct_val is None or _pct_val >= 90:
+                    _bracket_colour = '#000000'
+                elif _pct_val >= 50:
+                    _bracket_colour = '#E97132'
+                else:
+                    _bracket_colour = '#EE0000'
+
                 for line_i, line in enumerate(df_lines):
-                    dy = 1.2 * line_step + line_i * line_step * 0.7
-                    fs_df = self._zoom_fontsize(base=6.5)
+                    dy = line_i * line_step
+                    # line 0 = area result (base 8.5), line 1 = threshold (base 6.5)
+                    df_base = 8.5 if line_i % 2 == 0 else 6.5
+                    fs_df = self._zoom_fontsize(base=df_base)
+                    text_colour = _bracket_colour if line_i % 2 == 0 else 'white'
+                    no_outline = (text_colour == '#000000')
+                    stroke_col = 'white' if no_outline else 'black'
+                    stroke_lw = fs_df * 0.06 if no_outline else fs_df * 0.12
+                    path_fx = [patheffects.withStroke(linewidth=stroke_lw, foreground=stroke_col)]
+                    fw = 'bold' if no_outline else 'normal'
                     df_text = self.ax.text(
-                        name_anchor[0], name_anchor[1] + dy, line,
-                        color='white', fontsize=fs_df, fontweight='bold',
-                        ha='center', va='center', clip_on=True,
-                        path_effects=[patheffects.withStroke(linewidth=fs_df * 0.20, foreground='black')],
+                        anchor[0], anchor[1] + dy, line,
+                        color=text_colour, fontsize=fs_df, fontweight=fw, fontfamily='DejaVu Sans',
+                        ha='left', va='center', clip_on=True,
+                        path_effects=path_fx,
                     )
                     df_text.set_clip_path(self.ax.patch)
-                    # Store pole + verts + line index for repositioning on zoom/scale change
-                    df_text._df_pole   = pole
-                    df_text._df_verts  = verts
-                    df_text._df_n_df   = n_df
-                    df_text._df_line_i = line_i
+                    df_text._df_pole       = pole
+                    df_text._df_verts      = verts
+                    df_text._df_n_df       = n_df
+                    df_text._df_line_i     = line_i
+                    df_text._df_base       = df_base
+                    df_text._df_no_outline = no_outline
+                    df_text._df_all_lines  = all_lines
                     self._df_text_cache.append(df_text)
+
+            # Room name — last line (after DF lines, or at anchor if no DF)
+            # Offset = (n_df - 1) * line_step + name_step, same formula as block_h
+            if n_df > 0 and is_current_floor:
+                name_dy = (n_df - 1) * line_step + name_step
+            else:
+                name_dy = 0
+            fs_name = self._zoom_fontsize(base=6.5)
+            label_text = self.ax.text(
+                anchor[0], anchor[1] + name_dy, label,
+                color='white', fontsize=fs_name, fontweight='normal', fontfamily='DejaVu Sans',
+                ha='left', va='center', clip_on=True,
+                path_effects=[patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')],
+            )
+            label_text.set_clip_path(self.ax.patch)
+            label_text._label_pole      = pole
+            label_text._label_verts     = verts
+            label_text._label_n_df      = n_df
+            label_text._label_all_lines = all_lines
+            self._room_label_cache[idx] = label_text
 
     def _update_room_visuals(self):
         """Update room colours without a full redraw (for hover/selection changes)."""
@@ -3540,40 +3637,54 @@ class HdrAoiEditor:
         return np.hypot(px - proj_x, py - proj_y), proj_x, proj_y
 
     @staticmethod
-    def _compute_label_anchor(pole, verts, n_df: int, line_step: float) -> np.ndarray:
-        """Return the y-adjusted anchor so the full text block (name + DF lines) fits inside the polygon.
+    def _compute_label_anchor(pole, verts, n_total: int, line_step: float,
+                              name_step: float | None = None,
+                              block_w_data: float = 0.0) -> np.ndarray:
+        """Return the anchor for the top-left of the annotation block.
 
-        The name label is placed at the returned point with va='center'.
-        DF lines extend downward from anchor_y + 1.2*line_step + i*0.7*line_step.
+        n_total       — number of text lines (DF lines + room name).
+        line_step     — vertical spacing between DF lines in data coords.
+        name_step     — gap from last DF line to room name (defaults to line_step).
+        block_w_data  — estimated block width in data coords; when >0 the block
+                        is horizontally centred on the pole (anchor_x = pole[0]
+                        - block_w_data/2), otherwise falls back to left-edge inset.
 
-        Strategy:
-          1. Compute the total vertical span of the block in data units.
-          2. Start with the pole of inaccessibility as anchor.
-          3. Shift the anchor up by half the block height so the block is centred at the pole.
-          4. Clamp anchor_y so the full block stays inside the polygon's bounding box.
+        The anchor is the top-left corner of the block; text is drawn left-aligned
+        from this point, so the block reads centred over the room.
         """
+        if name_step is None:
+            name_step = line_step
         pts = np.array(verts, dtype=float)
+        xmin, xmax = pts[:, 0].min(), pts[:, 0].max()
         ymin, ymax = pts[:, 1].min(), pts[:, 1].max()
 
-        # Vertical extents of the full block (name centred at anchor, DF lines below)
-        # name half-height: approximately 0.5 * line_step (using name base ≈ df base * 1.23)
-        name_half = line_step * 0.6
+        # block_h: span from first to last line centre.
+        n_df = n_total - 1
         if n_df > 0:
-            df_total = 1.2 * line_step + (n_df - 1) * line_step * 0.7 + line_step * 0.5
+            block_h = (n_df - 1) * line_step + name_step
         else:
-            df_total = 0.0
-        block_h = name_half + df_total  # total height below the name centre
+            block_h = 0.0
 
-        # Centre the block at the pole: shift name anchor up so block is centred on pole
-        half_block = (name_half + df_total) / 2.0
-        anchor_y = pole[1] - half_block + name_half
+        half_line = line_step * 0.5
 
-        # Clamp so block stays within the polygon bounding box (with a small margin)
+        # Centre the block vertically on the pole
+        anchor_y = pole[1] - block_h / 2.0
+
+        # Clamp so block stays within bounding box
         margin = line_step * 0.3
-        anchor_y = max(ymin + name_half + margin, anchor_y)
-        anchor_y = min(ymax - df_total - margin, anchor_y)
+        anchor_y = max(ymin + half_line + margin, anchor_y)
+        anchor_y = min(ymax - block_h - half_line - margin, anchor_y)
 
-        return np.array([pole[0], anchor_y])
+        # Horizontally: centre the block on the pole x (left edge = pole_x - half_width)
+        if block_w_data > 0:
+            anchor_x = pole[0] - block_w_data / 2.0
+            # Clamp so block stays within bounding box
+            anchor_x = max(xmin, anchor_x)
+            anchor_x = min(xmax - block_w_data, anchor_x)
+        else:
+            anchor_x = xmin + (xmax - xmin) * 0.05
+
+        return np.array([anchor_x, anchor_y])
 
     @staticmethod
     def _polygon_label_point(verts) -> np.ndarray:
@@ -4738,13 +4849,17 @@ class HdrAoiEditor:
         """Return font size scaled relative to the default (full-image) zoom.
 
         At default zoom returns base. Scales down when zoomed out further,
-        scales up when zoomed in. Clamps to [4, 20].
+        scales up when zoomed in. Clamps the scale factor (not the result)
+        so all bases maintain their relative proportions at every zoom level.
         """
+        _reference_base = 8.5
         if self._reference_view_w <= 1:
             return base * self._annotation_scale
         view_w = abs(self.ax.get_xlim()[1] - self.ax.get_xlim()[0])
-        scale  = self._reference_view_w / max(view_w, 1.0)
-        return max(4.0, min(20.0, base * scale * self._annotation_scale))
+        raw_scale = self._reference_view_w / max(view_w, 1.0) * self._annotation_scale
+        # Clamp relative to the largest base so all lines scale equally.
+        clamped_scale = max(4.0 / _reference_base, min(20.0 / _reference_base, raw_scale))
+        return base * clamped_scale
 
     def _df_line_step(self) -> float:
         """Return zoom-aware vertical spacing (in data coords) between DF result lines.
@@ -4768,36 +4883,74 @@ class HdrAoiEditor:
         fs_data = abs(y1_data - y0_data)       # font height in data units
         return fs_data * 1.6                   # 1.6× line height for comfortable spacing
 
+    def _annotation_block_width_data(self, lines: list[str]) -> float:
+        """Estimate the annotation block width in data coords from the longest line.
+
+        Uses the largest font base (8.5 pt for line 0) and DejaVu Sans average
+        character width (~0.55× font height) to approximate the rendered width,
+        then converts display pixels → data units via the axes transform.
+        This gives a good-enough estimate for centering the block on the pole.
+        """
+        if not lines:
+            return 0.0
+        max_chars = max(len(ln) for ln in lines)
+        fs_pt = self._zoom_fontsize(base=8.5)
+        dpi = self.fig.dpi
+        px_per_pt = dpi / 72.0
+        char_w_px = fs_pt * px_per_pt * 0.55   # ~0.55 em per character
+        block_w_px = max_chars * char_w_px
+        inv = self.ax.transData.inverted()
+        x0_data, _ = inv.transform((0, 0))
+        x1_data, _ = inv.transform((block_w_px, 0))
+        return abs(x1_data - x0_data)
+
     def _apply_zoom_fontsizes(self):
         """Reapply zoom-dependent font sizes, stroke widths, and positions to all cached text."""
-        fs = self._zoom_fontsize()
-        fs_df = self._zoom_fontsize(base=6.5)
+        fs_name = self._zoom_fontsize(base=6.5)
         line_step = self._df_line_step()
-        stroke_name = [patheffects.withStroke(linewidth=fs * 0.20, foreground='black')]
-        stroke_df   = [patheffects.withStroke(linewidth=fs_df * 0.20, foreground='black')]
+        name_step = line_step * 0.7   # tighter gap between last DF line and room name
+        stroke_name = [patheffects.withStroke(linewidth=fs_name * 0.12, foreground='black')]
 
         for label in self._room_label_cache.values():
             if label is None:
                 continue
-            label.set_fontsize(fs)
+            label.set_fontsize(fs_name)
             label.set_path_effects(stroke_name)
-            pole  = getattr(label, '_label_pole', None)
-            verts = getattr(label, '_label_verts', None)
-            n_df  = getattr(label, '_label_n_df', 0)
+            pole      = getattr(label, '_label_pole', None)
+            verts     = getattr(label, '_label_verts', None)
+            n_df      = getattr(label, '_label_n_df', 0)
+            all_lines = getattr(label, '_label_all_lines', None)
             if pole is not None and verts is not None:
-                anchor = self._compute_label_anchor(pole, verts, n_df, line_step)
-                label.set_position(anchor)
+                n_total = n_df + 1 if n_df > 0 else 1
+                block_w = self._annotation_block_width_data(all_lines) if all_lines else 0.0
+                anchor = self._compute_label_anchor(pole, verts, n_total, line_step, name_step, block_w)
+                # Room name is the last line; offset = (n_df-1)*line_step + name_step
+                if n_df > 0:
+                    name_dy = (n_df - 1) * line_step + name_step
+                else:
+                    name_dy = 0
+                label.set_position((anchor[0], anchor[1] + name_dy))
 
         for dt in self._df_text_cache:
+            df_base    = getattr(dt, '_df_base', 6.5)
+            no_outline = getattr(dt, '_df_no_outline', False)
+            fs_df      = self._zoom_fontsize(base=df_base)
             dt.set_fontsize(fs_df)
-            dt.set_path_effects(stroke_df)
-            pole   = getattr(dt, '_df_pole', None)
-            verts  = getattr(dt, '_df_verts', None)
-            n_df   = getattr(dt, '_df_n_df', 0)
-            line_i = getattr(dt, '_df_line_i', None)
+            stroke_col = 'white' if no_outline else 'black'
+            stroke_lw = fs_df * 0.06 if no_outline else fs_df * 0.12
+            path_fx = [patheffects.withStroke(linewidth=stroke_lw, foreground=stroke_col)]
+            dt.set_path_effects(path_fx)
+            dt.set_fontweight('bold' if no_outline else 'normal')
+            pole      = getattr(dt, '_df_pole', None)
+            verts     = getattr(dt, '_df_verts', None)
+            n_df      = getattr(dt, '_df_n_df', 0)
+            line_i    = getattr(dt, '_df_line_i', None)
+            all_lines = getattr(dt, '_df_all_lines', None)
             if pole is not None and verts is not None and line_i is not None:
-                anchor = self._compute_label_anchor(pole, verts, n_df, line_step)
-                dt.set_position((anchor[0], anchor[1] + 1.2 * line_step + line_i * line_step * 0.7))
+                n_total = n_df + 1
+                block_w = self._annotation_block_width_data(all_lines) if all_lines else 0.0
+                anchor = self._compute_label_anchor(pole, verts, n_total, line_step, name_step, block_w)
+                dt.set_position((anchor[0], anchor[1] + line_i * line_step))
 
     def _zoom_linewidth(self, base: float = 1.5) -> float:
         """Return linewidth that stays visually constant regardless of zoom.
@@ -5874,6 +6027,14 @@ class HdrAoiEditor:
             self._update_status("No custom alignment to reset on this level", 'orange')
 
     _DPI_PRESETS = [72, 100, 150, 200, 300]
+
+    def _on_restart_click(self, event):
+        """Save session, close the editor, and relaunch via `uv run archilume`."""
+        self._save_session()
+        plt.close('all')
+        # Replace this process with a fresh `uv run archilume` invocation.
+        # os.execvp replaces the current process so no orphan processes are left.
+        os.execvp('uv', ['uv', 'run', 'archilume'])
 
     def _on_overlay_dpi_click(self, event):
         """Toggle DPI preset dropdown visibility."""
@@ -7001,6 +7162,7 @@ class HdrAoiEditor:
         original_name   = room.get('name', 'unnamed')
         original_parent = room.get('parent')
         hdr_file        = room.get('hdr_file', self.current_hdr_name)
+        ffl             = room.get('ffl')
 
         if original_parent is None:
             division_parent = original_name
@@ -7038,6 +7200,8 @@ class HdrAoiEditor:
             'hdr_file':  hdr_file,
             'room_type': 'CIRC',
         }
+        if ffl is not None:
+            div_room['ffl'] = ffl
 
         # Parent room vertices are intentionally left unchanged
 
