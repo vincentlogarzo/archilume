@@ -963,7 +963,7 @@ class HdrAoiEditor:
     def _draw_restart_icon(self, ax):
         """Draw the meteor-icons:power icon onto the button axes.
 
-        SVG: M12 2v10  M6 4a10 10 0 1 0 12 0  (24×24 viewbox, stroked)
+        SVG: M12 2v10  M6 4a10 10 0 1 0 12 0  (24x24 viewbox, stroked)
         Arc: start (6,4)→(18,4), r=10, large-arc CCW → centre (12,12).
         Drawn as parametric line segments to stay within the axes bounds.
         """
@@ -1521,9 +1521,12 @@ class HdrAoiEditor:
 
         try:
             if path.suffix.lower() in ('.hdr', '.pic'):
-                img = imageio.imread(str(path)).astype(np.float32)
-                if img.ndim == 2:
-                    img = np.stack([img, img, img], axis=-1)
+                width, height = utils.get_hdr_resolution(path)
+                result = subprocess.run(
+                    ['pvalue', '-h', '-H', '-df', str(path)],
+                    capture_output=True, check=True,
+                )
+                img = np.frombuffer(result.stdout, dtype=np.float32).reshape((height, width, 3))
                 p99 = np.percentile(img, 99)
                 if p99 > 0:
                     img = img / p99
