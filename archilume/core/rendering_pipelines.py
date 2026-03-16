@@ -108,6 +108,21 @@ class DaylightRenderer:
             hdr_path = self.image_dir / f"{octree_base_name}_{view_name}.hdr"
             amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
 
+            # Ambient file warming pass (low-res, output discarded)
+            if amb_path.exists():
+                print(f"Skipping ambient warming for {view_name} — {amb_path.name} already exists")
+            else:
+                null_target = "/dev/null" if IS_LINUX else "NUL"
+                if IS_LINUX:
+                    warmup_cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+                else:
+                    warmup_cmd = rf"rpict -w -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+
+                print(f"Warming ambient file for view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{X_RES_OVERTURE}x{Y_RES_OVERTURE}] started {time.strftime('%H:%M:%S')}")
+                utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
+                print(f"Ambient warming for {view_name} complete {time.strftime('%H:%M:%S')}")
+
+            # Full resolution render (reads pre-warmed ambient file)
             if IS_LINUX:
                 cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {hdr_path}"
             else:
