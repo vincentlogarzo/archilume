@@ -644,6 +644,13 @@ class HdrAoiEditor:
         "M10 5v5H9V5H5v8h4v-1h1v5H9v-3H5v5h7v-2h1v2h6v-2h2v4H3V3h18v12h-2v-5h-6v5h-1V9h7V5z"
     )
 
+    # material-symbols-light:refresh SVG path (viewBox 0 0 24 24, fill-based)
+    _RESET_ICON_SVG = (
+        "M12 20q-3.35 0-5.675-2.325T4 12t2.325-5.675T12 4q1.725 0 3.3.712T18 6.75V4h1v4.5"
+        "h-4.5v-1H17q-1.1-1.35-2.638-2.175T12 4.5Q9.075 4.5 7.038 6.538T5 12t2.038 5.463"
+        "T12 19.5q2.625 0 4.588-1.7T18.9 13.5h1.025q-.375 3-2.675 4.75T12 20"
+    )
+
     # game-icons:resize SVG path (viewBox 0 0 512 512, fill-based)
     _RESIZE_ICON_SVG = (
         "m29 30l1 90h36V66h26V30zm99 0v36h72V30zm108 0v36h72V30zm108 0v36h72V30z"
@@ -910,6 +917,17 @@ class HdrAoiEditor:
         ax.set_ylim(24 + pad, -pad)
         ax.set_aspect('equal', adjustable='box')
         ax.add_patch(PathPatch(self._svg_to_mpl_path(self._DELETE_ICON_SVG),
+                               transform=ax.transData, facecolor='#333333',
+                               edgecolor='none', zorder=4, clip_on=False))
+
+    def _draw_reset_icon(self, ax):
+        """Draw the material-symbols-light:refresh SVG icon onto the button axes."""
+        from matplotlib.patches import PathPatch
+        pad = 1
+        ax.set_xlim(-pad, 24 + pad)
+        ax.set_ylim(24 + pad, -pad)
+        ax.set_aspect('equal', adjustable='box')
+        ax.add_patch(PathPatch(self._svg_to_mpl_path(self._RESET_ICON_SVG),
                                transform=ax.transData, facecolor='#333333',
                                edgecolor='none', zorder=4, clip_on=False))
 
@@ -1197,6 +1215,9 @@ class HdrAoiEditor:
             NO. PERIMETER POINTS <n>: x,y pixel_x pixel_y positions
             <world_x> <world_y> <pixel_x> <pixel_y>
             ...
+
+        World vertices and FFL are preserved so that rooms can be re-projected
+        onto other images at the same level via _reproject_rooms_for_hdr.
         """
         aoi_files = sorted(aoi_dir.glob('*.aoi'))
         for aoi_path in aoi_files:
@@ -1211,31 +1232,50 @@ class HdrAoiEditor:
 
             # HDR file from view file reference (plan_ffl_28700.vp → model_plan_ffl_28700)
             vp_match = re.search(r'plan_ffl_(\d+)', lines[1])
-            hdr_file = self.current_hdr_name
+            hdr_file = None
             if vp_match:
                 ffl_val = vp_match.group(1)
+                # Match the first HDR whose name contains the FFL token followed
+                # by a non-digit (or end-of-string) so that plan_ffl_14300 does
+                # not also match plan_ffl_143000.
+                ffl_pat = re.compile(r'plan_ffl_' + ffl_val + r'(?!\d)')
                 for entry in self.hdr_files:
-                    if ffl_val in entry['name']:
+                    if ffl_pat.search(entry['name']):
                         hdr_file = entry['name']
                         break
+            if hdr_file is None:
+                continue
+
+            # FFL z height from line 2 (e.g. "FFL z height(m): 14.3")
+            ffl = 0.0
+            ffl_match = re.search(r'FFL z height\(m\):\s*([\d.]+)', lines[2])
+            if ffl_match:
+                ffl = float(ffl_match.group(1))
 
             # Vertex lines: world_x world_y pixel_x pixel_y
             vertices = []
+            world_vertices = []
             for line in lines[5:]:
                 parts = line.split()
                 if len(parts) >= 4:
                     px, py = float(parts[2]), float(parts[3])
                     vertices.append([px, py])
+                    world_vertices.append([float(parts[0]), float(parts[1])])
 
             if len(vertices) >= 3:
                 self.rooms.append({
-                    'name':     name,
-                    'parent':   None,
-                    'vertices': vertices,
-                    'hdr_file': hdr_file,
+                    'name':           name,
+                    'parent':         None,
+                    'vertices':       vertices,
+                    'world_vertices': world_vertices,
+                    'ffl':            ffl,
+                    'hdr_file':       hdr_file,
                 })
 
-        print(f"Loaded {len(self.rooms)} rooms from {len(aoi_files)} .aoi files in {aoi_dir}")
+        skipped = len(aoi_files) - len(self.rooms)
+        print(f"Loaded {len(self.rooms)} rooms from {len(aoi_files)} .aoi files in {aoi_dir}"
+              f" (skipped {skipped} with no matching HDR)" if skipped else
+              f"Loaded {len(self.rooms)} rooms from {len(aoi_files)} .aoi files in {aoi_dir}")
 
     def _load_from_iesve_aoi(self) -> int:
         """Load room boundaries from IESVE .aoi files (world X/Y only).
@@ -1287,12 +1327,14 @@ class HdrAoiEditor:
                 print(f"Warning: could not read iesve_room_data: {exc}")
 
         # Build ffl_mm (int) → HDR entry map by extracting 'plan_ffl_XXXXX' tokens
-        # from each HDR filename. Only FFL groups with a matching HDR will be loaded.
+        # from each HDR filename. When multiple images share the same FFL (e.g.
+        # _half resolution variants), we keep the first match. The other images
+        # at the same FFL are handled at display time via _reproject_rooms_for_hdr.
         ffl_mm_to_entry: dict = {}
         for entry in self.hdr_files:
             m = re.search(r'plan_ffl_(\d+)', entry['name'])
             if m:
-                ffl_mm_to_entry[int(m.group(1))] = entry
+                ffl_mm_to_entry.setdefault(int(m.group(1)), entry)
 
         # Pre-build view params cache for matched HDR entries
         view_cache: dict = {}  # ffl_mm → (entry, view_params tuple)
@@ -1301,15 +1343,30 @@ class HdrAoiEditor:
             if vp is not None:
                 view_cache[ffl_mm] = (entry, vp)
 
-        # Fall back: if no HDR filenames contain 'plan_ffl_XXXXX', load all rooms
-        # against the first HDR (preserves behaviour for non-standard naming).
+        # Fall back: if no HDR filenames contain 'plan_ffl_XXXXX', match rooms
+        # to images by IESVE level name instead.  The ZONE line in each .aoi
+        # gives the level (e.g. "L11") and .pic filenames start with that level
+        # followed by '_' (e.g. L11_94_270226.pic, L11_Lightwell_260226.pic).
+        # We pick the first image per level for initial projection; other images
+        # at the same level are handled at display time via _reproject_rooms_for_hdr.
         use_ffl_filter = bool(ffl_mm_to_entry)
+        level_cache: dict = {}  # level_name → (entry, view_params)
         if not use_ffl_filter:
-            first_entry = self.hdr_files[0]
-            fallback_vp = self._read_view_params(first_entry['hdr_path'])
-            if fallback_vp is None:
-                print(f"Warning: no VIEW params in {first_entry['hdr_path'].name}, cannot project.")
-                return 0
+            for entry in self.hdr_files:
+                level_m = re.match(r'^(L\d+)', entry['name'], re.IGNORECASE)
+                if level_m:
+                    level_name = level_m.group(1)
+                    if level_name not in level_cache:
+                        vp = self._read_view_params(entry['hdr_path'])
+                        if vp is not None:
+                            level_cache[level_name] = (entry, vp)
+            if not level_cache:
+                # Ultimate fallback: no plan_ffl_ tokens and no L<n>_ prefixes
+                first_entry = self.hdr_files[0]
+                fallback_vp = self._read_view_params(first_entry['hdr_path'])
+                if fallback_vp is None:
+                    print(f"Warning: no VIEW params in {first_entry['hdr_path'].name}, cannot project.")
+                    return 0
 
         aoi_files = sorted(self.aoi_dir.glob('*.aoi'))
         count = 0
@@ -1328,13 +1385,25 @@ class HdrAoiEditor:
             room_name = zone_match.group(2).strip()
             ffl       = ffl_lookup.get(space_id, 0.0)
 
-            # Resolve matched HDR entry and view params for this room's FFL
+            # Resolve matched HDR entry and view params for this room's FFL.
+            # One room dict is created per room, initially projected into the
+            # first matching image's pixel space.  When the user views a
+            # different image at the same level, _reproject_rooms_for_hdr
+            # re-projects on the fly.
             if use_ffl_filter:
                 ffl_mm = int(round(ffl * 1000))
                 cached = view_cache.get(ffl_mm)
                 if cached is None:
                     skipped += 1
                     continue  # No HDR for this level — skip
+                entry, (vp_x, vp_y, vh_val, vv_val, img_w, img_h) = cached
+            elif level_cache:
+                # IESVE level-name matching: room_name is e.g. "L11", match
+                # against .pic filenames that start with "L11_"
+                cached = level_cache.get(room_name)
+                if cached is None:
+                    skipped += 1
+                    continue
                 entry, (vp_x, vp_y, vh_val, vv_val, img_w, img_h) = cached
             else:
                 entry = first_entry
@@ -1365,9 +1434,14 @@ class HdrAoiEditor:
 
         if skipped:
             print(f"Skipped {skipped} IESVE AOI rooms with no matching HDR level.")
-        assigned = [f"{ffl_mm / 1000:.3f} m -> {e['name']}" for ffl_mm, (e, _) in view_cache.items()]
-        if assigned:
-            print(f"Matched {len(assigned)} FFL group(s) to HDR: {', '.join(assigned)}")
+        if use_ffl_filter:
+            assigned = [f"{ffl_mm / 1000:.3f} m -> {e['name']}" for ffl_mm, (e, _) in view_cache.items()]
+            if assigned:
+                print(f"Matched {len(assigned)} FFL group(s) to HDR: {', '.join(assigned)}")
+        elif level_cache:
+            assigned = [f"{lvl} -> {e['name']}" for lvl, (e, _) in sorted(level_cache.items())]
+            if assigned:
+                print(f"Matched {len(assigned)} level(s) to images: {', '.join(assigned)}")
         print(f"Loaded {count} IESVE AOI rooms from {self.aoi_dir}")
         return count
 
@@ -1390,8 +1464,7 @@ class HdrAoiEditor:
             vp_x, vp_y = float(vp.group(1)), float(vp.group(2))
             vh_val = float(vh.group(1))
             vv_val = float(vv.group(1))
-            img = imageio.imread(str(pic_path))
-            img_h, img_w = img.shape[:2]
+            img_w, img_h = utils.get_hdr_resolution(pic_path)
             return vp_x, vp_y, vh_val, vv_val, img_w, img_h
         except Exception as exc:
             print(f"Warning: could not read VIEW params from {pic_path}: {exc}")
@@ -2112,7 +2185,13 @@ class HdrAoiEditor:
             delete_x, rtype_btn_y, icon_w, btn_h, '', self._on_delete_click)
         self._draw_delete_icon(self.btn_delete.ax)
 
-        # Tooltips for save/delete icon buttons
+        # Reset session — square icon button, right after Delete
+        reset_x = delete_x + icon_w + gap
+        self.btn_reset = self._make_button(
+            reset_x, rtype_btn_y, icon_w, btn_h, '', self._on_reset_session_click)
+        self._draw_reset_icon(self.btn_reset.ax)
+
+        # Tooltips for save/delete/reset icon buttons
         self._save_tooltip = self.fig.text(
             0, 0, 'Save Room (S)',
             fontsize=7, color='#333333',
@@ -2125,10 +2204,17 @@ class HdrAoiEditor:
             bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
                       edgecolor='#AAAAAA', linewidth=0.8),
             visible=False, zorder=100)
+        self._reset_tooltip = self.fig.text(
+            0, 0, 'Reset session (reload from AOI files)',
+            fontsize=7, color='#333333',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFFCC',
+                      edgecolor='#AAAAAA', linewidth=0.8),
+            visible=False, zorder=100)
 
         def _show_action_tooltip(event):
             for btn, tip in ((self.btn_save, self._save_tooltip),
-                              (self.btn_delete, self._delete_tooltip)):
+                              (self.btn_delete, self._delete_tooltip),
+                              (self.btn_reset, self._reset_tooltip)):
                 if event.inaxes == btn.ax:
                     ax = btn.ax
                     tip.set_position((ax.get_position().x1 + 0.005, ax.get_position().y0))
@@ -2137,7 +2223,7 @@ class HdrAoiEditor:
                     return
 
         def _hide_action_tooltip(event):
-            for tip in (self._save_tooltip, self._delete_tooltip):
+            for tip in (self._save_tooltip, self._delete_tooltip, self._reset_tooltip):
                 if tip.get_visible():
                     tip.set_visible(False)
                     self.fig.canvas.draw_idle()
@@ -3031,6 +3117,10 @@ class HdrAoiEditor:
                 ha='center', va='center', fontsize=13, color='#888888',
                 transform=self.ax.transData, zorder=10,
             )
+
+        # Re-project rooms with world_vertices if the current image shares a
+        # level/FFL with another image but has different resolution or view params
+        self._reproject_rooms_for_hdr()
 
         # Rebuild snap vertex + edge pools from current-HDR room vertices
         all_verts, edge_starts, edge_ends = [], [], []
@@ -4883,6 +4973,35 @@ class HdrAoiEditor:
         print(f"Deleted room '{name}'")
         self._save_session()
 
+    def _on_reset_session_click(self, event):
+        """Delete aoi_session.json and reload rooms fresh from AOI files."""
+        if not messagebox.askyesno(
+            "Reset Session",
+            "Delete the saved session and reload all rooms from AOI files?\n\n"
+            "This will discard any unsaved room edits, DF stamps,\n"
+            "and overlay transforms.",
+        ):
+            return
+        # Delete session file
+        if self.session_path.exists():
+            self.session_path.unlink()
+            print(f"Deleted session: {self.session_path}")
+        # Clear state
+        self.rooms.clear()
+        self._df_stamps.clear()
+        self._aoi_level_idx = 0
+        self._aoi_level_map.clear()
+        self.selected_room_idx = None
+        self.current_polygon_vertices = []
+        # Reload from AOI files
+        self._load_session()
+        self._update_room_list()
+        self._update_hdr_list()
+        self._render_section(force_full=True)
+        self._create_polygon_selector()
+        self._update_status("Session reset — reloaded from AOI files", 'green')
+        print("Session reset complete")
+
     # === ZOOM & DISPLAY ========================================================
 
     def _view_ratio(self) -> float:
@@ -5925,6 +6044,74 @@ class HdrAoiEditor:
                 room.pop('df_cache', None)
         self._update_status(
             f"Assigned FFL {target_ffl} m rooms → {hdr_name}", 'green')
+
+    def _reproject_rooms_for_hdr(self):
+        """Re-project IESVE rooms onto the current image if needed.
+
+        When multiple images share the same FFL or level (e.g. full-res and
+        _half variants, or lightwell crops), rooms are initially projected
+        into one image's pixel space.  This method detects when the user is
+        viewing a *different* image at the same level and re-projects rooms
+        with ``world_vertices`` so they align correctly, updating their
+        ``hdr_file`` and ``vertices`` in-place.
+        """
+        if not self.hdr_files:
+            return
+        entry = self.hdr_files[self.current_hdr_idx]
+        hdr_name = entry['name']
+        print(f"_reproject_rooms_for_hdr: checking {hdr_name}, rooms={len(self.rooms)}, "
+              f"aoi_level_map={self._aoi_level_map}")
+
+        # Determine which FFL is assigned to this image (if any)
+        assigned_ffl = self._aoi_level_map.get(hdr_name)
+
+        # Also check plan_ffl_ token in filename for images not yet in the map
+        ffl_mm_match = re.search(r'plan_ffl_(\d+)', hdr_name)
+        # Also check IESVE level prefix
+        level_match = re.match(r'^(L\d+)', hdr_name, re.IGNORECASE)
+
+        # Find rooms that belong to this image's level but are currently
+        # projected for a different image
+        candidates = []
+        for room in self.rooms:
+            if 'world_vertices' not in room:
+                continue
+            if room.get('hdr_file') == hdr_name:
+                continue  # already projected for this image
+
+            match = False
+            if assigned_ffl is not None and room.get('ffl') == assigned_ffl:
+                match = True
+            elif ffl_mm_match:
+                room_hdr = room.get('hdr_file', '')
+                room_ffl_match = re.search(r'plan_ffl_(\d+)', room_hdr)
+                if room_ffl_match and room_ffl_match.group(1) == ffl_mm_match.group(1):
+                    match = True
+            elif level_match:
+                room_hdr = room.get('hdr_file', '')
+                room_level = re.match(r'^(L\d+)', room_hdr, re.IGNORECASE)
+                if room_level and room_level.group(1) == level_match.group(1):
+                    match = True
+
+            if match:
+                candidates.append(room)
+
+        if not candidates:
+            print(f"_reproject_rooms_for_hdr: no candidates for {hdr_name}")
+            return
+
+        view_params = self._read_view_params(entry['hdr_path'])
+        if view_params is None:
+            print(f"_reproject_rooms_for_hdr: no VIEW params for {hdr_name}")
+            return
+        vp_x, vp_y, vh_val, vv_val, img_w, img_h = view_params
+
+        print(f"_reproject_rooms_for_hdr: re-projecting {len(candidates)} rooms onto {hdr_name} ({img_w}x{img_h})")
+        for room in candidates:
+            room['vertices'] = self._world_to_pixels(
+                room['world_vertices'], vp_x, vp_y, vh_val, vv_val, img_w, img_h)
+            room['hdr_file'] = hdr_name
+            room.pop('df_cache', None)
 
     def _update_aoi_level_label(self):
         """Update the AOI level cycle button label to reflect the FFL assigned

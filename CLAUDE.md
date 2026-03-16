@@ -102,7 +102,7 @@ Always use SI units (metres, millimetres, kilograms, lux, etc.) in all discussio
 
 - **Paths**: Always use `pathlib.Path`. Reference `archilume.config` for standard project paths.
 - **Parallelism**: Use `utils.execute_new_radiance_commands` for Radiance tool parallelism. Respect `config.WORKERS` limits.
-- **Platform**: `rtpict` (multi-core rendering) is Linux-only. Be mindful of Windows/Linux/WSL differences throughout.
+- **Platform**: `rtpict` (multi-core rendering) is Linux-only (available in the dev container). Be mindful of Windows/Linux differences throughout.
 - **Dash apps**: Use `app.run(debug=True)` for development.
 - **Rendering classes**: Prefer `SunlightRenderer`/`DaylightRenderer` over calling Radiance binaries directly.
 - **Cleanup**: Use `utils.smart_cleanup()` to clear previous results based on changed parameters.
@@ -118,7 +118,7 @@ The recommended setup is the **Docker dev container** (`.devcontainer/`), which 
 **Before giving platform-specific advice, determine the execution environment:**
 
 1. **Check the system context** — Note the OS (Windows/Linux/macOS) and current working directory
-2. **Verify container/WSL status** — Determine if running in dev container, WSL, or native
+2. **Verify container status** — Determine if running in dev container or native Windows
 3. **Audit all command suggestions** for platform compatibility:
    - Use `pathlib.Path` and forward slashes in Python (cross-platform)
    - Use PowerShell syntax on Windows (not Unix bash)
@@ -127,10 +127,9 @@ The recommended setup is the **Docker dev container** (`.devcontainer/`), which 
    - Remember AcceleradRT works natively on Windows; `rtpict` requires Linux
 4. **Flag any platform clashes** before suggesting terminal commands
 
-**Current environment:** Native Windows (not WSL, not dev container)
+**Current environment:** Native Windows (not dev container)
 
 **Tool availability by platform:**
 
 - **Native Windows**: Accelerad, AcceleradRT (GPU), basic Radiance tools
-- **WSL/Linux**: `rtpict` (multi-core rendering), Accelerad (needs GPU passthrough)
-- **Dev container**: All tools bundled and optimized
+- **Dev container (Linux)**: All tools bundled and optimized, including `rtpict` (multi-core rendering)

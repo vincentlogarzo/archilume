@@ -95,6 +95,12 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ### Core Architecture
 
+- **Per-Image Session Files (Major Refactor):** Replace the single `aoi_session.json` with per-image session files (e.g. `527DP_plan_ffl_14300.session.json`). Everything in the editor is fundamentally linked to the `.hdr`/`.pic` image — room boundaries, PDF underlay alignment, DF calculations, layer visibility. Per-image sessions would mean:
+  - Dropping a new `.hdr` into the folder automatically works — no existing session to corrupt.
+  - Different resolutions of the same level (e.g. `_half` variants, lightwell crops) each store their own correctly-projected coordinates without needing runtime re-projection workarounds.
+  - Removing an image cleanly removes its state.
+  - The global `_aoi_level_map` concept becomes unnecessary — each image session knows its own level/FFL.
+  - Migration path: one-time conversion from existing single-session format; rooms with `world_vertices` can be re-projected per image automatically.
 - **Multi-Resolution Reuse:** Allow pre-existing AOI boundaries to be reused across images rendered at different resolutions by storing vertices in normalized [0,1] or world coordinates.
 - **Self-Contained Transform:** Derive pixel to world transform directly from the .hdr header (VIEW= parameters) and pixel dimensions, removing map file dependency.
 - **State Machine Integration:** Replace scattered mode-tracking attributes with a single explicit state machine to prevent invalid combined states.

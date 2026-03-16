@@ -1,0 +1,44 @@
+/* Dash Editor custom styles */
+
+/* Crosshair cursor for draw/divider modes */
+.cursor-crosshair .js-plotly-plot .plotly .cursor-crosshair,
+.cursor-crosshair .js-plotly-plot .plotly .nsewdrag {
+    cursor: crosshair !important;
+}
+
+/* Pointer cursor for default mode */
+.cursor-pointer .js-plotly-plot .plotly .nsewdrag {
+    cursor: pointer !important;
+}
+
+/* Hide scrollbar on sidebar */
+.sidebar-scroll::-webkit-scrollbar {
+    display: none;
+}
+.sidebar-scroll {
+    scrollbar-width: none;
+}
+
+/* Tree row hover */
+.tree-row:hover {
+    background-color: #eef0f3 !important;
+}
+
+/* Tree row selected */
+.tree-row-selected {
+    background-color: #ccfbf1 !important;
+}
+
+/* Active mode badge pulse */
+.mode-badge-active {
+    animation: pulse 2s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Status bar transition */
+.status-bar {
+    transition: background-color 0.3s ease;
+}

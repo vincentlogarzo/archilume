@@ -50,7 +50,7 @@ Archilume is a Python-based framework designed to automate Radiance-based archit
     - `RADIANCE_ROOT`: Override path to Radiance.
     - `RAYPATH`: Managed automatically by `config.py` but can be overridden.
 - **Interactive Apps:** Use `app.run(debug=True)` for Dash applications.
-- **Platform Awareness:** Be mindful of Windows vs. Linux (WSL) differences, especially for `rtpict` (multi-core Radiance), which is Linux-only.
+- **Platform Awareness:** Be mindful of Windows vs. Linux differences, especially for `rtpict` (multi-core Radiance), which is Linux-only (available in the dev container).
 - **Markdown Formatting:** Ensure all headings (#, ##, ###, etc.) are surrounded by blank lines (one above and one below) to comply with MD022 standards.
 
 ## Common Commands

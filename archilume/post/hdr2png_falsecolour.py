@@ -69,22 +69,45 @@ def hdr2png_falsecolour(
         # Dimmed background
         f"pfilt -e 0.5 {src} > {dm}",
     ]
+    print(f"[hdr2png] Running falsecolour/contour/dimmed for: {stem}")
     utils.execute_new_radiance_commands(cmds, number_of_workers=workers)
 
+    # Log intermediate file status
+    for label, path in [("false_tiff", false_tiff), ("contour_hdr", contour_hdr), ("dimmed", dimmed)]:
+        if not path.exists():
+            print(f"[hdr2png] ERROR — {label} not created: {path}")
+        elif path.stat().st_size < 1000:
+            print(f"[hdr2png] ERROR — {label} too small ({path.stat().st_size} bytes): {path}")
+        else:
+            print(f"[hdr2png] {label} OK ({path.stat().st_size} bytes)")
+
     # Contour composite depends on dimmed + contour_hdr being written first
-    composite_cmd = (
-        f'pcomb -e "cond=ri(2)+gi(2)+bi(2)" '
-        f'-e "ro=if(cond-.01,ri(2),ri(1))" '
-        f'-e "go=if(cond-.01,gi(2),gi(1))" '
-        f'-e "bo=if(cond-.01,bi(2),bi(1))" '
-        f"{dm} {ch} | ra_tiff - {ct}"
-    )
-    utils.execute_new_radiance_commands(composite_cmd, number_of_workers=workers)
+    if not dimmed.exists() or not contour_hdr.exists():
+        print(f"[hdr2png] ERROR — Skipping contour composite (dimmed exists={dimmed.exists()}, contour_hdr exists={contour_hdr.exists()})")
+    else:
+        composite_cmd = (
+            f'pcomb -e "cond=ri(2)+gi(2)+bi(2)" '
+            f'-e "ro=if(cond-.01,ri(2),ri(1))" '
+            f'-e "go=if(cond-.01,gi(2),gi(1))" '
+            f'-e "bo=if(cond-.01,bi(2),bi(1))" '
+            f"{dm} {ch} | ra_tiff - {ct}"
+        )
+        utils.execute_new_radiance_commands(composite_cmd, number_of_workers=workers)
+
+        if not contour_tiff.exists():
+            print(f"[hdr2png] ERROR — contour composite not created: {contour_tiff}")
+        elif contour_tiff.stat().st_size < 1000:
+            print(f"[hdr2png] ERROR — contour composite too small ({contour_tiff.stat().st_size} bytes): {contour_tiff}")
 
     # Convert TIFFs to PNG
     for tiff in (false_tiff, contour_tiff):
         if tiff.exists() and tiff.stat().st_size >= 1000:
             Image.open(tiff).save(tiff.with_suffix('.png'), format='PNG', optimize=True, compress_level=9)
+            print(f"[hdr2png] Created {tiff.with_suffix('.png').name}")
+        elif tiff.exists():
+            print(f"[hdr2png] ERROR — {tiff.name} too small for PNG conversion ({tiff.stat().st_size} bytes)")
+        else:
+            print(f"[hdr2png] ERROR — {tiff.name} does not exist, no PNG created")
 
     # Clean up intermediates
     for tmp in (dimmed, contour_hdr, false_tiff, contour_tiff):

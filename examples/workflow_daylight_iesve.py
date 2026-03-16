@@ -6,10 +6,8 @@ Daylight factor (DF) analysis using a pre-built IESVE octree
 (10K lux CIE overcast sky). Converts IESVE room data + AOI files
  into Radiance views, renders per floor, and exports HDR results.
 
-Note:   Runs fastest on Linux via rtpict multiprocessing (20 CPUs
-         ≈ 20x speedup vs Windows). On WSL, increase RAM/CPU limits
-        in %USERPROFILE%/.wslconfig — default limits cause failures
-        on large models when rtpict is used with many cores.
+Note:   Runs fastest in the dev container via rtpict multiprocessing
+        (20 CPUs ≈ 20x speedup vs native Windows).
 
 Input:  IESVE octree (.oct), rendering parameters (.rdp), 
         IESVE room data CSV, AOI files (.aoi)
@@ -32,12 +30,12 @@ from archilume.workflows import IESVEDaylightWorkflow
 def run_daylight_analysis():
     # 2. Run the standardized workflow
     inputs = IESVEDaylightWorkflow.InputsValidator(
-        project                     = "527DP-demo2",  # Required: project name under projects/ (e.g. projects/527DP/)
+        project                     = "527DP-gcloud-lowRes",  # Required: project name under projects/ (e.g. projects/527DP/)
         octree_path                 = "527DP.oct",  # Must use 10KLx sky
-        rendering_params            = "preview.rdp",
+        rendering_params            = "high.rdp",
         iesve_room_data             = "aoi/iesve_room_data.csv",
-        image_resolution            = 2048,
-        ffl_offset                  = 0.0,  # Camera height above floor (m)
+        image_resolution            = 1280,
+        ffl_offset                  = 1.54,  # Camera height above floor (m)
     )
 
     smart_cleanup(

@@ -120,6 +120,10 @@ Smooth image can be effective for visualization, but source image must be used f
 ```bash
 IMAGE_NAME="image1_shg_12ab"
 
+# must be run in cmd prompt on windows. 
+cmd /c 'pfilt -x /2 -y /2 "projects/527DP-gcloud-lowRes/outputs/image/527DP_plan_ffl_14300.hdr" > "projects/527DP-gcloud-lowRes/outputs/image/527DP_plan_ffl_14300_half.hdr"'
+
+
 # Smooth
 pfilt -x /2 -y /2 outputs/image/${IMAGE_NAME}.hdr > outputs/image/${IMAGE_NAME}_smooth.hdr
 

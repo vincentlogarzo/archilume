@@ -21,15 +21,7 @@ git clone https://github.com/vincentlogarzo/archilume.git
 
 Open the folder in VS Code and click **"Reopen in Container"** when prompted (or `Ctrl+Shift+P` → `Dev Containers: Reopen in Container`). Once the container finishes building, the environment is ready.
 
-### Option B — WSL (Multi-Core Rendering on Windows)
-
-Some Radiance tools (`rtpict`) only support multi-core rendering on Linux. If you don't have an NVIDIA GPU for Accelerad, you can get full parallel rendering through WSL:
-
-1. Install [WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
-2. In VS Code, install the [WSL extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl) and connect (`Ctrl+Shift+P` → `WSL: Connect to WSL`).
-3. Reopen the repository inside the dev container from the WSL session.
-
-### Option C — Native Windows
+### Option B — Native Windows
 
 1. Install **[Python 3.12+](https://www.python.org/downloads/)**.
 2. Install **[Radiance](https://www.radiance-online.org/)** (and optionally [Accelerad](https://nljones.github.io/Accelerad/) for GPU rendering).
