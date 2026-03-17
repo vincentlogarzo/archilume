@@ -17,7 +17,7 @@
   // postCreateCommand runs AFTER the container is created, every time.
   // Since our Dockerfile already installs everything, we don't need setup.sh.
   // This is now just a lightweight verification step.
-  "postCreateCommand": "python --version && oconv 2>&1 | head -1 || echo 'Radiance ready'",
+  "postCreateCommand": "sudo chown -R vscode:vscode /workspaces/archilume && uv sync --frozen && python --version && oconv 2>&1 | head -1 || echo 'Radiance ready'",
 
   "customizations": {
     "vscode": {
