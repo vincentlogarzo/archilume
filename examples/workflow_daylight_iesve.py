@@ -36,7 +36,8 @@ def run_daylight_analysis():
         iesve_room_data             = "aoi/iesve_room_data.csv",
         image_resolution            = 1280,
         ffl_offset                  = 1.54,  # Camera height above floor (m)
-        use_ambient_file            = False,  # Enable/disable ambient file warming pass
+        use_ambient_file            = True,  # Enable/disable ambient file warming pass
+        n_cpus                      = 32,   # Number of CPUs for rtpict (None = all available)
     )
 
     smart_cleanup(

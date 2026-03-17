@@ -32,6 +32,7 @@ class IESVEDaylightWorkflow:
             image_resolution:   int  = 2048,
             ffl_offset:         float = 0.0,
             use_ambient_file:   bool = True,
+            n_cpus:             Optional[int] = None,
         ):
             self.paths = config.get_project_paths(project)
             base_dir = self.paths.inputs_dir
@@ -39,6 +40,7 @@ class IESVEDaylightWorkflow:
             self.image_resolution   = image_resolution
             self.ffl_offset         = ffl_offset
             self.use_ambient_file   = use_ambient_file
+            self.n_cpus             = n_cpus
             self.project            = project
 
             def _resolve(p):
@@ -84,6 +86,7 @@ class IESVEDaylightWorkflow:
             print(f"{'Resolution':<30} {self.image_resolution}px")
             print(f"{'Camera Height (FFL)':<30} {self.ffl_offset}m")
             print(f"{'Ambient File':<30} {'Enabled' if self.use_ambient_file else 'Disabled'}")
+            print(f"{'CPUs':<30} {self.n_cpus if self.n_cpus else 'All available'}")
             print("="*100 + "\n")
 
     def run(self, inputs: InputsValidator):
@@ -114,6 +117,7 @@ class IESVEDaylightWorkflow:
                 view_files=view_generator.view_files,
                 image_dir=inputs.paths.image_dir,
                 use_ambient_file=inputs.use_ambient_file,
+                n_cpus=inputs.n_cpus,
             )
             renderer.daylight_rendering_pipeline()
 

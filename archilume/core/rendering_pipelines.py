@@ -66,6 +66,7 @@ class DaylightRenderer:
     # Optional with defaults
     y_res: Optional[int]        = field(default=None)
     use_ambient_file: bool      = True
+    n_cpus: Optional[int]       = field(default=None)
 
     def __post_init__(self):
         # Normalise view_files to a sorted list of Paths
@@ -80,20 +81,70 @@ class DaylightRenderer:
                 raise FileNotFoundError(f"View file not found: {vf}")
         if self.y_res is None:
             self.y_res = self.x_res
+        if self.n_cpus is None:
+            self.n_cpus = N_CPUS
+        if not 1 <= self.n_cpus <= N_CPUS:
+            raise ValueError(f"n_cpus must be between 1 and {N_CPUS}, got {self.n_cpus}")
         os.makedirs(self.image_dir, exist_ok=True)
         if not self.octree_path.exists():
             raise FileNotFoundError(f"Octree not found: {self.octree_path}")
         if not self.rdp_path.exists():
             raise FileNotFoundError(f"RDP file not found: {self.rdp_path}")
 
+    def _build_view_commands(self, view_file: Path, octree_base_name: str):
+        """Build warmup and render commands for a single view."""
+        view_name = view_file.stem
+        hdr_path = self.image_dir / f"{octree_base_name}_{view_name}.hdr"
+        amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
+
+        warmup_cmd = None
+        amb_flag = ""
+
+        if self.use_ambient_file:
+            amb_flag = f"-af {amb_path}"
+            if not amb_path.exists():
+                null_target = "/dev/null" if IS_LINUX else "NUL"
+                if IS_LINUX:
+                    warmup_cmd = rf"rtpict -n {self.n_cpus} -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+                else:
+                    warmup_cmd = rf"rpict -w -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+
+        if IS_LINUX:
+            render_cmd = rf"rtpict -n {self.n_cpus} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
+        else:
+            render_cmd = rf"rpict -w -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
+
+        return view_name, hdr_path, amb_path, warmup_cmd, render_cmd
+
+    def _render_single_view(self, view_file: Path, view_idx: int, total: int, octree_base_name: str) -> Path:
+        """Warm ambient file (if needed) and render a single view. Returns the HDR path."""
+        view_name, hdr_path, amb_path, warmup_cmd, render_cmd = self._build_view_commands(view_file, octree_base_name)
+
+        if self.use_ambient_file:
+            if amb_path.exists():
+                print(f"Skipping ambient warming for {view_name} — {amb_path.name} already exists")
+            else:
+                print(f"Warming ambient file for view {view_idx}/{total}: {view_name} [{X_RES_OVERTURE}x{Y_RES_OVERTURE}] started {time.strftime('%H:%M:%S')}")
+                utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
+                print(f"Ambient warming for {view_name} complete {time.strftime('%H:%M:%S')}")
+        else:
+            print(f"Ambient file disabled for {view_name} — rendering without ambient cache")
+
+        print(f"Rendering view {view_idx}/{total}: {view_name} [{self.x_res}x{self.y_res}] started {time.strftime('%H:%M:%S')}")
+        utils.execute_new_radiance_commands(render_cmd, number_of_workers=1)
+        print(f"Rendering view {view_name} complete {time.strftime('%H:%M:%S')}")
+        return hdr_path
+
     def daylight_rendering_pipeline(self) -> None:
         """
         Execute the full daylight rendering and post-processing pipeline.
 
-        Renders each view sequentially using all CPU cores, then generates
-        falsecolor visualisations, contour overlays, and legend images.
+        When n_cpus < total available cores, multiple views render concurrently
+        (e.g. n_cpus=32 on a 64-core machine renders 2 views in parallel).
+        When n_cpus equals total cores, views render sequentially.
         """
-        print(f"\nDaylight rendering: {len(self.view_files)} view(s), {self.x_res}x{self.y_res}px, {N_CPUS} CPUs")
+        concurrent_views = max(1, N_CPUS // self.n_cpus)
+        print(f"\nDaylight rendering: {len(self.view_files)} view(s), {self.x_res}x{self.y_res}px, {self.n_cpus} CPUs/view, {concurrent_views} concurrent view(s)")
         print(f"Octree: {self.octree_path.name}")
         print(f"Params: {self.rdp_path.name}\n")
 
@@ -102,42 +153,22 @@ class DaylightRenderer:
         # Start CPU usage logger
         cpu_logger = utils.start_cpu_logger(self.image_dir / "cpu_log.txt")
 
-        # Step 1: Render each view sequentially, all cores per view
+        # Step 1: Render views (concurrently when CPU budget allows)
         octree_base_name = self.octree_path.stem
-        for view_file in self.view_files:
-            view_name = view_file.stem
-            hdr_path = self.image_dir / f"{octree_base_name}_{view_name}.hdr"
-            amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
+        total = len(self.view_files)
 
-            # Ambient file warming pass (low-res, output discarded)
-            amb_flag = ""
-            if self.use_ambient_file:
-                amb_flag = f"-af {amb_path}"
-                if amb_path.exists():
-                    print(f"Skipping ambient warming for {view_name} — {amb_path.name} already exists")
-                else:
-                    null_target = "/dev/null" if IS_LINUX else "NUL"
-                    if IS_LINUX:
-                        warmup_cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
-                    else:
-                        warmup_cmd = rf"rpict -w -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
-
-                    print(f"Warming ambient file for view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{X_RES_OVERTURE}x{Y_RES_OVERTURE}] started {time.strftime('%H:%M:%S')}")
-                    utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
-                    print(f"Ambient warming for {view_name} complete {time.strftime('%H:%M:%S')}")
-            else:
-                print(f"Ambient file disabled for {view_name} — rendering without ambient cache")
-
-            # Full resolution render
-            if IS_LINUX:
-                cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
-            else:
-                cmd = rf"rpict -w -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
-
-            print(f"Rendering view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{self.x_res}x{self.y_res}] started {time.strftime('%H:%M:%S')}")
-            utils.execute_new_radiance_commands(cmd, number_of_workers=1)
-            print(f"Rendering view {view_name} complete {time.strftime('%H:%M:%S')}")
-            rendered_hdrs.append(hdr_path)
+        if concurrent_views == 1:
+            for idx, view_file in enumerate(self.view_files, 1):
+                hdr_path = self._render_single_view(view_file, idx, total, octree_base_name)
+                rendered_hdrs.append(hdr_path)
+        else:
+            with ThreadPoolExecutor(max_workers=concurrent_views) as executor:
+                futures = {
+                    executor.submit(self._render_single_view, vf, idx, total, octree_base_name): vf
+                    for idx, vf in enumerate(self.view_files, 1)
+                }
+                for future in futures:
+                    rendered_hdrs.append(future.result())
 
         # Stop CPU usage logger
         utils.stop_cpu_logger(cpu_logger)
