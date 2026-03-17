@@ -63,14 +63,7 @@
     "DISPLAY": "${localEnv:DISPLAY}"
   },
 
-  "mounts": [
-    // Projects folder: bind-mount a folder from the Windows host into the
-    // container at /workspace/projects. Users drop input files here (HDR,
-    // PDFs, IFC) and the app reads/writes project data to the same location.
-    // The host path uses USERPROFILE (Windows: C:\Users\<name>).
-    // Create the folder on Windows first: mkdir %USERPROFILE%\archilume-projects
-    "source=${localEnv:USERPROFILE}/archilume-projects,target=/workspace/projects,type=bind,consistency=cached"
-  ],
+  "mounts": [],
 
   "forwardPorts": [],
 
