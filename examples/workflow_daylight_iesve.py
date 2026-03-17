@@ -30,12 +30,13 @@ from archilume.workflows import IESVEDaylightWorkflow
 def run_daylight_analysis():
     # 2. Run the standardized workflow
     inputs = IESVEDaylightWorkflow.InputsValidator(
-        project                     = "527DP-gcloud-lowRes",  # Required: project name under projects/ (e.g. projects/527DP/)
+        project                     = "527DP-gcloud-lowRes-GregW",  # Required: project name under projects/ (e.g. projects/527DP/)
         octree_path                 = "527DP.oct",  # Must use 10KLx sky
-        rendering_params            = "high.rdp",
+        rendering_params            = "high_GregW.rdp",
         iesve_room_data             = "aoi/iesve_room_data.csv",
         image_resolution            = 1280,
         ffl_offset                  = 1.54,  # Camera height above floor (m)
+        use_ambient_file            = False,  # Enable/disable ambient file warming pass
     )
 
     smart_cleanup(

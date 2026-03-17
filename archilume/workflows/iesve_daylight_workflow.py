@@ -31,12 +31,14 @@ class IESVEDaylightWorkflow:
             project:            str,
             image_resolution:   int  = 2048,
             ffl_offset:         float = 0.0,
+            use_ambient_file:   bool = True,
         ):
             self.paths = config.get_project_paths(project)
             base_dir = self.paths.inputs_dir
 
             self.image_resolution   = image_resolution
             self.ffl_offset         = ffl_offset
+            self.use_ambient_file   = use_ambient_file
             self.project            = project
 
             def _resolve(p):
@@ -81,6 +83,7 @@ class IESVEDaylightWorkflow:
             print(f"{'IESVE Room Data':<30} {str(self.iesve_room_data.name):<70}")
             print(f"{'Resolution':<30} {self.image_resolution}px")
             print(f"{'Camera Height (FFL)':<30} {self.ffl_offset}m")
+            print(f"{'Ambient File':<30} {'Enabled' if self.use_ambient_file else 'Disabled'}")
             print("="*100 + "\n")
 
     def run(self, inputs: InputsValidator):
@@ -110,6 +113,7 @@ class IESVEDaylightWorkflow:
                 x_res=inputs.image_resolution,
                 view_files=view_generator.view_files,
                 image_dir=inputs.paths.image_dir,
+                use_ambient_file=inputs.use_ambient_file,
             )
             renderer.daylight_rendering_pipeline()
 

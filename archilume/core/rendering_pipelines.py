@@ -65,6 +65,7 @@ class DaylightRenderer:
 
     # Optional with defaults
     y_res: Optional[int]        = field(default=None)
+    use_ambient_file: bool      = True
 
     def __post_init__(self):
         # Normalise view_files to a sorted list of Paths
@@ -109,24 +110,29 @@ class DaylightRenderer:
             amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
 
             # Ambient file warming pass (low-res, output discarded)
-            if amb_path.exists():
-                print(f"Skipping ambient warming for {view_name} — {amb_path.name} already exists")
-            else:
-                null_target = "/dev/null" if IS_LINUX else "NUL"
-                if IS_LINUX:
-                    warmup_cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+            amb_flag = ""
+            if self.use_ambient_file:
+                amb_flag = f"-af {amb_path}"
+                if amb_path.exists():
+                    print(f"Skipping ambient warming for {view_name} — {amb_path.name} already exists")
                 else:
-                    warmup_cmd = rf"rpict -w -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+                    null_target = "/dev/null" if IS_LINUX else "NUL"
+                    if IS_LINUX:
+                        warmup_cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
+                    else:
+                        warmup_cmd = rf"rpict -w -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
 
-                print(f"Warming ambient file for view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{X_RES_OVERTURE}x{Y_RES_OVERTURE}] started {time.strftime('%H:%M:%S')}")
-                utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
-                print(f"Ambient warming for {view_name} complete {time.strftime('%H:%M:%S')}")
-
-            # Full resolution render (reads pre-warmed ambient file)
-            if IS_LINUX:
-                cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {hdr_path}"
+                    print(f"Warming ambient file for view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{X_RES_OVERTURE}x{Y_RES_OVERTURE}] started {time.strftime('%H:%M:%S')}")
+                    utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
+                    print(f"Ambient warming for {view_name} complete {time.strftime('%H:%M:%S')}")
             else:
-                cmd = rf"rpict -w -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {hdr_path}"
+                print(f"Ambient file disabled for {view_name} — rendering without ambient cache")
+
+            # Full resolution render
+            if IS_LINUX:
+                cmd = rf"rtpict -n {N_CPUS} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
+            else:
+                cmd = rf"rpict -w -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
 
             print(f"Rendering view {self.view_files.index(view_file) + 1}/{len(self.view_files)}: {view_name} [{self.x_res}x{self.y_res}] started {time.strftime('%H:%M:%S')}")
             utils.execute_new_radiance_commands(cmd, number_of_workers=1)
