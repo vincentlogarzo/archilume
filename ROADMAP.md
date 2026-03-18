@@ -61,8 +61,9 @@ This file tracks planned features, optimizations, and known issues for the Archi
 ### Core Architecture
 
 - **OBJ Input Use Case:** Enable direct input of OBJ files for the daylight workflow, allowing for full octree compilation (sky + geometry) within Archilume rather than relying solely on pre-built IESVE octrees.
-- **Scenario Grid:** Implement a variant/scenario grid system with matching file naming conventions to allow running permutations (different materials/params) in the most efficient order.
-- **Raw File Compilation:** Automate the compilation of raw geometry and .map files into octrees based on the scenario grid.
+- **Scenario Sidebar:** Replace the scenario grid concept with a sidebar-based scenario manager. The sidebar lists named scenarios (e.g. material/parameter permutations) within confined parameter ranges defined by the user (min/max bounds per variable). Each scenario is a discrete row the user can enable/disable, rename, and reorder. File naming conventions are auto-derived from the active scenario set. This replaces a flat grid approach with a structured, bounded list that scales more clearly as scenario counts grow.
+- **Multi-Octree Support:** Allow the workflow to compile and reference multiple separate octrees from independent model sources. A new `inputs/models/` directory holds per-scenario or per-variant OBJ/MTL geometry sets. Each subfolder in `inputs/models/` maps to a named octree that `Objs2Octree` compiles independently. The scenario sidebar links each scenario row to a selected octree, enabling material/geometry permutations without recompiling a monolithic scene. `oconv` calls are parallelised across models where hardware allows.
+- **Raw File Compilation:** Automate the compilation of raw geometry and .map files into octrees based on the active scenario sidebar selection.
 - **GPU Mode:** Add support for GPU rendering in the Daylight pipeline (similar to Sunlight workflow) to enable fast processing on Windows machines.
 
 ### Post-Processing & Validation
@@ -133,7 +134,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 ### Workflow & Simulation
 
 - **Integrated Controls:** Add simulation and post-processing controls directly to the UI to run the full daylight IESVE workflow locally. <- this item is to progress to a docker image that launches a dash web UI to control everything. The user can click through pre-configured workflows, and auhment whatever parameters they are allow to augment.
-- **Permutation Grid:** Add 5×5 permutation grid for quality, LRV, and VLT variables to evaluate sensitivity for failing rooms.
+- **Scenario Sidebar (Sensitivity Analysis):** Replace the permutation grid with a sidebar panel for sensitivity analysis of failing rooms. Users define bounded parameter ranges (e.g. LRV 0.3–0.6, VLT 0.2–0.5, quality preset Low/Med/High) and the sidebar lists the resulting scenario combinations as discrete rows. Rows can be individually run, compared, or toggled — avoiding the fixed-size grid constraint and making the parameter space explicit and auditable.
 - **Boundary Management:** Allow deletion of boundaries and restoration from source AOI files within the UI.
 
 ### IESVE .pic Compatibility
