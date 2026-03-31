@@ -18,9 +18,9 @@
 All positioning uses matplotlib's normalised figure coordinates `(0,0)` = bottom-left, `(1,1)` = top-right.
 
 ```
-┌────┬────────────┬─────────────────────────────────────┬─────────┐
+┌────┬─────────────┬─────────────────────────────────────┬─────────┐
 │LEFT│ INSTRUCTIONS│            CANVAS                   │  RIGHT  │
-│SIDE│ PANEL       │     (0.16, 0.21) to (0.99, 0.93)   │  SIDE-  │
+│SIDE│ PANEL       │     (0.16, 0.21) to (0.99, 0.93)    │  SIDE-  │
 │BAR │ (top-left)  │                                     │  BAR    │
 │    │             │                                     │ (tree)  │
 │0.03│             │                                     │  0.12w  │
@@ -29,7 +29,7 @@ All positioning uses matplotlib's normalised figure coordinates `(0,0)` = bottom
 │    │  (left col) │                                     │         │
 │    │             ├─────────────────────────────────────┤         │
 │    │             │         BOTTOM BAR (y=0.93+)        │         │
-└────┴────────────┴─────────────────────────────────────┴─────────┘
+└────┴─────────────┴─────────────────────────────────────┴─────────┘
 ```
 
 | Region | X | Y | Width | Height | Purpose |

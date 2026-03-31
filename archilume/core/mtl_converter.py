@@ -26,7 +26,8 @@ class MtlConverter:
     # Input file paths
     rad_paths: list[str] = field(default_factory=list)
     mtl_paths: list[str] = field(default_factory=list)
-    
+    output_dir: Path = None
+
     # Internal state
     rad_modifiers: set[str] = field(init=False, default_factory=set)
     output_mtl_path: str = field(init=False)
@@ -34,9 +35,10 @@ class MtlConverter:
 
     def __post_init__(self):
         """Initializes the output directory for Radiance material files."""
-        
-        # Ensure output directory exists
-        self.output_dir = Path(__file__).parent.parent / "outputs" / "rad"
+
+        # Use provided output_dir or fall back to project rad_dir
+        if self.output_dir is None:
+            self.output_dir = Path(__file__).parent.parent / "outputs" / "rad"
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 

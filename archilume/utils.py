@@ -1668,10 +1668,10 @@ def smart_cleanup(
         print("SCENARIO 1: Timestep changed")
         print("-" * 80)
         if delete_amb_files:
-            print("Action: Delete sky/, octree/, and ALL image/ files (including .amb)")
+            print(f"Action: Delete {paths.sky_dir.name}/, {paths.rad_dir.name}/, {paths.octree_dir.name}/, and ALL {paths.image_dir.name}/ files (including .amb)")
             print("Reason: New timesteps + quality/mode change requires full regeneration\n")
         else:
-            print("Action: Delete sky/, octree/, and image/ files, RETAIN .amb files")
+            print(f"Action: Delete {paths.sky_dir.name}/, {paths.rad_dir.name}/, {paths.octree_dir.name}/, and {paths.image_dir.name}/ files, RETAIN .amb files")
             print("Reason: New timesteps require new sky files and octrees")
             print("        Ambient files can be reused (scene geometry unchanged)\n")
 
@@ -1681,6 +1681,14 @@ def smart_cleanup(
             for sky_file in sky_dir.glob("*.sky"):
                 sky_file.unlink()
                 files_removed.append(f"sky/{sky_file.name}")
+
+        # Delete rad and materials files (upstream of octrees, must regenerate)
+        rad_dir = paths.rad_dir
+        if rad_dir.exists():
+            for rad_file in rad_dir.iterdir():
+                if rad_file.is_file() and rad_file.name not in {".gitkeep", ".gitignore"}:
+                    rad_file.unlink()
+                    files_removed.append(f"rad/{rad_file.name}")
 
         # Delete octree files
         if octree_dir.exists():

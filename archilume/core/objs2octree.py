@@ -94,7 +94,8 @@ class Objs2Octree:
         if self.output_rad_paths:
             mtl_creator = MtlConverter(
                 rad_paths=self.output_rad_paths,
-                mtl_paths=self.input_mtl_paths
+                mtl_paths=self.input_mtl_paths,
+                output_dir=self.rad_dir
             )
             mtl_creator.create_radiance_mtl_file()
 
