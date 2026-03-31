@@ -59,7 +59,7 @@ class SunlightAccessWorkflow:
             self.paths = config.get_project_paths(project)
 
             base_dir = self.paths.inputs_dir
-            self.room_boundaries_csv = base_dir / room_boundaries_csv if not Path(room_boundaries_csv).is_absolute() else Path(room_boundaries_csv)
+            self.room_boundaries_csv = self.paths.aoi_inputs_dir / room_boundaries_csv if not Path(room_boundaries_csv).is_absolute() else Path(room_boundaries_csv)
             self.obj_paths = [base_dir / p if not Path(p).is_absolute() else Path(p) for p in obj_paths]
 
             self._errors = []
@@ -133,7 +133,7 @@ class SunlightAccessWorkflow:
 
         def _report(self):
             if self._errors:
-                print("\n" + "="*100)
+                # # print("\n" + "="*100)
                 print("INPUT VALIDATION FAILED - EXECUTION BLOCKED")
                 print("="*100)
                 for e in self._errors: print(f" {e}")

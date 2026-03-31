@@ -25,17 +25,21 @@ param(
 
     [Parameter(Position = 3)]
     [string]
-    $ViewName
+    $ViewName,
+
+    [Parameter(Position = 4, HelpMessage = "Project outputs directory (e.g. projects/cowles/outputs)")]
+    [string]
+    $OutputsDir = "outputs"
 )
 
 $ErrorActionPreference = 'Stop'
 
 # SETUP PATHS
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$acceleradExe = Join-Path $scriptDir '../.devcontainer/accelerad_07_beta_Windows/bin/accelerad_rpict.exe'
-$octreeFile = "outputs/octree/$OctreeName.oct"
-$viewDir = 'outputs/view'
-$imageDir = 'outputs/image'
+$acceleradExe = Join-Path $scriptDir '../../.devcontainer/accelerad_07_beta_Windows/bin/accelerad_rpict.exe'
+$octreeFile = "$OutputsDir/octree/$OctreeName.oct"
+$viewDir = "$OutputsDir/view"
+$imageDir = "$OutputsDir/image"
 
 Write-Host "`n============================================================================"
 Write-Host "ACCELERAD BATCH RENDERER - STARTUP DIAGNOSTICS"

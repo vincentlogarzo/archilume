@@ -9,10 +9,30 @@
 #       http://127.0.0.1:8050/
 #
 
+import json
+import os
+import re
+import shutil
+import threading
+import time
+import webbrowser
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Optional
+
 import dash
 import dash_bootstrap_components as dbc
-from dash import html, dcc, Input, Output, State
+import plotly.graph_objects as go
+from dash import ALL, ctx, html, dcc, no_update, Input, Output, State
 from dash_iconify import DashIconify
+
+from archilume.apps.dash_editor import EditorState, build_figure, render_tree
+from archilume.apps.project_config import (
+    list_projects,
+    save_project_toml,
+    set_last_project,
+)
 
 app = dash.Dash(
     __name__,
@@ -22,6 +42,21 @@ app = dash.Dash(
     ],
     suppress_callback_exceptions=True,
 )
+
+# ── Server-side state ─────────────────────────────────────────────────────────
+
+STATE: Optional[EditorState] = None
+
+
+def _init_state(project: Optional[str] = None) -> None:
+    global STATE
+    STATE = EditorState(project=project)
+    # Kick off DF computation in background for the initial HDR
+    def _initial_df():
+        if STATE is not None:
+            STATE.load_df_image()
+            STATE._compute_all_room_df_results()
+    threading.Thread(target=_initial_df, daemon=True).start()
 
 # ---------------------------------------------------------------- colour tokens --
 
@@ -187,7 +222,8 @@ left_sidebar = html.Div([
     # ---- Nav ----
     sb_btn("lucide:menu",          "sb-menu",          "Toggle Project Browser"),
     html.Div(style={"height": "4px"}),
-    sb_btn("lucide:folder-open",   "sb-project",       "Open / Create Project"),
+    sb_btn("lucide:folder-open",   "sb-open-project",  "Open Project"),
+    sb_btn("lucide:folder-plus",   "sb-create-project","Create New Project"),
     divider_line(),
 
     # ---- Archive ----
@@ -357,57 +393,17 @@ tree_controls = html.Div([
 project_tree = html.Div([
     tree_controls,
 
-    html.Div([
-        # Root: HDR file
-        _tree_row("level_01_north.hdr", "lucide:file-image", depth=0, expanded=True,
-                  eye=False, cog=False),
-
-        # Layer 1
-        _tree_row("Layer 1 – False Colour",  "lucide:image",       depth=1, expanded=False,
-                  eye=True, cog=False),
-        # Layer 2
-        _tree_row("Layer 2 – Contour Lines", "lucide:image",       depth=1, expanded=False,
-                  eye=True, cog=False),
-        # Layer 3 – PDF overlay (dimmed = not loaded)
-        _tree_row("Layer 3 – PDF Floor Plan","lucide:file-text",   depth=1, expanded=False,
-                  eye=True, cog=True, dimmed=True),
-        # Layer 4 – Room Boundaries (highlighted)
-        _tree_row("Layer 4 – Room Boundaries","lucide:vector-square", depth=1, expanded=True,
-                  highlight=True, eye=False, cog=False),
-
-        # Accent bar + room children
-        html.Div([
-            html.Div(style={
-                "width": "2px", "backgroundColor": C["accent"],
-                "borderRadius": "1px", "marginLeft": "30px",
-                "marginRight": "5px", "flexShrink": "0",
-            }),
-            html.Div([
-                # Apartment U101
-                _tree_row("U101", "lucide:home", depth=0, expanded=True,
-                          badge="BED", highlight=True),
-                _tree_row("U101_BED1", "lucide:bed-double", depth=1, expanded=None,
-                          badge="BED"),
-                _tree_row("U101_LIV1", "lucide:sofa",       depth=1, expanded=None,
-                          badge="LIVING"),
-                _tree_row("U101_CIRC1","lucide:move",        depth=1, expanded=None,
-                          badge="CIRC"),
-                # Apartment U102
-                _tree_row("U102", "lucide:home", depth=0, expanded=False,
-                          badge="LIVING"),
-                # Apartment U103 collapsed
-                _tree_row("U103", "lucide:home", depth=0, expanded=False,
-                          badge="BED", dimmed=True),
-            ], style={"flexGrow": "1"}),
-        ], style={"display": "flex", "marginTop": "2px", "marginBottom": "4px"}),
-
-    ], style={"padding": "0 4px", "overflowY": "auto", "flexGrow": "1"}),
+    # Dynamic room tree — populated by update_all callback
+    html.Div(
+        id="room-tree-container",
+        style={"padding": "0 4px", "overflowY": "auto", "flexGrow": "1"},
+    ),
 
     # AOI level indicator at bottom of tree
     html.Div([
         DashIconify(icon="lucide:layers-2", width=12, color=C["text_dim"],
                     style={"marginRight": "5px"}),
-        html.Span("AOI Level: 1 / 3", style={
+        html.Span("—", id="aoi-level-label", style={
             "fontSize": "10px", "fontFamily": FONT_MONO, "color": C["text_dim"],
             "flexGrow": "1",
         }),
@@ -422,7 +418,7 @@ project_tree = html.Div([
         "borderTop": f"1px solid {C['panel_bdr']}",
     }),
 
-], style={
+], id="project-tree-panel", style={
     "backgroundColor": C["panel_bg"],
     "borderRight": f"1px solid {C['panel_bdr']}",
     "display": "flex",
@@ -662,14 +658,18 @@ viewport = html.Div([
     # ---- Canvas area ----
     html.Div([
 
-        # Dot-grid background (placeholder; replace with dcc.Graph / plotly figure)
-        html.Div(id="canvas-area", style={
-            "flexGrow": "1",
-            "backgroundImage": "radial-gradient(circle, #c4cad1 1px, transparent 1px)",
-            "backgroundSize": "24px 24px",
-        }),
+        # Live Plotly viewport
+        dcc.Graph(
+            id="viewport-graph",
+            config={
+                "scrollZoom": True,
+                "displayModeBar": False,
+                "doubleClick": "reset",
+            },
+            style={"height": "100%", "width": "100%"},
+        ),
 
-        # Floating drawing tool palette (bottom-centre)
+        # Floating drawing tool palette (bottom-centre, overlaid above the graph)
         html.Div([
             *[html.Div([
                 DashIconify(icon=ic, width=14, color=C["text_sec"],
@@ -701,7 +701,62 @@ viewport = html.Div([
             "boxShadow": "0 4px 16px rgba(0,0,0,0.12)",
             "zIndex": 20,
             "minWidth": "200px",
+            "pointerEvents": "auto",
         }),
+
+        # Overlay alignment panel (top-right, shown only when align mode active)
+        html.Div(
+            id="overlay-align-panel",
+            children=[
+                html.Div("OVERLAY ALIGNMENT", style={
+                    "fontSize": "9px", "fontFamily": FONT_MONO,
+                    "color": C["text_dim"], "letterSpacing": "0.1em",
+                    "marginBottom": "8px",
+                }),
+                html.Div([
+                    html.Span("Offset X", style={"fontSize": "10px", "fontFamily": FONT_MONO,
+                                                 "color": C["text_sec"], "width": "60px", "display": "inline-block"}),
+                    dbc.Input(id="overlay-offset-x", type="number", value=0, step=1, debounce=True,
+                              size="sm", style={"width": "80px", "fontFamily": FONT_MONO, "fontSize": "10px"}),
+                ], style={"display": "flex", "alignItems": "center", "marginBottom": "4px"}),
+                html.Div([
+                    html.Span("Offset Y", style={"fontSize": "10px", "fontFamily": FONT_MONO,
+                                                 "color": C["text_sec"], "width": "60px", "display": "inline-block"}),
+                    dbc.Input(id="overlay-offset-y", type="number", value=0, step=1, debounce=True,
+                              size="sm", style={"width": "80px", "fontFamily": FONT_MONO, "fontSize": "10px"}),
+                ], style={"display": "flex", "alignItems": "center", "marginBottom": "4px"}),
+                html.Div([
+                    html.Span("Scale X", style={"fontSize": "10px", "fontFamily": FONT_MONO,
+                                                "color": C["text_sec"], "width": "60px", "display": "inline-block"}),
+                    dbc.Input(id="overlay-scale-x", type="number", value=1.0, step=0.01, debounce=True,
+                              size="sm", style={"width": "80px", "fontFamily": FONT_MONO, "fontSize": "10px"}),
+                ], style={"display": "flex", "alignItems": "center", "marginBottom": "4px"}),
+                html.Div([
+                    html.Span("Scale Y", style={"fontSize": "10px", "fontFamily": FONT_MONO,
+                                                "color": C["text_sec"], "width": "60px", "display": "inline-block"}),
+                    dbc.Input(id="overlay-scale-y", type="number", value=1.0, step=0.01, debounce=True,
+                              size="sm", style={"width": "80px", "fontFamily": FONT_MONO, "fontSize": "10px"}),
+                ], style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
+                html.Div([
+                    html.Span("Alpha", style={"fontSize": "10px", "fontFamily": FONT_MONO,
+                                              "color": C["text_sec"], "width": "60px", "display": "inline-block"}),
+                    dbc.Input(id="overlay-alpha", type="number", value=0.6, step=0.05,
+                              min=0.0, max=1.0, debounce=True,
+                              size="sm", style={"width": "80px", "fontFamily": FONT_MONO, "fontSize": "10px"}),
+                ], style={"display": "flex", "alignItems": "center"}),
+            ],
+            style={
+                "display": "none",  # shown via callback when align mode active
+                "position": "absolute", "top": "12px", "right": "12px",
+                "backgroundColor": C["header"],
+                "border": f"1px solid {C['panel_bdr']}",
+                "borderRadius": "6px",
+                "padding": "10px 12px",
+                "boxShadow": "0 4px 16px rgba(0,0,0,0.12)",
+                "zIndex": 30,
+                "pointerEvents": "auto",
+            },
+        ),
 
         # Zoom indicator (bottom-right)
         html.Div("100%", id="zoom-indicator", style={
@@ -710,6 +765,7 @@ viewport = html.Div([
             "backgroundColor": C["header"], "border": f"1px solid {C['panel_bdr']}",
             "borderRadius": "4px", "padding": "2px 6px",
             "zIndex": 10,
+            "pointerEvents": "none",
         }),
 
     ], style={
@@ -983,21 +1039,24 @@ shortcuts_modal = dbc.Modal([
                       "marginBottom": "6px", "padding": "3px 0",
                       "borderBottom": f"1px solid {C['panel_bdr']}22"})
              for k, desc in [
-                 ("↑ / ↓",      "Navigate HDR files"),
-                 ("T",          "Toggle image variant (HDR/TIFF)"),
-                 ("D",          "Toggle draw mode"),
-                 ("DD",         "Enter room divider mode"),
-                 ("E",          "Toggle edit mode"),
-                 ("O",          "Toggle ortho lines"),
-                 ("P",          "Toggle DF% placement mode"),
-                 ("S",          "Save room / confirm edit"),
-                 ("F",          "Fit zoom to selected room"),
-                 ("R",          "Reset zoom"),
-                 ("Ctrl+Z",     "Undo (edit or draw mode)"),
-                 ("Ctrl+A",     "Select all rooms on current HDR"),
-                 ("Ctrl+Click", "Multi-select rooms in list"),
-                 ("Esc",        "Exit mode / deselect"),
-                 ("Q",          "Quit"),
+                 ("↑ / ↓",           "Navigate HDR files"),
+                 ("T",               "Toggle image variant (HDR/TIFF)"),
+                 ("D",               "Toggle draw mode"),
+                 ("DD",              "Enter room divider mode (quick double-D)"),
+                 ("E",               "Toggle edit mode"),
+                 ("Click vertex",    "Select vertex for move (edit mode)"),
+                 ("Click canvas",    "Move selected vertex to position"),
+                 ("Delete/Backspace","Delete selected vertex (edit mode, ≥4 verts)"),
+                 ("O",               "Toggle ortho lines"),
+                 ("P",               "Toggle DF% placement mode"),
+                 ("S",               "Save room / confirm divider"),
+                 ("F",               "Fit zoom to selected room"),
+                 ("R",               "Reset zoom"),
+                 ("Ctrl+Z",          "Undo vertex move / draw step / room delete"),
+                 ("Ctrl+A",          "Select all rooms on current HDR"),
+                 ("Shift+S",         "Force save session"),
+                 ("Ctrl+R",          "Rotate overlay 90°"),
+                 ("Esc",             "Exit mode / align mode / deselect"),
              ]],
         ]),
     ], style={"backgroundColor": C["panel_bg"], "padding": "16px 20px"}),
@@ -1012,6 +1071,16 @@ shortcuts_modal = dbc.Modal([
 # ------------------------------------------------------------------ layout ---
 
 app.layout = html.Div([
+    # Hidden stores & polling interval
+    dcc.Store(id="store-trigger", data=0),
+    dcc.Store(id="store-draw-vertices", data=[]),
+    dcc.Store(id="store-divider-points", data=[]),
+    dcc.Store(id="keyboard-event", data=""),
+    dcc.Store(id="store-grid-spacing", data=50),
+    dcc.Store(id="store-grid-visible", data=True),
+    dcc.Interval(id="keyboard-poll", interval=150, n_intervals=0),
+    dcc.Interval(id="export-poll", interval=400, disabled=True, n_intervals=0),
+
     # Fixed left sidebar
     left_sidebar,
 
@@ -1045,6 +1114,83 @@ app.layout = html.Div([
     # Modals & overlays
     shortcuts_modal,
 
+    # Open Project modal
+    dbc.Modal([
+        dbc.ModalHeader("Open Project"),
+        dbc.ModalBody([
+            html.Div("Select a project to open:", style={
+                "fontFamily": FONT_MONO, "fontSize": "11px",
+                "color": C["text_sec"], "marginBottom": "8px",
+            }),
+            dbc.Select(
+                id="open-project-select",
+                options=[],
+                placeholder="— choose project —",
+                style={"fontFamily": FONT_MONO, "fontSize": "11px"},
+            ),
+        ]),
+        dbc.ModalFooter([
+            dbc.Button("Open", id="btn-open-project-confirm", color="primary", size="sm",
+                       style={"fontFamily": FONT_MONO, "fontSize": "11px", "marginRight": "8px"}),
+            dbc.Button("Cancel", id="btn-open-project-cancel", color="secondary", size="sm",
+                       style={"fontFamily": FONT_MONO, "fontSize": "11px"}),
+        ]),
+    ], id="open-project-modal", is_open=False),
+
+    # Create Project modal
+    dbc.Modal([
+        dbc.ModalHeader("Create New Project"),
+        dbc.ModalBody([
+            html.Div("Project name:", style={
+                "fontFamily": FONT_MONO, "fontSize": "11px",
+                "color": C["text_sec"], "marginBottom": "6px",
+            }),
+            dbc.Input(
+                id="create-project-name",
+                placeholder="e.g. MyProject",
+                debounce=False,
+                style={"fontFamily": FONT_MONO, "fontSize": "11px", "marginBottom": "8px"},
+            ),
+            html.Div(id="create-project-feedback", style={
+                "fontFamily": FONT_MONO, "fontSize": "10px",
+                "color": C["danger"], "minHeight": "14px",
+            }),
+        ]),
+        dbc.ModalFooter([
+            dbc.Button("Create", id="btn-create-project-confirm", color="success", size="sm",
+                       style={"fontFamily": FONT_MONO, "fontSize": "11px", "marginRight": "8px"}),
+            dbc.Button("Cancel", id="btn-create-project-cancel", color="secondary", size="sm",
+                       style={"fontFamily": FONT_MONO, "fontSize": "11px"}),
+        ]),
+    ], id="create-project-modal", is_open=False),
+
+    # Extract archive modal
+    dbc.Modal([
+        dbc.ModalHeader("Extract Archive"),
+        dbc.ModalBody([
+            html.Div("Select an archive to restore:", style={
+                "fontFamily": FONT_MONO, "fontSize": "11px",
+                "color": C["text_sec"], "marginBottom": "8px",
+            }),
+            dbc.Select(
+                id="extract-archive-select",
+                options=[],
+                placeholder="— choose archive —",
+                style={"fontFamily": FONT_MONO, "fontSize": "11px", "marginBottom": "8px"},
+            ),
+            html.Div(
+                "This will overwrite the current project AOI files and reload the session.",
+                style={"fontFamily": FONT_MONO, "fontSize": "10px", "color": C["danger"]},
+            ),
+        ]),
+        dbc.ModalFooter([
+            dbc.Button("Extract & Reload", id="btn-extract-confirm", color="danger", size="sm",
+                       style={"fontFamily": FONT_MONO, "fontSize": "11px", "marginRight": "8px"}),
+            dbc.Button("Cancel", id="btn-extract-cancel", color="secondary", size="sm",
+                       style={"fontFamily": FONT_MONO, "fontSize": "11px"}),
+        ]),
+    ], id="extract-modal", is_open=False),
+
 ], style={
     "display": "flex",
     "fontFamily": FONT_MONO,
@@ -1055,8 +1201,470 @@ app.layout = html.Div([
     "overflow": "hidden",
 })
 
-# ---------------------------------------------------------------- callbacks --
-# All stubs — wire up real logic later.
+# ═══════════════════════════════════════════════════════════════════════════════
+# Callbacks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Keyboard capture (clientside) ────────────────────────────────────────────
+# keyboard.js in assets/ sets window._lastKeyEvent on every keydown.
+# We poll it every 150 ms and clear after reading.
+
+app.clientside_callback(
+    """
+    function(n) {
+        const ev = window._lastKeyEvent;
+        window._lastKeyEvent = null;
+        return ev ? JSON.stringify(ev) : "";
+    }
+    """,
+    Output("keyboard-event", "data"),
+    Input("keyboard-poll", "n_intervals"),
+)
+
+
+# ── Master render ─────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("viewport-graph", "figure", allow_duplicate=True),
+    Output("hdr-filename", "children"),
+    Output("hdr-index", "children"),
+    Output("variant-badge", "children"),
+    Output("room-tree-container", "children"),
+    Output("status-text", "children", allow_duplicate=True),
+    Output("mode-badge-draw", "style"),
+    Output("mode-badge-edit", "style"),
+    Output("mode-badge-divider", "style"),
+    Output("project-status", "children", allow_duplicate=True),
+    Output("aoi-level-label", "children"),
+    Output("status-dot", "style"),
+    Output("multiselect-badge", "children"),
+    Output("multiselect-badge", "style"),
+    Output("df-legend", "style"),
+    Input("store-trigger", "data"),
+    State("store-grid-spacing", "data"),
+    State("store-grid-visible", "data"),
+    prevent_initial_call=False,
+)
+def update_all(_trigger, grid_spacing, grid_visible):
+    _badge_hidden = {"display": "none"}
+
+    def _badge_visible(base_style):
+        s = dict(base_style)
+        s["display"] = "inline-block"
+        return s
+
+    DRAW_BASE = {
+        "fontFamily": FONT_MONO, "fontSize": "9px",
+        "color": C["accent"], "backgroundColor": C["btn_on"],
+        "border": f"1px solid {C['accent']}",
+        "borderRadius": "3px", "padding": "1px 6px", "marginRight": "4px",
+    }
+    EDIT_BASE = {
+        "fontFamily": FONT_MONO, "fontSize": "9px",
+        "color": "#92400e", "backgroundColor": "#fef3c7",
+        "border": f"1px solid {C['warning']}",
+        "borderRadius": "3px", "padding": "1px 6px", "marginRight": "4px",
+    }
+    DIV_BASE = {
+        "fontFamily": FONT_MONO, "fontSize": "9px",
+        "color": "#1e40af", "backgroundColor": "#dbeafe",
+        "border": f"1px solid {C['accent2']}",
+        "borderRadius": "3px", "padding": "1px 6px", "marginRight": "4px",
+    }
+
+    _dot_base = {"width": "6px", "height": "6px", "borderRadius": "50%",
+                 "marginRight": "7px", "flexShrink": "0"}
+    _multisel_hidden = {
+        "fontFamily": FONT_MONO, "fontSize": "10px", "color": "#1e40af",
+        "backgroundColor": "#dbeafe", "border": f"1px solid {C['accent2']}",
+        "borderRadius": "3px", "padding": "2px 8px", "marginRight": "10px",
+        "display": "none",
+    }
+    _df_legend_hidden = {"display": "none"}
+    _df_legend_visible = {
+        "backgroundColor": C["panel_bg"], "border": f"1px solid {C['panel_bdr']}",
+        "borderRadius": "6px", "marginBottom": "8px",
+    }
+
+    if STATE is None:
+        return (
+            go.Figure(), "No images", "—", "HDR",
+            [], "No project loaded",
+            _badge_hidden, _badge_hidden, _badge_hidden,
+            "No project loaded", "—",
+            dict(_dot_base, backgroundColor=C["text_dim"]),
+            "", _multisel_hidden, _df_legend_hidden,
+        )
+
+    fig = build_figure(
+        grid_spacing=grid_spacing or 50,
+        grid_visible=grid_visible if grid_visible is not None else True,
+        state=STATE,
+    )
+    hdr_name = STATE.current_hdr_name or "No images"
+    n_hdrs = len(STATE.hdr_files)
+    idx_str = f"{STATE.current_hdr_idx + 1} / {n_hdrs}" if n_hdrs else "—"
+
+    variant_label = "HDR"
+    if STATE.image_variants:
+        vp = STATE.current_variant_path
+        if vp:
+            suffix = vp.suffix.lower()
+            if suffix in (".tif", ".tiff"):
+                variant_label = "TIFF"
+            elif suffix in (".png",):
+                variant_label = "PNG"
+
+    tree = render_tree(state=STATE)
+
+    n_rooms = sum(1 for r in STATE.rooms if STATE._is_room_on_current_hdr(r))
+    mode_str = (
+        "DRAW" if STATE.draw_mode
+        else "DIVIDER" if STATE.divider_mode
+        else "EDIT" if STATE.edit_mode
+        else "SELECT"
+    )
+    status = f"{hdr_name} | {n_rooms} rooms | {mode_str}"
+    proj_label = STATE.project or "No project"
+
+    draw_style = _badge_visible(DRAW_BASE) if STATE.draw_mode else _badge_hidden
+    edit_style = _badge_visible(EDIT_BASE) if STATE.edit_mode else _badge_hidden
+    div_style  = _badge_visible(DIV_BASE) if STATE.divider_mode else _badge_hidden
+
+    # AOI level label
+    aoi_label = STATE.get_aoi_level_label()
+
+    # Status dot colour: teal = select, amber = edit/draw/divider, red = placement
+    if STATE.placement_mode:
+        dot_color = C["danger"]
+    elif STATE.draw_mode or STATE.edit_mode or STATE.divider_mode:
+        dot_color = C["warning"]
+    else:
+        dot_color = C["accent2"]
+    dot_style = dict(_dot_base, backgroundColor=dot_color)
+
+    # Multiselect badge
+    n_sel = len(STATE.multi_selected_room_idxs)
+    if n_sel > 0:
+        ms_children = f"{n_sel} rooms selected"
+        ms_style = dict(_multisel_hidden, display="inline-block")
+    else:
+        ms_children = ""
+        ms_style = _multisel_hidden
+
+    # DF legend: show when any stamps exist for current HDR
+    hdr_name_cur = STATE.current_hdr_name or ""
+    df_legend_style = (
+        _df_legend_visible
+        if STATE._df_stamps.get(hdr_name_cur)
+        else _df_legend_hidden
+    )
+
+    return (
+        fig, hdr_name, idx_str, variant_label,
+        tree, status,
+        draw_style, edit_style, div_style,
+        proj_label, aoi_label, dot_style,
+        ms_children, ms_style, df_legend_style,
+    )
+
+
+# ── DF compute trigger (fires after HDR nav) ──────────────────────────────────
+
+def _trigger_df_compute() -> None:
+    """Load DF image and compute compliance for current HDR in background."""
+    if STATE is None:
+        return
+    # threading imported at top
+    def _worker():
+        STATE.load_df_image()
+        STATE._compute_all_room_df_results()
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+# ── HDR navigation ────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("hdr-prev", "n_clicks"),
+    prevent_initial_call=True,
+)
+def hdr_prev(_):
+    if STATE and STATE.current_hdr_idx > 0:
+        STATE.current_hdr_idx -= 1
+        STATE._rebuild_image_variants()
+        STATE._rebuild_snap_arrays()
+        STATE._update_parent_options()
+        STATE.selected_room_idx = None
+        STATE._edit_selected_vertex = None
+        _trigger_df_compute()
+    return time.time()
+
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("hdr-next", "n_clicks"),
+    prevent_initial_call=True,
+)
+def hdr_next(_):
+    if STATE and STATE.hdr_files and STATE.current_hdr_idx < len(STATE.hdr_files) - 1:
+        STATE.current_hdr_idx += 1
+        STATE._rebuild_image_variants()
+        STATE._rebuild_snap_arrays()
+        STATE._update_parent_options()
+        STATE.selected_room_idx = None
+        STATE._edit_selected_vertex = None
+        _trigger_df_compute()
+    return time.time()
+
+
+# ── Image variant toggle [T] ──────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("variant-badge", "n_clicks"),
+    Input("sb-image-toggle", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_variant(_, __):
+    if STATE and STATE.image_variants:
+        STATE.current_variant_idx = (STATE.current_variant_idx + 1) % len(STATE.image_variants)
+    return time.time()
+
+
+# ── Keyboard handler ──────────────────────────────────────────────────────────
+
+_last_d_time: float = 0.0  # for DD double-key detection
+
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("store-draw-vertices", "data", allow_duplicate=True),
+    Input("keyboard-event", "data"),
+    State("store-draw-vertices", "data"),
+    prevent_initial_call=True,
+)
+def on_keyboard(key_json, draw_verts):
+    global _last_d_time
+    if not key_json or STATE is None:
+        return no_update, no_update
+    try:
+        evt = json.loads(key_json)
+    except (json.JSONDecodeError, TypeError):
+        return no_update, no_update
+    key = evt.get("key", "")
+    ctrl = evt.get("ctrl", False)
+    shift = evt.get("shift", False)
+    trigger = no_update
+    dv = no_update
+
+    if key == "Escape":
+        if STATE.overlay_align_mode:
+            STATE.overlay_align_mode = False
+        STATE.draw_mode = False
+        STATE.edit_mode = False
+        STATE.divider_mode = False
+        STATE._divider_points = []
+        STATE._divider_room_idx = None
+        STATE.current_polygon_vertices = []
+        STATE._edit_selected_vertex = None
+        trigger = time.time()
+        dv = []
+
+    elif key.lower() == "d" and not ctrl and not shift:
+        now = time.time()
+        if now - _last_d_time < 0.4:
+            # DD — enter divider mode on selected room
+            _last_d_time = 0.0
+            if not STATE.divider_mode:
+                if not STATE.edit_mode:
+                    STATE.edit_mode = True
+                if STATE.selected_room_idx is not None:
+                    STATE.divider_mode = True
+                    STATE._divider_room_idx = STATE.selected_room_idx
+                    STATE._divider_points = []
+            STATE.draw_mode = False
+        else:
+            # Single D — draw mode toggle
+            _last_d_time = now
+            STATE.draw_mode = not STATE.draw_mode
+            if STATE.draw_mode:
+                STATE.edit_mode = False
+                STATE.divider_mode = False
+            STATE.current_polygon_vertices = []
+            dv = []
+        trigger = time.time()
+
+    elif key.lower() == "e" and not ctrl:
+        STATE.edit_mode = not STATE.edit_mode
+        if not STATE.edit_mode:
+            STATE.divider_mode = False
+            STATE._divider_points = []
+            STATE._edit_selected_vertex = None
+        STATE.draw_mode = False
+        trigger = time.time()
+
+    elif key == "S" and shift and not ctrl:
+        # Shift+S — force save session
+        STATE._save_session()
+        trigger = time.time()
+
+    elif key.lower() == "s" and not ctrl and not shift:
+        if STATE.divider_mode and STATE._divider_points:
+            msg = STATE.finalize_division()
+            print(msg)
+            trigger = time.time()
+            dv = []
+        elif STATE.draw_mode and STATE.current_polygon_vertices:
+            msg = STATE.save_room("ROOM")
+            print(msg)
+            trigger = time.time()
+            dv = []
+
+    elif key.lower() == "o":
+        STATE.ortho_mode = not STATE.ortho_mode
+        trigger = time.time()
+
+    elif key.lower() == "z" and ctrl:
+        if STATE.draw_mode:
+            STATE.undo_draw()
+            dv = [[v[0], v[1]] for v in STATE.current_polygon_vertices]
+        else:
+            STATE.undo_edit()
+        trigger = time.time()
+
+    elif key in ("Delete", "Backspace"):
+        if STATE.divider_mode and STATE._divider_points:
+            # Undo last divider point
+            STATE._divider_points.pop()
+            trigger = time.time()
+        elif STATE.edit_mode and STATE._edit_selected_vertex is not None:
+            r_idx, v_idx = STATE._edit_selected_vertex
+            msg = STATE.delete_vertex(r_idx, v_idx)
+            print(msg)
+            trigger = time.time()
+        elif STATE.draw_mode and STATE.current_polygon_vertices:
+            # Undo last drawn vertex
+            STATE.current_polygon_vertices.pop()
+            dv = [[v[0], v[1]] for v in STATE.current_polygon_vertices]
+            trigger = time.time()
+
+    elif key == "ArrowUp":
+        if STATE.overlay_align_mode:
+            STATE.nudge_overlay("up")
+            trigger = time.time()
+        elif STATE.current_hdr_idx > 0:
+            STATE.current_hdr_idx -= 1
+            STATE._rebuild_image_variants()
+            STATE._rebuild_snap_arrays()
+            STATE._update_parent_options()
+            STATE.selected_room_idx = None
+            STATE._edit_selected_vertex = None
+            trigger = time.time()
+
+    elif key == "ArrowDown":
+        if STATE.overlay_align_mode:
+            STATE.nudge_overlay("down")
+            trigger = time.time()
+        elif STATE.hdr_files and STATE.current_hdr_idx < len(STATE.hdr_files) - 1:
+            STATE.current_hdr_idx += 1
+            STATE._rebuild_image_variants()
+            STATE._rebuild_snap_arrays()
+            STATE._update_parent_options()
+            STATE.selected_room_idx = None
+            STATE._edit_selected_vertex = None
+            trigger = time.time()
+
+    elif key == "ArrowLeft":
+        if STATE.overlay_align_mode:
+            STATE.nudge_overlay("left")
+            trigger = time.time()
+
+    elif key == "ArrowRight":
+        if STATE.overlay_align_mode:
+            STATE.nudge_overlay("right")
+            trigger = time.time()
+
+    elif key.lower() == "t":
+        if STATE.image_variants:
+            STATE.current_variant_idx = (STATE.current_variant_idx + 1) % len(STATE.image_variants)
+            trigger = time.time()
+
+    elif key.lower() == "p" and not ctrl:
+        STATE.placement_mode = not STATE.placement_mode
+        if STATE.placement_mode:
+            # threading imported at top
+            threading.Thread(target=STATE.load_df_image, daemon=True).start()
+        trigger = time.time()
+
+    elif key.lower() == "r" and ctrl:
+        # Ctrl+R — rotate overlay 90°
+        if STATE._overlay_visible:
+            STATE.rotate_overlay_90()
+        trigger = time.time()
+
+    elif key.lower() == "r" and not ctrl:
+        trigger = time.time()  # reset zoom — update_all rebuilds with autorange
+
+    return trigger, dv
+
+
+# Keyboard F → fire btn-fit
+@app.callback(
+    Output("btn-fit", "n_clicks", allow_duplicate=True),
+    Input("keyboard-event", "data"),
+    State("btn-fit", "n_clicks"),
+    prevent_initial_call=True,
+)
+def keyboard_fit(key_json, n):
+    if not key_json:
+        return no_update
+    try:
+        evt = json.loads(key_json)
+    except Exception:
+        return no_update
+    if evt.get("key", "").lower() == "f" and not evt.get("ctrl") and not evt.get("shift"):
+        return (n or 0) + 1
+    return no_update
+
+
+# Keyboard Ctrl+A → fire btn-select-all
+@app.callback(
+    Output("btn-select-all", "n_clicks", allow_duplicate=True),
+    Input("keyboard-event", "data"),
+    State("btn-select-all", "n_clicks"),
+    prevent_initial_call=True,
+)
+def keyboard_select_all(key_json, n):
+    if not key_json:
+        return no_update
+    try:
+        evt = json.loads(key_json)
+    except Exception:
+        return no_update
+    if evt.get("key", "").lower() == "a" and evt.get("ctrl"):
+        return (n or 0) + 1
+    return no_update
+
+
+# ── Reset zoom ────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("viewport-graph", "figure", allow_duplicate=True),
+    Input("sb-reset-zoom", "n_clicks"),
+    State("store-grid-spacing", "data"),
+    State("store-grid-visible", "data"),
+    prevent_initial_call=True,
+)
+def reset_zoom(_, grid_spacing, grid_visible):
+    return build_figure(
+        grid_spacing=grid_spacing or 50,
+        grid_visible=grid_visible if grid_visible is not None else True,
+        state=STATE,
+    )
+
+
+# ── Shortcuts modal ───────────────────────────────────────────────────────────
 
 @app.callback(
     Output("shortcuts-modal", "is_open"),
@@ -1068,6 +1676,8 @@ app.layout = html.Div([
 def toggle_shortcuts_modal(open_clicks, close_clicks, is_open):
     return not is_open
 
+
+# ── Room name preview ─────────────────────────────────────────────────────────
 
 @app.callback(
     Output("room-name-preview", "children"),
@@ -1086,25 +1696,1017 @@ def update_name_preview(name, parent):
     return f"Will save as: {full}"
 
 
-# Room type toggle stubs
-for _btn_id in ("rt-bed", "rt-living", "rt-nonresi", "rt-circ"):
+# ── Open Project modal ────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("open-project-modal", "is_open"),
+    Output("open-project-select", "options"),
+    Output("open-project-select", "value"),
+    Input("sb-open-project", "n_clicks"),
+    Input("btn-open-project-cancel", "n_clicks"),
+    State("open-project-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_open_project(open_clicks, cancel_clicks, is_open):
+    # list_projects imported at top
+    triggered = ctx.triggered_id
+    if triggered == "sb-open-project":
+        projects = list_projects()
+        options = [{"label": p, "value": p} for p in projects]
+        current = STATE.project if STATE else None
+        return True, options, current
+    return False, [], None
+
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("open-project-modal", "is_open", allow_duplicate=True),
+    Output("project-status", "children", allow_duplicate=True),
+    Input("btn-open-project-confirm", "n_clicks"),
+    State("open-project-select", "value"),
+    prevent_initial_call=True,
+)
+def confirm_open_project(_, project_name):
+    if not project_name:
+        return no_update, True, no_update
+    # set_last_project imported at top
+    set_last_project(project_name)
+    _init_state(project_name)
+    return time.time(), False, project_name
+
+
+# ── Create Project modal ──────────────────────────────────────────────────────
+
+@app.callback(
+    Output("create-project-modal", "is_open"),
+    Output("create-project-name", "value"),
+    Input("sb-create-project", "n_clicks"),
+    Input("btn-create-project-cancel", "n_clicks"),
+    State("create-project-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_create_project(open_clicks, cancel_clicks, is_open):
+    triggered = ctx.triggered_id
+    if triggered == "sb-create-project":
+        return True, ""
+    return False, no_update
+
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("create-project-modal", "is_open", allow_duplicate=True),
+    Output("create-project-feedback", "children"),
+    Input("btn-create-project-confirm", "n_clicks"),
+    State("create-project-name", "value"),
+    prevent_initial_call=True,
+)
+def confirm_create_project(_, project_name):
+    if not project_name or not project_name.strip():
+        return no_update, True, "Please enter a project name."
+    name = project_name.strip()
+    # Validate: only alphanumeric, hyphens, underscores
+    # re imported at top
+    if not re.match(r'^[\w\-]+$', name):
+        return no_update, True, "Name may only contain letters, numbers, hyphens, underscores."
+    # project_config imported at top
+    if name in list_projects():
+        return no_update, True, f"Project '{name}' already exists — use Open instead."
+    # Create minimal project.toml
+    save_project_toml(name, {"project": {"mode": "archilume"}})
+    set_last_project(name)
+    _init_state(name)
+    return time.time(), False, ""
+
+
+# ── Draw mode toggle (tool-draw button) ──────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("tool-draw", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_draw(_):
+    if STATE is None:
+        return no_update
+    STATE.draw_mode = not STATE.draw_mode
+    if STATE.draw_mode:
+        STATE.edit_mode = False
+        STATE.divider_mode = False
+        STATE._divider_points = []
+    STATE.current_polygon_vertices = []
+    return time.time()
+
+
+# ── Edit mode toggle ──────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("sb-edit-mode", "n_clicks"),
+    Input("tool-edit", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_edit(_, __):
+    if STATE is None:
+        return no_update
+    STATE.edit_mode = not STATE.edit_mode
+    if not STATE.edit_mode:
+        STATE.divider_mode = False
+        STATE._divider_points = []
+    STATE.draw_mode = False
+    return time.time()
+
+
+# ── Ortho toggle ──────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("sb-ortho", "n_clicks"),
+    Input("tool-ortho", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_ortho(_, __):
+    if STATE is None:
+        return no_update
+    STATE.ortho_mode = not STATE.ortho_mode
+    return time.time()
+
+
+# ── Divider mode toggle ───────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("tool-divider", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_divider(_):
+    if STATE is None:
+        return no_update
+    if STATE.divider_mode:
+        STATE.divider_mode = False
+        STATE._divider_points = []
+        STATE._divider_room_idx = None
+    else:
+        if not STATE.edit_mode:
+            STATE.edit_mode = True
+        if STATE.selected_room_idx is not None:
+            STATE.divider_mode = True
+            STATE._divider_room_idx = STATE.selected_room_idx
+            STATE._divider_points = []
+    return time.time()
+
+
+# ── Canvas click → vertex placement / room selection / vertex move ────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("store-draw-vertices", "data", allow_duplicate=True),
+    Output("input-parent", "value", allow_duplicate=True),
+    Input("viewport-graph", "clickData"),
+    State("store-draw-vertices", "data"),
+    prevent_initial_call=True,
+)
+def on_canvas_click(click_data, draw_verts):
+    if STATE is None or click_data is None:
+        return no_update, no_update, no_update
+    pt = click_data.get("points", [{}])[0]
+    x, y = pt.get("x"), pt.get("y")
+
+    customdata = pt.get("customdata")
+    if isinstance(customdata, list) and customdata:
+        customdata = customdata[0]
+
+    # ── Placement mode (DF% stamping) ─────────────────────────────────────────
+    if STATE.placement_mode:
+        if x is None or y is None:
+            return no_update, no_update, no_update
+        if isinstance(customdata, dict) and "stamp_idx" in customdata:
+            STATE.remove_nearest_stamp(x, y)
+            return time.time(), no_update, no_update
+        if STATE._df_image is None:
+            STATE.load_df_image()
+        df_val = STATE.stamp_df(x, y)
+        if df_val is not None:
+            print(f"DF stamp: ({x:.0f}, {y:.0f}) = {df_val:.2f}%")
+        return time.time(), no_update, no_update
+
+    # ── Edit mode ─────────────────────────────────────────────────────────────
+    if STATE.edit_mode and not STATE.divider_mode and not STATE.draw_mode:
+        if isinstance(customdata, dict) and "vertex_idx" in customdata:
+            room_idx = customdata["room_idx"]
+            vertex_idx = customdata["vertex_idx"]
+            if STATE._edit_selected_vertex == (room_idx, vertex_idx):
+                STATE._edit_selected_vertex = None
+            else:
+                STATE._edit_selected_vertex = (room_idx, vertex_idx)
+            return time.time(), no_update, no_update
+
+        if STATE._edit_selected_vertex is not None and x is not None and y is not None:
+            r_idx, v_idx = STATE._edit_selected_vertex
+            sx, sy = STATE._snap_to_pixel(x, y)
+            sx, sy = STATE._snap_to_vertex(sx, sy)
+            if STATE.ortho_mode:
+                verts = STATE.rooms[r_idx]["vertices"]
+                prev_v = verts[(v_idx - 1) % len(verts)]
+                next_v = verts[(v_idx + 1) % len(verts)]
+                dx_p, dy_p = abs(sx - prev_v[0]), abs(sy - prev_v[1])
+                dx_n, dy_n = abs(sx - next_v[0]), abs(sy - next_v[1])
+                if min(dx_p, dy_p) < min(dx_n, dy_n):
+                    ref = prev_v
+                    if dx_p >= dy_p:
+                        sy = ref[1]
+                    else:
+                        sx = ref[0]
+            msg = STATE.move_vertex(r_idx, v_idx, sx, sy)
+            print(msg)
+            return time.time(), no_update, no_update
+
+        if isinstance(customdata, dict) and "room_idx" in customdata and "vertex_idx" not in customdata:
+            room_idx = customdata["room_idx"]
+            if 0 <= room_idx < len(STATE.rooms):
+                STATE.selected_room_idx = room_idx
+                STATE.selected_parent = STATE.rooms[room_idx].get("parent")
+                STATE._edit_selected_vertex = None
+            return time.time(), no_update, no_update
+
+        if x is not None:
+            STATE._edit_selected_vertex = None
+            return time.time(), no_update, no_update
+
+        return no_update, no_update, no_update
+
+    # ── Select-mode room click (non-edit, non-draw) ───────────────────────────
+    if isinstance(customdata, dict) and "room_idx" in customdata:
+        room_idx = customdata["room_idx"]
+        if not STATE.divider_mode and not STATE.draw_mode:
+            if 0 <= room_idx < len(STATE.rooms):
+                STATE.selected_room_idx = room_idx
+                STATE.selected_parent = STATE.rooms[room_idx].get("parent")
+                return time.time(), no_update, no_update
+        if x is None and "bbox" in pt:
+            bbox = pt["bbox"]
+            x = (bbox.get("x0", 0) + bbox.get("x1", 0)) / 2
+            y = (bbox.get("y0", 0) + bbox.get("y1", 0)) / 2
+
+    if x is None or y is None:
+        return no_update, no_update, no_update
+
+    # ── Divider mode ──────────────────────────────────────────────────────────
+    if STATE.divider_mode:
+        STATE.add_divider_point(x, y)
+        return time.time(), no_update, no_update
+
+    # ── Draw mode ─────────────────────────────────────────────────────────────
+    if STATE.draw_mode:
+        sx, sy = STATE._snap_to_pixel(x, y)
+        # Try vertex snap first, then edge snap as fallback
+        snapped_v = STATE._snap_to_vertex(sx, sy)
+        if snapped_v == (sx, sy):
+            sx, sy = STATE._snap_to_edge(sx, sy)
+        else:
+            sx, sy = snapped_v
+        if STATE.ortho_mode and STATE.current_polygon_vertices:
+            lx, ly = STATE.current_polygon_vertices[-1]
+            dx, dy = abs(sx - lx), abs(sy - ly)
+            if dx >= dy:
+                sy = ly
+            else:
+                sx = lx
+        STATE.current_polygon_vertices.append([sx, sy])
+        # Auto-detect parent on first vertex
+        parent_val = no_update
+        if len(STATE.current_polygon_vertices) == 1 and STATE.selected_parent is None:
+            detected = STATE.find_parent_at(sx, sy)
+            if detected:
+                STATE.selected_parent = detected
+                parent_val = detected
+        return time.time(), [[v[0], v[1]] for v in STATE.current_polygon_vertices], parent_val
+
+    # ── Select mode ───────────────────────────────────────────────────────────
+    room_idx = STATE.find_room_at(x, y)
+    if room_idx is not None:
+        STATE.selected_room_idx = room_idx
+        STATE.selected_parent = STATE.rooms[room_idx].get("parent")
+    else:
+        STATE.selected_room_idx = None
+        STATE.selected_parent = None
+    return time.time(), no_update, no_update
+
+
+# ── Save room ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("store-draw-vertices", "data", allow_duplicate=True),
+    Input("btn-save-room", "n_clicks"),
+    State("input-room-name", "value"),
+    State("input-parent", "value"),
+    prevent_initial_call=True,
+)
+def on_save(_n, name, parent):
+    if STATE is None:
+        return no_update, no_update
+    # Sync parent selection from the input field
+    if parent and parent != "(None)":
+        STATE.selected_parent = parent
+    # Finalize divider
+    if STATE.divider_mode:
+        msg = STATE.finalize_division()
+        print(msg)
+        return time.time(), []
+    # Save polygon
+    if STATE.draw_mode and STATE.current_polygon_vertices:
+        msg = STATE.save_room(name or "ROOM")
+        print(msg)
+        return time.time(), []
+    return no_update, no_update
+
+
+# ── Delete room ───────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("btn-delete-room", "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_delete(_n):
+    if STATE is None:
+        return no_update
+    # Multi-select: delete all selected rooms (highest index first to preserve indices)
+    targets = sorted(STATE.multi_selected_room_idxs, reverse=True)
+    if not targets and STATE.selected_room_idx is not None:
+        targets = [STATE.selected_room_idx]
+    if not targets:
+        return no_update
+    for idx in targets:
+        if 0 <= idx < len(STATE.rooms):
+            STATE.delete_room(idx)
+    STATE.multi_selected_room_idxs.clear()
+    STATE.selected_room_idx = None
+    return time.time()
+
+
+# ── Undo ──────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("store-draw-vertices", "data", allow_duplicate=True),
+    Input("btn-undo", "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_undo(_):
+    if STATE is None:
+        return no_update, no_update
+    if STATE.draw_mode and STATE.current_polygon_vertices:
+        STATE.current_polygon_vertices.pop()
+        return time.time(), [[v[0], v[1]] for v in STATE.current_polygon_vertices]
+    msg = STATE.undo_edit()
+    print(msg)
+    return time.time(), no_update
+
+
+# ── Room type buttons ─────────────────────────────────────────────────────────
+
+_ROOM_TYPE_MAP = [
+    ("rt-bed",     "BED"),
+    ("rt-living",  "LIVING"),
+    ("rt-nonresi", "NON-RESI"),
+    ("rt-circ",    "CIRC"),
+]
+
+_TYPE_BTN_BASE = {
+    "fontFamily": FONT_MONO, "fontSize": "10px", "padding": "3px 7px",
+    "marginRight": "3px", "marginBottom": "3px", "borderRadius": "3px",
+}
+
+
+def _type_btn_style(active: bool) -> dict:
+    s = dict(_TYPE_BTN_BASE)
+    if active:
+        s.update({"backgroundColor": C["btn_on"], "border": f"1px solid {C['accent']}", "color": C["accent"]})
+    else:
+        s.update({"backgroundColor": C["deep"], "border": f"1px solid {C['panel_bdr']}", "color": C["text_sec"]})
+    return s
+
+
+for _rt_id, _rt_val in _ROOM_TYPE_MAP:
     @app.callback(
-        Output(_btn_id, "style"),
-        Input(_btn_id, "n_clicks"),
+        Output(_rt_id, "style"),
+        Output("store-trigger", "data", allow_duplicate=True),
+        Input(_rt_id, "n_clicks"),
         prevent_initial_call=True,
     )
-    def _toggle_room_type_btn(n, _id=_btn_id):
-        # Real impl would track active state; stub just returns active style
-        return {
-            "fontFamily": FONT_MONO, "fontSize": "10px", "padding": "3px 7px",
-            "backgroundColor": C["btn_on"], "border": f"1px solid {C['accent']}",
-            "color": C["accent"], "marginRight": "3px", "marginBottom": "3px",
-            "borderRadius": "3px",
+    def _on_room_type(_, _val=_rt_val, _id=_rt_id):
+        if STATE is not None:
+            # Apply to all multi-selected rooms, or fall back to single selection
+            targets = list(STATE.multi_selected_room_idxs) or (
+                [STATE.selected_room_idx] if STATE.selected_room_idx is not None else []
+            )
+            for idx in targets:
+                if 0 <= idx < len(STATE.rooms):
+                    STATE.set_room_type(idx, _val)
+        return _type_btn_style(True), time.time()
+
+    # Keep other type buttons visually deselected when this one is active
+    for _other_id, _other_val in _ROOM_TYPE_MAP:
+        if _other_id != _rt_id:
+            @app.callback(
+                Output(_other_id, "style", allow_duplicate=True),
+                Input(_rt_id, "n_clicks"),
+                prevent_initial_call=True,
+            )
+            def _deselect_other(_, _oid=_other_id):
+                return _type_btn_style(False)
+
+
+# Sync all four type button styles when selected room changes
+@app.callback(
+    Output("rt-bed",     "style", allow_duplicate=True),
+    Output("rt-living",  "style", allow_duplicate=True),
+    Output("rt-nonresi", "style", allow_duplicate=True),
+    Output("rt-circ",    "style", allow_duplicate=True),
+    Input("store-trigger", "data"),
+    prevent_initial_call=True,
+)
+def sync_type_btn_styles(_):
+    if STATE is None or STATE.selected_room_idx is None:
+        return (_type_btn_style(False),) * 4
+    room = STATE.rooms[STATE.selected_room_idx] if STATE.selected_room_idx < len(STATE.rooms) else {}
+    rtype = room.get("room_type", "")
+    return tuple(_type_btn_style(rtype == val) for _, val in _ROOM_TYPE_MAP)
+
+
+# ── Parent apartment selector ─────────────────────────────────────────────────
+
+@app.callback(
+    Output("input-parent", "value", allow_duplicate=True),
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("parent-prev", "n_clicks"),
+    Input("parent-next", "n_clicks"),
+    State("input-parent", "value"),
+    prevent_initial_call=True,
+)
+def cycle_parent(prev_clicks, next_clicks, current_val):
+    if STATE is None:
+        return no_update, no_update
+    opts = ["(None)"] + list(STATE.parent_options)
+    if not opts:
+        return no_update, no_update
+    try:
+        idx = opts.index(current_val) if current_val in opts else 0
+    except ValueError:
+        idx = 0
+    triggered = ctx.triggered_id
+    if triggered == "parent-prev":
+        idx = (idx - 1) % len(opts)
+    else:
+        idx = (idx + 1) % len(opts)
+    new_val = opts[idx]
+    STATE.selected_parent = None if new_val == "(None)" else new_val
+    return new_val, time.time()
+
+
+# ── Sync parent input when a room is selected ─────────────────────────────────
+
+@app.callback(
+    Output("input-parent", "value", allow_duplicate=True),
+    Output("input-room-name", "value"),
+    Input("store-trigger", "data"),
+    prevent_initial_call=True,
+)
+def sync_inputs_from_selection(_):
+    if STATE is None:
+        return no_update, no_update
+    parent_val = STATE.selected_parent or "(None)"
+    if STATE.selected_room_idx is not None and 0 <= STATE.selected_room_idx < len(STATE.rooms):
+        room = STATE.rooms[STATE.selected_room_idx]
+        room_name = room.get("name", "")
+        # Strip the parent prefix for display in the input
+        if STATE.selected_parent and room_name.startswith(STATE.selected_parent + "_"):
+            room_name = room_name[len(STATE.selected_parent) + 1:]
+        return parent_val, room_name
+    return parent_val, no_update
+
+
+# ── Tree row clicks ───────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input({"type": "tree-row", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_tree_click(n_clicks_list):
+    if STATE is None:
+        return no_update
+    triggered = ctx.triggered_id
+    if triggered is None:
+        return no_update
+    idx = triggered.get("index") if isinstance(triggered, dict) else None
+    if isinstance(idx, int):
+        STATE.selected_room_idx = idx
+        room = STATE.rooms[idx]
+        STATE.selected_parent = room.get("parent")
+    elif isinstance(idx, str) and idx.startswith("node-"):
+        node_key_str = idx[5:]
+        try:
+            node_key = eval(node_key_str)
+            if node_key in STATE._tree_collapsed:
+                STATE._tree_collapsed.discard(node_key)
+            else:
+                STATE._tree_collapsed.add(node_key)
+        except Exception:
+            pass
+    return time.time()
+
+
+# ── Tree expand / collapse all ────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("tree-expand-all", "n_clicks"),
+    Input("tree-collapse-all", "n_clicks"),
+    prevent_initial_call=True,
+)
+def tree_expand_collapse(_, __):
+    if STATE is None:
+        return no_update
+    triggered = ctx.triggered_id
+    if triggered == "tree-expand-all":
+        STATE._tree_collapsed.clear()
+    else:
+        # Collapse all HDR-level nodes
+        items = STATE.build_layer_tree()
+        for item in items:
+            if item.get("has_children") and item.get("node_key"):
+                try:
+                    STATE._tree_collapsed.add(eval(item["node_key"]))
+                except Exception:
+                    pass
+    return time.time()
+
+
+# ── PDF overlay toggle ────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("sb-overlay-toggle", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_overlay(_):
+    if STATE is None:
+        return no_update
+    STATE._overlay_visible = not STATE._overlay_visible
+    STATE._save_session()
+    return time.time()
+
+
+# ── PDF overlay page cycle ────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("sb-overlay-page", "n_clicks"),
+    prevent_initial_call=True,
+)
+def cycle_overlay_page(_):
+    if STATE is None:
+        return no_update
+    n = STATE.get_overlay_page_count()
+    if n > 1:
+        STATE._overlay_page_idx = (STATE._overlay_page_idx + 1) % n
+        # Clear b64 cache for old page so the new page is freshly rasterized
+        STATE._overlay_b64_cache.clear()
+        STATE._save_session()
+    return time.time()
+
+
+# ── PDF DPI radio ─────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("pdf-dpi-radio", "value"),
+    prevent_initial_call=True,
+)
+def change_overlay_dpi(dpi):
+    if STATE is None or dpi is None:
+        return no_update
+    STATE._overlay_raster_dpi = int(dpi)
+    STATE._overlay_b64_cache.clear()
+    STATE._save_session()
+    return time.time()
+
+
+# ── Reset level alignment ─────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("overlay-offset-x", "value"),
+    Output("overlay-offset-y", "value"),
+    Output("overlay-scale-x", "value"),
+    Output("overlay-scale-y", "value"),
+    Input("btn-reset-align", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_overlay_align(_):
+    if STATE is None:
+        return no_update, 0, 0, 1.0, 1.0
+    hdr_name = STATE.current_hdr_name or ""
+    STATE._overlay_transforms.pop(hdr_name, None)
+    STATE._save_session()
+    return time.time(), 0, 0, 1.0, 1.0
+
+
+# ── Overlay align mode toggle ─────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("overlay-align-panel", "style"),
+    Output("overlay-offset-x", "value", allow_duplicate=True),
+    Output("overlay-offset-y", "value", allow_duplicate=True),
+    Output("overlay-scale-x", "value", allow_duplicate=True),
+    Output("overlay-scale-y", "value", allow_duplicate=True),
+    Output("overlay-alpha", "value"),
+    Input("sb-overlay-align", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_overlay_align(_):
+    _PANEL_HIDDEN = {
+        "display": "none",
+        "position": "absolute", "top": "12px", "right": "12px",
+        "backgroundColor": C["header"],
+        "border": f"1px solid {C['panel_bdr']}",
+        "borderRadius": "6px",
+        "padding": "10px 12px",
+        "boxShadow": "0 4px 16px rgba(0,0,0,0.12)",
+        "zIndex": 30,
+        "pointerEvents": "auto",
+    }
+    _PANEL_VISIBLE = dict(_PANEL_HIDDEN, display="block")
+
+    if STATE is None:
+        return no_update, _PANEL_HIDDEN, 0, 0, 1.0, 1.0, 0.6
+
+    STATE.overlay_align_mode = not STATE.overlay_align_mode
+    tf = STATE.get_overlay_transform()
+    panel_style = _PANEL_VISIBLE if STATE.overlay_align_mode else _PANEL_HIDDEN
+    return (
+        time.time(),
+        panel_style,
+        tf.get("offset_x", 0.0),
+        tf.get("offset_y", 0.0),
+        tf.get("scale_x", 1.0),
+        tf.get("scale_y", 1.0),
+        STATE._overlay_alpha,
+    )
+
+
+# ── Overlay alignment inputs → update transform ───────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("overlay-offset-x", "value"),
+    Input("overlay-offset-y", "value"),
+    Input("overlay-scale-x", "value"),
+    Input("overlay-scale-y", "value"),
+    Input("overlay-alpha",   "value"),
+    prevent_initial_call=True,
+)
+def update_overlay_transform(ox, oy, sx, sy, alpha):
+    if STATE is None:
+        return no_update
+    if not STATE.overlay_align_mode:
+        return no_update
+    if None in (ox, oy, sx, sy):
+        return no_update
+    sx = max(0.01, float(sx))
+    sy = max(0.01, float(sy))
+    STATE.set_overlay_transform(float(ox), float(oy), sx, sy)
+    if alpha is not None:
+        STATE._overlay_alpha = max(0.0, min(1.0, float(alpha)))
+        STATE._save_session()
+    return time.time()
+
+
+# ── DF% placement mode toggle ─────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("sb-placement", "n_clicks"),
+    Input("tool-dfplace", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_placement(_, __):
+    if STATE is None:
+        return no_update
+    STATE.placement_mode = not STATE.placement_mode
+    if STATE.placement_mode:
+        # Start loading DF image in background so it's ready when user clicks
+        # threading imported at top
+        threading.Thread(target=STATE.load_df_image, daemon=True).start()
+    return time.time()
+
+
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+_export_progress: dict = {"phase": "idle", "message": "", "pct": 0}
+
+
+@app.callback(
+    Output("export-poll", "disabled", allow_duplicate=True),
+    Output("progress-bar-wrap", "style"),
+    Input("sb-export", "n_clicks"),
+    prevent_initial_call=True,
+)
+def start_export(_):
+    if STATE is None:
+        return True, {"display": "none"}
+    # threading imported at top
+    _export_progress.update({"phase": "starting", "message": "Starting export…", "pct": 0})
+    threading.Thread(target=STATE.run_export, args=(_export_progress,), daemon=True).start()
+    bar_style = {
+        "height": "18px",
+        "backgroundColor": C["deep"],
+        "borderTop": f"1px solid {C['panel_bdr']}",
+        "position": "relative",
+        "flexShrink": "0",
+        "display": "flex",
+        "alignItems": "center",
+    }
+    return False, bar_style  # enable polling, show bar
+
+
+@app.callback(
+    Output("progress-fill", "style"),
+    Output("progress-text", "children"),
+    Output("export-poll", "disabled", allow_duplicate=True),
+    Input("export-poll", "n_intervals"),
+    prevent_initial_call=True,
+)
+def poll_export_progress(_):
+    pct = _export_progress.get("pct", 0)
+    msg = _export_progress.get("message", "")
+    phase = _export_progress.get("phase", "idle")
+    fill_style = {
+        "height": "100%",
+        "width": f"{pct}%",
+        "backgroundColor": C["accent"] if phase != "error" else C["danger"],
+        "borderRadius": "3px",
+        "transition": "width 0.3s ease",
+    }
+    done = phase in ("done", "error", "idle")
+    return fill_style, msg, done  # disable polling when finished
+
+
+# ── AOI level cycling ─────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("tree-aoi-level", "n_clicks"),
+    Input("btn-aoi-level-bottom", "n_clicks"),
+    prevent_initial_call=True,
+)
+def change_aoi_level(_, __):
+    if STATE is None:
+        return no_update
+    msg = STATE.cycle_aoi_level()
+    print(msg)
+    return time.time()
+
+
+# ── Fit to selected room ──────────────────────────────────────────────────────
+
+@app.callback(
+    Output("viewport-graph", "figure", allow_duplicate=True),
+    Input("btn-fit", "n_clicks"),
+    State("store-grid-spacing", "data"),
+    State("store-grid-visible", "data"),
+    prevent_initial_call=True,
+)
+def fit_to_room(_, grid_spacing, grid_visible):
+    if STATE is None or STATE.selected_room_idx is None:
+        return no_update
+    if STATE.selected_room_idx >= len(STATE.rooms):
+        return no_update
+    verts = STATE.rooms[STATE.selected_room_idx]["vertices"]
+    if not verts:
+        return no_update
+    xs = [v[0] for v in verts]
+    ys = [v[1] for v in verts]
+    pad_x = max(30, (max(xs) - min(xs)) * 0.15)
+    pad_y = max(30, (max(ys) - min(ys)) * 0.15)
+    fig = build_figure(
+        grid_spacing=grid_spacing or 50,
+        grid_visible=grid_visible if grid_visible is not None else True,
+        state=STATE,
+    )
+    fig.update_layout(
+        xaxis_range=[min(xs) - pad_x, max(xs) + pad_x],
+        yaxis_range=[min(ys) - pad_y, max(ys) + pad_y],
+    )
+    return fig
+
+
+# ── Select all rooms on current HDR ──────────────────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("btn-select-all", "n_clicks"),
+    prevent_initial_call=True,
+)
+def select_all_rooms(_):
+    if STATE is None:
+        return no_update
+    idxs = {i for i, r in enumerate(STATE.rooms) if STATE._is_room_on_current_hdr(r)}
+    STATE.multi_selected_room_idxs = idxs
+    return time.time()
+
+
+# ── Zoom indicator ────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("zoom-indicator", "children"),
+    Input("viewport-graph", "relayoutData"),
+    prevent_initial_call=True,
+)
+def update_zoom_indicator(relay):
+    if STATE is None or relay is None:
+        return "100%"
+    img_w, img_h = STATE.get_image_dimensions()
+    if img_w == 0:
+        return "100%"
+    x_range = relay.get("xaxis.range[0]"), relay.get("xaxis.range[1]")
+    if None in x_range:
+        # autorange or reset
+        return "100%"
+    visible_w = abs(x_range[1] - x_range[0])
+    pct = max(1, int(round(img_w / visible_w * 100)))
+    return f"{pct}%"
+
+
+# ── Project tree panel toggle (sb-menu) ──────────────────────────────────────
+
+@app.callback(
+    Output("project-tree-panel", "style"),
+    Input("sb-menu", "n_clicks"),
+    State("project-tree-panel", "style"),
+    prevent_initial_call=True,
+)
+def toggle_project_tree(_, style):
+    if style is None:
+        style = {}
+    if style.get("display") == "none":
+        style = {
+            "backgroundColor": C["panel_bg"],
+            "borderRight": f"1px solid {C['panel_bdr']}",
+            "display": "flex",
+            "flexDirection": "column",
+            "minWidth": "240px",
+            "maxWidth": "300px",
+            "height": "100%",
+            "overflowY": "hidden",
         }
+    else:
+        style = dict(style, display="none")
+    return style
+
+
+# ── Floating palette: undo, zoom mode, pan mode ───────────────────────────────
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("store-draw-vertices", "data", allow_duplicate=True),
+    Input("tool-undo-fp", "n_clicks"),
+    prevent_initial_call=True,
+)
+def undo_from_palette(_):
+    if STATE is None:
+        return no_update, no_update
+    if STATE.draw_mode and STATE.current_polygon_vertices:
+        STATE.current_polygon_vertices.pop()
+        return time.time(), [[v[0], v[1]] for v in STATE.current_polygon_vertices]
+    STATE.undo_edit()
+    return time.time(), no_update
+
+
+@app.callback(
+    Output("viewport-graph", "config"),
+    Input("tool-zoom", "n_clicks"),
+    Input("tool-pan", "n_clicks"),
+    State("viewport-graph", "config"),
+    prevent_initial_call=True,
+)
+def set_drag_mode(zoom_clicks, pan_clicks, config):
+    """Switch Plotly dragmode between zoom and pan via the floating palette."""
+    triggered = ctx.triggered_id
+    cfg = dict(config) if config else {}
+    # Plotly config doesn't directly set dragmode; use figure update instead
+    return no_update  # handled below via separate figure update
+
+@app.callback(
+    Output("viewport-graph", "figure", allow_duplicate=True),
+    Input("tool-zoom", "n_clicks"),
+    Input("tool-pan", "n_clicks"),
+    State("store-grid-spacing", "data"),
+    State("store-grid-visible", "data"),
+    prevent_initial_call=True,
+)
+def set_dragmode_figure(zoom_clicks, pan_clicks, grid_spacing, grid_visible):
+    triggered = ctx.triggered_id
+    fig = build_figure(
+        grid_spacing=grid_spacing or 50,
+        grid_visible=grid_visible if grid_visible is not None else True,
+        state=STATE,
+    )
+    dragmode = "zoom" if triggered == "tool-zoom" else "pan"
+    fig.update_layout(dragmode=dragmode)
+    return fig
+
+
+# ── Extract archive modal ─────────────────────────────────────────────────────
+
+@app.callback(
+    Output("extract-modal", "is_open"),
+    Output("extract-archive-select", "options"),
+    Input("sb-extract", "n_clicks"),
+    Input("btn-extract-cancel", "n_clicks"),
+    State("extract-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_extract_modal(open_clicks, cancel_clicks, is_open):
+    triggered = ctx.triggered_id
+    if triggered == "sb-extract" and STATE is not None:
+        archives = STATE.list_archives()
+        options = [{"label": p.name, "value": str(p)} for p in archives]
+        if not options:
+            options = [{"label": "No archives found", "value": "", "disabled": True}]
+        return True, options
+    return False, []
+
+
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Output("status-text", "children", allow_duplicate=True),
+    Output("extract-modal", "is_open", allow_duplicate=True),
+    Input("btn-extract-confirm", "n_clicks"),
+    State("extract-archive-select", "value"),
+    prevent_initial_call=True,
+)
+def confirm_extract(_, zip_path_str):
+    if STATE is None or not zip_path_str:
+        return no_update, "No archive selected.", False
+    # Path imported at top
+    msg = STATE.extract_and_reload(Path(zip_path_str))
+    return time.time(), msg, False
+
+
+# ── sb-history / sb-settings: placeholders ────────────────────────────────────
+
+@app.callback(
+    Output("status-text", "children", allow_duplicate=True),
+    Input("sb-history", "n_clicks"),
+    Input("sb-settings", "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_history_settings(_, __):
+    triggered = ctx.triggered_id
+    if triggered == "sb-history":
+        return "History: not yet implemented"
+    return "Settings: not yet implemented"
+
+
+# ── Annotation scale slider ──────────────────────────────────────────────────
+
+# Slider → state: user drags slider → update _annotation_scale → rebuild figure
+@app.callback(
+    Output("store-trigger", "data", allow_duplicate=True),
+    Input("slider-annotation-scale", "value"),
+    prevent_initial_call=True,
+)
+def annotation_scale_changed(slider_val):
+    if STATE is not None and slider_val is not None:
+        STATE._annotation_scale = float(slider_val)
+        STATE._save_session()
+    return time.time()
+
+
+# State → slider: project load → push persisted value back to slider
+@app.callback(
+    Output("slider-annotation-scale", "value"),
+    Input("store-trigger", "data"),
+    prevent_initial_call=True,
+)
+def restore_annotation_scale(_):
+    if STATE is not None:
+        return STATE._annotation_scale
+    return no_update
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+_init_state()
 
 
 if __name__ == "__main__":
-    import os, webbrowser
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
         webbrowser.open_new("http://127.0.0.1:8050/")
     app.run(debug=True)

@@ -543,7 +543,8 @@ class SunlightRenderer:
 
     def _launch_gpu_rendering(self, octree_name: str, gpu_quality: str, octree_base_name: str, overcast_sky_name: str):
         """Launch asynchronous GPU rendering via PowerShell/Accelerad."""
-        batch_cmd = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\core\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res}'
+        outputs_dir = self.image_dir.parent
+        batch_cmd = f'powershell.exe -ExecutionPolicy Bypass -File .\\archilume\\core\\accelerad_rpict.ps1 -OctreeName "{octree_name}" -Quality "{gpu_quality}" -Resolution {self.x_res} -OutputsDir "{outputs_dir}"'
 
         project_root = os.getcwd()
         env = os.environ.copy()

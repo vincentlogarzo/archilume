@@ -520,9 +520,7 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                                     last = command_counter.get('last_render_pct', -1)
                                     if int(pct) > last:
                                         command_counter['last_render_pct'] = int(pct)
-                                        print(f"\r  Rendering: {pct:.0f}%", end='', flush=True)
-                                        if pct >= 100:
-                                            print()
+                                        print(f"\r  Rendering: {pct:.0f}%          ", end='', flush=True)
                                 except (ValueError, IndexError):
                                     pass
                                 continue
@@ -560,9 +558,7 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
                                     last = command_counter.get('last_render_pct', -1)
                                     if int(pct) > last:
                                         command_counter['last_render_pct'] = int(pct)
-                                        print(f"\r  Rendering: {pct:.0f}%", end='', flush=True)
-                                        if pct >= 100:
-                                            print()
+                                        print(f"\r  Rendering: {pct:.0f}%          ", end='', flush=True)
                                 except (ValueError, IndexError):
                                     pass
                                 continue
@@ -586,7 +582,11 @@ def execute_new_radiance_commands(commands: Union[str, list[str]] , number_of_wo
 
                     # Print on every 1% increment (or first/last command)
                     if current_pct > last_pct or completed == total:
-                        print(f"\r[{completed}/{total}] {current_pct}% complete", flush=True)
+                        line = f"\r[{completed}/{total}] {current_pct}% complete"
+                        if completed == total:
+                            print(f"{line:<40}", flush=True)  # Final: newline
+                        else:
+                            print(f"{line:<40}", end='', flush=True)  # In-place update
                         command_counter['last_printed_pct'] = current_pct
                 else:
                     # Extract output filename for cleaner error message

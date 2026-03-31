@@ -69,7 +69,7 @@ class Tiff2Animation:
 
     def _convert_apng_to_mp4(self) -> None:
         """Convert all APNG files in image directory to MP4 format."""
-        from archilume.apng2mp4 import Apng2Mp4
+        from archilume.post.apng2mp4 import Apng2Mp4
 
         print("Converting APNG files to MP4...")
         converter = Apng2Mp4(input_dir=self.image_dir, fps=2)
