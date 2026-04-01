@@ -6,9 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "cairosvg>=2.8.2",
-    "dash>=4.0.0",
-    "dash-bootstrap-components>=2.0.4",
-    "dash-iconify>=0.1.2",
     "ifcopenshell>=0.8.3.post1",
     "lxml>=6.0.2",
     "numpy>=2.3.2",
@@ -21,6 +18,7 @@ dependencies = [
     "pymupdf>=1.24.0",
     "pyradiance>=1.2.0",
     "pyvista>=0.46.4",
+    "reflex>=0.8.28.post1",
     "scikit-image>=0.25.2",
     "selenium>=4.41.0",
     "svg2png>=1.2",
