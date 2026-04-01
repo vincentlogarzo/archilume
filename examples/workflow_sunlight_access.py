@@ -29,8 +29,8 @@ def run_sunlight_analysis():
         start_hour          = 9,         # 9:00 AM
         end_hour            = 15,        # 3:00 PM
         timestep            = 15,        # 15-minute intervals
-        ffl_offset          = 1.0,       # Camera height above floor (m)
-        image_resolution    = 2048,      # Pixel resolution
+        ffl_offset          = 1.0,       # Image height above floor (m)
+        grid_resolution     = 15,        # Grid spacing in mm per pixel
         rendering_mode      = "gpu",     # Backend: 'cpu' or 'gpu'
         rendering_quality   = "stand",   # Quality: 'draft', 'stand', 'prod', etc.
         animation_format    = "apng",    # Options: 'apng', 'gif'

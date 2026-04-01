@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+import math
 import sys
 
 from archilume import (
@@ -36,7 +37,7 @@ class SunlightAccessWorkflow:
             end_hour: int,
             timestep: int,
             ffl_offset: float,
-            image_resolution: int,
+            grid_resolution: int,
             rendering_mode: str,
             rendering_quality: str,
             room_boundaries_csv: Path | str,
@@ -51,7 +52,8 @@ class SunlightAccessWorkflow:
             self.end_hour = end_hour
             self.timestep = timestep
             self.ffl_offset = ffl_offset
-            self.image_resolution = image_resolution
+            self.grid_resolution = grid_resolution
+            self.image_resolution = None
             self.rendering_mode = rendering_mode
             self.rendering_quality = rendering_quality
             self.animation_format = animation_format.lower()
@@ -83,9 +85,11 @@ class SunlightAccessWorkflow:
             if self.timestep < 1: self._errors.append("[X] timestep: Must be >= 1.")
             elif self.timestep < 5: self._warnings.append(f"[!] timestep ({self.timestep} min) is very low. High computation time.")
 
-            # --- Rendering ---
-            if self.image_resolution < 128: self._errors.append("[X] resolution: Must be >= 128.")
-            elif self.image_resolution > 2048: self._warnings.append(f"[!] resolution ({self.image_resolution}) exceeds recommended 2048px.")
+            # --- Grid Resolution ---
+            if not isinstance(self.grid_resolution, int) or self.grid_resolution < 10:
+                self._errors.append("[X] grid_resolution: Must be an integer >= 10 mm.")
+            elif self.grid_resolution > 50:
+                self._errors.append("[X] grid_resolution: Must be <= 50 mm. Larger values produce images too coarse for meaningful analysis.")
 
             valid_modes = ['cpu', 'gpu']
             if self.rendering_mode.lower() not in valid_modes:
@@ -153,7 +157,7 @@ class SunlightAccessWorkflow:
             print(f"{'Time Range':<30} {self.start_hour}:00 - {self.end_hour}:00{'Start must be < End (0-23h fmt)'}")
             print(f"{'Timestep':<30} {self.timestep} min{'Integer >= 1 (Rec: >5min)'}")
             print(f"{'Camera Height (FFL)':<30} {self.ffl_offset}m{'Numeric value > 0.0m'}")
-            print(f"{'Resolution':<30} {self.image_resolution}px{'Integer >= 128px (Rec: <=2048)'}")
+            print(f"{'Grid Resolution':<30} {self.grid_resolution} mm/px{'Integer 10-50 mm'}")
             print(f"{'Rendering Mode':<30} {self.rendering_mode.upper():<30} {'Must be CPU or GPU'}")
             print(f"{'Quality Preset':<30} {self.rendering_quality.upper():<30} {'Valid preset name'}")
             print(f"{'Room Boundaries CSV':<30} {self.room_boundaries_csv.name:<30} {'File exists & extension is .csv'}")
@@ -213,6 +217,27 @@ class SunlightAccessWorkflow:
                 aoi_dir=inputs.paths.aoi_dir,
             )
             view_generator.create_plan_view_files()
+
+            # Compute pixel resolution from grid_resolution and view horizontal extent
+            # Radiance derives y_res from the view aspect ratio (-vh/-vv)
+            view_h_mm = view_generator.view_horizontal * 1000
+            inputs.image_resolution = math.ceil(view_h_mm / inputs.grid_resolution)
+
+            # Runtime validation on computed pixel resolution
+            if inputs.image_resolution < 128:
+                print(f"[!] WARNING: Computed resolution {inputs.image_resolution}px is below 128px.")
+                print(f"    This is unlikely to produce useful results. Consider decreasing grid_resolution.")
+            if inputs.image_resolution > 4000:
+                print(f"[!] WARNING: Computed resolution {inputs.image_resolution}px exceeds 4000px.")
+                print(f"    grid_resolution={inputs.grid_resolution}mm on view width {view_generator.view_horizontal:.2f}m")
+                print(f"    This may cause long render times or memory issues. Consider increasing grid_resolution.")
+            if inputs.image_resolution > 6000:
+                print(f"[X] ERROR: Computed resolution {inputs.image_resolution}px exceeds 6000px hard limit.")
+                print(f"    Increase grid_resolution to reduce pixel count.")
+                sys.exit(1)
+
+            print(f"Grid: {inputs.grid_resolution}mm/px -> Resolution: {inputs.image_resolution}px "
+                  f"(view width: {view_generator.view_horizontal:.2f}m)")
 
         with timer("Phase 4: Execute Image Rendering"):
             renderer = SunlightRenderer(

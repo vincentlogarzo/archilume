@@ -10,7 +10,6 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ## 🔴 HIGH PRIORITY: Core Workflow & Output Improvements
 
-- **Grid Resolution:** Support grid size input in millimeters. Auto-calculate `x_res`, `y_res` from room extents.
 - **RDP References:** Implement inline `@v{rdp_file_path}` implementation to simplify command outputs.
 - **Modular Post-Processing:** Break `Tiff2Animation` into `Wpd2Tiff` and `Tiff2Animation` for clearer function separation.
 - **Advanced Reporting:** Replace Excel output with a `wpd2report` module generating PDF/HTML with NSW ADG metrics.
@@ -87,7 +86,8 @@ This file tracks planned features, optimizations, and known issues for the Archi
     1. **Archilume-Compute:** A headless, performance-optimized image containing the full simulation stack (Radiance/Accelerad/Python) for heavy CLI-based workloads.
     2. **Archilume-App:** A user-facing interactive image that bundles the Dash-based applications (AOI Editor, Viewers).
 - **One-Command Launch:** Enable new users to simply install Docker Desktop and run `docker run archilume-app` to open a web-based portal to the entire suite of tools.
-- **Cross-Platform Accessibility:** Ensure the App image handles interactive GUI components via a web browser (Dash) to eliminate the need for local Python or Radiance installations on Windows/Mac.
+- **Cross-Platform Accessibility:** Ensure the App image handles interactive GUI components via a web browser (Dash/Reflex) to eliminate the need for local Python or Radiance installations on Windows/Mac.
+- **FastAPI Inter-Container API (Low Priority):** Add a FastAPI server to the Archilume-Compute image so the Reflex UI (Archilume-App) can submit simulation jobs via HTTP. Endpoints for job submission (`POST /jobs/{workflow_type}`), status polling (`GET /jobs/{id}`), and result retrieval. Enables multi-container orchestration, job queuing, and future multi-user support. Until then, use shared volume + `docker exec` for simplicity.
 
 ---
 
