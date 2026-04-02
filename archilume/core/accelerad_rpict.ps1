@@ -59,7 +59,7 @@ if (-not (Test-Path $octreeFile)) { throw "ERROR: Octree not found at $octreeFil
 # QUALITY PRESETS (Transposed Format)
 #           draft   stand   prod    final   4k      custom  fast    med     high    detailed
 $AA   = @(  0.01,   0.01,   0.01,   0.01,   0.02,   0.01,   0.06,   0.03,   0.01,   0       )
-$AB   = @(  3,      3,      3,      3,      3,      8,      3,      3,      3,      2       )
+$AB   = @(  3,      3,      3,      3,      3,      8,      1,      3,      3,      2       )
 $AD   = @(  2048,   1792,   1536,   1280,   1024,   2048,   512,    1024,   1536,   2048    )
 $AS   = @(  1024,   896,    768,    640,    512,    1024,   256,    512,    512,    1024    )
 $AR   = @(  1024,   1024,   1024,   1024,   1024,   1024,   128,    256,    512,    1024    )

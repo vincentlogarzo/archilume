@@ -21,8 +21,7 @@ Workflow Overview:
 from archilume.workflows import SunlightAccessWorkflow
 
 def run_sunlight_analysis():
-    # 1. Define simulation parameters and paths
-    inputs = SunlightAccessWorkflow.InputsValidator(
+    SunlightAccessWorkflow().run(
         building_latitude   = -37.8134,  # Melbourne, Australia
         month               = 6,         # June
         day                 = 21,        # Winter Solstice
@@ -32,7 +31,7 @@ def run_sunlight_analysis():
         ffl_offset          = 1.0,       # Image height above floor (m)
         grid_resolution     = 15,        # Grid spacing in mm per pixel
         rendering_mode      = "gpu",     # Backend: 'cpu' or 'gpu'
-        rendering_quality   = "stand",   # Quality: 'draft', 'stand', 'prod', etc.
+        rendering_quality   = "fast",    # Quality: 'draft', 'stand', 'prod', etc.
         animation_format    = "apng",    # Options: 'apng', 'gif'
         project             = "cowles",  # Required: project name under projects/ (e.g. projects/cowles/)
         room_boundaries_csv = "87cowles_BLD_room_boundaries.csv",
@@ -41,10 +40,6 @@ def run_sunlight_analysis():
                                 "87cowles_site_decimated.obj" #add to this list if necessary
                                 ]
     )
-
-    # 2. Run the standardized workflow
-    workflow = SunlightAccessWorkflow()
-    workflow.run(inputs)
 
 if __name__ == "__main__":
     run_sunlight_analysis()

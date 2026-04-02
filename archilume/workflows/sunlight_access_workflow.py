@@ -171,10 +171,17 @@ class SunlightAccessWorkflow:
                 for w in self._warnings: print(f" {w}")
             print("="*100 + "\n")
 
-    def run(self, inputs: InputsValidator):
+    def run(self, inputs: InputsValidator | None = None, **kwargs):
         """
         Execute the full sunlight analysis pipeline.
+
+        Accepts either a pre-built InputsValidator or keyword arguments
+        that will be forwarded to InputsValidator for validation.
         """
+        if inputs is None:
+            inputs = self.InputsValidator(**kwargs)
+        elif kwargs:
+            raise ValueError("Pass either 'inputs' or keyword arguments, not both.")
         timer = PhaseTimer()
 
         with timer("Phase 0: Setup and Cleanup"):

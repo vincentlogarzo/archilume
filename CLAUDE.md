@@ -4,12 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Platform & Environment
 
-**This project runs on Windows.** Always consider Windows compatibility:
+**This project runs on both Windows and Linux.** Before running any terminal command, detect the OS:
 
-- Use `pathlib.Path` or `os.path` instead of Unix paths
-- Avoid `rsync` (use `tar`/`scp` instead)
-- Use PowerShell-compatible commands
-- Handle Unicode encoding issues (e.g., UTF-8 for file I/O)
+```bash
+python -c "import sys; print(sys.platform)"
+# win32  → Windows (use PowerShell syntax, backslash paths)
+# linux  → Linux / dev container (use bash syntax, forward slashes)
+```
+
+**Never assume the OS.** Always run the detection command above before the first terminal command in any session.
+
+Platform-specific rules:
+
+- **Windows**: Use PowerShell-compatible commands. Avoid Unix-only tools (`rsync`, `rtpict` multi-core).
+- **Linux**: Bash syntax is fine. All Radiance/Accelerad tools available in dev container.
+- Use `pathlib.Path` in Python code (cross-platform).
+- Handle Unicode encoding issues (e.g., UTF-8 for file I/O).
 
 **This project uses `uv` for Python dependency management, NOT pip.** Always use `uv add`, `uv sync`, and `uv run` — never pip.
 
@@ -34,8 +44,13 @@ python examples/sunlight_access_workflow.py
 python examples/daylight_workflow_iesve.py
 
 # Launch interactive editors
-python examples/obj_aoi_editor.py
-python apps/hdr_aoi_editor.py
+python examples/launch_obj_editor.py
+python examples/launch_hdr_editor.py
+
+# Launch Reflex web UI
+cd archilume/apps/archilume_ui && reflex run   # opens http://localhost:3000
+# or via launcher script:
+python examples/launch_archilume_ui.py
 ```
 
 ## Architecture
@@ -55,13 +70,13 @@ The core flow is: **Geometry → Octree → Sky + Views → Rendering → Post-P
 
 ### Workflow Orchestration
 
-`workflows.py` contains `SunlightAccessWorkflow` with a nested `Inputs` validator class. The `run()` method orchestrates the full pipeline. Example scripts in `examples/` show how to configure and launch workflows.
+`archilume/workflows/` package contains `SunlightAccessWorkflow` (in `sunlight_access_workflow.py`) with a nested `Inputs` validator class. The `run()` method orchestrates the full pipeline. Example scripts in `examples/` show how to configure and launch workflows.
 
 ### Key Infrastructure
 
 - **`config.py`**: Centralized path management and environment detection. Resolves Radiance/Accelerad tool paths (platform-aware: Windows vs Linux, bundled vs system). Manages `RAYPATH`, worker counts, project directories (`inputs/`, `outputs/`). Override tool paths via `RADIANCE_ROOT` and `ACCELERAD_ROOT` env vars.
 - **`utils.py`**: Parallel command execution (`execute_new_radiance_commands`), timing (`PhaseTimer`/`Timekeeper`), geometry calculations (centroid, bounding box), HDR helpers, `smart_cleanup()` for output management, CSV conversions.
-- **Interactive editors**: `ObjAoiEditor` (matplotlib-based, uses `MeshSlicer` for 3D→2D via PyVista) and `HdrAoiEditor` (Dash/Plotly web app in `apps/`). Both support hierarchical room naming and export boundaries for the pipeline.
+- **Interactive editors**: `ObjAoiEditor` (matplotlib-based, uses `MeshSlicer` for 3D→2D via PyVista) and `archilume_ui` (Reflex web app at `archilume/apps/archilume_ui/`). Both support hierarchical room naming and export boundaries for the pipeline.
 
 ### Cloud Integration
 
@@ -103,7 +118,7 @@ Always use SI units (metres, millimetres, kilograms, lux, etc.) in all discussio
 - **Paths**: Always use `pathlib.Path`. Reference `archilume.config` for standard project paths.
 - **Parallelism**: Use `utils.execute_new_radiance_commands` for Radiance tool parallelism. Respect `config.WORKERS` limits.
 - **Platform**: `rtpict` (multi-core rendering) is Linux-only (available in the dev container). Be mindful of Windows/Linux differences throughout.
-- **Dash apps**: Use `app.run(debug=True)` for development.
+- **Reflex apps**: Run `reflex run` from the app directory (e.g. `archilume/apps/archilume_ui/`). Use `uv run reflex run` if not in the activated venv.
 - **Rendering classes**: Prefer `SunlightRenderer`/`DaylightRenderer` over calling Radiance binaries directly.
 - **Cleanup**: Use `utils.smart_cleanup()` to clear previous results based on changed parameters.
 - **Verification**: Check HDR outputs exist in `outputs/image/` before proceeding to post-processing.

@@ -251,10 +251,11 @@ Each room rendered as:
 ### 6.3 Drawing-in-Progress
 
 When draw mode is active and vertices have been placed:
-- **Scatter markers** at each placed vertex (teal dots)
-- **Line segments** connecting vertices (teal solid line)
+- **Scatter markers** at each placed vertex (teal `#0d9488` dots, ~6px radius)
+- **Line segments** connecting vertices (teal solid line, 1.5px)
 - **Preview line** from last vertex to cursor (teal dashed, ortho-constrained if enabled)
-- **Snap ring**: yellow circle highlight when cursor is near an existing vertex (10px threshold)
+- **Snap ring**: yellow `#facc15` circle highlight (12px radius, 2px stroke, no fill) when cursor is within 10px (data-space, zoom-scaled) of an existing vertex on the current HDR. Snap detection uses `_snap_to_vertex()` — computes Euclidean distance to all vertices on the current floor and returns the nearest within threshold.
+- **Ortho preview**: When ortho mode is ON, the preview line is projected onto the nearest axis (horizontal or vertical) from the previous vertex. The snapped endpoint is computed as: if `|dx| > |dy|` → horizontal, else → vertical.
 
 ### 6.4 Edit Mode Visuals
 
@@ -896,3 +897,78 @@ The Dash editor (`dash_app.py`) is a web-based reimplementation. Key differences
 | Bottom panels | PDF controls + progress | Model Validation + Simulation Manager + Floor Plan Controls |
 
 The Dash editor adds aspirational panels (Model Validation, Simulation Manager, Compliance Framework) that don't exist in the matplotlib version.
+
+---
+
+## 19. Image Loading & Caching
+
+### 19.1 HDR Tone-Mapping Pipeline
+
+1. **Load**: `pvalue -h -H -df {hdr_path}` extracts float32 RGB array (H × W × 3)
+2. **Normalize**: Percentile-based (99.5th percentile clamp), then gamma correction (γ = 1/2.2)
+3. **Convert**: Scale to uint8 [0–255], create PIL Image
+4. **Cache**: Thread-safe LRU dict (`_image_cache`) with max 15 entries
+
+### 19.2 Image Discovery
+
+`_scan_hdr_files()` scans `image_dir` for `*.hdr` and `*.pic` files. For each HDR, `_rebuild_image_variants()` discovers associated TIFFs by matching the stem:
+- `{stem}_falsecolor.tif` → false-colour variant
+- `{stem}_contour.tif` → contour variant
+- Any other `{stem}*.tif` → additional variants
+
+### 19.3 Prefetching
+
+Background thread (`ThreadPoolExecutor`) prefetches adjacent HDR/TIFF images on navigation. Tracks in-flight fetches via `_prefetching_hdrs` set to avoid duplicates.
+
+---
+
+## 20. Geometry Algorithms
+
+### 20.1 Polygon Label Placement
+
+`_polygon_label_point()` computes a visually centred label position using corner-weighted pole logic:
+1. Compute polygon centroid (arithmetic mean of vertices)
+2. Verify centroid is inside polygon via `Path.contains_point()`
+3. If outside (concave polygon), fall back to largest-inscribed-circle approximation
+
+### 20.2 Ray-Polygon Intersection (Divider)
+
+`_ray_polygon_intersection(origin, direction, polygon_vertices)`:
+1. For each edge of the polygon, compute line-segment / ray intersection
+2. Return the nearest intersection point in the given direction
+3. Used to extend divider endpoints to the room boundary
+
+### 20.3 Polygon Splitting
+
+`_split_polygon_by_polyline(polygon, polyline)`:
+1. Find intersection points where the polyline crosses polygon edges
+2. Walk the polygon perimeter, splitting at each intersection
+3. Assign vertices to left/right sub-polygons based on which side of the polyline they fall
+4. Validate: both sub-polygons must have ≥ 3 vertices and nonzero area
+
+### 20.4 Edge Perpendicular Translation
+
+When Shift+dragging an edge in edit mode:
+1. Compute edge normal vector (perpendicular to edge direction)
+2. Project mouse displacement onto the normal
+3. Translate both edge endpoints by the projected displacement
+
+---
+
+## 21. IESVE Compatibility
+
+### 21.1 World Coordinate Projection
+
+IESVE AOI files use real-world coordinates (metres). The editor projects these to pixel coordinates using the image's spatial extent metadata:
+- `world_vertices` stored alongside `vertices` (pixel) in each room dict
+- Projection: `px_x = (world_x - extent_min_x) / (extent_max_x - extent_min_x) * image_width`
+
+### 21.2 Multi-Level Support
+
+IESVE images may contain multiple floor levels (FFLs). The editor groups rooms by FFL and provides a level cycle button in the bottom bar. `_aoi_level_map` assigns each `.pic` file to an FFL value.
+
+### 21.3 EXPOSURE Header Handling
+
+IESVE `.pic` files include an EXPOSURE header that must be undone before computing DF%:
+- Read EXPOSURE value from HDR header
+- Divide luminance values by EXPOSURE to recover original irradiance

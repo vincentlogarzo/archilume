@@ -10,7 +10,9 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ## 🔴 HIGH PRIORITY: Core Workflow & Output Improvements
 
+- **grid_resolution:** Implement grid_resolution into the daylight workflow as it currently seen in the sunlight access workflow.
 - **RDP References:** Implement inline `@v{rdp_file_path}` implementation to simplify command outputs.
+- **Include gpu rendering option into the daylight workflow.** `examples/workflow_sunlight_access.py` implement the current accelerad_rpict.ps1 into the workflow, and update custom parameter inputs by user in all functions that construct radiance commands. These should all be extracted or potentially utilise pyradiance.
 - **Modular Post-Processing:** Break `Tiff2Animation` into `Wpd2Tiff` and `Tiff2Animation` for clearer function separation.
 - **Advanced Reporting:** Replace Excel output with a `wpd2report` module generating PDF/HTML with NSW ADG metrics.
 - **Auto-Cleanup:** Move `smart_cleanup` into each workflow's `InputsValidator`. Must happen *after* file naming encodes the scenario grid (resolution, rendering params, etc.) so the cache can distinguish previously completed runs. For the IESVE daylight workflow specifically, the only input the user should need to flag is whether the source `.oct` file has changed — parameter/resolution changes should be inferred automatically from the output file names.

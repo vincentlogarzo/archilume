@@ -3,6 +3,7 @@
         "./archilume"
     ],
     "workbench.iconTheme": "material-icon-theme",
+    "editor.wordWrap": "off",
     "files.exclude": {
         "**/__pycache__": true,
         "**/*.egg-info": true,
