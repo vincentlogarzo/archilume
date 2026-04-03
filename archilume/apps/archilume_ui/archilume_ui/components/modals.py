@@ -38,7 +38,7 @@ def shortcuts_modal() -> rx.Component:
     ]
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("Keyboard Shortcuts", style={"font_family": FONT_MONO, "font_size": "13px"}),
+            rx.dialog.title("Keyboard Shortcuts", style={"font_family": FONT_MONO, "font_size": "18px"}),
             rx.box(*rows, style={"max_height": "60vh", "overflow_y": "auto"}),
             rx.flex(
                 rx.dialog.close(rx.button("Close", variant="outline", size="1", style={"font_family": FONT_MONO})),
@@ -50,20 +50,47 @@ def shortcuts_modal() -> rx.Component:
     )
 
 
+def _project_list_item(name: str) -> rx.Component:
+    return rx.box(
+        rx.text(name, style={"font_family": FONT_MONO, "font_size": "12px"}),
+        style={"padding": "7px 10px", "cursor": "pointer", "border_radius": "4px"},
+        color=COLORS["text_pri"],
+        _hover={"background": COLORS["hover"]},
+        on_click=EditorState.open_project(name),
+    )
+
+
 def open_project_modal() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("Open Project", style={"font_family": FONT_MONO, "font_size": "13px"}),
-            rx.select(
-                EditorState.available_projects,
-                placeholder="Select a project…", size="2",
-                on_change=EditorState.open_project,
-                style={"font_family": FONT_MONO, "width": "100%"},
+            rx.flex(
+                rx.dialog.title("Open Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin": "0"}),
+                rx.spacer(),
+                rx.tooltip(
+                    rx.icon_button(
+                        rx.icon(tag="folder", style={"width": "14px", "height": "14px"}),
+                        variant="ghost", size="1",
+                        on_click=EditorState.open_projects_folder,
+                    ),
+                    content="Open projects folder in Explorer", side="left",
+                ),
+                align="center", style={"margin_bottom": "14px"},
+            ),
+            rx.box(
+                rx.foreach(EditorState.available_projects, _project_list_item),
+                style={
+                    "border": "1px solid", "border_color": COLORS["panel_bdr"],
+                    "border_radius": "6px", "overflow_y": "auto",
+                    "max_height": "280px", "min_height": "80px",
+                    "padding": "4px",
+                },
+                background=COLORS["deep"],
             ),
             rx.flex(
                 rx.dialog.close(rx.button("Cancel", variant="outline", size="1", style={"font_family": FONT_MONO})),
                 justify="end", gap="8px", style={"margin_top": "12px"},
             ),
+            style={"min_width": "320px"},
         ),
         open=EditorState.open_project_modal_open,
         on_open_change=EditorState.close_open_project_modal,
@@ -73,10 +100,10 @@ def open_project_modal() -> rx.Component:
 def create_project_modal() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("Create New Project", style={"font_family": FONT_MONO, "font_size": "13px"}),
+            rx.dialog.title("Create New Project", style={"font_family": FONT_MONO, "font_size": "18px"}),
             rx.box(
                 rx.text("Project Name", style={
-                    "font_family": FONT_MONO, "font_size": "9px", "text_transform": "uppercase",
+                    "font_family": FONT_MONO, "font_size": "18px", "text_transform": "uppercase",
                     "color": COLORS["text_dim"], "margin_bottom": "4px",
                 }),
                 rx.input(placeholder="my-project", on_change=EditorState.set_new_project_name, size="2",
@@ -85,7 +112,7 @@ def create_project_modal() -> rx.Component:
             ),
             rx.box(
                 rx.text("Mode", style={
-                    "font_family": FONT_MONO, "font_size": "9px", "text_transform": "uppercase",
+                    "font_family": FONT_MONO, "font_size": "18px", "text_transform": "uppercase",
                     "color": COLORS["text_dim"], "margin_bottom": "4px",
                 }),
                 rx.select(["archilume", "hdr", "iesve"], default_value="archilume",
@@ -96,7 +123,7 @@ def create_project_modal() -> rx.Component:
             rx.cond(
                 EditorState.create_error != "",
                 rx.text(EditorState.create_error, style={
-                    "font_family": FONT_MONO, "font_size": "10px", "color": COLORS["danger"], "margin_bottom": "8px",
+                    "font_family": FONT_MONO, "font_size": "14px", "color": COLORS["danger"], "margin_bottom": "8px",
                 }),
                 rx.fragment(),
             ),
@@ -115,7 +142,7 @@ def create_project_modal() -> rx.Component:
 def extract_archive_modal() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("Extract Archive", style={"font_family": FONT_MONO, "font_size": "13px"}),
+            rx.dialog.title("Extract Archive", style={"font_family": FONT_MONO, "font_size": "18px"}),
             rx.select(
                 EditorState.available_archives, placeholder="Select archive…",
                 on_change=EditorState.set_selected_archive, size="2",
@@ -123,7 +150,7 @@ def extract_archive_modal() -> rx.Component:
             ),
             rx.text(
                 "This will overwrite the current project AOI files and reload the session.",
-                style={"font_family": FONT_MONO, "font_size": "10px", "color": COLORS["danger"], "margin_top": "8px"},
+                style={"font_family": FONT_MONO, "font_size": "14px", "color": COLORS["danger"], "margin_top": "8px"},
             ),
             rx.flex(
                 rx.dialog.close(rx.button("Cancel", variant="outline", size="1", style={"font_family": FONT_MONO})),
@@ -146,11 +173,11 @@ def accelerad_modal() -> rx.Component:
                     rx.text("AcceleradRT Preview", style={"margin_left": "6px"}),
                     align="center",
                 ),
-                style={"font_family": FONT_MONO, "font_size": "13px"},
+                style={"font_family": FONT_MONO, "font_size": "18px"},
             ),
             rx.box(
                 rx.text("Octree File", style={
-                    "font_family": FONT_MONO, "font_size": "9px", "text_transform": "uppercase",
+                    "font_family": FONT_MONO, "font_size": "18px", "text_transform": "uppercase",
                     "color": COLORS["text_dim"], "margin_bottom": "4px",
                 }),
                 rx.select(
@@ -163,7 +190,7 @@ def accelerad_modal() -> rx.Component:
             rx.flex(
                 rx.box(
                     rx.text("Width (px)", style={
-                        "font_family": FONT_MONO, "font_size": "9px", "text_transform": "uppercase",
+                        "font_family": FONT_MONO, "font_size": "18px", "text_transform": "uppercase",
                         "color": COLORS["text_dim"], "margin_bottom": "4px",
                     }),
                     rx.input(value=EditorState.accelerad_res_x.to(str), on_change=EditorState.set_accelerad_res_x,
@@ -173,7 +200,7 @@ def accelerad_modal() -> rx.Component:
                 ),
                 rx.box(
                     rx.text("Height (px)", style={
-                        "font_family": FONT_MONO, "font_size": "9px", "text_transform": "uppercase",
+                        "font_family": FONT_MONO, "font_size": "18px", "text_transform": "uppercase",
                         "color": COLORS["text_dim"], "margin_bottom": "4px",
                     }),
                     rx.input(value=EditorState.accelerad_res_y.to(str), on_change=EditorState.set_accelerad_res_y,
@@ -186,7 +213,7 @@ def accelerad_modal() -> rx.Component:
             rx.cond(
                 EditorState.accelerad_error != "",
                 rx.text(EditorState.accelerad_error, style={
-                    "font_family": FONT_MONO, "font_size": "10px", "color": COLORS["danger"], "margin_bottom": "8px",
+                    "font_family": FONT_MONO, "font_size": "14px", "color": COLORS["danger"], "margin_bottom": "8px",
                 }),
                 rx.fragment(),
             ),

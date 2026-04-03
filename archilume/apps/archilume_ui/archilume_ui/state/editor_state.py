@@ -6,6 +6,7 @@ Organised into sections matching the original split-state design.
 
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +22,7 @@ class HdrFileInfo(TypedDict):
     name: str
     hdr_path: str
     tiff_paths: list[str]
+    suffix: str
 
 
 class RoomDict(TypedDict):
@@ -37,6 +39,8 @@ class EnrichedRoom(TypedDict):
     name: str
     room_type: str
     parent: str
+    is_circ: bool
+    is_div: bool
     vertices_str: str
     label_x: str
     label_y: str
@@ -44,6 +48,7 @@ class EnrichedRoom(TypedDict):
     selected: bool
     df_lines: str
     df_status: str
+    df_color: str
 
 
 class VertexDict(TypedDict):
@@ -67,8 +72,33 @@ class DfStamp(TypedDict):
     value: float
 
 
+class TreeNode(TypedDict):
+    # type: "hdr" | "parent_room" | "child_room"
+    node_type: str
+    # display
+    label: str
+    room_type: str
+    indent: str          # CSS width e.g. "16px"
+    selected: bool
+    is_current_hdr: bool
+    collapsed: bool      # only meaningful for hdr nodes
+    has_children: bool   # only meaningful for parent_room nodes
+    # action payload
+    hdr_name: str        # which HDR this node belongs to
+    room_idx: int        # -1 for hdr nodes
+    hdr_idx: int         # index into hdr_files
+
+
 class EditorState(rx.State):
     """Unified state for the entire editor application."""
+
+    # =====================================================================
+    # §0 — Workflow tabs
+    # =====================================================================
+    active_tab: str = "pre_simulation"
+
+    def set_active_tab(self, tab: str) -> None:
+        self.active_tab = tab
 
     # =====================================================================
     # §1 — Project
@@ -95,6 +125,9 @@ class EditorState(rx.State):
     current_image_b64: str = ""
     image_width: int = 0
     image_height: int = 0
+
+    # -- View params per HDR: maps hdr_name -> [vp_x, vp_y, vh, vv]
+    hdr_view_params: dict[str, list[float]] = {}
 
     # =====================================================================
     # §3 — Rooms
@@ -180,6 +213,12 @@ class EditorState(rx.State):
     pan_x: float = 0.0
     pan_y: float = 0.0
     annotation_scale: float = 1.0
+    viewport_width: int = 0
+    viewport_height: int = 0
+
+    # -- Grid overlay
+    grid_visible: bool = False
+    grid_spacing_mm: int = 50  # default 50mm = 5cm, min 5mm
 
     # =====================================================================
     # §12 — Mouse state
@@ -191,6 +230,7 @@ class EditorState(rx.State):
     # §13 — UI chrome
     # =====================================================================
     project_tree_open: bool = True
+    collapsed_hdrs: list[str] = []
     shortcuts_modal_open: bool = False
     open_project_modal_open: bool = False
     create_project_modal_open: bool = False
@@ -243,8 +283,134 @@ class EditorState(rx.State):
         return len(self.multi_selected_idxs)
 
     @rx.var
-    def canvas_transform(self) -> str:
-        return f"scale({self.zoom_level}) translate({self.pan_x}px, {self.pan_y}px)"
+    def all_rooms_selected(self) -> bool:
+        if not self.hdr_files:
+            return False
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        hdr_idxs = [i for i, r in enumerate(self.rooms) if r.get("hdr_file") == hdr_name]
+        return len(hdr_idxs) > 0 and set(hdr_idxs) == set(self.multi_selected_idxs)
+
+    @rx.var
+    def tree_nodes(self) -> list[TreeNode]:
+        """Flat list of typed tree nodes for the Room Browser.
+
+        Structure per HDR:
+          [hdr row]
+            [parent room row]   (rooms with no parent, or unique parent values)
+              [child room row]  (rooms whose parent == parent room name)
+        """
+        nodes: list[TreeNode] = []
+        current_hdr_name = (
+            self.hdr_files[self.current_hdr_idx]["name"]
+            if self.hdr_files and 0 <= self.current_hdr_idx < len(self.hdr_files)
+            else ""
+        )
+
+        for hdr_idx, hdr in enumerate(self.hdr_files):
+            hdr_name = hdr["name"]
+            is_current = hdr_name == current_hdr_name
+            collapsed = hdr_name in self.collapsed_hdrs
+
+            # Count rooms for this HDR
+            hdr_rooms = [(i, r) for i, r in enumerate(self.rooms) if r.get("hdr_file") == hdr_name]
+
+            nodes.append({
+                "node_type": "hdr",
+                "label": hdr_name,
+                "room_type": "",
+                "indent": "0px",
+                "selected": False,
+                "is_current_hdr": is_current,
+                "collapsed": collapsed,
+                "has_children": len(hdr_rooms) > 0,
+                "hdr_name": hdr_name,
+                "room_idx": -1,
+                "hdr_idx": hdr_idx,
+            })
+
+            if collapsed:
+                continue
+
+            # Group: find unique parent values among this HDR's rooms
+            # Parents are rooms whose own name appears as another room's parent
+            parent_names = sorted({r.get("parent", "") for _, r in hdr_rooms if r.get("parent", "")})
+            # Rooms that are parents themselves (no parent of their own)
+            top_level = [(i, r) for i, r in hdr_rooms if not r.get("parent")]
+            # Rooms that have a parent
+            child_map: dict[str, list[tuple[int, dict]]] = {}
+            for i, r in hdr_rooms:
+                p = r.get("parent") or ""
+                if p:
+                    child_map.setdefault(p, []).append((i, r))
+
+            for room_idx, room in top_level:
+                room_name = room.get("name", "")
+                children = child_map.get(room_name, [])
+                is_selected = (
+                    room_idx == self.selected_room_idx
+                    or room_idx in self.multi_selected_idxs
+                )
+                nodes.append({
+                    "node_type": "parent_room",
+                    "label": room_name,
+                    "room_type": room.get("room_type", ""),
+                    "indent": "16px",
+                    "selected": is_selected,
+                    "is_current_hdr": is_current,
+                    "collapsed": False,
+                    "has_children": len(children) > 0,
+                    "hdr_name": hdr_name,
+                    "room_idx": room_idx,
+                    "hdr_idx": hdr_idx,
+                })
+                for child_idx, child in children:
+                    child_selected = (
+                        child_idx == self.selected_room_idx
+                        or child_idx in self.multi_selected_idxs
+                    )
+                    nodes.append({
+                        "node_type": "child_room",
+                        "label": child.get("name", ""),
+                        "room_type": child.get("room_type", ""),
+                        "indent": "32px",
+                        "selected": child_selected,
+                        "is_current_hdr": is_current,
+                        "collapsed": False,
+                        "has_children": False,
+                        "hdr_name": hdr_name,
+                        "room_idx": child_idx,
+                        "hdr_idx": hdr_idx,
+                    })
+
+            # Orphan children (parent name not present as a top-level room)
+            top_level_names = {r.get("name", "") for _, r in top_level}
+            for parent_name, children in child_map.items():
+                if parent_name not in top_level_names:
+                    for child_idx, child in children:
+                        child_selected = (
+                            child_idx == self.selected_room_idx
+                            or child_idx in self.multi_selected_idxs
+                        )
+                        nodes.append({
+                            "node_type": "child_room",
+                            "label": child.get("name", ""),
+                            "room_type": child.get("room_type", ""),
+                            "indent": "16px",
+                            "selected": child_selected,
+                            "is_current_hdr": is_current,
+                            "collapsed": False,
+                            "has_children": False,
+                            "hdr_name": hdr_name,
+                            "room_idx": child_idx,
+                            "hdr_idx": hdr_idx,
+                        })
+
+        return nodes
+
+    def set_viewport_size(self, data: dict) -> None:
+        """Called by ResizeObserver JS when the viewport container resizes."""
+        self.viewport_width = int(data.get("w", 0))
+        self.viewport_height = int(data.get("h", 0))
 
     @rx.var
     def zoom_pct(self) -> str:
@@ -257,18 +423,139 @@ class EditorState(rx.State):
         return "0 0 1000 800"
 
     @rx.var
+    def image_aspect_ratio(self) -> str:
+        """CSS aspect-ratio value, e.g. '1280 / 441'."""
+        if self.image_width > 0 and self.image_height > 0:
+            return f"{self.image_width} / {self.image_height}"
+        return "1000 / 800"
+
+    @rx.var
+    def grid_spacing_px(self) -> float:
+        """Grid spacing in image-pixel units, derived from VIEW params and grid_spacing_mm."""
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            return 0.0
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        vp_params = self.hdr_view_params.get(hdr_name)
+        if not vp_params or self.image_width <= 0:
+            return 0.0
+        vh = vp_params[2]  # horizontal view size in metres
+        if vh <= 0:
+            return 0.0
+        metres_per_pixel = vh / self.image_width
+        spacing_m = self.grid_spacing_mm / 1000.0
+        return spacing_m / metres_per_pixel
+
+    @rx.var
+    def grid_pattern_size(self) -> str:
+        s = self.grid_spacing_px
+        if s <= 0:
+            return "10"
+        return str(round(s, 2))
+
+    @rx.var
+    def grid_offset_x(self) -> str:
+        """Pattern offset so grid aligns to world origin."""
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            return "0"
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        vp_params = self.hdr_view_params.get(hdr_name)
+        if not vp_params or self.image_width <= 0:
+            return "0"
+        vp_x, _, vh, _ = vp_params
+        metres_per_pixel = vh / self.image_width
+        spacing_m = self.grid_spacing_mm / 1000.0
+        # World origin (0,0) maps to pixel: img_w/2 - vp_x/mpp
+        origin_px = self.image_width / 2.0 - vp_x / metres_per_pixel
+        s = spacing_m / metres_per_pixel
+        if s <= 0:
+            return "0"
+        offset = origin_px % s
+        return str(round(offset, 2))
+
+    @rx.var
+    def grid_offset_y(self) -> str:
+        """Pattern offset so grid aligns to world origin."""
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            return "0"
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        vp_params = self.hdr_view_params.get(hdr_name)
+        if not vp_params or self.image_height <= 0:
+            return "0"
+        _, vp_y, _, vv = vp_params
+        metres_per_pixel = vv / self.image_height
+        spacing_m = self.grid_spacing_mm / 1000.0
+        origin_py = self.image_height / 2.0 + vp_y / metres_per_pixel
+        s = spacing_m / metres_per_pixel
+        if s <= 0:
+            return "0"
+        offset = origin_py % s
+        return str(round(offset, 2))
+
+    @rx.var
+    def label_font_size(self) -> str:
+        """Room name font size scaled by annotation_scale."""
+        return str(round(10 * self.annotation_scale, 1))
+
+    @rx.var
+    def df_font_size(self) -> str:
+        """DF result font size scaled by annotation_scale."""
+        return str(round(8 * self.annotation_scale, 1))
+
+    @rx.var
+    def df_label_offset(self) -> str:
+        """Vertical offset from label centre to DF text, scaled by annotation_scale."""
+        return str(round(14 * self.annotation_scale, 1))
+
+    @rx.var
+    def room_stroke_width(self) -> str:
+        """Boundary stroke width that stays visually consistent across zoom levels.
+
+        Scales inversely with zoom_level so lines don't appear to thin out when
+        zoomed in (since SVG stroke-width is in image-pixel space, not screen space).
+        """
+        base = 1.5
+        lw = base / max(self.zoom_level, 0.01)
+        return str(round(max(base * 0.5, min(base * 4.0, lw)), 2))
+
+    @rx.var
     def enriched_rooms(self) -> list[EnrichedRoom]:
         """Rooms for current HDR enriched with SVG rendering data."""
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return []
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        img_w = self.image_width
+        img_h = self.image_height
+
+        # Reproject world_vertices → pixel coords using HDR VIEW parameters
+        # Matches the Radiance orthographic (-vtl) projection used by the matplotlib editor:
+        #   px = (world_x - vp_x) / (vh / img_w) + img_w / 2
+        #   py = img_h / 2 - (world_y - vp_y) / (vv / img_h)
+        vp_params = self.hdr_view_params.get(hdr_name)
+
+        def reproject(world_verts: list, vp_x: float, vp_y: float,
+                      vh: float, vv: float) -> list:
+            result_v = []
+            for wx, wy in world_verts:
+                px = (wx - vp_x) / (vh / img_w) + img_w / 2
+                py = img_h / 2 - (wy - vp_y) / (vv / img_h)
+                result_v.append([px, py])
+            return result_v
+
         result = []
         for i, room in enumerate(self.rooms):
             if room.get("hdr_file") != hdr_name:
                 continue
             if not room.get("visible", True):
                 continue
-            verts = room.get("vertices", [])
+
+            # Use reprojected world_vertices when view params are available
+            world_verts = room.get("world_vertices", [])
+            if vp_params and len(world_verts) >= 3 and img_w > 0 and img_h > 0:
+                vp_x, vp_y, vh, vv = vp_params
+                verts = reproject(world_verts, vp_x, vp_y, vh, vv)
+            else:
+                verts = room.get("vertices", [])
+
             if len(verts) < 3:
                 continue
 
@@ -283,18 +570,38 @@ class EditorState(rx.State):
             df_lines = df_info.get("result_lines", [])
             df_status = df_info.get("pass_status", "none")
 
+            # DF colour: parse percentage from first result line, match matplotlib thresholds
+            df_color = "#ffffff"
+            if df_lines:
+                _m = re.search(r'\((\d+(?:\.\d+)?)%\)', df_lines[0])
+                if _m:
+                    _pct = float(_m.group(1))
+                    if _pct >= 90:
+                        df_color = "#000000"
+                    elif _pct >= 50:
+                        df_color = "#E97132"
+                    else:
+                        df_color = "#EE0000"
+
+            is_circ = room.get("room_type", "") == "CIRC"
+            is_div = "_DIV" in room.get("name", "")
+            label_offset = round(14 * self.annotation_scale, 1)
+
             result.append({
                 "idx": i,
                 "name": room.get("name", ""),
                 "room_type": room.get("room_type", ""),
-                "parent": room.get("parent", ""),
+                "parent": room.get("parent") or "",
+                "is_circ": is_circ,
+                "is_div": is_div,
                 "vertices_str": verts_str,
                 "label_x": str(lx),
                 "label_y": str(ly),
-                "df_label_y": str(ly + 14),
+                "df_label_y": str(ly + label_offset),
                 "selected": i == self.selected_room_idx or i in self.multi_selected_idxs,
                 "df_lines": "\n".join(df_lines) if df_lines else "",
                 "df_status": df_status,
+                "df_color": df_color,
             })
         return result
 
@@ -361,6 +668,24 @@ class EditorState(rx.State):
     @rx.var
     def overlay_alpha_str(self) -> str:
         return str(self.overlay_alpha)
+
+    @rx.var
+    def image_width_str(self) -> str:
+        return str(self.image_width) if self.image_width > 0 else "1280"
+
+    @rx.var
+    def image_height_str(self) -> str:
+        return str(self.image_height) if self.image_height > 0 else "800"
+
+    @rx.var
+    def overlay_svg_transform(self) -> str:
+        """SVG-syntax transform for the overlay image (no CSS units)."""
+        t = self._get_current_overlay_transform()
+        ox = t.get("offset_x", 0)
+        oy = t.get("offset_y", 0)
+        sx = t.get("scale_x", 1.0)
+        sy = t.get("scale_y", 1.0)
+        return f"translate({ox},{oy}) scale({sx},{sy})"
 
     @rx.var
     def selected_room_vertices(self) -> list[VertexPoint]:
@@ -442,6 +767,8 @@ class EditorState(rx.State):
             self.current_hdr_idx = new_idx
             self._rebuild_variants()
             self.load_current_image()
+            hdr_name = self.hdr_files[new_idx]["name"]
+            self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
 
     def toggle_image_variant(self) -> None:
         if not self.image_variants:
@@ -481,12 +808,22 @@ class EditorState(rx.State):
     # =====================================================================
 
     def select_room(self, idx: int) -> None:
+        self.multi_selected_idxs = []
         self.selected_room_idx = idx
         if 0 <= idx < len(self.rooms):
             room = self.rooms[idx]
             self.room_name_input = room.get("name", "")
             self.room_type_input = room.get("room_type", "BED")
             self.selected_parent = room.get("parent", "") or ""
+            # Navigate to the HDR this room belongs to
+            hdr_name = room.get("hdr_file", "")
+            for i, h in enumerate(self.hdr_files):
+                if h["name"] == hdr_name and i != self.current_hdr_idx:
+                    self.current_hdr_idx = i
+                    self._rebuild_variants()
+                    self.load_current_image()
+                    self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
+                    break
 
     def select_room_multi(self, idx: int) -> None:
         if idx in self.multi_selected_idxs:
@@ -494,13 +831,37 @@ class EditorState(rx.State):
         else:
             self.multi_selected_idxs = self.multi_selected_idxs + [idx]
 
+    def collapse_all_hdrs(self) -> None:
+        self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
+
+    def expand_all_hdrs(self) -> None:
+        self.collapsed_hdrs = []
+
+    def toggle_hdr_collapse(self, hdr_name: str) -> None:
+        if hdr_name in self.collapsed_hdrs:
+            self.collapsed_hdrs = [h for h in self.collapsed_hdrs if h != hdr_name]
+        else:
+            self.collapsed_hdrs = self.collapsed_hdrs + [hdr_name]
+
+    def navigate_to_hdr(self, hdr_idx: int) -> None:
+        if 0 <= hdr_idx < len(self.hdr_files):
+            self.current_hdr_idx = hdr_idx
+            self._rebuild_variants()
+            self.load_current_image()
+            # Collapse all HDRs except the one just navigated to
+            hdr_name = self.hdr_files[hdr_idx]["name"]
+            self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
+
     def select_all_rooms(self) -> None:
         if not self.hdr_files:
             return
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        self.multi_selected_idxs = [
-            i for i, r in enumerate(self.rooms) if r.get("hdr_file") == hdr_name
-        ]
+        hdr_idxs = [i for i, r in enumerate(self.rooms) if r.get("hdr_file") == hdr_name]
+        if set(hdr_idxs) == set(self.multi_selected_idxs):
+            self.multi_selected_idxs = []
+            self.selected_room_idx = -1
+        else:
+            self.multi_selected_idxs = hdr_idxs
 
     def set_room_name(self, value: str) -> None:
         self.room_name_input = value
@@ -613,39 +974,26 @@ class EditorState(rx.State):
         if self.edit_mode:
             self.dragging_vertex_idx = -1
 
-    def handle_wheel(self, data: dict) -> None:
-        """Scroll-wheel zoom centred on cursor, or middle-mouse pan."""
-        # Middle-mouse pan (sent by JS with panDx/panDy)
-        pan_dx = float(data.get("panDx", 0))
-        pan_dy = float(data.get("panDy", 0))
-        if pan_dx != 0 or pan_dy != 0:
-            if self.zoom_level > 0:
-                self.pan_x += pan_dx / self.zoom_level
-                self.pan_y += pan_dy / self.zoom_level
-            return
-
-        delta = float(data.get("deltaY", 0))
-        cx = float(data.get("x", 0))
-        cy = float(data.get("y", 0))
-        if delta == 0:
-            return
-
-        factor = 0.9 if delta > 0 else 1.1
-        new_zoom = max(0.1, min(10.0, self.zoom_level * factor))
-
-        # Adjust pan so point under cursor stays fixed
-        if self.zoom_level > 0:
-            self.pan_x = cx / new_zoom - cx / self.zoom_level + self.pan_x
-            self.pan_y = cy / new_zoom - cy / self.zoom_level + self.pan_y
-
-        self.zoom_level = new_zoom
+    def sync_zoom(self, data: dict) -> None:
+        """Receive zoom/pan state from JS after a gesture ends (debounced)."""
+        self.zoom_level = float(data.get("zoom", self.zoom_level))
+        self.pan_x = float(data.get("pan_x", self.pan_x))
+        self.pan_y = float(data.get("pan_y", self.pan_y))
 
     def reset_zoom(self) -> None:
         self.zoom_level = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
+        return rx.call_script("window._archiZoom && window._archiZoom.setTransform(1.0, 0, 0);")
 
     def fit_zoom(self) -> None:
+        """Zoom and pan so the selected room fills the viewport container.
+
+        Transform model: translate(pan_x, pan_y) scale(zoom), origin 0 0.
+        To centre image point (cx, cy) in a viewport of size (vw, vh):
+            pan_x = vw/2 - cx * zoom
+            pan_y = vh/2 - cy * zoom
+        """
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
             self.reset_zoom()
             return
@@ -656,19 +1004,27 @@ class EditorState(rx.State):
             return
         from ..lib.geometry import polygon_bbox
         min_x, min_y, max_x, max_y = polygon_bbox(verts)
-        pad = 50
+        pad = 50  # padding in image pixels
         bw = max_x - min_x + 2 * pad
         bh = max_y - min_y + 2 * pad
         if bw <= 0 or bh <= 0:
             self.reset_zoom()
             return
-        zx = self.image_width / bw
-        zy = self.image_height / bh
-        self.zoom_level = min(zx, zy, 5.0)
+        # Use actual viewport container size (from ResizeObserver)
+        vw = self.viewport_width if self.viewport_width > 0 else self.image_width
+        vh = self.viewport_height if self.viewport_height > 0 else self.image_height
+        zx = vw / bw
+        zy = vh / bh
+        self.zoom_level = min(zx, zy, 10.0)
+        # Centre the bounding-box midpoint in the viewport
         cx = (min_x + max_x) / 2
         cy = (min_y + max_y) / 2
-        self.pan_x = -(cx - self.image_width / (2 * self.zoom_level))
-        self.pan_y = -(cy - self.image_height / (2 * self.zoom_level))
+        self.pan_x = vw / 2 - cx * self.zoom_level
+        self.pan_y = vh / 2 - cy * self.zoom_level
+        return rx.call_script(
+            f"window._archiZoom && window._archiZoom.setTransform("
+            f"{self.zoom_level}, {self.pan_x}, {self.pan_y});"
+        )
 
     def set_annotation_scale(self, value: list) -> None:
         if value:
@@ -1025,11 +1381,28 @@ class EditorState(rx.State):
         self._auto_save()
 
     # =====================================================================
+    # GRID OVERLAY
+    # =====================================================================
+
+    def toggle_grid(self) -> None:
+        self.grid_visible = not self.grid_visible
+
+    def set_grid_spacing(self, value: str) -> None:
+        try:
+            v = int(float(value))
+            if v < 5:
+                v = 5
+            self.grid_spacing_mm = v
+        except (ValueError, TypeError):
+            pass
+
+    # =====================================================================
     # PDF OVERLAY
     # =====================================================================
 
     def toggle_overlay(self) -> None:
         self.overlay_visible = not self.overlay_visible
+        print(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', b64_len={len(self.overlay_image_b64)}")
         if self.overlay_visible and not self.overlay_image_b64:
             self._rasterize_current_page()
 
@@ -1122,9 +1495,15 @@ class EditorState(rx.State):
 
     def _rasterize_current_page(self) -> None:
         if not self.overlay_pdf_path:
+            print(f"[overlay] _rasterize skipped: no overlay_pdf_path")
             return
         from ..lib.image_loader import rasterize_pdf_page
+        print(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
         b64 = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi)
+        if b64:
+            print(f"[overlay] Rasterized OK, b64 length={len(b64)}")
+        else:
+            print(f"[overlay] Rasterization FAILED — returned None/empty")
         self.overlay_image_b64 = b64 or ""
 
     def _add_align_point(self, x: float, y: float) -> None:
@@ -1490,23 +1869,35 @@ class EditorState(rx.State):
                         toml_data = tomllib.load(f)
                     proj = toml_data.get("project", {})
                     self.project_mode = proj.get("mode", self.project_mode)
-                    if proj.get("image_dir"):
-                        override = Path(proj["image_dir"])
+                    toml_paths = toml_data.get("paths", {})
+                    image_dir_str = proj.get("image_dir") or toml_paths.get("image_dir")
+                    if image_dir_str:
+                        override = Path(image_dir_str)
                         if override.is_absolute() and override.exists():
                             image_dir = override
                         elif (paths.inputs_dir / override).exists():
                             image_dir = paths.inputs_dir / override
-                    if proj.get("pdf_path"):
-                        pdf_p = Path(proj["pdf_path"])
+                    pdf_path_str = proj.get("pdf_path") or toml_paths.get("pdf_path")
+                    if pdf_path_str:
+                        pdf_p = Path(pdf_path_str)
                         if pdf_p.is_absolute() and pdf_p.exists():
                             self.overlay_pdf_path = str(pdf_p)
+                        elif (paths.project_dir / pdf_p).exists():
+                            self.overlay_pdf_path = str(paths.project_dir / pdf_p)
                         elif (paths.inputs_dir / pdf_p).exists():
                             self.overlay_pdf_path = str(paths.inputs_dir / pdf_p)
                 except Exception:
                     pass
             self.session_path = str(paths.aoi_inputs_dir / "aoi_session.json")
-            from ..lib.image_loader import scan_hdr_files
+            from ..lib.image_loader import scan_hdr_files, read_hdr_view_params
             self.hdr_files = scan_hdr_files(image_dir)
+            # Read VIEW parameters from each HDR for accurate reprojection
+            vp_map: dict[str, list[float]] = {}
+            for hdr_info in self.hdr_files:
+                params = read_hdr_view_params(Path(hdr_info["hdr_path"]))
+                if params is not None:
+                    vp_map[hdr_info["name"]] = list(params)
+            self.hdr_view_params = vp_map
             if self.overlay_pdf_path:
                 from ..lib.image_loader import get_pdf_page_count
                 self.overlay_page_count = get_pdf_page_count(Path(self.overlay_pdf_path))
@@ -1525,6 +1916,8 @@ class EditorState(rx.State):
     def toggle_project_tree(self) -> None:
         self.project_tree_open = not self.project_tree_open
 
+
+
     def open_shortcuts_modal(self) -> None:
         self.shortcuts_modal_open = True
 
@@ -1534,6 +1927,21 @@ class EditorState(rx.State):
     def open_open_project_modal(self) -> None:
         self.scan_projects()
         self.open_project_modal_open = True
+
+    def open_projects_folder(self) -> None:
+        import subprocess
+        import sys
+        try:
+            from archilume.config import PROJECTS_DIR
+            path = str(PROJECTS_DIR)
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", path])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
 
     def close_open_project_modal(self) -> None:
         self.open_project_modal_open = False

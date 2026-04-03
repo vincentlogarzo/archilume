@@ -48,10 +48,10 @@ COLORS = {
     "warning":          "#d97706",
     "success":          "#059669",
     # Room polygon colours (SVG fill strings — static)
-    "room_fill_selected":    "rgba(13,148,136,0.25)",
-    "room_fill_unselected":  "rgba(100,116,139,0.15)",
-    "room_stroke_selected":  "#0d9488",
-    "room_stroke_unselected":"#64748b",
+    "room_fill_selected":    "none",
+    "room_fill_unselected":  "none",
+    "room_stroke_selected":  "#facc15",
+    "room_stroke_unselected":"#ef4444",
     "snap_highlight":   "#facc15",
     "df_stamp":         "#06b6d4",
     "divider_preview":  "#4f6ef7",
@@ -123,5 +123,5 @@ KBD_BADGE = {
 SIDEBAR_DIVIDER = {
     "height": "1px",
     "opacity": "0.5",
-    "margin": "6px 8px",
+    "margin": "0 8px",
 }

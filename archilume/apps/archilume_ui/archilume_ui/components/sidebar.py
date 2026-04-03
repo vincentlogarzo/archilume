@@ -10,14 +10,14 @@ def _sidebar_btn(
     icon: str, tooltip: str, on_click=None, is_active=None,
 ) -> rx.Component:
     base_style = {
-        "width": "48px", "height": "38px",
+        "width": "48px", "height": "34px",
         "display": "flex", "align_items": "center", "justify_content": "center",
         "border_radius": "6px", "cursor": "pointer", "border": "none",
         "background": "transparent",
     }
     btn = rx.tooltip(
         rx.button(
-            rx.icon(tag=icon, size=20),
+            rx.icon(tag=icon, style={"width": "22px", "height": "22px", "stroke_width": "1.5"}),
             style=base_style,
             color=COLORS["text_sec"],
             _hover={"background": COLORS["hover"]},
@@ -31,7 +31,7 @@ def _sidebar_btn(
         is_active,
         rx.tooltip(
             rx.button(
-                rx.icon(tag=icon, size=20),
+                rx.icon(tag=icon, style={"width": "22px", "height": "22px", "stroke_width": "1.5"}),
                 style=base_style,
                 background=COLORS["sidebar_act"],
                 color=COLORS["accent"],
@@ -54,7 +54,7 @@ def _annotation_slider() -> rx.Component:
     return rx.box(
         rx.text(
             "Aa",
-            style={"font_family": FONT_MONO, "font_size": "9px",
+            style={"font_family": FONT_MONO, "font_size": "18px",
                    "text_align": "center", "margin_bottom": "4px"},
             color=COLORS["text_dim"],
         ),
@@ -96,8 +96,6 @@ def sidebar() -> rx.Component:
             _divider(),
             _sidebar_btn("layers", "Toggle Image Layers [T]",
                          on_click=EditorState.toggle_image_variant),
-            _sidebar_btn("zoom-in", "Reset Zoom [R]",
-                         on_click=EditorState.reset_zoom),
             _divider(),
             _sidebar_btn("crosshair", "DF% Placement [P]",
                          on_click=EditorState.toggle_df_placement,
@@ -118,7 +116,7 @@ def sidebar() -> rx.Component:
                 content="Toggle Light / Dark Mode", side="right",
             ),
             _sidebar_btn("settings-2", "Settings"),
-            direction="column", align="center",
+            direction="column", align="center", gap="4px",
             style={"height": "100%", "padding": "6px 0"},
         ),
         style={

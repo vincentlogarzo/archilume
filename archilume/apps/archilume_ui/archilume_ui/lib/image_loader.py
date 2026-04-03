@@ -227,6 +227,32 @@ def _read_hdr_dimensions(path: Path) -> tuple[int, int]:
     return (0, 0)
 
 
+def read_hdr_view_params(path: Path) -> tuple[float, float, float, float] | None:
+    """Extract (vp_x, vp_y, vh, vv) from a Radiance HDR file's VIEW= header line.
+
+    Returns None if the VIEW line is missing or incomplete.
+    """
+    import re
+    try:
+        with open(path, "rb") as f:
+            for _ in range(50):
+                raw = f.readline()
+                if not raw or raw.strip() == b"":
+                    break
+                line = raw.decode("ascii", errors="replace")
+                if not line.startswith("VIEW="):
+                    continue
+                vp = re.search(r"-vp\s+([-\d.]+)\s+([-\d.]+)", line)
+                vh = re.search(r"-vh\s+([-\d.]+)", line)
+                vv = re.search(r"-vv\s+([-\d.]+)", line)
+                if vp and vh and vv:
+                    return (float(vp.group(1)), float(vp.group(2)),
+                            float(vh.group(1)), float(vv.group(1)))
+    except Exception:
+        pass
+    return None
+
+
 def get_image_dimensions(path: Path) -> tuple[int, int]:
     """Get (width, height) of an image file without fully loading it."""
     suffix = path.suffix.lower()
