@@ -4,6 +4,8 @@ __pycache__/
 
 # AI tool settings
 .claude/
+.playwright-tmp/
+.playwright-mcp/
 .env
 .env.local
 *.key

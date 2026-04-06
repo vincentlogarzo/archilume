@@ -66,7 +66,7 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
 def index() -> rx.Component:
     return rx.box(
         _ZOOM_GUARD_SCRIPT,
-        _DEBUG_SCRIPT,
+        rx.cond(EditorState.debug_mode, _DEBUG_SCRIPT),
         rx.window_event_listener(on_key_down=EditorState.handle_key_event),
         sidebar(),
         rx.flex(

@@ -86,6 +86,36 @@ The core flow is: **Geometry → Octree → Sky + Views → Rendering → Post-P
 
 When updating SSH config for GCP VMs with new IPs, ensure the `User` field matches the VM's system username (typically set during VM provisioning). Do not assume or change the username without explicit instruction.
 
+## Post-Edit UI Verification
+
+After making changes to `archilume_ui` files, use the Playwright MCP tools to **functionally test** the changes, not just visually inspect them.
+
+**Verification workflow:**
+
+1. Navigate to `http://localhost:3000`
+2. Take a "before" screenshot if useful for comparison
+3. **Interact with the changed UI elements** — click buttons, fill forms, select options, press keys, hover elements — whatever is needed to exercise the specific change that was made
+4. Take screenshots after each meaningful interaction to confirm the expected behaviour
+5. Check `browser_console_messages` for JavaScript errors after interactions
+6. Report any issues (visual, functional, console errors) before marking the task complete
+7. After verification is complete, flush the temp directory: `rm -rf .playwright-tmp/*`
+
+**Examples of what to test:**
+
+- Button changed → click it, screenshot the result, check console for errors
+- Form field added → fill it with test data, submit, verify the state updates
+- Modal/dialog added → trigger it, screenshot it open, close it, screenshot it closed
+- Sidebar toggle changed → click toggle, verify panel shows/hides
+- Dropdown updated → open it, select an option, verify selection applies
+
+**Key tools:** `browser_snapshot` (get interactive element refs), `browser_click`, `browser_fill_form`, `browser_press_key`, `browser_select_option`, `browser_hover`, `browser_take_screenshot`, `browser_console_messages`.
+
+Always use `browser_snapshot` first to get element references before interacting — do not guess element selectors.
+
+All Playwright output (screenshots, snapshots, logs) is written to `.playwright-tmp/` which is gitignored. This data is ephemeral — only needed for Claude to review its work, then discarded.
+
+This assumes the Reflex app is already running locally. If it is not running, ask the user to start it before verifying.
+
 ## Code Modification Rules
 
 When renaming files, classes, or modules, **only rename exactly what the user requests.** Do not rename related files or add suffixes unless explicitly asked.

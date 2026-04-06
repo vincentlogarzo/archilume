@@ -125,6 +125,13 @@ def header() -> rx.Component:
                 rx.fragment(),
             ),
             rx.button(
+                rx.icon(tag="bug", size=14),
+                rx.text("DBG", style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "4px"}),
+                variant="ghost", size="1", on_click=EditorState.toggle_debug_mode,
+                color=rx.cond(EditorState.debug_mode, "#22c55e", COLORS["text_sec"]),
+                background=rx.cond(EditorState.debug_mode, "rgba(34,197,94,0.1)", "transparent"),
+            ),
+            rx.button(
                 rx.icon(tag="keyboard", size=14),
                 rx.text("Shortcuts", style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "4px"}),
                 variant="ghost", size="1", on_click=EditorState.open_shortcuts_modal,

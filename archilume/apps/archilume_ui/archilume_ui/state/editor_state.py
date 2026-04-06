@@ -4,6 +4,7 @@ All state is in one class to avoid Reflex substate delegation issues.
 Organised into sections matching the original split-state design.
 """
 
+import logging
 import math
 import os
 import re
@@ -15,6 +16,7 @@ from typing import Any, TypedDict
 
 import reflex as rx
 
+from ..lib.debug import debug_handler, logger, trace
 from ..lib.geometry import polygon_label_point
 
 # Module-level DF image cache (numpy arrays can't be Reflex state vars)
@@ -245,6 +247,34 @@ class EditorState(rx.State):
     status_colour: str = "accent2"
     _last_d_press: float = 0.0
     _UNDO_MAX: int = 50
+
+    # =====================================================================
+    # §14 — Debug
+    # =====================================================================
+    debug_mode: bool = os.environ.get("ARCHILUME_DEBUG", "").lower() in ("1", "true")
+    debug_log: list[str] = []
+
+    def toggle_debug_mode(self) -> None:
+        """Toggle debug mode on/off. Controls backend logging and frontend overlay."""
+        self.debug_mode = not self.debug_mode
+        level = logging.DEBUG if self.debug_mode else logging.WARNING
+        logger.setLevel(level)
+        if self.debug_mode:
+            # Start a fresh debug session — clear trace buffer and rotate log
+            trace.clear()
+            logger.debug("Debug mode ON — trace cleared, fresh session")
+            self.status_message = "Debug mode ON"
+        else:
+            # Flush remaining trace before turning off
+            trace.flush()
+            self.status_message = "Debug mode OFF"
+        self.status_colour = "accent2"
+
+    def flush_debug_trace(self) -> None:
+        """Write current trace buffer to debug_trace.json in the project dir."""
+        trace.flush()
+        if self.debug_mode:
+            logger.debug(f"Trace flushed ({len(trace.entries)} entries)")
 
     # =====================================================================
     # COMPUTED VARS
@@ -729,6 +759,7 @@ class EditorState(rx.State):
         self.divider_points = []
         self.dragging_vertex_idx = -1
 
+    @debug_handler
     def toggle_draw_mode(self) -> None:
         was_on = self.draw_mode
         self._clear_modes()
@@ -736,6 +767,7 @@ class EditorState(rx.State):
         self.status_message = "Draw mode ON — click to place vertices, S to save" if self.draw_mode else "Ready"
         self.status_colour = "accent" if self.draw_mode else "accent2"
 
+    @debug_handler
     def toggle_edit_mode(self) -> None:
         was_on = self.edit_mode
         self._clear_modes()
@@ -743,6 +775,7 @@ class EditorState(rx.State):
         self.status_message = "Edit mode ON — drag vertices, right-click to delete" if self.edit_mode else "Ready"
         self.status_colour = "warning" if self.edit_mode else "accent2"
 
+    @debug_handler
     def toggle_divider_mode(self) -> None:
         was_on = self.divider_mode
         self._clear_modes()
@@ -865,6 +898,7 @@ class EditorState(rx.State):
         else:
             self.select_room(idx)
 
+    @debug_handler
     def select_room(self, idx: int) -> None:
         self.multi_selected_idxs = []
         self.selected_room_idx = idx
@@ -966,6 +1000,7 @@ class EditorState(rx.State):
             idx = 0
         self.selected_parent = parents[idx]
 
+    @debug_handler
     def delete_room(self) -> None:
         if self.multi_selected_idxs:
             to_delete = set(self.multi_selected_idxs)
@@ -982,6 +1017,7 @@ class EditorState(rx.State):
     # CANVAS — click routing, coordinate conversion, zoom/pan
     # =====================================================================
 
+    @debug_handler
     def handle_canvas_click(self, data: dict) -> None:
         """Route canvas click. data: {x, y, button, shiftKey, ctrlKey} from JS."""
         x = float(data.get("x", 0))
@@ -993,31 +1029,50 @@ class EditorState(rx.State):
         self.mouse_x = x
         self.mouse_y = y
 
+        if self.debug_mode:
+            btn_name = {0: "left", 1: "middle", 2: "right"}.get(button, str(button))
+            logger.debug(
+                f"  canvas_click at ({x:.1f}, {y:.1f}) btn={btn_name} "
+                f"shift={shift} ctrl={ctrl} | modes: draw={self.draw_mode} "
+                f"edit={self.edit_mode} divider={self.divider_mode} "
+                f"df_place={self.df_placement_mode} overlay_align={self.overlay_align_mode}"
+            )
+
         if self.draw_mode:
             if button == 2:
+                logger.debug(f"  → draw_mode: undo vertex (count={len(self.draw_vertices)})")
                 self._drawing_undo_vertex()
             else:
+                logger.debug(f"  → draw_mode: add vertex at ({x:.1f}, {y:.1f}), ortho={self.ortho_mode}")
                 self._drawing_add_vertex(x, y)
         elif self.edit_mode:
+            logger.debug(f"  → edit_mode: editing_click, selected_room={self.selected_room_idx}")
             self._editing_click(x, y, button, shift)
         elif self.divider_mode:
             if button == 2:
+                logger.debug(f"  → divider_mode: undo point (count={len(self.divider_points)})")
                 self._divider_undo_point()
             else:
+                logger.debug(f"  → divider_mode: add point at ({x:.1f}, {y:.1f})")
                 self._divider_add_point(x, y)
         elif self.df_placement_mode:
             if button == 2:
+                logger.debug(f"  → df_placement: remove nearest stamp at ({x:.1f}, {y:.1f})")
                 self._df_remove_nearest(x, y)
             else:
+                logger.debug(f"  → df_placement: stamp at ({x:.1f}, {y:.1f})")
                 self._df_stamp(x, y)
         elif self.overlay_align_mode:
+            logger.debug(f"  → overlay_align: add align point at ({x:.1f}, {y:.1f}), points_so_far={len(self.align_points)}")
             self._add_align_point(x, y)
         else:
             # Room selection is handled by polygon on_click handlers in the SVG.
             # Only use coordinate-based selection as a fallback (clicks on empty canvas area).
             if ctrl:
+                logger.debug(f"  → fallback: select_room_at({x:.1f}, {y:.1f}) multi=True")
                 self._select_room_at(x, y, multi=True)
             else:
+                logger.debug(f"  → fallback: select_room_at({x:.1f}, {y:.1f}) multi=False")
                 self._select_room_at(x, y, multi=False)
 
     def handle_mouse_move(self, data: dict) -> None:
@@ -1029,6 +1084,7 @@ class EditorState(rx.State):
         if self.draw_mode and self.draw_vertices:
             self._update_draw_preview(x, y)
         elif self.edit_mode and self.dragging_vertex_idx >= 0:
+            logger.debug(f"mouse_move drag: vertex_idx={self.dragging_vertex_idx} → ({x:.1f}, {y:.1f})")
             self._drag_vertex(x, y)
         elif self.df_placement_mode:
             px, py = int(round(x)), int(round(y))
@@ -1042,6 +1098,7 @@ class EditorState(rx.State):
             self.df_cursor_label = f"px({px},{py}){df_val_str}"
             self.status_message = self.df_cursor_label
 
+    @debug_handler
     def handle_mouse_down(self, data: dict) -> None:
         if not self.edit_mode:
             return
@@ -1049,6 +1106,7 @@ class EditorState(rx.State):
         y = float(data.get("y", 0))
         self._editing_start_drag(x, y)
 
+    @debug_handler
     def handle_mouse_up(self, _data: dict) -> None:
         if self.edit_mode:
             self.dragging_vertex_idx = -1
@@ -1176,17 +1234,43 @@ class EditorState(rx.State):
             x, y = ortho_constrain(x, y, last["x"], last["y"])
         self.preview_point = {"x": x, "y": y}
 
+    @debug_handler
     def save_room(self) -> None:
         if self.draw_mode and len(self.draw_vertices) >= 3:
+            logger.debug(
+                f"  save_room → _save_new_room: {len(self.draw_vertices)} vertices, "
+                f"name_input='{self.room_name_input}', parent='{self.selected_parent}', "
+                f"type='{self.room_type_input}', hdr_idx={self.current_hdr_idx}"
+            )
             self._save_new_room()
+        elif self.draw_mode:
+            logger.debug(
+                f"  save_room → SKIPPED: draw_mode but only {len(self.draw_vertices)} vertices (need ≥3)"
+            )
         elif self.edit_mode and 0 <= self.selected_room_idx < len(self.rooms):
+            logger.debug(
+                f"  save_room → _save_edited_room: room_idx={self.selected_room_idx}, "
+                f"name_input='{self.room_name_input}', type='{self.room_type_input}'"
+            )
             self._save_edited_room()
         elif self.divider_mode:
+            logger.debug(
+                f"  save_room → _finalize_divider: {len(self.divider_points)} points, "
+                f"divider_room_idx={self.divider_room_idx}"
+            )
             self._finalize_divider()
         else:
             # Just save name/type of selected room
             if 0 <= self.selected_room_idx < len(self.rooms):
+                logger.debug(
+                    f"  save_room → _save_edited_room (name/type only): "
+                    f"room_idx={self.selected_room_idx}"
+                )
                 self._save_edited_room()
+            else:
+                logger.debug(
+                    f"  save_room → NOOP: no active mode, selected_room_idx={self.selected_room_idx}"
+                )
 
     def _save_new_room(self) -> None:
         from ..lib.geometry import make_unique_name, point_in_polygon
@@ -1491,7 +1575,7 @@ class EditorState(rx.State):
 
     def toggle_overlay(self) -> None:
         self.overlay_visible = not self.overlay_visible
-        print(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', b64_len={len(self.overlay_image_b64)}")
+        logger.debug(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', b64_len={len(self.overlay_image_b64)}")
         if self.overlay_visible and not self.overlay_image_b64:
             self._rasterize_current_page()
 
@@ -1584,7 +1668,7 @@ class EditorState(rx.State):
 
     def _rasterize_current_page(self) -> None:
         if not self.overlay_pdf_path:
-            print(f"[overlay] _rasterize skipped: no overlay_pdf_path")
+            logger.debug("[overlay] _rasterize skipped: no overlay_pdf_path")
             return
         from ..lib.image_loader import rasterize_pdf_page
         cache_dir = None
@@ -1594,12 +1678,12 @@ class EditorState(rx.State):
                 cache_dir = get_project_paths(self.project).plans_dir / ".overlay_cache"
             except Exception:
                 pass
-        print(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
+        logger.debug(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
         b64 = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
         if b64:
-            print(f"[overlay] Rasterized OK, b64 length={len(b64)}")
+            logger.debug(f"[overlay] Rasterized OK, b64 length={len(b64)}")
         else:
-            print(f"[overlay] Rasterization FAILED — returned None/empty")
+            logger.debug("[overlay] Rasterization FAILED — returned None/empty")
         self.overlay_image_b64 = b64 or ""
 
     def _add_align_point(self, x: float, y: float) -> None:
@@ -1883,6 +1967,8 @@ class EditorState(rx.State):
 
     def _auto_save(self) -> None:
         self.save_session()
+        if self.debug_mode:
+            trace.flush()
 
     # =====================================================================
     # PROJECT MANAGEMENT
@@ -1989,6 +2075,7 @@ class EditorState(rx.State):
                 except Exception:
                     pass
             self.session_path = str(paths.aoi_inputs_dir / "aoi_session.json")
+            trace.set_project_path(paths.project_dir)
             from ..lib.image_loader import scan_hdr_files, read_hdr_view_params
             self.hdr_files = scan_hdr_files(image_dir)
             # Read VIEW parameters from each HDR for accurate reprojection
@@ -2069,34 +2156,66 @@ class EditorState(rx.State):
         This is the correct Reflex pattern — compiled to addEvents, not window.applyEvent.
         key_info contains: alt_key, ctrl_key, meta_key, shift_key.
         """
+        # Skip modifier-only keys — they generate noise with no action
+        if key in ("Shift", "Control", "Alt", "Meta"):
+            return
+
         ctrl = key_info.get("ctrl_key", False)
         shift = key_info.get("shift_key", False)
+
+        if self.debug_mode:
+            mods = []
+            if ctrl:
+                mods.append("Ctrl")
+            if shift:
+                mods.append("Shift")
+            if key_info.get("alt_key"):
+                mods.append("Alt")
+            mod_str = "+".join(mods + [key]) if mods else key
+            logger.debug(
+                f"▶ handle_key_event: key={mod_str} | modes: draw={self.draw_mode} "
+                f"edit={self.edit_mode} divider={self.divider_mode} "
+                f"df_place={self.df_placement_mode} overlay_align={self.overlay_align_mode} "
+                f"| selected_room={self.selected_room_idx} hdr_idx={self.current_hdr_idx}"
+            )
+
         # Skip events from inputs/textareas — Reflex handles focus isolation but
         # the tab_index=-1 on the trap div means this only fires when the div is focused;
         # in practice document-level focus means we get all keys not consumed by inputs.
         if ctrl and key.lower() == "z":
+            logger.debug("  → routing to: undo()")
             self.undo()
         elif ctrl and key.lower() == "a":
+            logger.debug("  → routing to: select_all_rooms()")
             self.select_all_rooms()
         elif ctrl and key.lower() == "r":
+            logger.debug("  → routing to: rotate_overlay_90()")
             self.rotate_overlay_90()
         elif shift and key == "S":
+            logger.debug("  → routing to: force_save()")
             self.force_save()
         elif key in ("Delete", "Backspace"):
+            logger.debug("  → routing to: delete_hovered_vertex()")
             self.delete_hovered_vertex()
         elif key.lower() == "f":
+            logger.debug("  → routing to: fit_zoom()")
             yield from self.fit_zoom()
         elif key.lower() == "r" and not ctrl:
+            logger.debug("  → routing to: reset_zoom()")
             yield from self.reset_zoom()
         else:
+            logger.debug(f"  → routing to: handle_key('{key}')")
             yield from self.handle_key(key)
 
+    @debug_handler
     def handle_key(self, key: str) -> None:
         now = time.time()
         k = key.lower() if len(key) == 1 else key
 
         if k == "d":
-            if now - self._last_d_press < 0.4 and not self.divider_mode:
+            elapsed = now - self._last_d_press
+            if elapsed < 0.4 and not self.divider_mode:
+                logger.debug(f"  handle_key 'd': double-press ({elapsed:.3f}s) → divider mode ON")
                 self._clear_modes()
                 self.divider_mode = True
                 if self.selected_room_idx >= 0:
@@ -2104,39 +2223,65 @@ class EditorState(rx.State):
                 self.status_message = "Divider mode ON"
                 self.status_colour = "accent2"
             else:
+                logger.debug(f"  handle_key 'd': single press ({elapsed:.3f}s) → toggle_draw_mode")
                 self.toggle_draw_mode()
             self._last_d_press = now
             return
 
         if k == "e":
+            logger.debug("  handle_key 'e' → toggle_edit_mode")
             self.toggle_edit_mode()
         elif k == "o":
+            logger.debug(f"  handle_key 'o' → toggle_ortho (was {self.ortho_mode})")
             self.toggle_ortho()
         elif k == "p":
+            logger.debug(f"  handle_key 'p' → toggle_df_placement (was {self.df_placement_mode})")
             self.toggle_df_placement()
         elif k == "t":
+            logger.debug(f"  handle_key 't' → toggle_image_variant (idx={self.current_variant_idx})")
             self.toggle_image_variant()
         elif k == "r":
+            logger.debug("  handle_key 'r' → reset_zoom")
             yield from self.reset_zoom()
         elif k == "f":
+            logger.debug("  handle_key 'f' → fit_zoom")
             yield from self.fit_zoom()
         elif k == "s":
+            logger.debug(
+                f"  handle_key 's' → save_room | draw={self.draw_mode} "
+                f"edit={self.edit_mode} divider={self.divider_mode} "
+                f"draw_verts={len(self.draw_vertices)} selected={self.selected_room_idx}"
+            )
             self.save_room()
         elif k == "Escape":
+            logger.debug(
+                f"  handle_key 'Escape' → exit_mode | active modes: "
+                f"draw={self.draw_mode} edit={self.edit_mode} "
+                f"divider={self.divider_mode} df={self.df_placement_mode} "
+                f"overlay_align={self.overlay_align_mode}"
+            )
             self.exit_mode()
         elif k == "ArrowUp":
             if self.overlay_align_mode and self.overlay_visible:
+                logger.debug("  handle_key 'ArrowUp' → nudge_overlay(0, -1)")
                 self.nudge_overlay(0, -1)
             else:
+                logger.debug(f"  handle_key 'ArrowUp' → navigate_hdr(-1) (current={self.current_hdr_idx})")
                 self.navigate_hdr(-1)
         elif k == "ArrowDown":
             if self.overlay_align_mode and self.overlay_visible:
+                logger.debug("  handle_key 'ArrowDown' → nudge_overlay(0, 1)")
                 self.nudge_overlay(0, 1)
             else:
+                logger.debug(f"  handle_key 'ArrowDown' → navigate_hdr(1) (current={self.current_hdr_idx})")
                 self.navigate_hdr(1)
         elif k == "ArrowLeft":
             if self.overlay_align_mode and self.overlay_visible:
+                logger.debug("  handle_key 'ArrowLeft' → nudge_overlay(-1, 0)")
                 self.nudge_overlay(-1, 0)
         elif k == "ArrowRight":
             if self.overlay_align_mode and self.overlay_visible:
+                logger.debug("  handle_key 'ArrowRight' → nudge_overlay(1, 0)")
                 self.nudge_overlay(1, 0)
+        else:
+            logger.debug(f"  handle_key '{k}' → no matching action (unbound key)")
