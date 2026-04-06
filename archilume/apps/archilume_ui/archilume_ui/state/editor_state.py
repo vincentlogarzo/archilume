@@ -17,6 +17,9 @@ import reflex as rx
 
 from ..lib.geometry import polygon_label_point
 
+# Module-level DF image cache (numpy arrays can't be Reflex state vars)
+_df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
+
 
 class HdrFileInfo(TypedDict):
     name: str
@@ -70,6 +73,8 @@ class DfStamp(TypedDict):
     x: float
     y: float
     value: float
+    px: int
+    py: int
 
 
 class TreeNode(TypedDict):
@@ -95,7 +100,7 @@ class EditorState(rx.State):
     # =====================================================================
     # §0 — Workflow tabs
     # =====================================================================
-    active_tab: str = "pre_simulation"
+    active_tab: str = "results"
 
     def set_active_tab(self, tab: str) -> None:
         self.active_tab = tab
@@ -189,6 +194,7 @@ class EditorState(rx.State):
     # =====================================================================
     df_stamps: dict = {}
     room_df_results: dict = {}
+    df_cursor_label: str = ""
 
     # =====================================================================
     # §10 — Export / AcceleradRT
@@ -368,9 +374,11 @@ class EditorState(rx.State):
                         child_idx == self.selected_room_idx
                         or child_idx in self.multi_selected_idxs
                     )
+                    child_name = child.get("name", "")
+                    child_label = child_name.removeprefix(room_name).strip("_ ") or child_name
                     nodes.append({
                         "node_type": "child_room",
-                        "label": child.get("name", ""),
+                        "label": child_label,
                         "room_type": child.get("room_type", ""),
                         "indent": "32px",
                         "selected": child_selected,
@@ -391,9 +399,11 @@ class EditorState(rx.State):
                             child_idx == self.selected_room_idx
                             or child_idx in self.multi_selected_idxs
                         )
+                        child_name = child.get("name", "")
+                        child_label = child_name.removeprefix(parent_name).strip("_ ") or child_name
                         nodes.append({
                             "node_type": "child_room",
-                            "label": child.get("name", ""),
+                            "label": child_label,
                             "room_type": child.get("room_type", ""),
                             "indent": "16px",
                             "selected": child_selected,
@@ -559,7 +569,7 @@ class EditorState(rx.State):
             if len(verts) < 3:
                 continue
 
-            # SVG points string
+            is_div = "_DIV" in room.get("name", "")
             verts_str = " ".join(f"{v[0]},{v[1]}" for v in verts)
 
             # Label position via centroid
@@ -584,7 +594,6 @@ class EditorState(rx.State):
                         df_color = "#EE0000"
 
             is_circ = room.get("room_type", "") == "CIRC"
-            is_div = "_DIV" in room.get("name", "")
             label_offset = round(14 * self.annotation_scale, 1)
 
             result.append({
@@ -649,7 +658,17 @@ class EditorState(rx.State):
             return []
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
         raw = self.df_stamps.get(hdr_name, [])
-        return [{"x": float(s[0]), "y": float(s[1]), "value": float(s[2])} for s in raw if len(s) >= 3]
+        return [
+            {
+                "x": float(s[0]),
+                "y": float(s[1]),
+                "value": float(s[2]),
+                "px": int(s[3]) if len(s) > 3 else int(round(s[0])),
+                "py": int(s[4]) if len(s) > 4 else int(round(s[1])),
+            }
+            for s in raw
+            if len(s) >= 3
+        ]
 
     @rx.var
     def overlay_css_transform(self) -> str:
@@ -737,8 +756,35 @@ class EditorState(rx.State):
         was_on = self.df_placement_mode
         self._clear_modes()
         self.df_placement_mode = not was_on
-        self.status_message = "DF% placement ON — click to stamp values" if self.df_placement_mode else "Ready"
+        if self.df_placement_mode:
+            self._load_df_image_cache()
+            loaded = _df_cache["image"] is not None
+            self.status_message = "DF% placement ON — click to stamp values" if loaded else "DF% placement ON — HDR image could not be loaded"
+        else:
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
+            self.df_cursor_label = ""
+            self.status_message = "Ready"
         self.status_colour = "accent" if self.df_placement_mode else "accent2"
+
+    def _load_df_image_cache(self) -> None:
+        """Load and cache the DF image for the current HDR."""
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
+            return
+        hdr_info = self.hdr_files[self.current_hdr_idx]
+        hdr_path = hdr_info.get("hdr_path", "")
+        # Skip if already cached for this HDR
+        if _df_cache["hdr_path"] == hdr_path and _df_cache["image"] is not None:
+            return
+        try:
+            from ..lib.df_analysis import load_df_image
+            _df_cache["image"] = load_df_image(Path(hdr_path))
+            _df_cache["hdr_path"] = hdr_path if _df_cache["image"] is not None else ""
+        except Exception:
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
 
     def toggle_ortho(self) -> None:
         self.ortho_mode = not self.ortho_mode
@@ -769,6 +815,11 @@ class EditorState(rx.State):
             self.load_current_image()
             hdr_name = self.hdr_files[new_idx]["name"]
             self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
+            # Invalidate DF image cache; will reload if placement mode is active
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
+            if self.df_placement_mode:
+                self._load_df_image_cache()
 
     def toggle_image_variant(self) -> None:
         if not self.image_variants:
@@ -807,6 +858,13 @@ class EditorState(rx.State):
     # ROOM SELECTION
     # =====================================================================
 
+    def select_room_or_multi(self, idx: int, pointer: dict) -> None:
+        """Click handler — multi-selects if Ctrl/Meta/Shift held, otherwise single-selects."""
+        if pointer.get("ctrl_key") or pointer.get("meta_key") or pointer.get("shift_key"):
+            self.select_room_multi(idx)
+        else:
+            self.select_room(idx)
+
     def select_room(self, idx: int) -> None:
         self.multi_selected_idxs = []
         self.selected_room_idx = idx
@@ -825,11 +883,19 @@ class EditorState(rx.State):
                     self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
                     break
 
+    def room_or_stamp_click(self, idx: int, pointer: dict) -> None:
+        """Polygon click handler — stamps DF% in placement mode, otherwise selects (or multi-selects) room."""
+        if self.df_placement_mode:
+            self._df_stamp(self.mouse_x, self.mouse_y)
+        else:
+            self.select_room_or_multi(idx, pointer)
+
     def select_room_multi(self, idx: int) -> None:
         if idx in self.multi_selected_idxs:
             self.multi_selected_idxs = [i for i in self.multi_selected_idxs if i != idx]
         else:
             self.multi_selected_idxs = self.multi_selected_idxs + [idx]
+
 
     def collapse_all_hdrs(self) -> None:
         self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
@@ -947,6 +1013,8 @@ class EditorState(rx.State):
         elif self.overlay_align_mode:
             self._add_align_point(x, y)
         else:
+            # Room selection is handled by polygon on_click handlers in the SVG.
+            # Only use coordinate-based selection as a fallback (clicks on empty canvas area).
             if ctrl:
                 self._select_room_at(x, y, multi=True)
             else:
@@ -962,6 +1030,17 @@ class EditorState(rx.State):
             self._update_draw_preview(x, y)
         elif self.edit_mode and self.dragging_vertex_idx >= 0:
             self._drag_vertex(x, y)
+        elif self.df_placement_mode:
+            px, py = int(round(x)), int(round(y))
+            df_val_str = ""
+            df_image = _df_cache["image"]
+            if df_image is not None:
+                from ..lib.df_analysis import read_df_at_pixel
+                df_val = read_df_at_pixel(df_image, x, y)
+                if df_val is not None:
+                    df_val_str = f" DF: {df_val:.2f}%"
+            self.df_cursor_label = f"px({px},{py}){df_val_str}"
+            self.status_message = self.df_cursor_label
 
     def handle_mouse_down(self, data: dict) -> None:
         if not self.edit_mode:
@@ -980,13 +1059,13 @@ class EditorState(rx.State):
         self.pan_x = float(data.get("pan_x", self.pan_x))
         self.pan_y = float(data.get("pan_y", self.pan_y))
 
-    def reset_zoom(self) -> None:
+    def reset_zoom(self):
         self.zoom_level = 1.0
         self.pan_x = 0.0
         self.pan_y = 0.0
-        return rx.call_script("window._archiZoom && window._archiZoom.setTransform(1.0, 0, 0);")
+        yield rx.call_script("window._archiZoom && window._archiZoom.setTransform(1.0, 0, 0);")
 
-    def fit_zoom(self) -> None:
+    def fit_zoom(self):
         """Zoom and pan so the selected room fills the viewport container.
 
         Transform model: translate(pan_x, pan_y) scale(zoom), origin 0 0.
@@ -995,33 +1074,43 @@ class EditorState(rx.State):
             pan_y = vh/2 - cy * zoom
         """
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
-            self.reset_zoom()
+            yield from self.reset_zoom()
             return
         room = self.rooms[self.selected_room_idx]
         verts = room.get("vertices", [])
         if not verts or self.image_width <= 0:
-            self.reset_zoom()
+            yield from self.reset_zoom()
             return
         from ..lib.geometry import polygon_bbox
         min_x, min_y, max_x, max_y = polygon_bbox(verts)
-        pad = 50  # padding in image pixels
+        pad = 10  # small padding in image pixels so boundary stroke is visible
         bw = max_x - min_x + 2 * pad
         bh = max_y - min_y + 2 * pad
         if bw <= 0 or bh <= 0:
-            self.reset_zoom()
+            yield from self.reset_zoom()
             return
-        # Use actual viewport container size (from ResizeObserver)
+        # Viewport container dimensions in screen pixels (from ResizeObserver)
         vw = self.viewport_width if self.viewport_width > 0 else self.image_width
         vh = self.viewport_height if self.viewport_height > 0 else self.image_height
-        zx = vw / bw
-        zy = vh / bh
-        self.zoom_level = min(zx, zy, 10.0)
-        # Centre the bounding-box midpoint in the viewport
+        if self.image_width <= 0 or self.image_height <= 0 or vw <= 0:
+            yield from self.reset_zoom()
+            return
+        # At zoom=1 the canvas is width=vw, height=vw*(image_height/image_width).
+        # The rendered canvas height may be less than vh (letterboxed), so capping
+        # effective_vh avoids over-estimating zy and leaving empty space top/bottom.
+        image_scale = vw / self.image_width  # screen px per image px at zoom=1
+        canvas_h_at_1 = vw * self.image_height / self.image_width
+        effective_vh = min(vh, canvas_h_at_1) if canvas_h_at_1 > 0 else vh
+        zx = vw / (bw * image_scale)
+        zy = effective_vh / (bh * image_scale)
+        self.zoom_level = min(zx, zy, 20.0)
+        # Centre the bounding-box midpoint.
         cx = (min_x + max_x) / 2
         cy = (min_y + max_y) / 2
-        self.pan_x = vw / 2 - cx * self.zoom_level
-        self.pan_y = vh / 2 - cy * self.zoom_level
-        return rx.call_script(
+        pxscale = image_scale * self.zoom_level
+        self.pan_x = vw / 2 - cx * pxscale
+        self.pan_y = vh / 2 - cy * pxscale
+        yield rx.call_script(
             f"window._archiZoom && window._archiZoom.setTransform("
             f"{self.zoom_level}, {self.pan_x}, {self.pan_y});"
         )
@@ -1498,8 +1587,15 @@ class EditorState(rx.State):
             print(f"[overlay] _rasterize skipped: no overlay_pdf_path")
             return
         from ..lib.image_loader import rasterize_pdf_page
+        cache_dir = None
+        if self.project:
+            try:
+                from archilume.config import get_project_paths
+                cache_dir = get_project_paths(self.project).plans_dir / ".overlay_cache"
+            except Exception:
+                pass
         print(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
-        b64 = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi)
+        b64 = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
         if b64:
             print(f"[overlay] Rasterized OK, b64 length={len(b64)}")
         else:
@@ -1536,24 +1632,28 @@ class EditorState(rx.State):
 
     def _df_stamp(self, x: float, y: float) -> None:
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            self.status_message = "No HDR loaded"
+            self.status_colour = "danger"
             return
         hdr_info = self.hdr_files[self.current_hdr_idx]
         hdr_name = hdr_info["name"]
-        from ..lib.df_analysis import load_df_image, read_df_at_pixel
-        df_image = load_df_image(Path(hdr_info["hdr_path"]))
-        if df_image is None:
-            self.status_message = "Could not load DF image"
-            self.status_colour = "danger"
-            return
-        df_val = read_df_at_pixel(df_image, x, y)
-        if df_val is None:
-            return
+        px, py = int(round(x)), int(round(y))
+
+        # Try to read DF% from cached image; use 0.0 if unavailable
+        df_val = 0.0
+        df_image = _df_cache["image"]
+        if df_image is not None:
+            from ..lib.df_analysis import read_df_at_pixel
+            val = read_df_at_pixel(df_image, x, y)
+            if val is not None:
+                df_val = val
+
         stamps_copy = dict(self.df_stamps)
         hdr_stamps = list(stamps_copy.get(hdr_name, []))
-        hdr_stamps.append([x, y, round(df_val, 2)])
+        hdr_stamps.append([x, y, round(df_val, 2), px, py])
         stamps_copy[hdr_name] = hdr_stamps
         self.df_stamps = stamps_copy
-        self.status_message = f"DF: {df_val:.2f}%"
+        self.status_message = f"DF: {df_val:.2f}% at px({px},{py})"
         self.status_colour = "accent"
 
     def _df_remove_nearest(self, x: float, y: float) -> None:
@@ -1963,6 +2063,34 @@ class EditorState(rx.State):
     # KEYBOARD HANDLER
     # =====================================================================
 
+    def handle_key_event(self, key: str, key_info: dict):  # type: ignore[override]
+        """Route keyboard events from the Reflex on_key_down handler.
+
+        This is the correct Reflex pattern — compiled to addEvents, not window.applyEvent.
+        key_info contains: alt_key, ctrl_key, meta_key, shift_key.
+        """
+        ctrl = key_info.get("ctrl_key", False)
+        shift = key_info.get("shift_key", False)
+        # Skip events from inputs/textareas — Reflex handles focus isolation but
+        # the tab_index=-1 on the trap div means this only fires when the div is focused;
+        # in practice document-level focus means we get all keys not consumed by inputs.
+        if ctrl and key.lower() == "z":
+            self.undo()
+        elif ctrl and key.lower() == "a":
+            self.select_all_rooms()
+        elif ctrl and key.lower() == "r":
+            self.rotate_overlay_90()
+        elif shift and key == "S":
+            self.force_save()
+        elif key in ("Delete", "Backspace"):
+            self.delete_hovered_vertex()
+        elif key.lower() == "f":
+            yield from self.fit_zoom()
+        elif key.lower() == "r" and not ctrl:
+            yield from self.reset_zoom()
+        else:
+            yield from self.handle_key(key)
+
     def handle_key(self, key: str) -> None:
         now = time.time()
         k = key.lower() if len(key) == 1 else key
@@ -1989,9 +2117,9 @@ class EditorState(rx.State):
         elif k == "t":
             self.toggle_image_variant()
         elif k == "r":
-            self.reset_zoom()
+            yield from self.reset_zoom()
         elif k == "f":
-            self.fit_zoom()
+            yield from self.fit_zoom()
         elif k == "s":
             self.save_room()
         elif k == "Escape":

@@ -1,0 +1,11 @@
+.web
+__pycache__
+*.pyc
+*.pyo
+.git
+.env
+*.hdr
+*.pic
+*.tiff
+*.tif
+projects/

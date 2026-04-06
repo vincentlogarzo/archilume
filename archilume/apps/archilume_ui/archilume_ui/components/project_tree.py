@@ -84,7 +84,7 @@ def _room_row(node: dict) -> rx.Component:
         },
         background=rx.cond(node["selected"], COLORS["btn_on"], "transparent"),
         _hover={"background": COLORS["hover"]},
-        on_click=EditorState.select_room(node["room_idx"]),
+        on_click=lambda e: EditorState.select_room_or_multi(node["room_idx"], e),
     )
 
 
@@ -136,6 +136,7 @@ def _tree_header() -> rx.Component:
                "height": "36px", "overflow": "hidden"},
         border_bottom="1px solid", border_color=COLORS["panel_bdr"],
     )
+
 
 
 _RESIZE_SCRIPT = rx.script("""

@@ -4,6 +4,9 @@ Run from the archilume_ui app directory:
     cd archilume/apps/archilume_ui
     reflex run
 
+Run from docker image:
+    docker run -p 3000:3000 -p 8000:8000 -v C:/Projects/test-archilume/projects:/app/projects vlogarzo/archilume-ui
+
 Or use this script which changes directory and launches:
     python examples/launch_archilume_ui.py
 """
@@ -34,7 +37,7 @@ def _open_browser_when_ready(proc: subprocess.Popen) -> None:
 if __name__ == "__main__":
     app_dir = Path(__file__).resolve().parent.parent / "archilume" / "apps" / "archilume_ui"
     if not app_dir.exists():
-        print(f"App directory not found: {app_dir}")
+        print(f"App directofry not found: {app_dir}")
         sys.exit(1)
 
     print(f"Launching Archilume UI from: {app_dir}")

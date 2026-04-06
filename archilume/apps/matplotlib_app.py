@@ -227,6 +227,7 @@ class HdrAoiEditor:
         _placeholder = config.PROJECTS_DIR / "_no_project"
         self.project_input_dir: Path = _placeholder
         self.project_aoi_dir:   Path = _placeholder / "aoi"
+        self.project_plans_dir: Path = _placeholder / "plans"
         self.archive_dir:       Path = _placeholder / "archive"
         self.wpd_dir:           Path = _placeholder / "wpd"
         self.image_dir:         Path = _placeholder / "image"
@@ -449,11 +450,12 @@ class HdrAoiEditor:
         without requiring the user to open the Project dialog first.
         """
         paths = config.get_project_paths(project)
-        self.project_input_dir = paths.inputs_dir
-        self.project_aoi_dir   = paths.aoi_inputs_dir
-        self.archive_dir       = paths.archive_dir
-        self.wpd_dir           = paths.wpd_dir
-        self.output_image_dir  = paths.image_dir
+        self.project_input_dir  = paths.inputs_dir
+        self.project_aoi_dir    = paths.aoi_inputs_dir
+        self.project_plans_dir  = paths.plans_dir
+        self.archive_dir        = paths.archive_dir
+        self.wpd_dir            = paths.wpd_dir
+        self.output_image_dir   = paths.image_dir
         paths.create_dirs()
 
         # Fill missing constructor args from project.toml.
@@ -511,9 +513,10 @@ class HdrAoiEditor:
         project via the Project button before any real work can happen.
         """
         _placeholder = config.PROJECTS_DIR / "_no_project"
-        self.project_input_dir = _placeholder
-        self.project_aoi_dir   = _placeholder / "aoi"
-        self.archive_dir       = _placeholder / "archive"
+        self.project_input_dir  = _placeholder
+        self.project_aoi_dir    = _placeholder / "aoi"
+        self.project_plans_dir  = _placeholder / "plans"
+        self.archive_dir        = _placeholder / "archive"
         self.wpd_dir           = _placeholder / "wpd"
         self.output_image_dir  = _placeholder / "image"
         self.image_dir         = _placeholder / "image"
@@ -5871,6 +5874,7 @@ class HdrAoiEditor:
         set_last_project(name)
         self.project_input_dir  = paths.inputs_dir
         self.project_aoi_dir    = paths.aoi_inputs_dir
+        self.project_plans_dir  = paths.plans_dir
         self.archive_dir        = paths.archive_dir
         self.wpd_dir            = paths.wpd_dir
         self.output_image_dir   = paths.image_dir
@@ -6371,7 +6375,7 @@ class HdrAoiEditor:
         # Windows so the hash is stable across sessions.
         pdf_hash = hashlib.md5(str(pdf_path.resolve()).encode()).hexdigest()[:6]
 
-        cache_dir = self.project_aoi_dir / ".overlay_cache"
+        cache_dir = self.project_plans_dir / ".overlay_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)        
         # Example: FloorPlans_p0_300dpi_a1b2c3.npy
         fname = f"{pdf_path.stem}_p{page}_{res}dpi_{pdf_hash}.npy"

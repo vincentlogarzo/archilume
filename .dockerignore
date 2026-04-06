@@ -33,8 +33,13 @@ outputs/
 inputs/
 intermediates/
 
-# Windows Accelerad binaries — Linux image doesn't use these
+# Windows Accelerad binaries — never needed in any Linux image stage
 .devcontainer/accelerad_07_beta_Windows/
+.devcontainer/Radiance_7abde14f_Windows/
+
+# Reflex generated frontend and state cache — rebuilt inside the builder stage
+archilume/apps/archilume_ui/.web/
+archilume/apps/archilume_ui/.states/
 
 # Git history — not needed at runtime (saves ~MB)
 .git/

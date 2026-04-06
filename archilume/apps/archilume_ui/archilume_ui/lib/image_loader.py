@@ -1,6 +1,7 @@
 """Image loading, tone-mapping, and caching for HDR/TIFF/PDF files."""
 
 import base64
+import hashlib
 import io
 import subprocess
 import struct
@@ -299,11 +300,15 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
 
 
 def rasterize_pdf_page(
-    pdf_path: Path, page_index: int = 0, dpi: int = 150
+    pdf_path: Path, page_index: int = 0, dpi: int = 150,
+    cache_dir: Optional[Path] = None,
 ) -> Optional[str]:
     """Rasterize a PDF page to a base64-encoded PNG data URI.
 
-    Uses PyMuPDF (fitz) for rasterization.
+    Uses PyMuPDF (fitz) for rasterization. If *cache_dir* is provided the
+    rasterized image is saved as a .npy file there (keyed by PDF stem, page,
+    DPI, and a hash of the resolved PDF path) so subsequent calls for the same
+    page/DPI are instant.
     """
     try:
         import fitz
@@ -312,6 +317,24 @@ def rasterize_pdf_page(
 
     if not pdf_path.exists():
         return None
+
+    # --- disk cache lookup ---------------------------------------------------
+    cache_path: Optional[Path] = None
+    if cache_dir is not None:
+        pdf_hash = hashlib.md5(str(pdf_path.resolve()).encode()).hexdigest()[:6]
+        fname = f"{pdf_path.stem}_p{page_index}_{dpi}dpi_{pdf_hash}.npy"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / fname
+        if cache_path.exists():
+            try:
+                arr = np.load(str(cache_path))
+                img = Image.fromarray(arr)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG", optimize=False)
+                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                return f"data:image/png;base64,{b64}"
+            except Exception:
+                pass  # fall through to re-rasterize
 
     try:
         doc = fitz.open(str(pdf_path))
@@ -324,9 +347,17 @@ def rasterize_pdf_page(
         mat = fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat, alpha=False)
 
-        # Convert to PIL Image
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         doc.close()
+
+        # --- write disk cache ------------------------------------------------
+        if cache_path is not None:
+            try:
+                tmp_path = cache_path.with_suffix(".tmp.npy")
+                np.save(str(tmp_path), np.array(img))
+                tmp_path.replace(cache_path)
+            except Exception:
+                pass
 
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=False)

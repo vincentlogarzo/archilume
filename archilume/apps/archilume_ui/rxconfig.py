@@ -1,8 +1,11 @@
+import os
+
 import reflex as rx
 from reflex.plugins import SitemapPlugin
 
 config = rx.Config(
     app_name="archilume_ui",
+    api_url=os.environ.get("API_URL", "http://localhost:8000"),
     plugins=[SitemapPlugin()],
     tailwind={
         "theme": {

@@ -103,8 +103,8 @@ def _top_toolbar() -> rx.Component:
             align="center", gap="4px",
         ),
         _toolbar_btn("undo", "Undo", "Ctrl+Z", on_click=EditorState.undo),
-        _toolbar_btn("expand", "Fit", "F", on_click=EditorState.fit_zoom),
-        _toolbar_btn("zoom-in", "Reset Zoom", "R", on_click=EditorState.reset_zoom),
+        _toolbar_btn("expand", "Fit (F)", on_click=EditorState.fit_zoom),
+        _toolbar_btn("zoom-in", "Reset Zoom (R)", on_click=EditorState.reset_zoom),
         _toolbar_btn("move", "Pan (middle-mouse)"),
         align="center",
         style={"padding": "4px 8px", "gap": "4px", "height": "36px"},
@@ -232,19 +232,14 @@ def _render_room(room: dict) -> rx.Component:
     Font sizes scale with EditorState.annotation_scale via label_font_size / df_font_size.
     Stroke width scales inversely with zoom_level via EditorState.room_stroke_width.
     """
-    # For DIV rooms: a clipPath containing the same polygon clips the stroke to
-    # the interior only — true inset stroke effect so dashes sit on the parent
-    # boundary rather than bleeding outside it.
-    clip_id = "div-clip-" + room["idx"].to(str)
     return rx.fragment(
-        # DIV branch: defs + clipped dashed polygon
         rx.cond(
             room["is_div"],
-            rx.fragment(
+            rx.el.svg.g(
                 rx.el.svg.defs(
                     rx.el.svg.clip_path(
                         rx.el.polygon(points=room["vertices_str"]),
-                        custom_attrs={"id": clip_id},
+                        custom_attrs={"id": "clip-div-" + room["idx"].to(str)},
                     ),
                 ),
                 rx.el.polygon(
@@ -254,9 +249,9 @@ def _render_room(room: dict) -> rx.Component:
                     stroke_width=EditorState.room_stroke_width,
                     stroke_dasharray="6,3",
                     opacity="0.7",
-                    cursor="pointer",
-                    on_click=EditorState.select_room(room["idx"]),
-                    custom_attrs={"clip-path": "url(#" + clip_id + ")"},
+                    cursor=rx.cond(EditorState.df_placement_mode, "crosshair", "pointer"),
+                    on_click=lambda e: EditorState.room_or_stamp_click(room["idx"], e),
+                    custom_attrs={"clip-path": "url(#clip-div-" + room["idx"].to(str) + ")"},
                 ),
             ),
             # Non-DIV branch: normal solid polygon
@@ -265,8 +260,8 @@ def _render_room(room: dict) -> rx.Component:
                 fill=rx.cond(room["selected"], COLORS["room_fill_selected"], COLORS["room_fill_unselected"]),
                 stroke=rx.cond(room["selected"], COLORS["room_stroke_selected"], COLORS["room_stroke_unselected"]),
                 stroke_width=EditorState.room_stroke_width,
-                cursor="pointer",
-                on_click=EditorState.select_room(room["idx"]),
+                cursor=rx.cond(EditorState.df_placement_mode, "crosshair", "pointer"),
+                on_click=EditorState.room_or_stamp_click(room["idx"]),
             ),
         ),
         # Room name label — suppressed for CIRC rooms
@@ -318,20 +313,33 @@ def _render_edit_handle(vert: dict) -> rx.Component:
 
 
 def _render_stamp(stamp: dict) -> rx.Component:
-    """Render a DF% stamp dot + value."""
+    """Render a DF% stamp dot + label (matching matplotlib editor style)."""
     return rx.fragment(
+        # Cyan dot at stamped pixel
         rx.el.circle(
             cx=stamp["x"].to(str),
             cy=stamp["y"].to(str),
             r="4",
             fill=COLORS["df_stamp"],
         ),
-        rx.el.text(
-            stamp["value"].to(str) + "%",
+        # Background rect for readability
+        rx.el.rect(
             x=stamp["x"].to(str),
-            y=stamp["y"].to(str),
-            fill=COLORS["df_stamp"],
-            font_size="9",
+            y=(stamp["y"] - 16).to(str),
+            width="80",
+            height="22",
+            rx="3",
+            fill="#222222",
+            opacity="0.8",
+            style={"pointer_events": "none"},
+        ),
+        # DF value + pixel coords label
+        rx.el.text(
+            "DF:" + stamp["value"].to(str) + "% px(" + stamp["px"].to(str) + "," + stamp["py"].to(str) + ")",
+            x=(stamp["x"] + 4).to(str),
+            y=(stamp["y"] - 5).to(str),
+            fill="white",
+            font_size="8",
             font_family="DM Mono, monospace",
             dominant_baseline="middle",
             style={"pointer_events": "none"},
@@ -685,6 +693,34 @@ def _svg_canvas() -> rx.Component:
             # DF stamps
             rx.foreach(EditorState.current_hdr_stamps, _render_stamp),
 
+            # DF cursor tag — follows mouse when placement mode is active
+            rx.cond(
+                EditorState.df_cursor_label != "",
+                rx.fragment(
+                    rx.el.rect(
+                        x=(EditorState.mouse_x + 12).to(str),
+                        y=(EditorState.mouse_y - 20).to(str),
+                        width="120",
+                        height="18",
+                        rx="3",
+                        fill="#222222",
+                        opacity="0.85",
+                        style={"pointer_events": "none"},
+                    ),
+                    rx.el.text(
+                        EditorState.df_cursor_label,
+                        x=(EditorState.mouse_x + 16).to(str),
+                        y=(EditorState.mouse_y - 8).to(str),
+                        fill="white",
+                        font_size="10",
+                        font_family="DM Mono, monospace",
+                        dominant_baseline="middle",
+                        style={"pointer_events": "none"},
+                    ),
+                ),
+                rx.fragment(),
+            ),
+
             id="editor-svg",
             custom_attrs={
                 "viewBox": EditorState.svg_viewbox,
@@ -818,9 +854,29 @@ def _tab_placeholder(title: str, description: str, icon_tag: str) -> rx.Componen
 
 def viewport() -> rx.Component:
     return rx.flex(
-        # Pre-Simulation Checks — current HDR/AOI editor
+        # Pre-Simulation Checks — room boundary editing (no HDR viewing)
         rx.cond(
             EditorState.active_tab == "pre_simulation",
+            _tab_placeholder(
+                "Pre-Simulation Checks",
+                "Room boundary editing, AOI setup, and simulation preparation tools.",
+                "ruler",
+            ),
+            rx.fragment(),
+        ),
+        # Simulation Manager
+        rx.cond(
+            EditorState.active_tab == "simulation",
+            _tab_placeholder(
+                "Simulation Manager",
+                "Connect to GCP VM, launch simulations, and stream results back to the project directory.",
+                "cloud-cog",
+            ),
+            rx.fragment(),
+        ),
+        # Results Viewer — HDR/AOI editor
+        rx.cond(
+            EditorState.active_tab == "results",
             rx.flex(
                 _top_toolbar(),
                 rx.flex(
@@ -837,36 +893,6 @@ def viewport() -> rx.Component:
                 _progress_bar(),
                 direction="column",
                 style={"flex": "1", "overflow": "hidden"},
-            ),
-            rx.fragment(),
-        ),
-        # Model Validation
-        rx.cond(
-            EditorState.active_tab == "model_validation",
-            _tab_placeholder(
-                "Model Validation",
-                "AcceleradRT preview, simulation boundary checks, and cleanup tools.",
-                "shield-check",
-            ),
-            rx.fragment(),
-        ),
-        # Simulation Manager
-        rx.cond(
-            EditorState.active_tab == "simulation",
-            _tab_placeholder(
-                "Simulation Manager",
-                "Connect to GCP VM, launch simulations, and stream results back to the project directory.",
-                "cloud-cog",
-            ),
-            rx.fragment(),
-        ),
-        # Results Viewer
-        rx.cond(
-            EditorState.active_tab == "results",
-            _tab_placeholder(
-                "Results Viewer",
-                "View HDR/TIFF results as they arrive, daylight factor analysis, and compliance reports.",
-                "bar-chart-3",
             ),
             rx.fragment(),
         ),

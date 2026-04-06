@@ -32,20 +32,6 @@ def _action_row(icon: str, label: str, colour: str = "", on_click=None) -> rx.Co
     )
 
 
-def _model_validation() -> rx.Component:
-    return _card(
-        "Model Validation", "320px",
-        _action_row("zap", "AcceleratedRT Preview", COLORS["accent"], on_click=EditorState.open_accelerad_modal),
-        _action_row("scan-search", "Preview simulation boundary checks"),
-        _action_row("brush", "Cleaning tools"),
-        rx.box(
-            rx.text("Done here before Sun Merger", style={
-                "font_family": FONT_MONO, "font_size": "10px", "color": COLORS["accent2"],
-            }),
-            style={"background": "#eef4fe", "border_radius": "4px", "padding": "6px 8px", "margin": "6px 8px"},
-        ),
-    )
-
 
 def _simulation_manager() -> rx.Component:
     return _card(
@@ -186,7 +172,7 @@ def _room_inspector() -> rx.Component:
 
 def bottom_row() -> rx.Component:
     return rx.flex(
-        _model_validation(), _simulation_manager(), _floor_plan_controls(), _room_inspector(),
+        _simulation_manager(), _floor_plan_controls(), _room_inspector(),
         gap="8px",
         style={"padding": "14px", "min_height": "160px", "overflow_x": "auto"},
         background=COLORS["sidebar"],

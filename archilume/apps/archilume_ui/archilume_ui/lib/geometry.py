@@ -314,6 +314,70 @@ def _find_edge_for_point(
     return None
 
 
+def inset_polygon(vertices: list[list[float]], amount: float) -> list[list[float]]:
+    """Return a copy of the polygon with each vertex moved inward by `amount` pixels.
+
+    Uses per-vertex bisector inset: each vertex is shifted along the average
+    inward normal of its two adjacent edges.  Works for convex polygons and
+    reasonably well for mildly concave ones.
+    """
+    n = len(vertices)
+    if n < 3:
+        return vertices
+
+    # Ensure counter-clockwise winding (positive area) so "inward" is correct
+    area = 0.0
+    for i in range(n):
+        x0, y0 = vertices[i]
+        x1, y1 = vertices[(i + 1) % n]
+        area += x0 * y1 - x1 * y0
+    if area < 0:
+        vertices = list(reversed(vertices))
+
+    result = []
+    for i in range(n):
+        xp, yp = vertices[(i - 1) % n]
+        xc, yc = vertices[i]
+        xn, yn = vertices[(i + 1) % n]
+
+        # Inward normals of the two edges meeting at this vertex
+        # Edge prev→cur: normal pointing inward (leftward for CCW) = (dy, -dx) normalised
+        dx1, dy1 = xc - xp, yc - yp
+        l1 = math.hypot(dx1, dy1)
+        if l1 < 1e-10:
+            n1x, n1y = 0.0, 0.0
+        else:
+            n1x, n1y = dy1 / l1, -dx1 / l1
+
+        # Edge cur→next
+        dx2, dy2 = xn - xc, yn - yc
+        l2 = math.hypot(dx2, dy2)
+        if l2 < 1e-10:
+            n2x, n2y = 0.0, 0.0
+        else:
+            n2x, n2y = dy2 / l2, -dx2 / l2
+
+        # Bisector direction (average of the two normals)
+        bx = n1x + n2x
+        by = n1y + n2y
+        bl = math.hypot(bx, by)
+        if bl < 1e-10:
+            result.append([xc, yc])
+            continue
+
+        # Scale so the inset distance measured perpendicularly to each edge is `amount`
+        # dot(bisector_unit, n1) = cos(half-angle); divide by that to get correct offset
+        cos_half = (bx * n1x + by * n1y) / bl
+        if abs(cos_half) < 1e-6:
+            scale = amount
+        else:
+            scale = amount / cos_half
+
+        result.append([xc + (bx / bl) * scale, yc + (by / bl) * scale])
+
+    return result
+
+
 def polygon_area(vertices: list[list[float]]) -> float:
     """Compute signed area of polygon (positive = CCW)."""
     n = len(vertices)

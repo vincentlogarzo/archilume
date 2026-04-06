@@ -10,8 +10,9 @@
   //   "image": "ghcr.io/<your-org>/archilume-dev:latest"
   // and remove the "build" block entirely.
   "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
+    "dockerfile": "../Dockerfile",
+    "context": "..",
+    "target": "archilume-dev"
   },
 
   // postCreateCommand runs AFTER the container is created, every time.

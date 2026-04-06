@@ -30,7 +30,9 @@ _FONTS_PREVIEW_URL = (
 )
 
 
-# Prevent browser pinch-zoom and page scroll-zoom; canvas handles its own wheel events
+# Prevent browser pinch-zoom and page scroll-zoom; canvas handles its own wheel events.
+# Also blocks keydown propagation when an input/textarea/select is focused so that
+# window_event_listener does not fire shortcuts while the user is typing.
 _ZOOM_GUARD_SCRIPT = rx.script("""
 (function() {
     // Block Ctrl+wheel (pinch) everywhere — no pinch zoom anywhere in the app
@@ -44,52 +46,44 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
     window.addEventListener('touchmove', function(e) {
         if (e.touches.length > 1) e.preventDefault();
     }, { passive: false });
+
+    // Stop keydown propagation when focus is inside an input so window_event_listener
+    // does not trigger editor shortcuts while the user is typing in a field.
+    window.addEventListener('keydown', function(e) {
+        var tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' ||
+            (document.activeElement && document.activeElement.isContentEditable)) {
+            e.stopImmediatePropagation();
+        }
+    }, { capture: true });
 })();
 """)
 
 
 # Global keyboard handler — captures keys not handled by input elements
-_KEYBOARD_SCRIPT = rx.script("""
-(function() {
-    function dispatch(event, payload) {
-        if (typeof window.applyEvent === 'function') {
-            window.applyEvent(event, payload);
-        }
-    }
-
-    document.addEventListener('keydown', function(e) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-        if (e.ctrlKey && e.key === 'z') { e.preventDefault(); dispatch('editor_state.undo', {}); return; }
-        if (e.ctrlKey && e.key === 'a') { e.preventDefault(); dispatch('editor_state.select_all_rooms', {}); return; }
-        if (e.ctrlKey && e.key === 'r') { e.preventDefault(); dispatch('editor_state.rotate_overlay_90', {}); return; }
-        if (e.shiftKey && e.key === 'S') { e.preventDefault(); dispatch('editor_state.force_save', {}); return; }
-        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); dispatch('editor_state.delete_hovered_vertex', {}); return; }
-        if (e.key.length === 1 || e.key === 'Escape' || e.key.startsWith('Arrow')) {
-            e.preventDefault();
-            if (document.activeElement && document.activeElement !== document.body) {
-                document.activeElement.blur();
-            }
-            dispatch('editor_state.handle_key', {key: e.key});
-        }
-    });
-})();
-""")
 
 
 def index() -> rx.Component:
     return rx.box(
         _ZOOM_GUARD_SCRIPT,
-        _KEYBOARD_SCRIPT,
         _DEBUG_SCRIPT,
+        rx.window_event_listener(on_key_down=EditorState.handle_key_event),
         sidebar(),
         rx.flex(
             header(),
             rx.flex(
                 project_tree(),
-                viewport(),
+                rx.flex(
+                    rx.flex(
+                        viewport(),
+                        style={"flex": "1", "overflow": "hidden"},
+                    ),
+                    bottom_row(),
+                    direction="column",
+                    style={"flex": "1", "overflow": "hidden"},
+                ),
                 style={"flex": "1", "overflow": "hidden"},
             ),
-            bottom_row(),
             direction="column",
             style={
                 "margin_left": SIDEBAR_WIDTH, "height": "100vh",
