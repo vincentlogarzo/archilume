@@ -45,16 +45,79 @@ def _hdr_row(node: dict) -> rx.Component:
     )
 
 
-def _room_row(node: dict) -> rx.Component:
-    return rx.flex(
-        # indent spacer
-        rx.box(style={"width": node["indent"], "flex_shrink": "0"}),
-        rx.icon(
-            tag="chevron-right",
-            size=11,
-            style={"flex_shrink": "0",
-                   "color": rx.cond(node["selected"], COLORS["accent"], COLORS["text_dim"])},
+
+_LINE_COLOR = COLORS["text_dim"]
+_LINE_OPACITY = "0.4"
+# Horizontal midpoint within the connector column where the vertical line sits
+_VX = "6px"
+# Width of the connector column for parent rows; children add a second column
+_COL_W = "16px"
+
+
+def _connector(node: dict) -> rx.Component:
+    """
+    Classic tree connector rendered from the node's precomputed `connector`
+    ("T" or "L") and `parent_continues` fields.
+
+    Layout (two-column for child_room, one-column for parent_room):
+
+      col-A (16px): parent's vertical continuation line (child_room only, when parent_continues)
+      col-B (16px): own vertical + horizontal branch
+
+    For "T": vertical runs full height (continues to next sibling).
+    For "L": vertical runs top-half only (last sibling, line stops here).
+    """
+    line_style_base = {
+        "position": "absolute",
+        "background": _LINE_COLOR,
+        "opacity": _LINE_OPACITY,
+    }
+
+    # col-B: own connector — vertical segment height depends on T vs L
+    own_vert_h = rx.cond(node["connector"] == "T", "100%", "50%")
+
+    col_b = rx.box(
+        # vertical segment
+        rx.box(style={**line_style_base,
+                      "left": _VX, "top": "0",
+                      "width": "1px", "height": own_vert_h}),
+        # horizontal branch to label (always at row midpoint)
+        rx.box(style={**line_style_base,
+                      "left": _VX, "top": "50%",
+                      "width": _VX, "height": "1px"}),
+        style={"position": "relative", "width": _COL_W,
+               "flex_shrink": "0", "align_self": "stretch"},
+    )
+
+    # col-A: parent continuation — always rendered for child rows, but line is
+    # hidden via display:none when parent_continues is False.
+    # Using display toggling avoids rx.cond producing identical CSS classes for
+    # the two branches, which caused Reflex to always render the spacer variant.
+    col_a = rx.box(
+        rx.box(style={**line_style_base,
+                      "left": _VX, "top": "0",
+                      "width": "1px", "height": "100%",
+                      "display": rx.cond(node["parent_continues"] == "1", "block", "none")}),
+        style={"position": "relative", "width": _COL_W,
+               "flex_shrink": "0", "align_self": "stretch"},
+    )
+
+    return rx.cond(
+        node["node_type"] == "child_room",
+        rx.flex(
+            col_a,
+            col_b,
+            style={"flex_shrink": "0", "align_self": "stretch"},
         ),
+        # parent_room — single col_b only
+        col_b,
+    )
+
+
+def _room_row(node: dict) -> rx.Component:
+    connector = _connector(node)
+    return rx.flex(
+        connector,
         rx.text(
             node["label"],
             style={**_FONT,
@@ -78,7 +141,7 @@ def _room_row(node: dict) -> rx.Component:
         gap="5px",
         style={
             "height": _ROW_H,
-            "padding": "0 8px",
+            "padding": "0 8px 0 8px",
             "cursor": "pointer",
             "flex_shrink": "0",
         },
@@ -106,13 +169,24 @@ def _tree_header() -> rx.Component:
             color=COLORS["text_dim"],
         ),
         rx.spacer(),
+        rx.tooltip(
+            rx.icon_button(
+                rx.icon(tag="layers", size=12),
+                variant="ghost", size="1",
+                on_click=EditorState.toggle_image_variant,
+                style={"color": COLORS["text_dim"], "flex_shrink": "0"},
+            ),
+            content="Toggle Image Layers [T]", side="bottom",
+        ),
+        rx.box(style={"width": "1px", "height": "16px", "background": COLORS["panel_bdr"], "flex_shrink": "0"}),
         rx.button(
             rx.cond(EditorState.all_rooms_selected, "Unselect All", "Select All"),
             variant="ghost", size="1",
             on_click=EditorState.select_all_rooms,
             style={**_FONT, "font_size": "9px", "white_space": "nowrap",
-                   "color": COLORS["text_dim"], "padding": "0 3px", "flex_shrink": "0"},
+                   "color": COLORS["text_dim"], "padding": "0 4px", "flex_shrink": "0"},
         ),
+        rx.box(style={"width": "1px", "height": "16px", "background": COLORS["panel_bdr"], "flex_shrink": "0"}),
         rx.tooltip(
             rx.icon_button(
                 rx.icon(tag="chevrons-down-up", size=12),
@@ -132,8 +206,8 @@ def _tree_header() -> rx.Component:
             content="Expand All", side="bottom",
         ),
         align="center",
-        style={"padding": "0 4px", "flex_shrink": "0", "gap": "4px",
-               "height": "36px", "overflow": "hidden"},
+        style={"padding": "0 6px", "flex_shrink": "0", "gap": "6px",
+               "height": "36px"},
         border_bottom="1px solid", border_color=COLORS["panel_bdr"],
     )
 

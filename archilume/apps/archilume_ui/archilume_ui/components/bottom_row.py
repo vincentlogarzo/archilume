@@ -56,6 +56,14 @@ def _simulation_manager() -> rx.Component:
 
 
 def _floor_plan_controls() -> rx.Component:
+    btn_style = {
+        "font_family": FONT_MONO, "font_size": "11px",
+        "padding": "3px 8px", "cursor": "pointer", "flex": "1",
+        "display": "flex", "align_items": "center", "gap": "5px",
+        "_hover": {"background": COLORS["hover"]},
+    }
+    row_style = {"display": "flex", "gap": "0px", "padding": "3px 8px"}
+
     return rx.box(
         rx.text(
             "Floor Plan Underlay",
@@ -63,18 +71,60 @@ def _floor_plan_controls() -> rx.Component:
             color=COLORS["text_dim"],
             border_color=COLORS["panel_bdr"],
         ),
-        rx.box(
-            rx.text("PDF Resolution", style={
-                "font_family": FONT_MONO, "font_size": "9px", "text_transform": "uppercase",
-                "color": COLORS["text_dim"], "margin_bottom": "4px",
-            }),
-            rx.radio_group(["72", "100", "150", "200", "300"], default_value="150",
-                           direction="row", spacing="3", on_change=EditorState.set_overlay_dpi,
-                           style={"font_family": FONT_MONO, "font_size": "11px"}),
-            style={"padding": "6px 8px"},
+        # Row 1: Show Floor Plan | Change Floor Plan Page
+        rx.flex(
+            rx.flex(
+                rx.icon(tag=rx.cond(EditorState.overlay_has_pdf, "layout-panel-top", "file-up"), size=13),
+                rx.text(
+                    rx.cond(EditorState.overlay_has_pdf, "Show Floor Plan", "Attach Floor Plan"),
+                    style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "5px"},
+                ),
+                on_click=EditorState.toggle_overlay,
+                style={**btn_style, "border_right": f"1px solid {COLORS['panel_bdr']}"},
+                color=COLORS["text_dim"],
+            ),
+            rx.flex(
+                rx.icon(tag="refresh-cw", size=13),
+                rx.text("Change Page", style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "5px"}),
+                on_click=EditorState.cycle_overlay_page,
+                style=btn_style,
+                color=COLORS["text_dim"],
+            ),
+            style=row_style,
         ),
-        _action_row("rotate-ccw", "Reset Level Alignment", on_click=EditorState.reset_level_alignment),
-        _action_row("layers-2", "Switch Floor Plan", on_click=EditorState.toggle_overlay),
+        # Row 2: PDF Resolution | Reset Level Alignment
+        rx.flex(
+            rx.flex(
+                rx.radio_group(["72", "100", "150", "200", "300"], default_value="150",
+                               direction="row", spacing="2", on_change=EditorState.set_overlay_dpi,
+                               style={"font_family": FONT_MONO, "font_size": "11px"}),
+                style={**btn_style, "border_right": f"1px solid {COLORS['panel_bdr']}"},
+                color=COLORS["text_dim"],
+            ),
+            rx.flex(
+                rx.icon(tag="rotate-ccw", size=13),
+                rx.text("Reset Alignment", style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "5px"}),
+                on_click=EditorState.reset_level_alignment,
+                style=btn_style,
+                color=COLORS["text_dim"],
+            ),
+            style=row_style,
+        ),
+        # Row 3: Adjust Plan Mode (toggle, full width)
+        rx.flex(
+            rx.flex(
+                rx.icon(tag="maximize", size=13),
+                rx.text("Adjust Plan Mode", style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "5px"}),
+                on_click=EditorState.toggle_overlay_align,
+                style={
+                    **btn_style,
+                    "flex": "1",
+                    "background": rx.cond(EditorState.overlay_align_mode, COLORS["btn_on"], "transparent"),
+                },
+                color=rx.cond(EditorState.overlay_align_mode, COLORS["accent"], COLORS["text_dim"]),
+            ),
+            style=row_style,
+        ),
         style={**PANEL_CARD, "flex": "1", "min_width": "220px"},
         background=COLORS["panel_bg"],
         border="1px solid", border_color=COLORS["panel_bdr"],

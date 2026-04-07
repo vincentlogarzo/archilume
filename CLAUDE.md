@@ -1,180 +1,134 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Platform & Environment
 
-**This project runs on both Windows and Linux.** Before running any terminal command, detect the OS:
+**Runs on Windows and Linux.** Before any terminal command, detect OS:
 
 ```bash
 python -c "import sys; print(sys.platform)"
-# win32  → Windows (use PowerShell syntax, backslash paths)
-# linux  → Linux / dev container (use bash syntax, forward slashes)
+# win32 → PowerShell syntax | linux → bash syntax
 ```
 
-**Never assume the OS.** Always run the detection command above before the first terminal command in any session.
+- **Windows**: PowerShell commands. `rtpict` multi-core and `rsync` unavailable. AcceleradRT (GPU) works natively.
+- **Linux (dev container)**: All tools available including `rtpict`. Recommended setup: `.devcontainer/` bundles Python 3.12, Radiance, Accelerad.
+- **Package manager**: Always `uv` (`uv add`, `uv sync`, `uv run`) — never `pip`.
+- **Paths**: Always `pathlib.Path` in Python. UTF-8 for file I/O.
 
-Platform-specific rules:
-
-- **Windows**: Use PowerShell-compatible commands. Avoid Unix-only tools (`rsync`, `rtpict` multi-core).
-- **Linux**: Bash syntax is fine. All Radiance/Accelerad tools available in dev container.
-- Use `pathlib.Path` in Python code (cross-platform).
-- Handle Unicode encoding issues (e.g., UTF-8 for file I/O).
-
-**This project uses `uv` for Python dependency management, NOT pip.** Always use `uv add`, `uv sync`, and `uv run` — never pip.
+**Current environment:** Native Windows (not dev container)
 
 ## Project Overview
 
-Archilume is a Python framework for automated Radiance-based architectural daylight and sunlight simulations. It converts 3D CAD models (OBJ/MTL, IFC) into physically accurate lighting analyses with compliance reporting.
+Archilume is a Python framework for Radiance-based architectural daylight and sunlight simulations. Converts OBJ/MTL and IFC models into physically accurate lighting analyses with compliance reporting.
 
 ## Common Commands
 
 ```bash
-# Install dependencies (uses uv package manager)
-uv sync
-
-# Run all tests
-pytest
-
-# Run a single test file
-pytest tests/test_sky_generator.py
-
-# Run example workflows
-python examples/sunlight_access_workflow.py
-python examples/daylight_workflow_iesve.py
-
-# Launch interactive editors
-python examples/launch_obj_editor.py
-python examples/launch_hdr_editor.py
-
-# Launch Reflex web UI
-cd archilume/apps/archilume_ui && reflex run   # opens http://localhost:3000
-# or via launcher script:
-python examples/launch_archilume_ui.py
+uv sync                                          # install dependencies
+pytest                                           # run all tests
+python examples/sunlight_access_workflow.py      # example workflow
+python examples/launch_archilume_ui.py           # launch Reflex UI
+cd archilume/apps/archilume_ui && uv run reflex run  # direct Reflex launch
 ```
 
 ## Architecture
 
-### Simulation Pipeline
+**Pipeline:** Geometry → Octree → Sky + Views → Rendering → Post-Processing → Reports
 
-The core flow is: **Geometry → Octree → Sky + Views → Rendering → Post-Processing → Reports**
+1. **Geometry** (`objs2octree.py`): OBJ/MTL → Radiance RAD → octree via `obj2rad`/`oconv`. `MtlConverter` handles MTL → Radiance materials.
+2. **Sky** (`sky_generator.py`): Time-series sunny skies (sunlight access) or CIE overcast (daylight factor) via `gensky`.
+3. **Views/AOI** (`view_generator.py`): Parses room boundaries CSV, generates orthographic plan views (.vp) and AOI boundary files.
+4. **Rendering** (`rendering_pipelines.py`):
+   - `SunlightRenderer`: overcast baseline → sunny series → HDR compositing (`pcomb`) → TIFF. CPU (`rpict`) or GPU (`accelerad_rpict`).
+   - `DaylightRenderer`: `rtpict` (Linux only), falsecolor post-processing, contour overlays.
+5. **Post-processing**: `Hdr2Wpd` extracts illuminance via AOI masks. `Tiff2Animation` stamps metadata, creates GIF/APNG.
+6. **Reporting**: `Wpd2Xlsx` generates Excel reports with compliance metrics.
 
-1. **Geometry conversion** (`objs2octree.py`): OBJ/MTL files → Radiance RAD → compiled octree (.oct) via `obj2rad` and `oconv`. `MtlConverter` handles Wavefront MTL → Radiance material translation using primitives from `radiance_materials.py`.
-2. **Sky generation** (`sky_generator.py`): Produces time-series sunny skies (sunlight access) or CIE overcast skies (daylight factor) via `gensky`.
-3. **View/AOI generation** (`view_generator.py`): Parses room boundaries CSV, computes building extents, generates orthographic plan views (.vp) and AOI boundary files per room/level.
-4. **Rendering** (`rendering_pipelines.py`): Two renderer classes:
-   - `SunlightRenderer`: Multi-phase (overcast indirect baseline → sunny direct series → HDR compositing via `pcomb` → TIFF conversion). Supports CPU (`rpict`) and GPU (`accelerad_rpict`).
-   - `DaylightRenderer`: Sequential rendering with `rtpict` (Linux multi-core only), falsecolor post-processing, contour overlays.
-5. **Post-processing**: `Hdr2Wpd` extracts illuminance from HDR using AOI polygon masks. `Tiff2Animation` stamps metadata, draws AOI overlays, creates GIF/APNG animations.
-6. **Reporting**: `Wpd2Xlsx` generates formatted Excel reports with pivot summaries and compliance metrics.
+**Key modules:**
 
-### Workflow Orchestration
+- `config.py`: Path management, tool resolution, `RAYPATH`, `WORKERS`. Override via `RADIANCE_ROOT`/`ACCELERAD_ROOT`.
+- `utils.py`: `execute_new_radiance_commands` (parallel), `smart_cleanup()`, geometry helpers, HDR utilities.
+- `GCPVMManager`: GCP VM lifecycle. Config at `~/.archilume_gcp_config.json`. SSH `User` field must match VM's provisioned username — do not assume or change it.
 
-`archilume/workflows/` package contains `SunlightAccessWorkflow` (in `sunlight_access_workflow.py`) with a nested `Inputs` validator class. The `run()` method orchestrates the full pipeline. Example scripts in `examples/` show how to configure and launch workflows.
+## Launching the Reflex App
 
-### Key Infrastructure
+Start in background — do not ask the user to do it:
 
-- **`config.py`**: Centralized path management and environment detection. Resolves Radiance/Accelerad tool paths (platform-aware: Windows vs Linux, bundled vs system). Manages `RAYPATH`, worker counts, project directories (`inputs/`, `outputs/`). Override tool paths via `RADIANCE_ROOT` and `ACCELERAD_ROOT` env vars.
-- **`utils.py`**: Parallel command execution (`execute_new_radiance_commands`), timing (`PhaseTimer`/`Timekeeper`), geometry calculations (centroid, bounding box), HDR helpers, `smart_cleanup()` for output management, CSV conversions.
-- **Interactive editors**: `ObjAoiEditor` (matplotlib-based, uses `MeshSlicer` for 3D→2D via PyVista) and `archilume_ui` (Reflex web app at `archilume/apps/archilume_ui/`). Both support hierarchical room naming and export boundaries for the pipeline.
+```bash
+cd c:/Projects/archilume/archilume/apps/archilume_ui && uv run reflex run &
+```
 
-### Cloud Integration
+Poll until ready (repeat until `200`):
 
-`GCPVMManager` handles GCP VM lifecycle (creation, SSH, Docker deployment). Config stored at `~/.archilume_gcp_config.json`.
+```bash
+sleep 15 && curl -s -o /dev/null -w "%{http_code}" http://localhost:3000
+```
 
-## GCP / Infrastructure
+Playwright uses its own sandboxed Chromium — not the user's browser.
 
-When updating SSH config for GCP VMs with new IPs, ensure the `User` field matches the VM's system username (typically set during VM provisioning). Do not assume or change the username without explicit instruction.
+## Playwright "Browser Already In Use" Fix
+
+When `browser_navigate` or `browser_close` returns `Error: Browser is already in use for ...mcp-chrome-...`, the Playwright MCP server has a stale session lock from a prior conversation.
+
+**Execute this recovery sequence automatically — do NOT ask the user to do any of these steps:**
+
+1. Call `browser_close` (it will also fail — that's expected, ignore the error).
+2. Run `sleep 2` via Bash.
+3. Call `browser_navigate` again. The MCP server re-initialises on the second attempt.
+
+Only if step 3 still fails: ask the user to run **Reload Window** (`Ctrl+Shift+P` → "Reload Window") in VS Code. This restarts all extension processes including the Playwright MCP server without closing VS Code.
+
+**Do NOT tell the user to restart VS Code.** Reload Window is enough and is non-disruptive.
 
 ## Post-Edit UI Verification
 
-After making changes to `archilume_ui` files, use the Playwright MCP tools to **functionally test** the changes, not just visually inspect them.
+After modifying `archilume_ui`, use Playwright MCP to **functionally test** changes.
 
-**Verification workflow:**
+1. Start the Reflex app if not running (see above).
+2. `browser_navigate` to `http://localhost:3000` — always call this, do not pre-check.
+3. `browser_snapshot` first to get element refs — never guess selectors.
+4. Interact with changed elements (click, fill, hover, key press).
+5. Screenshot after each interaction. Compare specifically: spacing, font sizes, exact colors, alignment, border-radius, shadows, interactive states.
+6. `browser_console_messages` — check for JS errors.
+7. **Minimum 2 comparison rounds** — screenshot → compare → fix → repeat. Stop only when no visible differences remain.
+8. Flush temp dir when done: `rm -rf .playwright-tmp/*`
 
-1. Navigate to `http://localhost:3000`
-2. Take a "before" screenshot if useful for comparison
-3. **Interact with the changed UI elements** — click buttons, fill forms, select options, press keys, hover elements — whatever is needed to exercise the specific change that was made
-4. Take screenshots after each meaningful interaction to confirm the expected behaviour
-5. Check `browser_console_messages` for JavaScript errors after interactions
-6. Report any issues (visual, functional, console errors) before marking the task complete
-7. After verification is complete, flush the temp directory: `rm -rf .playwright-tmp/*`
+**Key tools:** `browser_snapshot`, `browser_click`, `browser_fill_form`, `browser_press_key`, `browser_select_option`, `browser_hover`, `browser_take_screenshot`, `browser_console_messages`.
 
-**Examples of what to test:**
+**`browser_evaluate` syntax:** Always arrow functions — `() => { ... }`. No top-level `var`/`const`/`let`.
 
-- Button changed → click it, screenshot the result, check console for errors
-- Form field added → fill it with test data, submit, verify the state updates
-- Modal/dialog added → trigger it, screenshot it open, close it, screenshot it closed
-- Sidebar toggle changed → click toggle, verify panel shows/hides
-- Dropdown updated → open it, select an option, verify selection applies
+**Reflex SVG styles:** Use `window.getComputedStyle(element).fill` — not `element.getAttribute('fill')` (always returns `null`).
 
-**Key tools:** `browser_snapshot` (get interactive element refs), `browser_click`, `browser_fill_form`, `browser_press_key`, `browser_select_option`, `browser_hover`, `browser_take_screenshot`, `browser_console_messages`.
+## Reflex UI — Always Do First
 
-Always use `browser_snapshot` first to get element references before interacting — do not guess element selectors.
+Before writing any Reflex UI code, every session, no exceptions: **invoke the `frontend-design` skill**.
 
-All Playwright output (screenshots, snapshots, logs) is written to `.playwright-tmp/` which is gitignored. This data is ephemeral — only needed for Claude to review its work, then discarded.
+**If a reference image is provided:** match layout, spacing, typography, and color exactly. Use placeholder content where needed (`https://placehold.co/`). Do not improve or add to the design — just match it.
 
-This assumes the Reflex app is already running locally. If it is not running, ask the user to start it before verifying.
+**If no reference image:** design from scratch using the standards below.
 
-## Code Modification Rules
+## Reflex UI Design Standards
 
-When renaming files, classes, or modules, **only rename exactly what the user requests.** Do not rename related files or add suffixes unless explicitly asked.
+Target audience: architects and engineers. UI must feel precise and professional.
 
-## Workflow Expectations
-
-Before making code changes, briefly explain your approach and get confirmation. Do not start editing until the user agrees with the plan.
-
-## Git Workflow
-
-Only commit and push when explicitly instructed by the user. Do not commit or push automatically after completing a task.
-
-**Before every commit, scan all staged changes for sensitive information:**
-
-- API keys, tokens, secrets, or passwords (hardcoded or in config files)
-- Private keys or certificates (`.pem`, `.key`, `.p12`, etc.)
-- Cloud credentials or service account files (`.json` GCP/AWS/Azure credentials)
-- SSH private keys or known-hosts with internal IPs
-- `.env` files or any file containing `SECRET`, `PASSWORD`, `TOKEN`, `API_KEY` patterns
-- Internal hostnames, IP addresses, or infrastructure details that should not be public
-
-If any sensitive data is found, **stop and alert the user** before proceeding. Do not commit or push until the issue is resolved.
-
-## Units
-
-Always use SI units (metres, millimetres, kilograms, lux, etc.) in all discussions, code comments, and documentation. Never use imperial units (inches, feet, miles, etc.).
+- **Colors**: No default Tailwind palette (indigo-500 etc.). Derive a custom palette. Use radial gradients for depth; SVG noise for texture.
+- **Typography**: Never the same font for headings and body. Pair display/serif + clean sans. Headings: tight tracking (`-0.03em`). Body: generous line-height (`1.7`).
+- **Shadows & Depth**: Layered, color-tinted shadows (low opacity). Clear z-plane system: base → elevated → floating.
+- **Animations**: Only `transform` and `opacity`. Never `transition-all`. Spring-style easing.
+- **Interactive States**: Every clickable element needs hover, focus-visible, and active states — no exceptions.
+- **Images**: Gradient overlay (`from-black/60`) + `mix-blend-multiply` color treatment layer.
+- **Spacing**: Consistent tokens — not arbitrary Tailwind steps.
 
 ## Coding Conventions
 
-- **Paths**: Always use `pathlib.Path`. Reference `archilume.config` for standard project paths.
-- **Parallelism**: Use `utils.execute_new_radiance_commands` for Radiance tool parallelism. Respect `config.WORKERS` limits.
-- **Platform**: `rtpict` (multi-core rendering) is Linux-only (available in the dev container). Be mindful of Windows/Linux differences throughout.
-- **Reflex apps**: Run `reflex run` from the app directory (e.g. `archilume/apps/archilume_ui/`). Use `uv run reflex run` if not in the activated venv.
-- **Rendering classes**: Prefer `SunlightRenderer`/`DaylightRenderer` over calling Radiance binaries directly.
-- **Cleanup**: Use `utils.smart_cleanup()` to clear previous results based on changed parameters.
-- **Verification**: Check HDR outputs exist in `outputs/image/` before proceeding to post-processing.
-- **Imports**: All `import` statements must be placed at the top of the module. Never place imports inside functions or methods. Before adding an import, check if it already exists in the file. This applies equally to `import x as y` aliases — if you need `tk.Toplevel` etc., add `import tkinter as tk` at the top rather than inside the function. A partial existing import (e.g. `from tkinter import Tk`) does **not** satisfy the need for the full module namespace — add the missing top-level import instead of placing it inline.
+- **Imports**: All at top of module — never inside functions. Check before adding. `from tkinter import Tk` does not cover `tk.Toplevel` — add `import tkinter as tk` separately.
+- **Rendering**: Use `SunlightRenderer`/`DaylightRenderer` — don't call Radiance binaries directly.
+- **Parallelism**: `utils.execute_new_radiance_commands`. Respect `config.WORKERS`.
+- **Cleanup**: `utils.smart_cleanup()` before re-runs. Verify HDR outputs in `outputs/image/` before post-processing.
+- **Units**: SI only — metres, millimetres, lux. Never imperial.
 
-## Development Environment
+## Workflow & Git
 
-The recommended setup is the **Docker dev container** (`.devcontainer/`), which bundles Python 3.12, Radiance, and Accelerad. Native Windows setup requires manual Radiance installation and `uv sync` for Python dependencies.
-
-## Claude Code Instructions
-
-**Before giving platform-specific advice, determine the execution environment:**
-
-1. **Check the system context** — Note the OS (Windows/Linux/macOS) and current working directory
-2. **Verify container status** — Determine if running in dev container or native Windows
-3. **Audit all command suggestions** for platform compatibility:
-   - Use `pathlib.Path` and forward slashes in Python (cross-platform)
-   - Use PowerShell syntax on Windows (not Unix bash)
-   - Always recommend `uv` for package management (never `pip`)
-   - Flag Linux-only tools (`rtpict` multi-core, `rsync`) if on Windows
-   - Remember AcceleradRT works natively on Windows; `rtpict` requires Linux
-4. **Flag any platform clashes** before suggesting terminal commands
-
-**Current environment:** Native Windows (not dev container)
-
-**Tool availability by platform:**
-
-- **Native Windows**: Accelerad, AcceleradRT (GPU), basic Radiance tools
-- **Dev container (Linux)**: All tools bundled and optimized, including `rtpict` (multi-core rendering)
+- **Before code changes**: Briefly explain approach, get confirmation. Do not edit until agreed.
+- **Renaming**: Only rename exactly what the user requests — no related files or suffixes.
+- **Commits/pushes**: Only when explicitly instructed.
+- **Pre-commit scan**: Check for API keys, tokens, private keys, `.pem`/`.key`/`.p12`, GCP/AWS credential JSONs, `.env` files, internal IPs. Stop and alert if found.

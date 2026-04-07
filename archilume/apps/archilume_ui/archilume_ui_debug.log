@@ -1,0 +1,5 @@
+2026-04-07 20:17:45,019 [DEBUG] archilume_ui — Debug mode ON — trace cleared, fresh session
+2026-04-07 20:22:02,488 [DEBUG] archilume_ui — ▶ handle_key_event: key=r | modes: draw=False edit=False divider=False df_place=False overlay_align=False | selected_room=-1 hdr_idx=0
+2026-04-07 20:22:02,488 [DEBUG] archilume_ui —   → routing to: reset_zoom()
+2026-04-07 20:32:31,800 [DEBUG] archilume_ui — Debug mode ON — trace cleared, fresh session
+2026-04-08 08:04:22,419 [DEBUG] archilume_ui — Debug mode ON — trace cleared, fresh session

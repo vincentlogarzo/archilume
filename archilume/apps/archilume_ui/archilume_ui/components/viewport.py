@@ -49,18 +49,6 @@ def _top_toolbar() -> rx.Component:
             style={"font_family": FONT_MONO, "font_size": "11px",
                     "color": COLORS["text_pri"], "margin_left": "8px"},
         ),
-        # Variant toggle badge
-        rx.button(
-            EditorState.current_variant_label,
-            variant="outline", size="1",
-            on_click=EditorState.toggle_image_variant,
-            style={
-                "font_family": FONT_MONO, "font_size": "14px",
-                "margin_left": "6px",
-                "color": COLORS["accent"],
-                "border_color": COLORS["accent"],
-            },
-        ),
         # Index
         rx.text(
             EditorState.current_hdr_count,
@@ -122,14 +110,14 @@ def _top_toolbar() -> rx.Component:
 # ---------------------------------------------------------------------------
 
 def _overlay_align_panel() -> rx.Component:
-    def _field(label: str, step: float, default: float = 0, on_change=None):
+    def _field(label: str, step: str, value, on_change=None):
         return rx.flex(
-            rx.text(label, style={"font_family": FONT_MONO, "font_size": "14px",
+            rx.text(label, style={"font_family": FONT_MONO, "font_size": "11px",
                                    "color": COLORS["text_dim"], "width": "60px"}),
             rx.input(
                 type="number",
-                default_value=str(default),
-                step=str(step),
+                value=value,
+                step=step,
                 on_change=on_change,
                 style={"font_family": FONT_MONO, "font_size": "11px", "width": "80px"},
                 size="1",
@@ -140,22 +128,48 @@ def _overlay_align_panel() -> rx.Component:
     return rx.cond(
         EditorState.overlay_align_mode,
         rx.box(
-            rx.text("Overlay Alignment", style={
-                "font_family": FONT_MONO, "font_size": "14px",
-                "text_transform": "uppercase",
-                "padding": "6px 8px",
-            },
-            color=COLORS["text_dim"],
-            border_bottom="1px solid", border_color=COLORS["panel_bdr"],
+            rx.flex(
+                rx.text("Overlay Alignment", style={
+                    "font_family": FONT_MONO, "font_size": "11px",
+                    "text_transform": "uppercase",
+                    "color": COLORS["text_dim"],
+                    "flex": "1",
+                }),
+                rx.icon_button(
+                    rx.icon(tag="x", size=12),
+                    variant="ghost", size="1",
+                    on_click=EditorState.toggle_overlay_align,
+                    style={"color": COLORS["text_dim"]},
+                ),
+                align="center", gap="4px",
+                style={"padding": "6px 8px", "border_bottom": f"1px solid {COLORS['panel_bdr']}"},
             ),
             rx.flex(
-                _field("Offset X", 1, on_change=EditorState.set_overlay_offset_x),
-                _field("Offset Y", 1, on_change=EditorState.set_overlay_offset_y),
-                _field("Scale X", 0.01, 1.0, on_change=EditorState.set_overlay_scale_x),
-                _field("Scale Y", 0.01, 1.0, on_change=EditorState.set_overlay_scale_y),
-                _field("Alpha", 0.05, 0.6, on_change=EditorState.set_overlay_alpha),
+                _field("Offset X", "1", EditorState.overlay_offset_x_str,
+                       on_change=EditorState.set_overlay_offset_x),
+                _field("Offset Y", "1", EditorState.overlay_offset_y_str,
+                       on_change=EditorState.set_overlay_offset_y),
+                _field("Scale", "0.01", EditorState.overlay_scale_str,
+                       on_change=EditorState.set_overlay_scale),
+                _field("Transp.", "0.05", EditorState.overlay_alpha_str,
+                       on_change=EditorState.set_overlay_alpha),
+                _field("Rotate °", "1", EditorState.overlay_rotation_deg_str,
+                       on_change=EditorState.set_overlay_rotation_deg),
                 direction="column", gap="4px",
                 style={"padding": "8px"},
+            ),
+            rx.flex(
+                rx.icon_button(
+                    rx.icon(tag="rotate-ccw", size=12),
+                    rx.text("Reset", style={"font_family": FONT_MONO, "font_size": "10px",
+                                            "margin_left": "4px"}),
+                    variant="ghost", size="1",
+                    on_click=EditorState.reset_level_alignment,
+                    style={"color": COLORS["text_dim"], "width": "100%",
+                           "padding": "4px 8px", "cursor": "pointer",
+                           "_hover": {"background": COLORS["hover"]}},
+                ),
+                style={"border_top": f"1px solid {COLORS['panel_bdr']}"},
             ),
             style={
                 "position": "absolute",
@@ -163,7 +177,7 @@ def _overlay_align_panel() -> rx.Component:
                 "border_radius": "8px",
                 "box_shadow": "0 2px 8px rgba(0,0,0,0.08)",
                 "z_index": "10",
-                "min_width": "180px",
+                "min_width": "200px",
             },
             background=COLORS["panel_bg"],
             border="1px solid", border_color=COLORS["panel_bdr"],
@@ -188,6 +202,27 @@ def _zoom_indicator() -> rx.Component:
             "background": "rgba(255,255,255,0.8)",
             "padding": "2px 6px",
             "border_radius": "3px",
+        },
+    )
+
+
+def _pixel_info_tooltip() -> rx.Component:
+    """Floating tooltip that shows RGB values when zoomed in to pixel level."""
+    return rx.el.div(
+        id="pixel-info-tooltip",
+        style={
+            "display": "none",
+            "position": "absolute",
+            "pointer_events": "none",
+            "z_index": "1000",
+            "background": "rgba(30,30,30,0.92)",
+            "color": "#fff",
+            "font_family": FONT_MONO,
+            "font_size": "11px",
+            "padding": "4px 8px",
+            "border_radius": "4px",
+            "white_space": "nowrap",
+            "border": "1px solid rgba(255,255,255,0.15)",
         },
     )
 
@@ -224,12 +259,22 @@ def _progress_bar() -> rx.Component:
 # Room polygon renderer (used by rx.foreach)
 # ---------------------------------------------------------------------------
 
+_TEXT_STROKE_STYLE = {
+    "pointer_events": "none",
+    "paint_order": "stroke",
+    "stroke_linejoin": "round",
+}
+
+
 def _render_room(room: dict) -> rx.Component:
     """Render a single enriched room dict as SVG polygon + label + DF annotation.
 
     CIRC rooms: boundary only — labels and DF annotations suppressed (reduces clutter).
     DIV sub-rooms: dashed boundary at 60% opacity.
-    Font sizes scale with EditorState.annotation_scale via label_font_size / df_font_size.
+    Font sizes match the matplotlib editor hierarchy:
+      - DF area result (line 0): base 8.5, coloured by percentage, stroke outline
+      - DF threshold  (line 1): base 6.5, white, black stroke outline
+      - Room name:               base 6.5, white (accent when selected), black stroke outline
     Stroke width scales inversely with zoom_level via EditorState.room_stroke_width.
     """
     return rx.fragment(
@@ -264,35 +309,60 @@ def _render_room(room: dict) -> rx.Component:
                 on_click=EditorState.room_or_stamp_click(room["idx"]),
             ),
         ),
+        # DF line 0: area result (larger font, coloured by percentage) — suppressed for CIRC
+        rx.cond(
+            ~room["is_circ"] & room["has_df"] & (room["df_line_0"] != ""),
+            rx.el.text(
+                room["df_line_0"],
+                x=room["label_x"],
+                y=room["df_line_0_y"],
+                text_anchor="middle",
+                dominant_baseline="middle",
+                fill=room["df_line_0_color"],
+                font_size=EditorState.df_area_font_size,
+                font_weight=room["df_line_0_weight"],
+                font_family="DM Mono, monospace",
+                stroke=room["df_line_0_stroke"],
+                stroke_width=room["df_line_0_stroke_w"],
+                style=_TEXT_STROKE_STYLE,
+            ),
+            rx.fragment(),
+        ),
+        # DF line 1: threshold (smaller font, always white, black stroke) — suppressed for CIRC
+        rx.cond(
+            ~room["is_circ"] & room["has_df"] & (room["df_line_1"] != ""),
+            rx.el.text(
+                room["df_line_1"],
+                x=room["label_x"],
+                y=room["df_line_1_y"],
+                text_anchor="middle",
+                dominant_baseline="middle",
+                fill="white",
+                font_size=EditorState.label_font_size,
+                font_weight="normal",
+                font_family="DM Mono, monospace",
+                stroke="black",
+                stroke_width=EditorState.label_stroke_width,
+                style=_TEXT_STROKE_STYLE,
+            ),
+            rx.fragment(),
+        ),
         # Room name label — suppressed for CIRC rooms
         rx.cond(
             ~room["is_circ"],
             rx.el.text(
                 room["name"],
                 x=room["label_x"],
-                y=room["label_y"],
+                y=room["name_y"],
                 text_anchor="middle",
                 dominant_baseline="middle",
-                fill=rx.cond(room["selected"], COLORS["accent"], COLORS["text_pri"]),
+                fill=rx.cond(room["selected"], COLORS["accent"], "white"),
                 font_size=EditorState.label_font_size,
+                font_weight="normal",
                 font_family="DM Mono, monospace",
-                style={"pointer_events": "none"},
-            ),
-            rx.fragment(),
-        ),
-        # DF annotation — suppressed for CIRC rooms
-        rx.cond(
-            ~room["is_circ"] & (room["df_lines"] != ""),
-            rx.el.text(
-                room["df_lines"],
-                x=room["label_x"],
-                y=room["df_label_y"],
-                text_anchor="middle",
-                dominant_baseline="middle",
-                fill=room["df_color"],
-                font_size=EditorState.df_font_size,
-                font_family="DM Mono, monospace",
-                style={"pointer_events": "none"},
+                stroke="black",
+                stroke_width=EditorState.label_stroke_width,
+                style=_TEXT_STROKE_STYLE,
             ),
             rx.fragment(),
         ),
@@ -452,7 +522,7 @@ _CANVAS_JS = rx.script("""
         // Zoom factor — trackpad pinch sends ctrlKey with small deltas
         var delta = e.ctrlKey ? e.deltaY * 4 : e.deltaY;
         var factor = delta > 0 ? 0.9 : 1.1;
-        var newZoom = Math.max(0.1, Math.min(20.0, _zoom * factor));
+        var newZoom = Math.max(0.1, Math.min(200.0, _zoom * factor));
 
         // Adjust pan so the point under cursor stays fixed
         _panX = cx - imgX * newZoom;
@@ -490,6 +560,69 @@ _CANVAS_JS = rx.script("""
     window.addEventListener('mouseup', function(e) {
         if (e.button === 1) panning = false;
     });
+
+    // ---------------------------------------------------------------------------
+    // Pixel inspector — shows RGB values when zoomed in to pixel level
+    // ---------------------------------------------------------------------------
+    var _pixelCanvas = null;
+    var _pixelCtx = null;
+    var _pixelImgLoaded = false;
+    var _pixelImgSrc = '';
+    var PIXEL_ZOOM_THRESHOLD = 15.0;
+
+    function ensurePixelCanvas() {
+        var img = document.getElementById('editor-img');
+        if (!img || !img.naturalWidth) { _pixelImgLoaded = false; return null; }
+        if (_pixelCanvas && _pixelImgSrc === img.src && _pixelImgLoaded) return _pixelCtx;
+        _pixelCanvas = document.createElement('canvas');
+        _pixelCanvas.width = img.naturalWidth;
+        _pixelCanvas.height = img.naturalHeight;
+        _pixelCtx = _pixelCanvas.getContext('2d', {willReadFrequently: true});
+        _pixelCtx.drawImage(img, 0, 0);
+        _pixelImgSrc = img.src;
+        _pixelImgLoaded = true;
+        return _pixelCtx;
+    }
+
+    document.addEventListener('mousemove', function(e) {
+        var tip = document.getElementById('pixel-info-tooltip');
+        if (!tip) return;
+        if (_zoom < PIXEL_ZOOM_THRESHOLD) { tip.style.display = 'none'; return; }
+        var container = document.getElementById('viewport-container');
+        if (!container || !container.contains(e.target)) { tip.style.display = 'none'; return; }
+
+        var rect = container.getBoundingClientRect();
+        var cx = e.clientX - rect.left;
+        var cy = e.clientY - rect.top;
+        var imgX = Math.floor((cx - _panX) / _zoom);
+        var imgY = Math.floor((cy - _panY) / _zoom);
+
+        var ctx = ensurePixelCanvas();
+        if (!ctx) { tip.style.display = 'none'; return; }
+        if (imgX < 0 || imgY < 0 || imgX >= _pixelCanvas.width || imgY >= _pixelCanvas.height) {
+            tip.style.display = 'none'; return;
+        }
+
+        var px = ctx.getImageData(imgX, imgY, 1, 1).data;
+        tip.textContent = 'R:' + px[0] + ' G:' + px[1] + ' B:' + px[2] + '  [' + imgX + ',' + imgY + ']';
+        tip.style.display = 'block';
+        tip.style.left = (cx + 16) + 'px';
+        tip.style.top = (cy - 28) + 'px';
+    });
+
+    // Hide tooltip when leaving the viewport
+    document.addEventListener('mouseleave', function() {
+        var tip = document.getElementById('pixel-info-tooltip');
+        if (tip) tip.style.display = 'none';
+    });
+
+    // Invalidate pixel canvas when image changes
+    var _imgObserver = new MutationObserver(function() { _pixelImgLoaded = false; });
+    (function watchImg() {
+        var img = document.getElementById('editor-img');
+        if (img) _imgObserver.observe(img, {attributes: true, attributeFilter: ['src']});
+        else setTimeout(watchImg, 500);
+    })();
 
     // ---------------------------------------------------------------------------
     // All other SVG events — click, mousemove, mousedown, mouseup
@@ -563,6 +696,7 @@ def _svg_canvas() -> rx.Component:
                     "display": "block",
                     "width": "100%",
                     "height": "auto",
+                    "image_rendering": "pixelated",
                 },
             ),
             rx.fragment(),
@@ -778,56 +912,10 @@ def _viewport_resize_js() -> rx.Component:
 # ---------------------------------------------------------------------------
 
 def _empty_state() -> rx.Component:
-    """Centred Open/Create buttons shown when no project is loaded. Lives outside the transformed canvas."""
+    """Centred Open/Create buttons shown in Results Viewer when no image is loaded."""
     return rx.cond(
         EditorState.current_image_b64 == "",
-        rx.box(
-            rx.flex(
-                rx.button(
-                    rx.flex(
-                        rx.icon(tag="folder-open", style={"width": "80px", "height": "80px", "stroke_width": "1"}),
-                        rx.text("Open Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin_top": "8px"}),
-                        direction="column",
-                        align="center",
-                    ),
-                    variant="outline", size="4",
-                    on_click=EditorState.open_open_project_modal,
-                    style={
-                        "color": COLORS["text_pri"],
-                        "border_color": COLORS["panel_bdr"],
-                        "cursor": "pointer",
-                        "width": "180px",
-                        "height": "180px",
-                        "padding": "18px",
-                    },
-                ),
-                rx.button(
-                    rx.flex(
-                        rx.icon(tag="folder-plus", style={"width": "80px", "height": "80px", "stroke_width": "1"}),
-                        rx.text("Create Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin_top": "8px"}),
-                        direction="column",
-                        align="center",
-                    ),
-                    variant="outline", size="4",
-                    on_click=EditorState.open_create_project_modal,
-                    style={
-                        "color": COLORS["text_pri"],
-                        "border_color": COLORS["panel_bdr"],
-                        "cursor": "pointer",
-                        "width": "180px",
-                        "height": "180px",
-                        "padding": "18px",
-                    },
-                ),
-                gap="32px",
-                align="center",
-            ),
-            style={
-                "position": "absolute", "inset": "0",
-                "display": "flex", "align_items": "center", "justify_content": "center",
-                "z_index": "20",
-            },
-        ),
+        _empty_state_buttons(),
         rx.fragment(),
     )
 
@@ -852,25 +940,92 @@ def _tab_placeholder(title: str, description: str, icon_tag: str) -> rx.Componen
     )
 
 
+def _tab_with_no_project_gate(placeholder: rx.Component) -> rx.Component:
+    """Wraps a tab placeholder: shows Open/Create project buttons when no project is loaded."""
+    return rx.cond(
+        EditorState.project == "",
+        rx.box(
+            _empty_state_buttons(),
+            style={"flex": "1", "position": "relative", "overflow": "hidden"},
+        ),
+        placeholder,
+    )
+
+
+def _empty_state_buttons() -> rx.Component:
+    """Centred Open/Create buttons — reusable across all tabs."""
+    return rx.box(
+        rx.flex(
+            rx.button(
+                rx.flex(
+                    rx.icon(tag="folder-open", style={"width": "80px", "height": "80px", "stroke_width": "1"}),
+                    rx.text("Open Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin_top": "8px"}),
+                    direction="column",
+                    align="center",
+                ),
+                variant="outline", size="4",
+                on_click=EditorState.open_open_project_modal,
+                style={
+                    "color": COLORS["text_pri"],
+                    "border_color": COLORS["panel_bdr"],
+                    "cursor": "pointer",
+                    "width": "180px",
+                    "height": "180px",
+                    "padding": "18px",
+                },
+            ),
+            rx.button(
+                rx.flex(
+                    rx.icon(tag="folder-plus", style={"width": "80px", "height": "80px", "stroke_width": "1"}),
+                    rx.text("Create Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin_top": "8px"}),
+                    direction="column",
+                    align="center",
+                ),
+                variant="outline", size="4",
+                on_click=EditorState.open_create_project_modal,
+                style={
+                    "color": COLORS["text_pri"],
+                    "border_color": COLORS["panel_bdr"],
+                    "cursor": "pointer",
+                    "width": "180px",
+                    "height": "180px",
+                    "padding": "18px",
+                },
+            ),
+            gap="32px",
+            align="center",
+        ),
+        style={
+            "position": "absolute", "inset": "0",
+            "display": "flex", "align_items": "center", "justify_content": "center",
+            "z_index": "20",
+        },
+    )
+
+
 def viewport() -> rx.Component:
     return rx.flex(
         # Pre-Simulation Checks — room boundary editing (no HDR viewing)
         rx.cond(
             EditorState.active_tab == "pre_simulation",
-            _tab_placeholder(
-                "Pre-Simulation Checks",
-                "Room boundary editing, AOI setup, and simulation preparation tools.",
-                "ruler",
+            _tab_with_no_project_gate(
+                _tab_placeholder(
+                    "Pre-Simulation Checks",
+                    "Room boundary editing, AOI setup, and simulation preparation tools.",
+                    "ruler",
+                ),
             ),
             rx.fragment(),
         ),
         # Simulation Manager
         rx.cond(
             EditorState.active_tab == "simulation",
-            _tab_placeholder(
-                "Simulation Manager",
-                "Connect to GCP VM, launch simulations, and stream results back to the project directory.",
-                "cloud-cog",
+            _tab_with_no_project_gate(
+                _tab_placeholder(
+                    "Simulation Manager",
+                    "Connect to GCP VM, launch simulations, and stream results back to the project directory.",
+                    "cloud-cog",
+                ),
             ),
             rx.fragment(),
         ),
@@ -883,6 +1038,7 @@ def viewport() -> rx.Component:
                     _svg_canvas(),
                     _overlay_align_panel(),
                     _zoom_indicator(),
+                    _pixel_info_tooltip(),
                     _empty_state(),
                     _viewport_resize_js(),
                     id="viewport-container",

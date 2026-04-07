@@ -7,7 +7,6 @@ Organised into sections matching the original split-state design.
 import logging
 import math
 import os
-import re
 import subprocess
 import sys
 import time
@@ -49,11 +48,19 @@ class EnrichedRoom(TypedDict):
     vertices_str: str
     label_x: str
     label_y: str
-    df_label_y: str
+    # Per-line DF annotation fields
+    df_line_0: str           # Area result, e.g. "DF avg: 1.23%"
+    df_line_0_y: str         # Y position
+    df_line_0_color: str     # Coloured by percentage threshold
+    df_line_0_weight: str    # "bold" when black (pass), else "normal"
+    df_line_0_stroke: str    # "white" for black text, "black" otherwise
+    df_line_0_stroke_w: str  # Stroke width
+    df_line_1: str           # Threshold, e.g. "Above 0.5%: 85%"
+    df_line_1_y: str         # Y position
+    name_y: str              # Room name Y (below DF lines, or at label_y if no DF)
+    has_df: bool             # Whether DF results exist
     selected: bool
-    df_lines: str
     df_status: str
-    df_color: str
 
 
 class VertexDict(TypedDict):
@@ -90,6 +97,9 @@ class TreeNode(TypedDict):
     is_current_hdr: bool
     collapsed: bool      # only meaningful for hdr nodes
     has_children: bool   # only meaningful for parent_room nodes
+    # tree connector — computed once at build time, single source of truth
+    connector: str       # "T" = more siblings below, "L" = last sibling, "none" = hdr row
+    parent_continues: str   # "1" when this child's parent is not the last sibling (vertical passes alongside), else "0"
     # action payload
     hdr_name: str        # which HDR this node belongs to
     room_idx: int        # -1 for hdr nodes
@@ -359,6 +369,8 @@ class EditorState(rx.State):
                 "is_current_hdr": is_current,
                 "collapsed": collapsed,
                 "has_children": len(hdr_rooms) > 0,
+                "connector": "none",
+                "parent_continues": "0",
                 "hdr_name": hdr_name,
                 "room_idx": -1,
                 "hdr_idx": hdr_idx,
@@ -379,13 +391,15 @@ class EditorState(rx.State):
                 if p:
                     child_map.setdefault(p, []).append((i, r))
 
-            for room_idx, room in top_level:
+            for top_pos, (room_idx, room) in enumerate(top_level):
                 room_name = room.get("name", "")
                 children = child_map.get(room_name, [])
                 is_selected = (
                     room_idx == self.selected_room_idx
                     or room_idx in self.multi_selected_idxs
                 )
+                is_last_top = (top_pos == len(top_level) - 1)
+                parent_connector = "L" if is_last_top else "T"
                 nodes.append({
                     "node_type": "parent_room",
                     "label": room_name,
@@ -395,17 +409,20 @@ class EditorState(rx.State):
                     "is_current_hdr": is_current,
                     "collapsed": False,
                     "has_children": len(children) > 0,
+                    "connector": parent_connector,
+                    "parent_continues": "0",
                     "hdr_name": hdr_name,
                     "room_idx": room_idx,
                     "hdr_idx": hdr_idx,
                 })
-                for child_idx, child in children:
+                for child_pos, (child_idx, child) in enumerate(children):
                     child_selected = (
                         child_idx == self.selected_room_idx
                         or child_idx in self.multi_selected_idxs
                     )
                     child_name = child.get("name", "")
                     child_label = child_name.removeprefix(room_name).strip("_ ") or child_name
+                    is_last_child = (child_pos == len(children) - 1)
                     nodes.append({
                         "node_type": "child_room",
                         "label": child_label,
@@ -415,6 +432,8 @@ class EditorState(rx.State):
                         "is_current_hdr": is_current,
                         "collapsed": False,
                         "has_children": False,
+                        "connector": "L" if is_last_child else "T",
+                        "parent_continues": ("1" if not is_last_top else "0"),
                         "hdr_name": hdr_name,
                         "room_idx": child_idx,
                         "hdr_idx": hdr_idx,
@@ -422,28 +441,32 @@ class EditorState(rx.State):
 
             # Orphan children (parent name not present as a top-level room)
             top_level_names = {r.get("name", "") for _, r in top_level}
-            for parent_name, children in child_map.items():
-                if parent_name not in top_level_names:
-                    for child_idx, child in children:
-                        child_selected = (
-                            child_idx == self.selected_room_idx
-                            or child_idx in self.multi_selected_idxs
-                        )
-                        child_name = child.get("name", "")
-                        child_label = child_name.removeprefix(parent_name).strip("_ ") or child_name
-                        nodes.append({
-                            "node_type": "child_room",
-                            "label": child_label,
-                            "room_type": child.get("room_type", ""),
-                            "indent": "16px",
-                            "selected": child_selected,
-                            "is_current_hdr": is_current,
-                            "collapsed": False,
-                            "has_children": False,
-                            "hdr_name": hdr_name,
-                            "room_idx": child_idx,
-                            "hdr_idx": hdr_idx,
-                        })
+            orphan_groups = [(p, c) for p, c in child_map.items() if p not in top_level_names]
+            for group_pos, (parent_name, children) in enumerate(orphan_groups):
+                is_last_group = (group_pos == len(orphan_groups) - 1)
+                for child_pos, (child_idx, child) in enumerate(children):
+                    child_selected = (
+                        child_idx == self.selected_room_idx
+                        or child_idx in self.multi_selected_idxs
+                    )
+                    child_name = child.get("name", "")
+                    child_label = child_name.removeprefix(parent_name).strip("_ ") or child_name
+                    is_last_child = (child_pos == len(children) - 1 and is_last_group)
+                    nodes.append({
+                        "node_type": "child_room",
+                        "label": child_label,
+                        "room_type": child.get("room_type", ""),
+                        "indent": "16px",
+                        "selected": child_selected,
+                        "is_current_hdr": is_current,
+                        "collapsed": False,
+                        "has_children": False,
+                        "connector": "L" if is_last_child else "T",
+                        "parent_continues": "0",
+                        "hdr_name": hdr_name,
+                        "room_idx": child_idx,
+                        "hdr_idx": hdr_idx,
+                    })
 
         return nodes
 
@@ -533,18 +556,18 @@ class EditorState(rx.State):
 
     @rx.var
     def label_font_size(self) -> str:
-        """Room name font size scaled by annotation_scale."""
-        return str(round(10 * self.annotation_scale, 1))
+        """Room name + threshold font size (base 6.5) scaled by annotation_scale."""
+        return str(round(6.5 * self.annotation_scale, 1))
 
     @rx.var
-    def df_font_size(self) -> str:
-        """DF result font size scaled by annotation_scale."""
-        return str(round(8 * self.annotation_scale, 1))
+    def df_area_font_size(self) -> str:
+        """DF area result font size (base 8.5) scaled by annotation_scale."""
+        return str(round(8.5 * self.annotation_scale, 1))
 
     @rx.var
-    def df_label_offset(self) -> str:
-        """Vertical offset from label centre to DF text, scaled by annotation_scale."""
-        return str(round(14 * self.annotation_scale, 1))
+    def label_stroke_width(self) -> str:
+        """Stroke outline width for room name and threshold text."""
+        return str(round(6.5 * self.annotation_scale * 0.12, 2))
 
     @rx.var
     def room_stroke_width(self) -> str:
@@ -607,24 +630,50 @@ class EditorState(rx.State):
 
             # DF results
             df_info = self.room_df_results.get(str(i), {})
-            df_lines = df_info.get("result_lines", [])
+            df_lines_raw = df_info.get("result_lines", [])
             df_status = df_info.get("pass_status", "none")
+            has_df = len(df_lines_raw) > 0
 
-            # DF colour: parse percentage from first result line, match matplotlib thresholds
-            df_color = "#ffffff"
-            if df_lines:
-                _m = re.search(r'\((\d+(?:\.\d+)?)%\)', df_lines[0])
-                if _m:
-                    _pct = float(_m.group(1))
-                    if _pct >= 90:
-                        df_color = "#000000"
-                    elif _pct >= 50:
-                        df_color = "#E97132"
-                    else:
-                        df_color = "#EE0000"
+            # DF colour from pct_above (numeric), matching matplotlib thresholds
+            pct_above = df_info.get("pct_above")
+            scale = self.annotation_scale
+            if pct_above is not None and has_df:
+                if pct_above >= 90:
+                    line_0_color = "#000000"
+                    line_0_weight = "bold"
+                    line_0_stroke = "white"
+                    line_0_stroke_w = str(round(8.5 * scale * 0.06, 2))
+                elif pct_above >= 50:
+                    line_0_color = "#E97132"
+                    line_0_weight = "normal"
+                    line_0_stroke = "black"
+                    line_0_stroke_w = str(round(8.5 * scale * 0.12, 2))
+                else:
+                    line_0_color = "#EE0000"
+                    line_0_weight = "normal"
+                    line_0_stroke = "black"
+                    line_0_stroke_w = str(round(8.5 * scale * 0.12, 2))
+            else:
+                line_0_color = "#ffffff"
+                line_0_weight = "normal"
+                line_0_stroke = "black"
+                line_0_stroke_w = str(round(8.5 * scale * 0.12, 2))
+
+            # Line spacing matching matplotlib: line_step = base * scale * 1.6
+            line_step = 6.5 * scale * 1.6
+            name_step = line_step * 0.7
+
+            # Y positions: line_0 at centroid, line_1 below, name below that
+            df_line_0_y = ly
+            df_line_1_y = ly + line_step
+            if has_df and len(df_lines_raw) >= 2:
+                name_y_val = ly + line_step + name_step
+            elif has_df:
+                name_y_val = ly + name_step
+            else:
+                name_y_val = ly
 
             is_circ = room.get("room_type", "") == "CIRC"
-            label_offset = round(14 * self.annotation_scale, 1)
 
             result.append({
                 "idx": i,
@@ -636,11 +685,18 @@ class EditorState(rx.State):
                 "vertices_str": verts_str,
                 "label_x": str(lx),
                 "label_y": str(ly),
-                "df_label_y": str(ly + label_offset),
+                "df_line_0": df_lines_raw[0] if has_df else "",
+                "df_line_0_y": str(df_line_0_y),
+                "df_line_0_color": line_0_color,
+                "df_line_0_weight": line_0_weight,
+                "df_line_0_stroke": line_0_stroke,
+                "df_line_0_stroke_w": line_0_stroke_w,
+                "df_line_1": df_lines_raw[1] if len(df_lines_raw) >= 2 else "",
+                "df_line_1_y": str(df_line_1_y),
+                "name_y": str(name_y_val),
+                "has_df": has_df,
                 "selected": i == self.selected_room_idx or i in self.multi_selected_idxs,
-                "df_lines": "\n".join(df_lines) if df_lines else "",
                 "df_status": df_status,
-                "df_color": df_color,
             })
         return result
 
@@ -707,7 +763,7 @@ class EditorState(rx.State):
         oy = t.get("offset_y", 0)
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
-        rot = t.get("rotation_90", 0) * 90
+        rot = t.get("rotation_90", 0)
         return f"translate({ox}px, {oy}px) scale({sx}, {sy}) rotate({rot}deg)"
 
     @rx.var
@@ -715,8 +771,21 @@ class EditorState(rx.State):
         return f"{self.progress_pct}%"
 
     @rx.var
+    def overlay_has_pdf(self) -> bool:
+        return bool(self.overlay_pdf_path)
+
+    @rx.var
     def overlay_alpha_str(self) -> str:
         return str(self.overlay_alpha)
+
+    @rx.var
+    def overlay_transparency_pct(self) -> str:
+        return str(round((1.0 - self.overlay_alpha) * 100))
+
+    @rx.var
+    def overlay_rotation_deg_str(self) -> str:
+        t = self._get_current_overlay_transform()
+        return str(t.get("rotation_90", 0))
 
     @rx.var
     def image_width_str(self) -> str:
@@ -735,6 +804,43 @@ class EditorState(rx.State):
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
         return f"translate({ox},{oy}) scale({sx},{sy})"
+
+    @rx.var
+    def overlay_offset_x_str(self) -> str:
+        return str(self._get_current_overlay_transform().get("offset_x", 0))
+
+    @rx.var
+    def overlay_offset_y_str(self) -> str:
+        return str(self._get_current_overlay_transform().get("offset_y", 0))
+
+    @rx.var
+    def overlay_scale_x_str(self) -> str:
+        return str(self._get_current_overlay_transform().get("scale_x", 1.0))
+
+    @rx.var
+    def overlay_scale_y_str(self) -> str:
+        return str(self._get_current_overlay_transform().get("scale_y", 1.0))
+
+    @rx.var
+    def overlay_scale_str(self) -> str:
+        return str(self._get_current_overlay_transform().get("scale_x", 1.0))
+
+    @rx.var
+    def overlay_page_label(self) -> str:
+        if self.overlay_page_count <= 0:
+            return "Change Floor Plan Page"
+        return f"Floor Plan — Page {self.overlay_page_idx + 1} / {self.overlay_page_count}"
+
+    @rx.var
+    def overlay_rotation_deg_str(self) -> str:
+        """Current rotation in degrees (0/90/180/270) as a string for the input field."""
+        rot90 = self._get_current_overlay_transform().get("rotation_90", 0)
+        return str((rot90 % 4) * 90)
+
+    @rx.var
+    def overlay_transparency_pct(self) -> str:
+        """Current transparency percentage (0–100) as a string for the input field."""
+        return str(round((1.0 - self.overlay_alpha) * 100))
 
     @rx.var
     def selected_room_vertices(self) -> list[VertexPoint]:
@@ -1127,9 +1233,17 @@ class EditorState(rx.State):
         """Zoom and pan so the selected room fills the viewport container.
 
         Transform model: translate(pan_x, pan_y) scale(zoom), origin 0 0.
-        To centre image point (cx, cy) in a viewport of size (vw, vh):
-            pan_x = vw/2 - cx * zoom
-            pan_y = vh/2 - cy * zoom
+
+        The canvas always fills the container width (width=100%), so at zoom=1:
+            canvas_w = vw  (no pillarboxing)
+            canvas_h = vw * image_height / image_width  (may be < vh: letterboxed)
+
+        The canvas sits at (0, 0) in the container — no auto vertical centering.
+        To place image point (cx, cy) at the centre of the visible canvas area:
+            pan_x = vw / 2 - cx * pxscale
+            pan_y = effective_vh / 2 - cy * pxscale
+        where effective_vh = min(vh, canvas_h_at_1) — the actual rendered height,
+        not the full container height which includes dead space below the image.
         """
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
             yield from self.reset_zoom()
@@ -1154,20 +1268,23 @@ class EditorState(rx.State):
             yield from self.reset_zoom()
             return
         # At zoom=1 the canvas is width=vw, height=vw*(image_height/image_width).
-        # The rendered canvas height may be less than vh (letterboxed), so capping
-        # effective_vh avoids over-estimating zy and leaving empty space top/bottom.
+        # effective_vh is the actual rendered canvas height — capped to vh so we
+        # never reference dead space below a letterboxed (wide) image, and never
+        # under-fit a tall (narrow) image that exceeds the container height.
         image_scale = vw / self.image_width  # screen px per image px at zoom=1
         canvas_h_at_1 = vw * self.image_height / self.image_width
         effective_vh = min(vh, canvas_h_at_1) if canvas_h_at_1 > 0 else vh
         zx = vw / (bw * image_scale)
         zy = effective_vh / (bh * image_scale)
-        self.zoom_level = min(zx, zy, 20.0)
-        # Centre the bounding-box midpoint.
+        self.zoom_level = min(zx, zy, 200.0)
+        # Centre the bounding-box midpoint in the visible canvas area.
         cx = (min_x + max_x) / 2
         cy = (min_y + max_y) / 2
         pxscale = image_scale * self.zoom_level
         self.pan_x = vw / 2 - cx * pxscale
-        self.pan_y = vh / 2 - cy * pxscale
+        # pan_y uses effective_vh (actual canvas height), not vh (full container),
+        # so the room centres on the image — not in the dead space below it.
+        self.pan_y = effective_vh / 2 - cy * pxscale
         yield rx.call_script(
             f"window._archiZoom && window._archiZoom.setTransform("
             f"{self.zoom_level}, {self.pan_x}, {self.pan_y});"
@@ -1574,10 +1691,68 @@ class EditorState(rx.State):
     # =====================================================================
 
     def toggle_overlay(self) -> None:
+        if not self.overlay_pdf_path:
+            self._pick_pdf_via_dialog()
+            return
         self.overlay_visible = not self.overlay_visible
         logger.debug(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', b64_len={len(self.overlay_image_b64)}")
         if self.overlay_visible and not self.overlay_image_b64:
             self._rasterize_current_page()
+
+    def _pick_pdf_via_dialog(self) -> None:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askopenfilename(
+            title="Select Floor Plan PDF",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if not path:
+            return
+        self.overlay_pdf_path = path
+        from ..lib.image_loader import get_pdf_page_count
+        self.overlay_page_count = get_pdf_page_count(Path(path))
+        self.overlay_page_idx = 0
+        self.overlay_image_b64 = ""
+        self._save_pdf_path_to_toml(path)
+        self._rasterize_current_page()
+        if self.overlay_image_b64:
+            self.overlay_visible = True
+            self.status_message = f"Floor plan attached ({self.overlay_page_count} page(s))"
+            self.status_colour = "accent"
+        else:
+            self.status_message = "Failed to rasterize PDF"
+            self.status_colour = "danger"
+
+    def _save_pdf_path_to_toml(self, path: str) -> None:
+        if not self.project:
+            return
+        try:
+            from archilume.config import get_project_paths
+            import tomllib
+            toml_path = get_project_paths(self.project).project_dir / "project.toml"
+            data: dict = {}
+            if toml_path.exists():
+                with open(toml_path, "rb") as f:
+                    data = tomllib.load(f)
+            data.setdefault("project", {})["pdf_path"] = path
+            # Write TOML manually (no tomli_w dependency)
+            lines = []
+            for section, values in data.items():
+                lines.append(f"[{section}]")
+                for k, v in values.items():
+                    if isinstance(v, str):
+                        lines.append(f'{k} = "{v}"')
+                    else:
+                        lines.append(f"{k} = {v}")
+                lines.append("")
+            toml_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.debug(f"[overlay] Saved pdf_path to {toml_path}")
+        except Exception as e:
+            logger.debug(f"[overlay] Failed to save pdf_path to toml: {e}")
 
     def toggle_overlay_align(self) -> None:
         self.overlay_align_mode = not self.overlay_align_mode
@@ -1599,6 +1774,19 @@ class EditorState(rx.State):
     def set_overlay_alpha(self, value: str) -> None:
         try:
             self.overlay_alpha = max(0.0, min(1.0, float(value)))
+        except ValueError:
+            pass
+
+    def set_overlay_transparency(self, value: list[float]) -> None:
+        """Slider on_value_commit passes list[float]; value 0–95 (transparency %) → opacity = 1 - v/100."""
+        v = value[0] if value else 40
+        self.overlay_alpha = max(0.05, min(1.0, 1.0 - v / 100))
+
+    def set_overlay_transparency_int(self, value: str) -> None:
+        """Number input: value 0–100 (transparency %) → opacity = 1 - v/100."""
+        try:
+            v = max(0, min(100, int(value)))
+            self.overlay_alpha = max(0.0, min(1.0, 1.0 - v / 100))
         except ValueError:
             pass
 
@@ -1634,10 +1822,28 @@ class EditorState(rx.State):
         except ValueError:
             pass
 
+    def set_overlay_scale(self, value: str) -> None:
+        try:
+            s = float(value)
+            t = dict(self._get_current_overlay_transform())
+            t["scale_x"] = s
+            t["scale_y"] = s
+            self._set_current_overlay_transform(t)
+        except ValueError:
+            pass
+
     def rotate_overlay_90(self) -> None:
         t = dict(self._get_current_overlay_transform())
-        t["rotation_90"] = (t.get("rotation_90", 0) + 1) % 4
+        t["rotation_90"] = (t.get("rotation_90", 0) + 90) % 360
         self._set_current_overlay_transform(t)
+
+    def set_overlay_rotation_deg(self, value: str) -> None:
+        try:
+            t = dict(self._get_current_overlay_transform())
+            t["rotation_90"] = int(value) % 360
+            self._set_current_overlay_transform(t)
+        except ValueError:
+            pass
 
     def reset_level_alignment(self) -> None:
         self._set_current_overlay_transform(
@@ -1940,11 +2146,14 @@ class EditorState(rx.State):
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
         pdf_path = data.get("overlay_pdf_path", "")
-        if pdf_path:
+        if pdf_path and Path(pdf_path).exists():
             self.overlay_pdf_path = pdf_path
+        # else: keep the path already resolved by _init_project_paths
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
         self._rebuild_variants()
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
+        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
+            self._rasterize_current_page()
 
     def save_session(self) -> None:
         if not self.session_path:
