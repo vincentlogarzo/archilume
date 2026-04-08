@@ -56,6 +56,38 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
             e.stopImmediatePropagation();
         }
     }, { capture: true });
+
+    // ---------------------------------------------------------------------------
+    // Global JS→Python dispatch bridge.
+    // Reflex 0.8 does not expose window.applyEvent.  We extract addEvents from
+    // the React fiber tree (EventLoopContext) so rx.script IIFEs can fire
+    // backend events with proper socket/navigate/params wiring.
+    // ---------------------------------------------------------------------------
+    function _installApplyEvent() {
+        var mod = window.__reflex && window.__reflex['$/utils/state'];
+        if (!mod || !mod.ReflexEvent) { setTimeout(_installApplyEvent, 200); return; }
+        // Find addEvents from React fiber of a known DOM element
+        var el = document.getElementById('viewport-container') || document.querySelector('[id]');
+        if (!el) { setTimeout(_installApplyEvent, 200); return; }
+        var fiberKey = Object.keys(el).find(function(k) { return k.startsWith('__reactFiber'); });
+        if (!fiberKey) { setTimeout(_installApplyEvent, 200); return; }
+        var fiber = el[fiberKey], addEvents = null;
+        for (var i = 0; i < 100 && fiber; i++, fiber = fiber.return) {
+            var v = fiber.memoizedProps && fiber.memoizedProps.value;
+            if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'function') {
+                addEvents = v[0]; break;
+            }
+        }
+        if (!addEvents) { setTimeout(_installApplyEvent, 200); return; }
+        var _addEvents = addEvents;
+        window.applyEvent = function(eventName, payload) {
+            var name = eventName.indexOf('.') === -1 ? eventName :
+                'reflex___state____state.archilume_ui___state___editor_state____editor_state.' +
+                eventName.replace('editor_state.', '');
+            _addEvents([mod.ReflexEvent(name, payload || {})], [], {});
+        };
+    }
+    _installApplyEvent();
 })();
 """)
 
@@ -135,7 +167,7 @@ _DEBUG_SCRIPT = rx.script("""
         }
     }, true);
 
-    // Patch applyEvent to log dispatches
+    // Patch applyEvent to log dispatches (waits for bridge installed by _ZOOM_GUARD_SCRIPT)
     function patchApplyEvent() {
         if (!window.applyEvent) { setTimeout(patchApplyEvent, 300); return; }
         var orig = window.applyEvent;

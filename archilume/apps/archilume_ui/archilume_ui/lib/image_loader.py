@@ -302,7 +302,7 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
 def rasterize_pdf_page(
     pdf_path: Path, page_index: int = 0, dpi: int = 150,
     cache_dir: Optional[Path] = None,
-) -> Optional[str]:
+) -> tuple[Optional[str], int, int]:
     """Rasterize a PDF page to a base64-encoded PNG data URI.
 
     Uses PyMuPDF (fitz) for rasterization. If *cache_dir* is provided the
@@ -313,10 +313,10 @@ def rasterize_pdf_page(
     try:
         import fitz
     except ImportError:
-        return None
+        return None, 0, 0
 
     if not pdf_path.exists():
-        return None
+        return None, 0, 0
 
     # --- disk cache lookup ---------------------------------------------------
     cache_path: Optional[Path] = None
@@ -328,11 +328,12 @@ def rasterize_pdf_page(
         if cache_path.exists():
             try:
                 arr = np.load(str(cache_path))
+                h, w = arr.shape[:2]
                 img = Image.fromarray(arr)
                 buf = io.BytesIO()
                 img.save(buf, format="PNG", optimize=False)
                 b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                return f"data:image/png;base64,{b64}"
+                return f"data:image/png;base64,{b64}", w, h
             except Exception:
                 pass  # fall through to re-rasterize
 
@@ -340,7 +341,7 @@ def rasterize_pdf_page(
         doc = fitz.open(str(pdf_path))
         if page_index >= len(doc):
             doc.close()
-            return None
+            return None, 0, 0
 
         page = doc[page_index]
         scale = dpi / 72.0
@@ -348,6 +349,7 @@ def rasterize_pdf_page(
         pix = page.get_pixmap(matrix=mat, alpha=False)
 
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        img_w, img_h = pix.width, pix.height
         doc.close()
 
         # --- write disk cache ------------------------------------------------
@@ -362,9 +364,9 @@ def rasterize_pdf_page(
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=False)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{b64}"
+        return f"data:image/png;base64,{b64}", img_w, img_h
     except Exception:
-        return None
+        return None, 0, 0
 
 
 def get_pdf_page_count(pdf_path: Path) -> int:

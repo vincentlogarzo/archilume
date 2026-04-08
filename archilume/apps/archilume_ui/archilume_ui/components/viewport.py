@@ -450,11 +450,10 @@ _CANVAS_JS = rx.script("""
     function scheduleSync() {
         if (_syncTimer) clearTimeout(_syncTimer);
         _syncTimer = setTimeout(function() {
-            if (typeof window.applyEvent === 'function') {
-                window.applyEvent('editor_state.sync_zoom', {
-                    data: {zoom: _zoom, pan_x: _panX, pan_y: _panY}
-                });
-            }
+            var fn = window.applyEvent || window.__reflex?.['$/utils/state']?.applyEvent;
+            if (typeof fn === 'function') fn('editor_state.sync_zoom', {
+                data: {zoom: _zoom, pan_x: _panX, pan_y: _panY}
+            });
         }, 300);
     }
 
@@ -471,9 +470,8 @@ _CANVAS_JS = rx.script("""
     // Helpers
     // ---------------------------------------------------------------------------
     function dispatch(event, payload) {
-        if (typeof window.applyEvent === 'function') {
-            window.applyEvent(event, payload);
-        }
+        var fn = window.applyEvent || window.__reflex?.['$/utils/state']?.applyEvent;
+        if (typeof fn === 'function') fn(event, payload);
     }
 
     var lastMoveTime = 0;
@@ -501,6 +499,71 @@ _CANVAS_JS = rx.script("""
     }
 
     // ---------------------------------------------------------------------------
+    // Overlay scale — Ctrl+scroll in Adjust Plan Mode scales the PDF underlay
+    // around its centre.  Pure JS for 60fps; debounce-syncs to Python.
+    // ---------------------------------------------------------------------------
+    var _overlaySyncTimer = null;
+
+    function getOverlayImg() {
+        // The overlay <img> has opacity < 1 and is not the editor-img
+        var imgs = document.querySelectorAll('#viewport-container img:not(#editor-img)');
+        for (var i = 0; i < imgs.length; i++) {
+            if (parseFloat(window.getComputedStyle(imgs[i]).opacity) < 1) return imgs[i];
+        }
+        return null;
+    }
+
+    function parseOverlayTransform(img) {
+        // Try inline style first (set by us after first scroll), then computed matrix
+        var raw = img.style.transform || '';
+        var t = {ox: 0, oy: 0, sx: 1, sy: 1, rot: 0};
+        if (raw) {
+            var m;
+            m = raw.match(/translate\(\s*([-\d.]+)px\s*,\s*([-\d.]+)px\s*\)/);
+            if (m) { t.ox = parseFloat(m[1]); t.oy = parseFloat(m[2]); }
+            m = raw.match(/scale\(\s*([-\d.]+)\s*(?:,\s*([-\d.]+))?\s*\)/);
+            if (m) { t.sx = parseFloat(m[1]); t.sy = m[2] !== undefined ? parseFloat(m[2]) : t.sx; }
+            m = raw.match(/rotate\(\s*([-\d.]+)deg\s*\)/);
+            if (m) { t.rot = parseFloat(m[1]); }
+        } else {
+            // Parse from computed matrix(a, b, c, d, tx, ty)
+            var cs = window.getComputedStyle(img).transform;
+            var mm = cs && cs.match(/matrix\(\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*\)/);
+            if (mm) {
+                t.sx = parseFloat(mm[1]);
+                t.sy = parseFloat(mm[4]);
+                t.ox = parseFloat(mm[5]);
+                t.oy = parseFloat(mm[6]);
+            }
+        }
+        return t;
+    }
+
+    function applyOverlayTransform(img, t) {
+        img.style.transform = 'translate(' + t.ox + 'px, ' + t.oy + 'px) scale(' + t.sx + ', ' + t.sy + ') rotate(' + t.rot + 'deg)';
+    }
+
+    function scheduleOverlaySync(t) {
+        if (_overlaySyncTimer) clearTimeout(_overlaySyncTimer);
+        _overlaySyncTimer = setTimeout(function() {
+            dispatch('editor_state.sync_overlay_transform', {
+                data: {
+                    offset_x: Math.round(t.ox),
+                    offset_y: Math.round(t.oy),
+                    scale_x: Math.round(t.sx * 1000000) / 1000000,
+                    scale_y: Math.round(t.sy * 1000000) / 1000000,
+                }
+            });
+            // Clear inline override after a short delay so the Reflex CSS
+            // class (updated by the state sync) takes back control.
+            setTimeout(function() {
+                var img = getOverlayImg();
+                if (img) img.style.transform = '';
+            }, 350);
+        }, 250);
+    }
+
+    // ---------------------------------------------------------------------------
     // Scroll-wheel zoom + trackpad pinch (ctrlKey=true)
     // Runs entirely in JS — no Python round-trip.
     // ---------------------------------------------------------------------------
@@ -509,6 +572,28 @@ _CANVAS_JS = rx.script("""
         e.preventDefault();
 
         var container = document.getElementById('viewport-container');
+
+        // Ctrl+scroll in Adjust Plan Mode → scale overlay, not canvas
+        if (e.ctrlKey && container && container.dataset.overlayAlign === 'true') {
+            var overlayImg = getOverlayImg();
+            if (overlayImg) {
+                var t = parseOverlayTransform(overlayImg);
+                var factor = e.deltaY > 0 ? 0.95 : 1.05;
+                var newS = t.sx * factor;
+                // Scale around centre: adjust offset so centre stays fixed
+                var rect = container.getBoundingClientRect();
+                var halfW = rect.width / 2;
+                var halfH = rect.height / 2;
+                t.ox = t.ox + halfW * (t.sx - newS);
+                t.oy = t.oy + halfH * (t.sy - newS);
+                t.sx = newS;
+                t.sy = newS;
+                applyOverlayTransform(overlayImg, t);
+                scheduleOverlaySync(t);
+                return;
+            }
+        }
+
         var rect = container.getBoundingClientRect();
 
         // Cursor position relative to viewport container (screen pixels)
@@ -886,9 +971,8 @@ def _viewport_resize_js() -> rx.Component:
     return rx.script("""
 (function() {
     function dispatch(event, payload) {
-        if (typeof window.applyEvent === 'function') {
-            window.applyEvent(event, payload);
-        }
+        var fn = window.applyEvent || window.__reflex?.['$/utils/state']?.applyEvent;
+        if (typeof fn === 'function') fn(event, payload);
     }
     function report(el) {
         dispatch('editor_state.set_viewport_size', {
@@ -1044,6 +1128,10 @@ def viewport() -> rx.Component:
                     id="viewport-container",
                     align="center",
                     justify="center",
+                    data_overlay_align=rx.cond(
+                        EditorState.overlay_align_mode & EditorState.overlay_visible,
+                        "true", "false",
+                    ),
                     style={"position": "relative", "flex": "1", "overflow": "hidden"},
                 ),
                 _progress_bar(),

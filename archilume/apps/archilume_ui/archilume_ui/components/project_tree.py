@@ -73,7 +73,9 @@ def _connector(node: dict) -> rx.Component:
         "opacity": _LINE_OPACITY,
     }
 
-    # col-B: own connector — vertical segment height depends on T vs L
+    # col-B: own connector — vertical segment from top.
+    # "T" = more siblings → full height.
+    # "L" = last sibling → top-half only.
     own_vert_h = rx.cond(node["connector"] == "T", "100%", "50%")
 
     col_b = rx.box(
@@ -91,8 +93,6 @@ def _connector(node: dict) -> rx.Component:
 
     # col-A: parent continuation — always rendered for child rows, but line is
     # hidden via display:none when parent_continues is False.
-    # Using display toggling avoids rx.cond producing identical CSS classes for
-    # the two branches, which caused Reflex to always render the spacer variant.
     col_a = rx.box(
         rx.box(style={**line_style_base,
                       "left": _VX, "top": "0",
@@ -116,7 +116,30 @@ def _connector(node: dict) -> rx.Component:
 
 def _room_row(node: dict) -> rx.Component:
     connector = _connector(node)
+    # Offset spacer so the parent-room connector line centres on the HDR row's
+    # image icon.  HDR icon centre ≈ 8px padding + 12px chevron + 5px gap + 6.5px
+    # = ~31.5px.  col-B line sits at 6px into the 16px column, so we need
+    # ~25.5px of left padding → add an 18px spacer before the connector (row
+    # already has 8px left padding, giving 8+18+6 = 32px ≈ icon centre).
+    # Child rows have col-A (16px) before col-B, so no extra spacer needed there.
+    spacer = rx.box(style={"width": "18px", "flex_shrink": "0"})
+    # For parent rooms with children, draw a vertical trunk line from the row
+    # midpoint downward at the x-position where children's col-B vertical sits.
+    # Position: 8px(pad) + 18px(spacer) + 5px(gap) + 16px(col-A) + 6px(_VX) = 53px.
+    child_trunk = rx.cond(
+        (node["node_type"] == "parent_room") & (node["has_children"]),
+        rx.box(style={
+            "position": "absolute",
+            "left": "53px", "top": "50%",
+            "width": "1px", "height": "50%",
+            "background": _LINE_COLOR,
+            "opacity": _LINE_OPACITY,
+        }),
+        rx.fragment(),
+    )
     return rx.flex(
+        child_trunk,
+        spacer,
         connector,
         rx.text(
             node["label"],
@@ -144,6 +167,7 @@ def _room_row(node: dict) -> rx.Component:
             "padding": "0 8px 0 8px",
             "cursor": "pointer",
             "flex_shrink": "0",
+            "position": "relative",
         },
         background=rx.cond(node["selected"], COLORS["btn_on"], "transparent"),
         _hover={"background": COLORS["hover"]},

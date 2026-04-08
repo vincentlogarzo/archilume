@@ -200,6 +200,8 @@ class EditorState(rx.State):
     overlay_align_mode: bool = False
     overlay_transforms: dict = {}
     align_points: list[AlignPoint] = []
+    overlay_img_width: int = 0
+    overlay_img_height: int = 0
 
     # =====================================================================
     # §9 — DF% analysis
@@ -1051,12 +1053,12 @@ class EditorState(rx.State):
 
     def navigate_to_hdr(self, hdr_idx: int) -> None:
         if 0 <= hdr_idx < len(self.hdr_files):
+            hdr_name = self.hdr_files[hdr_idx]["name"]
             self.current_hdr_idx = hdr_idx
             self._rebuild_variants()
             self.load_current_image()
-            # Collapse all HDRs except the one just navigated to
-            hdr_name = self.hdr_files[hdr_idx]["name"]
-            self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
+            # Toggle collapse for the clicked HDR
+            self.toggle_hdr_collapse(hdr_name)
 
     def select_all_rooms(self) -> None:
         if not self.hdr_files:
@@ -1213,7 +1215,7 @@ class EditorState(rx.State):
         self._editing_start_drag(x, y)
 
     @debug_handler
-    def handle_mouse_up(self, _data: dict) -> None:
+    def handle_mouse_up(self, data: dict) -> None:
         if self.edit_mode:
             self.dragging_vertex_idx = -1
 
@@ -1233,17 +1235,23 @@ class EditorState(rx.State):
         """Zoom and pan so the selected room fills the viewport container.
 
         Transform model: translate(pan_x, pan_y) scale(zoom), origin 0 0.
+        The transform is applied to the canvas element itself.
 
-        The canvas always fills the container width (width=100%), so at zoom=1:
-            canvas_w = vw  (no pillarboxing)
-            canvas_h = vw * image_height / image_width  (may be < vh: letterboxed)
+        The canvas always fills container width (width=100%), and is vertically
+        centred via margin:auto, so at zoom=1:
+            canvas_w = vw
+            canvas_h = vw * image_height / image_width  (canvas_h_at_1)
+            canvas top offset = (vh - canvas_h_at_1) / 2  (CSS margin:auto)
 
-        The canvas sits at (0, 0) in the container — no auto vertical centering.
-        To place image point (cx, cy) at the centre of the visible canvas area:
-            pan_x = vw / 2 - cx * pxscale
-            pan_y = effective_vh / 2 - cy * pxscale
-        where effective_vh = min(vh, canvas_h_at_1) — the actual rendered height,
-        not the full container height which includes dead space below the image.
+        Because pan_y shifts the canvas from its already-centred position, to
+        place image point cy at the container centre:
+            canvas_offset + pan_y + cy * pxscale = vh / 2
+            (vh - canvas_h_at_1)/2 + pan_y + cy * pxscale = vh / 2
+            pan_y = canvas_h_at_1 / 2 - cy * pxscale
+
+        For zoom, the visible canvas height IS canvas_h_at_1 (margin:auto means
+        it's never clipped by vh when smaller). For tall images where canvas_h_at_1
+        > vh, cap to vh so the room still fits within the visible area.
         """
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
             yield from self.reset_zoom()
@@ -1267,24 +1275,24 @@ class EditorState(rx.State):
         if self.image_width <= 0 or self.image_height <= 0 or vw <= 0:
             yield from self.reset_zoom()
             return
-        # At zoom=1 the canvas is width=vw, height=vw*(image_height/image_width).
-        # effective_vh is the actual rendered canvas height — capped to vh so we
-        # never reference dead space below a letterboxed (wide) image, and never
-        # under-fit a tall (narrow) image that exceeds the container height.
         image_scale = vw / self.image_width  # screen px per image px at zoom=1
         canvas_h_at_1 = vw * self.image_height / self.image_width
-        effective_vh = min(vh, canvas_h_at_1) if canvas_h_at_1 > 0 else vh
+        # canvas_offset_top: CSS margin:auto vertically centres the canvas in the
+        # container when canvas_h_at_1 < vh.  For tall images it is 0.
+        canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
+        # fit_vh: use the actual canvas height for zoom, not the full container.
+        # Using vh would over-zoom when canvas_h_at_1 < vh, pushing wide rooms
+        # off the sides because zy inflates beyond the image coordinate space.
+        fit_vh = min(vh, canvas_h_at_1) if canvas_h_at_1 > 0 else vh
         zx = vw / (bw * image_scale)
-        zy = effective_vh / (bh * image_scale)
+        zy = fit_vh / (bh * image_scale)
         self.zoom_level = min(zx, zy, 200.0)
-        # Centre the bounding-box midpoint in the visible canvas area.
         cx = (min_x + max_x) / 2
         cy = (min_y + max_y) / 2
         pxscale = image_scale * self.zoom_level
+        # Centre the bbox midpoint in the container, accounting for canvas_offset_top.
         self.pan_x = vw / 2 - cx * pxscale
-        # pan_y uses effective_vh (actual canvas height), not vh (full container),
-        # so the room centres on the image — not in the dead space below it.
-        self.pan_y = effective_vh / 2 - cy * pxscale
+        self.pan_y = vh / 2 - canvas_offset_top - cy * pxscale
         yield rx.call_script(
             f"window._archiZoom && window._archiZoom.setTransform("
             f"{self.zoom_level}, {self.pan_x}, {self.pan_y});"
@@ -1845,10 +1853,23 @@ class EditorState(rx.State):
         except ValueError:
             pass
 
+    def _centred_default_transform(self) -> dict:
+        """Return a default transform that centres the PDF vertically on the HDR."""
+        t = {"offset_x": 0, "offset_y": 0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
+        if (
+            self.overlay_img_width > 0
+            and self.overlay_img_height > 0
+            and self.image_width > 0
+            and self.image_height > 0
+        ):
+            vw = self.viewport_width or self.image_width
+            hdr_h = vw * self.image_height / self.image_width
+            pdf_h = vw * self.overlay_img_height / self.overlay_img_width
+            t["offset_y"] = round((hdr_h - pdf_h) / 2)
+        return t
+
     def reset_level_alignment(self) -> None:
-        self._set_current_overlay_transform(
-            {"offset_x": 0, "offset_y": 0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
-        )
+        self._set_current_overlay_transform(self._centred_default_transform())
 
     def nudge_overlay(self, dx: int, dy: int) -> None:
         t = dict(self._get_current_overlay_transform())
@@ -1856,13 +1877,20 @@ class EditorState(rx.State):
         t["offset_y"] = t.get("offset_y", 0) + dy
         self._set_current_overlay_transform(t)
 
+    def sync_overlay_transform(self, data: dict) -> None:
+        """Debounced sync from JS after Ctrl+scroll overlay scaling."""
+        t = dict(self._get_current_overlay_transform())
+        t["offset_x"] = data.get("offset_x", t.get("offset_x", 0))
+        t["offset_y"] = data.get("offset_y", t.get("offset_y", 0))
+        t["scale_x"] = data.get("scale_x", t.get("scale_x", 1.0))
+        t["scale_y"] = data.get("scale_y", t.get("scale_y", 1.0))
+        self._set_current_overlay_transform(t)
+
     def _get_current_overlay_transform(self) -> dict:
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
-            return {"offset_x": 0, "offset_y": 0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
+            return self._centred_default_transform()
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        return self.overlay_transforms.get(hdr_name, {
-            "offset_x": 0, "offset_y": 0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0
-        })
+        return self.overlay_transforms.get(hdr_name, self._centred_default_transform())
 
     def _set_current_overlay_transform(self, transform: dict) -> None:
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
@@ -1885,12 +1913,14 @@ class EditorState(rx.State):
             except Exception:
                 pass
         logger.debug(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
-        b64 = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
+        b64, pw, ph = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
         if b64:
             logger.debug(f"[overlay] Rasterized OK, b64 length={len(b64)}")
         else:
             logger.debug("[overlay] Rasterization FAILED — returned None/empty")
         self.overlay_image_b64 = b64 or ""
+        self.overlay_img_width = pw
+        self.overlay_img_height = ph
 
     def _add_align_point(self, x: float, y: float) -> None:
         self.align_points = self.align_points + [{"x": x, "y": y}]
@@ -2494,3 +2524,4 @@ class EditorState(rx.State):
                 self.nudge_overlay(1, 0)
         else:
             logger.debug(f"  handle_key '{k}' → no matching action (unbound key)")
+
