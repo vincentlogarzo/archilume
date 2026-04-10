@@ -27,6 +27,7 @@ class HdrFileInfo(TypedDict):
     hdr_path: str
     tiff_paths: list[str]
     suffix: str
+    legend_map: dict[str, str]
 
 
 class RoomDict(TypedDict):
@@ -140,6 +141,9 @@ class EditorState(rx.State):
 
     # -- Image display
     current_image_b64: str = ""
+    current_legend_b64: str = ""
+    legend_pinned: bool = False
+    legend_hovered: bool = False
     image_width: int = 0
     image_height: int = 0
 
@@ -210,6 +214,7 @@ class EditorState(rx.State):
     _overlay_drag_start_y: float = 0.0
     _overlay_drag_start_ox: float = 0.0
     _overlay_drag_start_oy: float = 0.0
+    _legacy_overlay_pending: bool = False
 
     # =====================================================================
     # §9 — DF% analysis
@@ -485,6 +490,8 @@ class EditorState(rx.State):
         """Called by ResizeObserver JS when the viewport container resizes."""
         self.viewport_width = int(data.get("w", 0))
         self.viewport_height = int(data.get("h", 0))
+        if self._legacy_overlay_pending and self.viewport_width > 0:
+            self._migrate_legacy_overlay_transforms()
 
     @rx.var
     def zoom_pct(self) -> str:
@@ -770,8 +777,9 @@ class EditorState(rx.State):
     @rx.var
     def overlay_css_transform(self) -> str:
         t = self._get_current_overlay_transform()
-        ox = t.get("offset_x", 0)
-        oy = t.get("offset_y", 0)
+        vw = self.viewport_width or self.image_width or 1
+        ox = t.get("offset_x", 0) * vw
+        oy = t.get("offset_y", 0) * vw
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
         rot = t.get("rotation_90", 0)
@@ -815,19 +823,22 @@ class EditorState(rx.State):
     def overlay_svg_transform(self) -> str:
         """SVG-syntax transform for the overlay image (no CSS units)."""
         t = self._get_current_overlay_transform()
-        ox = t.get("offset_x", 0)
-        oy = t.get("offset_y", 0)
+        iw = self.image_width or 1
+        ox = t.get("offset_x", 0) * iw
+        oy = t.get("offset_y", 0) * iw
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
         return f"translate({ox},{oy}) scale({sx},{sy})"
 
     @rx.var
     def overlay_offset_x_str(self) -> str:
-        return str(self._get_current_overlay_transform().get("offset_x", 0))
+        vw = self.viewport_width or self.image_width or 1
+        return str(round(self._get_current_overlay_transform().get("offset_x", 0) * vw))
 
     @rx.var
     def overlay_offset_y_str(self) -> str:
-        return str(self._get_current_overlay_transform().get("offset_y", 0))
+        vw = self.viewport_width or self.image_width or 1
+        return str(round(self._get_current_overlay_transform().get("offset_y", 0) * vw))
 
     @rx.var
     def overlay_scale_x_str(self) -> str:
@@ -996,6 +1007,7 @@ class EditorState(rx.State):
     def load_current_image(self) -> None:
         if not self.image_variants:
             self.current_image_b64 = ""
+            self.current_legend_b64 = ""
             return
         idx = min(self.current_variant_idx, len(self.image_variants) - 1)
         path = Path(self.image_variants[idx])
@@ -1008,6 +1020,31 @@ class EditorState(rx.State):
             self.image_height = h
         else:
             self.current_image_b64 = ""
+        self._update_legend()
+
+    def _update_legend(self) -> None:
+        """Load the legend PNG matching the current image variant, or clear."""
+        self.current_legend_b64 = ""
+        if not self.image_variants or not self.hdr_files:
+            return
+        idx = min(self.current_variant_idx, len(self.image_variants) - 1)
+        variant_path = Path(self.image_variants[idx])
+        if variant_path.suffix.lower() in (".hdr", ".pic"):
+            return
+        hdr_info = self.hdr_files[self.current_hdr_idx]
+        legend_map: dict = hdr_info.get("legend_map", {})
+        if not legend_map:
+            return
+        hdr_stem = hdr_info["name"]
+        variant_stem = variant_path.stem
+        suffix = variant_stem[len(hdr_stem) + 1:] if variant_stem.startswith(hdr_stem + "_") else variant_stem
+        for key, legend_path in legend_map.items():
+            if key in suffix:
+                from ..lib.image_loader import load_image_as_base64
+                b64 = load_image_as_base64(Path(legend_path))
+                if b64:
+                    self.current_legend_b64 = b64
+                return
 
     # =====================================================================
     # ROOM SELECTION
@@ -1230,11 +1267,15 @@ class EditorState(rx.State):
         self.mouse_y = y
 
         if self._overlay_dragging:
+            # Note: this Python drag path is superseded by the JS drag handler
+            # (viewport.py capture-phase mousedown with stopImmediatePropagation).
+            # Kept consistent with fractional offset storage for safety.
             dx = x - self._overlay_drag_start_x
             dy = y - self._overlay_drag_start_y
+            vw = self.viewport_width or self.image_width or 1
             t = dict(self._get_current_overlay_transform())
-            t["offset_x"] = self._overlay_drag_start_ox + dx
-            t["offset_y"] = self._overlay_drag_start_oy + dy
+            t["offset_x"] = self._overlay_drag_start_ox + dx / vw
+            t["offset_y"] = self._overlay_drag_start_oy + dy / vw
             self._set_current_overlay_transform(t)
             return
 
@@ -1281,7 +1322,7 @@ class EditorState(rx.State):
 
     def sync_zoom(self, data: dict) -> None:
         """Receive zoom/pan state from JS after a gesture ends (debounced)."""
-        self.zoom_level = float(data.get("zoom", self.zoom_level))
+        self.zoom_level = max(1.0, float(data.get("zoom", self.zoom_level)))
         self.pan_x = float(data.get("pan_x", self.pan_x))
         self.pan_y = float(data.get("pan_y", self.pan_y))
 
@@ -1758,6 +1799,15 @@ class EditorState(rx.State):
     # PDF OVERLAY
     # =====================================================================
 
+    # ------------------------------------------------------------------
+    # § Legend popout
+    # ------------------------------------------------------------------
+    def toggle_legend_pin(self) -> None:
+        self.legend_pinned = not self.legend_pinned
+
+    def set_legend_hovered(self, v: bool) -> None:
+        self.legend_hovered = v
+
     def toggle_overlay(self) -> None:
         if not self.overlay_pdf_path:
             self._pick_pdf_via_dialog()
@@ -1884,16 +1934,18 @@ class EditorState(rx.State):
 
     def set_overlay_offset_x(self, value: str) -> None:
         try:
+            vw = self.viewport_width or self.image_width or 1
             t = dict(self._get_current_overlay_transform())
-            t["offset_x"] = int(value)
+            t["offset_x"] = int(value) / vw
             self._set_current_overlay_transform(t)
         except ValueError:
             pass
 
     def set_overlay_offset_y(self, value: str) -> None:
         try:
+            vw = self.viewport_width or self.image_width or 1
             t = dict(self._get_current_overlay_transform())
-            t["offset_y"] = int(value)
+            t["offset_y"] = int(value) / vw
             self._set_current_overlay_transform(t)
         except ValueError:
             pass
@@ -1938,8 +1990,11 @@ class EditorState(rx.State):
             pass
 
     def _centred_default_transform(self) -> dict:
-        """Return a default transform that centres the PDF vertically on the HDR."""
-        t = {"offset_x": 0, "offset_y": 0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
+        """Return a default transform that centres the PDF vertically on the HDR.
+
+        Offsets stored as fractions of viewport width (resolution-independent).
+        """
+        t = {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
         if (
             self.overlay_img_width > 0
             and self.overlay_img_height > 0
@@ -1949,7 +2004,7 @@ class EditorState(rx.State):
             vw = self.viewport_width or self.image_width
             hdr_h = vw * self.image_height / self.image_width
             pdf_h = vw * self.overlay_img_height / self.overlay_img_width
-            t["offset_y"] = round((hdr_h - pdf_h) / 2)
+            t["offset_y"] = ((hdr_h - pdf_h) / 2) / vw  # fraction of viewport width
         return t
 
     def reset_level_alignment(self) -> None:
@@ -1991,16 +2046,24 @@ class EditorState(rx.State):
         return 1
 
     def nudge_overlay(self, dx: int, dy: int) -> None:
+        vw = self.viewport_width or self.image_width or 1
         t = dict(self._get_current_overlay_transform())
-        t["offset_x"] = t.get("offset_x", 0) + dx
-        t["offset_y"] = t.get("offset_y", 0) + dy
+        t["offset_x"] = t.get("offset_x", 0.0) + dx / vw
+        t["offset_y"] = t.get("offset_y", 0.0) + dy / vw
         self._set_current_overlay_transform(t)
 
     def sync_overlay_transform(self, data: dict) -> None:
-        """Debounced sync from JS after Ctrl+scroll overlay scaling."""
+        """Debounced sync from JS after Ctrl+scroll overlay scaling or drag.
+
+        JS sends absolute CSS pixel values; we convert to fractional offsets
+        (fraction of viewport width) before storing.
+        """
+        vw = self.viewport_width or self.image_width or 1
         t = dict(self._get_current_overlay_transform())
-        t["offset_x"] = data.get("offset_x", t.get("offset_x", 0))
-        t["offset_y"] = data.get("offset_y", t.get("offset_y", 0))
+        if "offset_x" in data:
+            t["offset_x"] = data["offset_x"] / vw
+        if "offset_y" in data:
+            t["offset_y"] = data["offset_y"] / vw
         t["scale_x"] = data.get("scale_x", t.get("scale_x", 1.0))
         t["scale_y"] = data.get("scale_y", t.get("scale_y", 1.0))
         self._set_current_overlay_transform(t)
@@ -2069,8 +2132,10 @@ class EditorState(rx.State):
         t = dict(self._get_current_overlay_transform())
         t["scale_x"] = scale
         t["scale_y"] = scale
-        t["offset_x"] = int(img1["x"] - pdf1["x"] * scale)
-        t["offset_y"] = int(img1["y"] - pdf1["y"] * scale)
+        # Input coords are SVG user units (= image intrinsic pixels); convert to fraction
+        iw = self.image_width or 1
+        t["offset_x"] = (img1["x"] - pdf1["x"] * scale) / iw
+        t["offset_y"] = (img1["y"] - pdf1["y"] * scale) / iw
         self._set_current_overlay_transform(t)
         self.align_points = []
         self.status_message = "Alignment applied"
@@ -2295,6 +2360,7 @@ class EditorState(rx.State):
         self.rooms = data.get("rooms", [])
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
+        _needs_migration = data.get("transform_version", 0) < 2 and bool(self.overlay_transforms)
         hdr_idx = data.get("current_hdr_idx", 0)
         if 0 <= hdr_idx < len(self.hdr_files):
             self.current_hdr_idx = hdr_idx
@@ -2310,6 +2376,9 @@ class EditorState(rx.State):
         # else: keep the path already resolved by _init_project_paths
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
         self._rebuild_variants()
+        # Migrate legacy pixel offsets AFTER _rebuild_variants sets image_width.
+        if _needs_migration:
+            self._migrate_legacy_overlay_transforms()
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
         if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
             self._rasterize_current_page()
@@ -2318,6 +2387,9 @@ class EditorState(rx.State):
         if not self.session_path:
             return
         from ..lib.session_io import build_session_dict, save_session
+        # Only mark as v2 when migration is complete; otherwise keep unmarked
+        # so that re-loading will re-attempt migration with the correct viewport_width.
+        tv = 2 if not self._legacy_overlay_pending else 1
         data = build_session_dict(
             rooms=self.rooms, df_stamps=self.df_stamps,
             overlay_transforms=self.overlay_transforms,
@@ -2325,7 +2397,7 @@ class EditorState(rx.State):
             selected_parent=self.selected_parent, annotation_scale=self.annotation_scale,
             overlay_dpi=self.overlay_dpi, overlay_visible=self.overlay_visible,
             overlay_alpha=self.overlay_alpha, overlay_pdf_path=self.overlay_pdf_path,
-            overlay_page_idx=self.overlay_page_idx,
+            overlay_page_idx=self.overlay_page_idx, transform_version=tv,
         )
         save_session(Path(self.session_path), data)
 
@@ -2337,6 +2409,29 @@ class EditorState(rx.State):
         self.save_session()
         if self.debug_mode:
             trace.flush()
+
+    def _migrate_legacy_overlay_transforms(self) -> None:
+        """Convert legacy absolute CSS pixel offsets to fractional offsets.
+
+        Old sessions stored offset_x/y as integer CSS pixels. New sessions
+        store them as fractions of viewport width (resolution-independent).
+        Heuristic: fractions are always in (-5, 5); pixel values are larger.
+        """
+        vw = self.viewport_width or self.image_width
+        if not vw:
+            self._legacy_overlay_pending = True
+            return
+        migrated = {}
+        for hdr_name, t in self.overlay_transforms.items():
+            t2 = dict(t)
+            ox = t.get("offset_x", 0)
+            oy = t.get("offset_y", 0)
+            if abs(ox) > 5 or abs(oy) > 5:
+                t2["offset_x"] = ox / vw
+                t2["offset_y"] = oy / vw
+            migrated[hdr_name] = t2
+        self.overlay_transforms = migrated
+        self._legacy_overlay_pending = False
 
     # =====================================================================
     # PROJECT MANAGEMENT

@@ -274,6 +274,12 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
     if not image_dir.exists():
         return []
 
+    # Build directory-level legend map: {"df_cntr": "/path/to/df_cntr_legend.png", ...}
+    legend_map: dict[str, str] = {}
+    for lp in image_dir.glob("*_legend.png"):
+        key = lp.stem.removesuffix("_legend")
+        legend_map[key] = str(lp)
+
     hdr_files = []
     for ext in ("*.hdr", "*.pic"):
         hdr_files.extend(image_dir.glob(ext))
@@ -285,7 +291,9 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
         tiff_paths = []
         for tiff_ext in ("*.tif", "*.tiff", "*.png"):
             for tp in image_dir.glob(tiff_ext):
-                if tp.stem.startswith(stem + "_") and "_aoi_overlay" not in tp.stem:
+                if (tp.stem.startswith(stem + "_")
+                        and "_aoi_overlay" not in tp.stem
+                        and not tp.stem.endswith("_legend")):
                     tiff_paths.append(tp)
         tiff_paths.sort(key=lambda p: p.stem)
 
@@ -294,6 +302,7 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
             "tiff_paths": [str(p) for p in tiff_paths],
             "name": stem,
             "suffix": hdr_path.suffix,
+            "legend_map": legend_map,
         })
 
     return result

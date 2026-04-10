@@ -245,6 +245,104 @@ def _pixel_info_tooltip() -> rx.Component:
     )
 
 
+def _legend_popout() -> rx.Component:
+    """Legend image — top-left of viewport, visible on hover or when pinned."""
+    return rx.cond(
+        EditorState.current_legend_b64 != "",
+        rx.cond(
+            EditorState.legend_hovered | EditorState.legend_pinned,
+            rx.box(
+                rx.el.img(
+                    src=EditorState.current_legend_b64,
+                    style={
+                        "transform": "rotate(-90deg) translateX(-100%)",
+                        "transform_origin": "top left",
+                        "height": "500px",
+                        "width": "auto",
+                        "pointer_events": "none",
+                        "border_radius": "4px",
+                        "box_shadow": "0 2px 8px rgba(0,0,0,0.4)",
+                        "background": "rgba(0,0,0,0.5)",
+                        "padding": "4px",
+                        "display": "block",
+                    },
+                ),
+                style={
+                    "position": "absolute",
+                    "bottom": "62px",
+                    "left": "12px",
+                    "height": "109px",
+                    "overflow": "visible",
+                    "z_index": "20",
+                    "pointer_events": "none",
+                },
+            ),
+            rx.fragment(),
+        ),
+        rx.fragment(),
+    )
+
+
+def _legend_button() -> rx.Component:
+    """Floating legend icon button — bottom-left of viewport canvas."""
+    svg_icon = rx.html(
+        """<svg width="18" height="28" viewBox="0 0 18 28" xmlns="http://www.w3.org/2000/svg" style="pointer-events:none">
+          <defs>
+            <linearGradient id="lg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stop-color="#0000ff"/>
+              <stop offset="25%"  stop-color="#00ffff"/>
+              <stop offset="50%"  stop-color="#00ff00"/>
+              <stop offset="75%"  stop-color="#ffff00"/>
+              <stop offset="100%" stop-color="#ff0000"/>
+            </linearGradient>
+          </defs>
+          <rect x="2" y="1" width="8" height="26" rx="1" fill="url(#lg)"/>
+          <line x1="10" y1="1"    x2="14" y2="1"    stroke="white" stroke-width="1.2"/>
+          <line x1="10" y1="8.3"  x2="13" y2="8.3"  stroke="white" stroke-width="1"/>
+          <line x1="10" y1="14"   x2="14" y2="14"   stroke="white" stroke-width="1.2"/>
+          <line x1="10" y1="19.7" x2="13" y2="19.7" stroke="white" stroke-width="1"/>
+          <line x1="10" y1="27"   x2="14" y2="27"   stroke="white" stroke-width="1.2"/>
+        </svg>""",
+        style={"pointer_events": "none"},
+    )
+    return rx.cond(
+        EditorState.current_legend_b64 != "",
+        rx.box(
+            svg_icon,
+            title="Colour Scale",
+            on_mouse_enter=EditorState.set_legend_hovered(True),
+            on_mouse_leave=EditorState.set_legend_hovered(False),
+            on_click=EditorState.toggle_legend_pin,
+            style={
+                "position": "absolute",
+                "bottom": "12px",
+                "left": "12px",
+                "z_index": "15",
+                "width": "32px",
+                "height": "42px",
+                "display": "flex",
+                "align_items": "center",
+                "justify_content": "center",
+                "background": rx.cond(
+                    EditorState.legend_pinned,
+                    "rgba(13,148,136,0.25)",
+                    "rgba(20,22,28,0.70)",
+                ),
+                "border": rx.cond(
+                    EditorState.legend_pinned,
+                    f"1px solid {COLORS['accent']}",
+                    "1px solid rgba(255,255,255,0.10)",
+                ),
+                "border_radius": "6px",
+                "box_shadow": "0 2px 6px rgba(0,0,0,0.45)",
+                "cursor": "pointer",
+                "_hover": {"background": "rgba(13,148,136,0.20)"},
+            },
+        ),
+        rx.fragment(),
+    )
+
+
 def _progress_bar() -> rx.Component:
     return rx.cond(
         EditorState.progress_visible,
@@ -478,7 +576,8 @@ _CANVAS_JS = rx.script("""
     // Public API — called by Python via rx.call_script for Fit/Reset
     window._archiZoom = {
         setTransform: function(zoom, panX, panY) {
-            _zoom = zoom; _panX = panX; _panY = panY;
+            _zoom = Math.max(1.0, zoom); _panX = panX; _panY = panY;
+            if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
             applyTransform();
         },
         getTransform: function() { return {zoom: _zoom, panX: _panX, panY: _panY}; },
@@ -635,12 +734,13 @@ _CANVAS_JS = rx.script("""
         // Zoom factor — trackpad pinch sends ctrlKey with small deltas
         var delta = e.ctrlKey ? e.deltaY * 4 : e.deltaY;
         var factor = delta > 0 ? 0.9 : 1.1;
-        var newZoom = Math.max(0.1, Math.min(200.0, _zoom * factor));
+        var newZoom = Math.max(1.0, Math.min(200.0, _zoom * factor));
 
         // Adjust pan so the point under cursor stays fixed
         _panX = cx - imgX * newZoom;
         _panY = cy - imgY * newZoom;
         _zoom = newZoom;
+        if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
 
         applyTransform();
         scheduleSync();
@@ -666,6 +766,7 @@ _CANVAS_JS = rx.script("""
         _panY += e.clientY - panStartY;
         panStartX = e.clientX;
         panStartY = e.clientY;
+        if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
         applyTransform();
         scheduleSync();
     });
@@ -1045,6 +1146,7 @@ def _svg_canvas() -> rx.Component:
             "position": "relative", "width": "100%",
             "margin": "auto 0",
             "transform_origin": "0 0",
+            "z_index": "1",
         },
         background=COLORS["viewport"],
     )
@@ -1262,6 +1364,8 @@ def viewport() -> rx.Component:
                     _pixel_info_tooltip(),
                     _empty_state(),
                     _viewport_resize_js(),
+                    _legend_popout(),
+                    _legend_button(),
                     id="viewport-container",
                     align="center",
                     justify="center",

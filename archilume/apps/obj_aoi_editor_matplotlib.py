@@ -46,6 +46,8 @@ import json
 import os
 import re
 import sys
+import tkinter as tk
+from tkinter import filedialog
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -541,23 +543,20 @@ class ObjAoiEditor:
                 obj_path = objs[0]
                 print(f"Auto-selected OBJ: {obj_path}")
 
-        if obj_path is None:
-            # We still don't have an OBJ, but we can't initialize without one.
-            # We'll allow __init__ to complete but launch() will need to handle this
-            # or we can raise here. Raising is safer for this class.
-            raise ValueError("obj_path is required (and could not be auto-discovered in project).")
-
         self.project = project
-        obj_path = Path(obj_path)
-        self.obj_path = base_dir / obj_path if not obj_path.is_absolute() else obj_path
+        if obj_path is not None:
+            obj_path = Path(obj_path)
+            self.obj_path = base_dir / obj_path if not obj_path.is_absolute() else obj_path
+        else:
+            self.obj_path = None
         self.mtl_path = mtl_path
-        self.session_path = session_path or (self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.json")
+        self.session_path = session_path or (self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.json" if self.obj_path else None)
         if room_boundaries_csv is not None:
             room_boundaries_csv = Path(room_boundaries_csv)
             self.room_boundaries_csv = base_dir / room_boundaries_csv if not room_boundaries_csv.is_absolute() else room_boundaries_csv
         else:
             self.room_boundaries_csv = None
-        self.csv_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.csv"
+        self.csv_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.csv" if self.obj_path else None
         self.simplify_ratio = simplify_ratio
         self.detect_floors = detect_floors
         self.max_vertex_display = max_vertex_display
@@ -656,6 +655,21 @@ class ObjAoiEditor:
 
     def launch(self):
         """Load the mesh and open the interactive editor window."""
+        if self.obj_path is None:
+            root = tk.Tk()
+            root.withdraw()
+            chosen = filedialog.askopenfilename(
+                title="Select OBJ file",
+                filetypes=[("OBJ files", "*.obj"), ("All files", "*.*")],
+            )
+            root.destroy()
+            if not chosen:
+                print("No OBJ file selected. Exiting.")
+                return
+            self.obj_path = Path(chosen)
+            self.session_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.json"
+            self.csv_path = self.obj_path.parent / f"{self.obj_path.stem}_room_boundaries.csv"
+
         # Check for cached floor levels in session to skip expensive detection on repeat runs
         cached_floor_levels = None
         if self.session_path.exists():
@@ -3716,6 +3730,14 @@ class ObjAoiEditor:
 
 def launch(project: Optional[str] = None, obj_path: Optional[Union[Path, str]] = None):
     """Launch the OBJ AOI Editor UI."""
+    if not project:
+        project = get_last_project()
+        if not project:
+            projs = list_projects()
+            if len(projs) == 1:
+                project = projs[0]
+                print(f"Auto-selected only available project: {project}")
+
     if project and not obj_path:
         # Try to find an OBJ in the project inputs if not specified
         paths = config.get_project_paths(project)

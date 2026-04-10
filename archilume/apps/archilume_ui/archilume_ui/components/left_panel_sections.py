@@ -51,16 +51,26 @@ def _floor_plan_body() -> rx.Component:
     }
 
     return rx.box(
-        # Show / Attach Floor Plan
+        # Show / Hide / Attach Floor Plan
         rx.flex(
-            rx.icon(tag=rx.cond(EditorState.overlay_has_pdf, "layout-panel-top", "file-up"), size=13),
+            rx.icon(
+                tag=rx.cond(EditorState.overlay_has_pdf, "layout-panel-top", "file-up"),
+                size=13,
+            ),
             rx.text(
-                rx.cond(EditorState.overlay_has_pdf, "Show Floor Plan", "Attach Floor Plan"),
+                rx.cond(
+                    EditorState.overlay_has_pdf,
+                    rx.cond(EditorState.overlay_visible, "Hide Floor Plan", "Show Floor Plan"),
+                    "Attach Floor Plan",
+                ),
                 style={"font_family": FONT_MONO, "font_size": "11px", "margin_left": "5px"},
             ),
             on_click=EditorState.toggle_overlay,
-            style=btn_style,
-            color=COLORS["text_dim"],
+            style={
+                **btn_style,
+                "background": rx.cond(EditorState.overlay_visible, COLORS["btn_on"], "transparent"),
+            },
+            color=rx.cond(EditorState.overlay_visible, COLORS["accent"], COLORS["text_dim"]),
         ),
         # DPI cycle button
         rx.tooltip(
@@ -88,7 +98,7 @@ def _floor_plan_body() -> rx.Component:
             },
             color=rx.cond(EditorState.overlay_align_mode, COLORS["accent"], COLORS["text_dim"]),
         ),
-        style={"padding": "2px 0"},
+        style={"padding": "2px 0", "padding_left": "16px"},
     )
 
 

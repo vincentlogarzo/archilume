@@ -51,11 +51,13 @@ cd archilume/apps/archilume_ui && uv run reflex run  # direct Reflex launch
 
 ## Launching the Reflex App
 
-Start in background — do not ask the user to do it:
+Always launch via the launcher script — do not ask the user to do it, do not use `uv run reflex run` directly:
 
 ```bash
-cd c:/Projects/archilume/archilume/apps/archilume_ui && uv run reflex run &
+cd c:/Projects/archilume && python examples/launch_archilume_ui.py &
 ```
+
+The launcher handles stale backend cleanup automatically before starting Reflex.
 
 Poll until ready (repeat until `200`):
 
