@@ -81,7 +81,7 @@ SIDEBAR_WIDTH = "52px"
 PROJECT_TREE_WIDTH = "260px"
 RIGHT_PANEL_WIDTH = "220px"
 HEADER_HEIGHT = "46px"
-BOTTOM_ROW_HEIGHT = "160px"
+
 
 # ---------------------------------------------------------------------------
 # Reusable style fragments (static-only keys — no rx.Var here)

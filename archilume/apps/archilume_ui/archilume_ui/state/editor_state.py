@@ -154,7 +154,7 @@ class EditorState(rx.State):
     multi_selected_idxs: list[int] = []
     selected_parent: str = ""
     room_name_input: str = ""
-    room_type_input: str = "BED"
+    room_type_input: str = "NONE"
 
     # =====================================================================
     # §4 — Interaction modes
@@ -202,6 +202,14 @@ class EditorState(rx.State):
     align_points: list[AlignPoint] = []
     overlay_img_width: int = 0
     overlay_img_height: int = 0
+    _arrow_last_time: float = 0.0
+    _arrow_last_dir: str = ""
+    _arrow_repeat_count: int = 0
+    _overlay_dragging: bool = False
+    _overlay_drag_start_x: float = 0.0
+    _overlay_drag_start_y: float = 0.0
+    _overlay_drag_start_ox: float = 0.0
+    _overlay_drag_start_oy: float = 0.0
 
     # =====================================================================
     # §9 — DF% analysis
@@ -250,6 +258,7 @@ class EditorState(rx.State):
     # §13 — UI chrome
     # =====================================================================
     project_tree_open: bool = True
+    floor_plan_section_open: bool = True
     collapsed_hdrs: list[str] = []
     shortcuts_modal_open: bool = False
     open_project_modal_open: bool = False
@@ -405,7 +414,7 @@ class EditorState(rx.State):
                 nodes.append({
                     "node_type": "parent_room",
                     "label": room_name,
-                    "room_type": room.get("room_type", ""),
+                    "room_type": room.get("room_type", "") or "NONE",
                     "indent": "16px",
                     "selected": is_selected,
                     "is_current_hdr": is_current,
@@ -428,7 +437,7 @@ class EditorState(rx.State):
                     nodes.append({
                         "node_type": "child_room",
                         "label": child_label,
-                        "room_type": child.get("room_type", ""),
+                        "room_type": child.get("room_type", "") or "NONE",
                         "indent": "32px",
                         "selected": child_selected,
                         "is_current_hdr": is_current,
@@ -457,7 +466,7 @@ class EditorState(rx.State):
                     nodes.append({
                         "node_type": "child_room",
                         "label": child_label,
-                        "room_type": child.get("room_type", ""),
+                        "room_type": child.get("room_type", "") or "NONE",
                         "indent": "16px",
                         "selected": child_selected,
                         "is_current_hdr": is_current,
@@ -680,7 +689,7 @@ class EditorState(rx.State):
             result.append({
                 "idx": i,
                 "name": room.get("name", ""),
-                "room_type": room.get("room_type", ""),
+                "room_type": room.get("room_type", "") or "NONE",
                 "parent": room.get("parent") or "",
                 "is_circ": is_circ,
                 "is_div": is_div,
@@ -779,6 +788,11 @@ class EditorState(rx.State):
     @rx.var
     def overlay_alpha_str(self) -> str:
         return str(self.overlay_alpha)
+
+    @rx.var
+    def overlay_transparency_str(self) -> str:
+        """Current transparency as a fraction 0–1 (0 = opaque, 1 = fully transparent)."""
+        return str(round(1.0 - self.overlay_alpha, 2))
 
     @rx.var
     def overlay_transparency_pct(self) -> str:
@@ -1013,7 +1027,7 @@ class EditorState(rx.State):
         if 0 <= idx < len(self.rooms):
             room = self.rooms[idx]
             self.room_name_input = room.get("name", "")
-            self.room_type_input = room.get("room_type", "BED")
+            self.room_type_input = room.get("room_type", "NONE") or "NONE"
             self.selected_parent = room.get("parent", "") or ""
             # Navigate to the HDR this room belongs to
             hdr_name = room.get("hdr_file", "")
@@ -1086,6 +1100,32 @@ class EditorState(rx.State):
             rooms_copy = list(self.rooms)
             rooms_copy[self.selected_room_idx] = {**rooms_copy[self.selected_room_idx], "room_type": rtype}
             self.rooms = rooms_copy
+
+    _ROOM_TYPE_CYCLE = ["NONE", "BED", "LIVING", "NON-RESI", "CIRC"]
+
+    def cycle_room_type(self, room_idx: int) -> None:
+        """Cycle the room type for a room (or all selected rooms in bulk)."""
+        if not (0 <= room_idx < len(self.rooms)):
+            return
+        current = self.rooms[room_idx].get("room_type", "NONE") or "NONE"
+        try:
+            next_type = self._ROOM_TYPE_CYCLE[
+                (self._ROOM_TYPE_CYCLE.index(current) + 1) % len(self._ROOM_TYPE_CYCLE)
+            ]
+        except ValueError:
+            next_type = self._ROOM_TYPE_CYCLE[0]
+        # Bulk: apply to all selected rooms when multi-selected
+        if self.multi_selected_idxs:
+            rooms_copy = list(self.rooms)
+            for idx in self.multi_selected_idxs:
+                if 0 <= idx < len(rooms_copy):
+                    rooms_copy[idx] = {**rooms_copy[idx], "room_type": next_type}
+            self.rooms = rooms_copy
+        else:
+            rooms_copy = list(self.rooms)
+            rooms_copy[room_idx] = {**rooms_copy[room_idx], "room_type": next_type}
+            self.rooms = rooms_copy
+        self.room_type_input = next_type
 
     def set_selected_parent(self, value: str) -> None:
         self.selected_parent = value
@@ -1189,6 +1229,15 @@ class EditorState(rx.State):
         self.mouse_x = x
         self.mouse_y = y
 
+        if self._overlay_dragging:
+            dx = x - self._overlay_drag_start_x
+            dy = y - self._overlay_drag_start_y
+            t = dict(self._get_current_overlay_transform())
+            t["offset_x"] = self._overlay_drag_start_ox + dx
+            t["offset_y"] = self._overlay_drag_start_oy + dy
+            self._set_current_overlay_transform(t)
+            return
+
         if self.draw_mode and self.draw_vertices:
             self._update_draw_preview(x, y)
         elif self.edit_mode and self.dragging_vertex_idx >= 0:
@@ -1208,14 +1257,25 @@ class EditorState(rx.State):
 
     @debug_handler
     def handle_mouse_down(self, data: dict) -> None:
-        if not self.edit_mode:
-            return
         x = float(data.get("x", 0))
         y = float(data.get("y", 0))
+        if self.overlay_align_mode and self.overlay_visible:
+            t = self._get_current_overlay_transform()
+            self._overlay_dragging = True
+            self._overlay_drag_start_x = x
+            self._overlay_drag_start_y = y
+            self._overlay_drag_start_ox = float(t.get("offset_x", 0))
+            self._overlay_drag_start_oy = float(t.get("offset_y", 0))
+            return
+        if not self.edit_mode:
+            return
         self._editing_start_drag(x, y)
 
     @debug_handler
     def handle_mouse_up(self, data: dict) -> None:
+        if self._overlay_dragging:
+            self._overlay_dragging = False
+            return
         if self.edit_mode:
             self.dragging_vertex_idx = -1
 
@@ -1429,7 +1489,7 @@ class EditorState(rx.State):
             "parent": self.selected_parent or None,
             "vertices": vertices,
             "hdr_file": hdr_name,
-            "room_type": self.room_type_input or "BED",
+            "room_type": self.room_type_input or "NONE",
             "visible": True,
         }
         # Push draw undo
@@ -1664,9 +1724,9 @@ class EditorState(rx.State):
         existing_names.append(name_a)
         name_b = make_unique_name(f"{base_name}_B", existing_names)
         room_a = {"name": name_a, "parent": room.get("parent"), "vertices": poly_a,
-                   "hdr_file": room.get("hdr_file", ""), "room_type": room.get("room_type", "BED"), "visible": True}
+                   "hdr_file": room.get("hdr_file", ""), "room_type": room.get("room_type", "NONE") or "NONE", "visible": True}
         room_b = {"name": name_b, "parent": room.get("parent"), "vertices": poly_b,
-                   "hdr_file": room.get("hdr_file", ""), "room_type": room.get("room_type", "BED"), "visible": True}
+                   "hdr_file": room.get("hdr_file", ""), "room_type": room.get("room_type", "NONE") or "NONE", "visible": True}
         rooms_copy = list(self.rooms)
         rooms_copy[self.divider_room_idx] = room_a
         rooms_copy.insert(self.divider_room_idx + 1, room_b)
@@ -1706,6 +1766,9 @@ class EditorState(rx.State):
         logger.debug(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', b64_len={len(self.overlay_image_b64)}")
         if self.overlay_visible and not self.overlay_image_b64:
             self._rasterize_current_page()
+        if self.overlay_visible:
+            self._ensure_default_transform()
+        self._auto_save()
 
     def _pick_pdf_via_dialog(self) -> None:
         import tkinter as tk
@@ -1779,9 +1842,28 @@ class EditorState(rx.State):
             return
         self._rasterize_current_page()
 
+    def cycle_overlay_dpi(self) -> None:
+        _DPI_STEPS = [72, 100, 150, 200, 300]
+        try:
+            idx = _DPI_STEPS.index(self.overlay_dpi)
+        except ValueError:
+            idx = 2  # default to 150
+        self.overlay_dpi = _DPI_STEPS[(idx + 1) % len(_DPI_STEPS)]
+        self._rasterize_current_page()
+
     def set_overlay_alpha(self, value: str) -> None:
         try:
             self.overlay_alpha = max(0.0, min(1.0, float(value)))
+            self._auto_save()
+        except ValueError:
+            pass
+
+    def set_overlay_transparency_fraction(self, value: str) -> None:
+        """Set transparency as a fraction 0–1 (0 = opaque, 1 = fully transparent)."""
+        try:
+            v = round(max(0.0, min(1.0, float(value))) * 20) / 20  # snap to 0.05 increments
+            self.overlay_alpha = round(1.0 - v, 2)
+            self._auto_save()
         except ValueError:
             pass
 
@@ -1789,12 +1871,14 @@ class EditorState(rx.State):
         """Slider on_value_commit passes list[float]; value 0–95 (transparency %) → opacity = 1 - v/100."""
         v = value[0] if value else 40
         self.overlay_alpha = max(0.05, min(1.0, 1.0 - v / 100))
+        self._auto_save()
 
     def set_overlay_transparency_int(self, value: str) -> None:
         """Number input: value 0–100 (transparency %) → opacity = 1 - v/100."""
         try:
             v = max(0, min(100, int(value)))
             self.overlay_alpha = max(0.0, min(1.0, 1.0 - v / 100))
+            self._auto_save()
         except ValueError:
             pass
 
@@ -1869,7 +1953,42 @@ class EditorState(rx.State):
         return t
 
     def reset_level_alignment(self) -> None:
-        self._set_current_overlay_transform(self._centred_default_transform())
+        """Remove the stored transform for this HDR so it inherits from the previous level."""
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            return
+        if self.current_hdr_idx == 0:
+            # First HDR: reset to centred default
+            self._set_current_overlay_transform(self._centred_default_transform())
+            return
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        t = dict(self.overlay_transforms)
+        t.pop(hdr_name, None)
+        self.overlay_transforms = t
+        self._auto_save()
+
+    def _ensure_default_transform(self) -> None:
+        """For the first HDR, store a centred default transform if none exists yet."""
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            return
+        if self.current_hdr_idx == 0:
+            hdr_name = self.hdr_files[0]["name"]
+            if hdr_name not in self.overlay_transforms:
+                self._set_current_overlay_transform(self._centred_default_transform())
+
+    def _arrow_accel(self, direction: str) -> int:
+        now = time.time()
+        elapsed = now - self._arrow_last_time
+        if direction == self._arrow_last_dir and elapsed < 0.15:
+            self._arrow_repeat_count += 1
+        else:
+            self._arrow_repeat_count = 1
+        self._arrow_last_time = now
+        self._arrow_last_dir = direction
+        if self._arrow_repeat_count >= 10:
+            return 20
+        elif self._arrow_repeat_count >= 4:
+            return 5
+        return 1
 
     def nudge_overlay(self, dx: int, dy: int) -> None:
         t = dict(self._get_current_overlay_transform())
@@ -1890,15 +2009,25 @@ class EditorState(rx.State):
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return self._centred_default_transform()
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        return self.overlay_transforms.get(hdr_name, self._centred_default_transform())
+        if hdr_name in self.overlay_transforms:
+            return self.overlay_transforms[hdr_name]
+        # Inherit from the nearest previous HDR that has a stored transform.
+        for idx in range(self.current_hdr_idx - 1, -1, -1):
+            prev_name = self.hdr_files[idx]["name"]
+            if prev_name in self.overlay_transforms:
+                return dict(self.overlay_transforms[prev_name])
+        return self._centred_default_transform()
 
     def _set_current_overlay_transform(self, transform: dict) -> None:
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        stored = dict(transform)
+        stored["is_manual"] = True
         t = dict(self.overlay_transforms)
-        t[hdr_name] = transform
+        t[hdr_name] = stored
         self.overlay_transforms = t
+        self._auto_save()
 
     def _rasterize_current_page(self) -> None:
         if not self.overlay_pdf_path:
@@ -2007,7 +2136,7 @@ class EditorState(rx.State):
         for i, room in enumerate(self.rooms):
             if room.get("hdr_file") != hdr_name:
                 continue
-            result = compute_room_df(df_image, room.get("vertices", []), room.get("room_type", "BED"))
+            result = compute_room_df(df_image, room.get("vertices", []), room.get("room_type", "NONE") or "NONE")
             if result:
                 results[str(i)] = result
         self.room_df_results = results
@@ -2229,6 +2358,7 @@ class EditorState(rx.State):
     def open_project(self, name: str) -> None:
         if not name:
             return
+        self.save_session()
         self.project = name
         self._init_project_paths()
         self._rebuild_variants()
@@ -2341,6 +2471,10 @@ class EditorState(rx.State):
 
     def toggle_project_tree(self) -> None:
         self.project_tree_open = not self.project_tree_open
+
+    def toggle_floor_plan_section(self) -> None:
+        self.floor_plan_section_open = not self.floor_plan_section_open
+
 
 
 
@@ -2502,26 +2636,30 @@ class EditorState(rx.State):
             self.exit_mode()
         elif k == "ArrowUp":
             if self.overlay_align_mode and self.overlay_visible:
-                logger.debug("  handle_key 'ArrowUp' → nudge_overlay(0, -1)")
-                self.nudge_overlay(0, -1)
+                step = self._arrow_accel("up")
+                logger.debug(f"  handle_key 'ArrowUp' → nudge_overlay(0, -{step})")
+                self.nudge_overlay(0, -step)
             else:
                 logger.debug(f"  handle_key 'ArrowUp' → navigate_hdr(-1) (current={self.current_hdr_idx})")
                 self.navigate_hdr(-1)
         elif k == "ArrowDown":
             if self.overlay_align_mode and self.overlay_visible:
-                logger.debug("  handle_key 'ArrowDown' → nudge_overlay(0, 1)")
-                self.nudge_overlay(0, 1)
+                step = self._arrow_accel("down")
+                logger.debug(f"  handle_key 'ArrowDown' → nudge_overlay(0, {step})")
+                self.nudge_overlay(0, step)
             else:
                 logger.debug(f"  handle_key 'ArrowDown' → navigate_hdr(1) (current={self.current_hdr_idx})")
                 self.navigate_hdr(1)
         elif k == "ArrowLeft":
             if self.overlay_align_mode and self.overlay_visible:
-                logger.debug("  handle_key 'ArrowLeft' → nudge_overlay(-1, 0)")
-                self.nudge_overlay(-1, 0)
+                step = self._arrow_accel("left")
+                logger.debug(f"  handle_key 'ArrowLeft' → nudge_overlay(-{step}, 0)")
+                self.nudge_overlay(-step, 0)
         elif k == "ArrowRight":
             if self.overlay_align_mode and self.overlay_visible:
-                logger.debug("  handle_key 'ArrowRight' → nudge_overlay(1, 0)")
-                self.nudge_overlay(1, 0)
+                step = self._arrow_accel("right")
+                logger.debug(f"  handle_key 'ArrowRight' → nudge_overlay({step}, 0)")
+                self.nudge_overlay(step, 0)
         else:
             logger.debug(f"  handle_key '{k}' → no matching action (unbound key)")
 

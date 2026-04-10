@@ -20,15 +20,52 @@ from pathlib import Path
 
 URL = "http://localhost:3000"
 
+_CHROME_NAMES = [
+    "chrome",
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+]
+
+_CHROME_WIN_PATHS = [
+    Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+    Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+]
+
+
+def _get_browser() -> webbrowser.BaseBrowser:
+    """Return a Chrome browser controller if available, else the default."""
+    # Try named registrations first (works on Linux/macOS after PATH lookup)
+    for name in _CHROME_NAMES:
+        try:
+            b = webbrowser.get(name)
+            if b is not None:
+                return b
+        except webbrowser.Error:
+            pass
+
+    # On Windows, look for chrome.exe at known install paths
+    if sys.platform == "win32":
+        for chrome_path in _CHROME_WIN_PATHS:
+            if chrome_path.exists():
+                webbrowser.register("chrome", None, webbrowser.BackgroundBrowser(str(chrome_path)))
+                return webbrowser.get("chrome")
+
+    # Fall back to the OS default
+    return webbrowser.get()
+
 
 def _open_browser_when_ready(proc: subprocess.Popen) -> None:
     """Watch stdout for the Reflex 'App running' signal then open the browser."""
     if proc.stdout is None:
         return
+    browser = _get_browser()
     for line in proc.stdout:
         print(line, end="", flush=True)
         if "App running" in line or "localhost:3000" in line:
-            webbrowser.open(URL)
+            browser.open(URL)
             break
     for line in proc.stdout:
         print(line, end="", flush=True)

@@ -110,7 +110,7 @@ def _top_toolbar() -> rx.Component:
 # ---------------------------------------------------------------------------
 
 def _overlay_align_panel() -> rx.Component:
-    def _field(label: str, step: str, value, on_change=None):
+    def _field(label: str, step: str, value, on_change=None, **kwargs):
         return rx.flex(
             rx.text(label, style={"font_family": FONT_MONO, "font_size": "11px",
                                    "color": COLORS["text_dim"], "width": "60px"}),
@@ -121,6 +121,7 @@ def _overlay_align_panel() -> rx.Component:
                 on_change=on_change,
                 style={"font_family": FONT_MONO, "font_size": "11px", "width": "80px"},
                 size="1",
+                **kwargs,
             ),
             align="center", gap="4px",
         )
@@ -151,8 +152,9 @@ def _overlay_align_panel() -> rx.Component:
                        on_change=EditorState.set_overlay_offset_y),
                 _field("Scale", "0.01", EditorState.overlay_scale_str,
                        on_change=EditorState.set_overlay_scale),
-                _field("Transp.", "0.05", EditorState.overlay_alpha_str,
-                       on_change=EditorState.set_overlay_alpha),
+                _field("Transp.", "0.05", EditorState.overlay_transparency_str,
+                       on_change=EditorState.set_overlay_transparency_fraction,
+                       min="0", max="1"),
                 _field("Rotate °", "1", EditorState.overlay_rotation_deg_str,
                        on_change=EditorState.set_overlay_rotation_deg),
                 direction="column", gap="4px",
@@ -160,11 +162,27 @@ def _overlay_align_panel() -> rx.Component:
             ),
             rx.flex(
                 rx.icon_button(
+                    rx.icon(tag="refresh-cw", size=12),
+                    rx.text("Change Page", style={"font_family": FONT_MONO, "font_size": "10px",
+                                                   "margin_left": "4px"}),
+                    variant="ghost", size="1",
+                    on_click=EditorState.cycle_overlay_page,
+                    style={"color": COLORS["text_dim"], "width": "100%",
+                           "padding": "4px 8px", "cursor": "pointer",
+                           "_hover": {"background": COLORS["hover"]}},
+                ),
+                style={"border_top": f"1px solid {COLORS['panel_bdr']}"},
+            ),
+            rx.flex(
+                rx.icon_button(
                     rx.icon(tag="rotate-ccw", size=12),
                     rx.text("Reset", style={"font_family": FONT_MONO, "font_size": "10px",
                                             "margin_left": "4px"}),
                     variant="ghost", size="1",
-                    on_click=EditorState.reset_level_alignment,
+                    on_click=[
+                        EditorState.reset_level_alignment,
+                        rx.call_script("if(window._cancelOverlaySync)window._cancelOverlaySync();"),
+                    ],
                     style={"color": COLORS["text_dim"], "width": "100%",
                            "padding": "4px 8px", "cursor": "pointer",
                            "_hover": {"background": COLORS["hover"]}},
@@ -504,6 +522,16 @@ _CANVAS_JS = rx.script("""
     // ---------------------------------------------------------------------------
     var _overlaySyncTimer = null;
 
+    // Exposed globally so Python's reset button can cancel pending syncs
+    // and clear stale inline styles that would overwrite the reset.
+    window._cancelOverlaySync = function() {
+        if (_overlaySyncTimer) { clearTimeout(_overlaySyncTimer); _overlaySyncTimer = null; }
+        _overlayDragT = null;
+        _overlayDragging = false;
+        var img = getOverlayImg();
+        if (img) img.style.transform = '';
+    };
+
     function getOverlayImg() {
         // The overlay <img> has opacity < 1 and is not the editor-img
         var imgs = document.querySelectorAll('#viewport-container img:not(#editor-img)');
@@ -578,7 +606,7 @@ _CANVAS_JS = rx.script("""
             var overlayImg = getOverlayImg();
             if (overlayImg) {
                 var t = parseOverlayTransform(overlayImg);
-                var factor = e.deltaY > 0 ? 0.95 : 1.05;
+                var factor = e.deltaY > 0 ? 0.99 : 1.01;
                 var newS = t.sx * factor;
                 // Scale around centre: adjust offset so centre stays fixed
                 var rect = container.getBoundingClientRect();
@@ -644,6 +672,54 @@ _CANVAS_JS = rx.script("""
 
     window.addEventListener('mouseup', function(e) {
         if (e.button === 1) panning = false;
+    });
+
+    // ---------------------------------------------------------------------------
+    // Overlay drag — left-click drag in Adjust Plan Mode moves the PDF underlay.
+    // Pure JS — no Python round-trip during drag for smooth 60fps response.
+    // Syncs to Python once on mouseup via scheduleOverlaySync.
+    // ---------------------------------------------------------------------------
+    var _overlayDragging = false;
+    var _overlayDragStartX = 0, _overlayDragStartY = 0;
+    var _overlayDragStartOx = 0, _overlayDragStartOy = 0;
+    var _overlayDragT = null;
+
+    document.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        if (!isOverViewport(e)) return;
+        var container = document.getElementById('viewport-container');
+        if (!container || container.dataset.overlayAlign !== 'true') return;
+        var overlayImg = getOverlayImg();
+        if (!overlayImg) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        _overlayDragging = true;
+        _overlayDragStartX = e.clientX;
+        _overlayDragStartY = e.clientY;
+        _overlayDragT = parseOverlayTransform(overlayImg);
+        _overlayDragStartOx = _overlayDragT.ox;
+        _overlayDragStartOy = _overlayDragT.oy;
+        overlayImg.style.cursor = 'grabbing';
+    }, true); // capture phase so we beat the SVG listener
+
+    window.addEventListener('mousemove', function(e) {
+        if (!_overlayDragging) return;
+        var overlayImg = getOverlayImg();
+        if (!overlayImg || !_overlayDragT) return;
+        var dx = e.clientX - _overlayDragStartX;
+        var dy = e.clientY - _overlayDragStartY;
+        _overlayDragT.ox = _overlayDragStartOx + dx;
+        _overlayDragT.oy = _overlayDragStartOy + dy;
+        applyOverlayTransform(overlayImg, _overlayDragT);
+    });
+
+    window.addEventListener('mouseup', function(e) {
+        if (!_overlayDragging) return;
+        _overlayDragging = false;
+        var overlayImg = getOverlayImg();
+        if (overlayImg) overlayImg.style.cursor = '';
+        if (_overlayDragT) scheduleOverlaySync(_overlayDragT);
+        _overlayDragT = null;
     });
 
     // ---------------------------------------------------------------------------
@@ -715,6 +791,8 @@ _CANVAS_JS = rx.script("""
     // ---------------------------------------------------------------------------
     function attachSvgListeners(svg) {
         svg.addEventListener('click', function(e) {
+            var container = document.getElementById('viewport-container');
+            if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_canvas_click', {
                 data: {x: c.x, y: c.y, button: e.button, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}
@@ -723,6 +801,8 @@ _CANVAS_JS = rx.script("""
 
         svg.addEventListener('contextmenu', function(e) {
             e.preventDefault();
+            var container = document.getElementById('viewport-container');
+            if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_canvas_click', {
                 data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}
@@ -733,17 +813,23 @@ _CANVAS_JS = rx.script("""
             var now = Date.now();
             if (now - lastMoveTime < MOVE_THROTTLE_MS) return;
             lastMoveTime = now;
+            var container = document.getElementById('viewport-container');
+            if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_mouse_move', {data: {x: c.x, y: c.y}});
         });
 
         svg.addEventListener('mousedown', function(e) {
             if (e.button !== 0) return;
+            var container = document.getElementById('viewport-container');
+            if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_mouse_down', {data: {x: c.x, y: c.y}});
         });
 
         svg.addEventListener('mouseup', function(e) {
+            var container = document.getElementById('viewport-container');
+            if (container && container.dataset.overlayAlign === 'true') return;
             dispatch('editor_state.handle_mouse_up', {data: {}});
         });
     }
@@ -949,6 +1035,7 @@ def _svg_canvas() -> rx.Component:
                 "position": "absolute", "top": "0", "left": "0",
                 "width": "100%", "height": "100%",
                 "pointer_events": "all",
+                "cursor": rx.cond(EditorState.overlay_align_mode, "grab", "default"),
             },
         ),
         # JS bridge for coordinate conversion and zoom/pan
@@ -1105,10 +1192,60 @@ def viewport() -> rx.Component:
         rx.cond(
             EditorState.active_tab == "simulation",
             _tab_with_no_project_gate(
-                _tab_placeholder(
-                    "Simulation Manager",
-                    "Connect to GCP VM, launch simulations, and stream results back to the project directory.",
-                    "cloud-cog",
+                rx.box(
+                    rx.flex(
+                        rx.icon(tag="cloud-cog", style={"width": "48px", "height": "48px",
+                                                         "stroke_width": "1", "color": COLORS["text_dim"]}),
+                        rx.text("Simulation Manager", style={"font_family": FONT_MONO, "font_size": "18px",
+                                                              "color": COLORS["text_pri"], "margin_top": "12px"}),
+                        rx.text("Connect to GCP VM, launch simulations, and stream results back to the project directory.",
+                                style={"font_family": FONT_MONO, "font_size": "12px",
+                                       "color": COLORS["text_dim"], "margin_top": "4px",
+                                       "text_align": "center", "max_width": "400px"}),
+                        direction="column", align="center",
+                        style={"margin_bottom": "24px"},
+                    ),
+                    # Simulation controls
+                    rx.box(
+                        rx.box(
+                            rx.select(["Default", "Summer Solstice", "Winter Solstice", "Equinox"],
+                                      default_value="Default", size="1",
+                                      style={"font_family": FONT_MONO, "font_size": "11px"}),
+                            style={"padding": "6px 8px"},
+                        ),
+                        rx.flex(
+                            rx.icon(tag="circle-play", size=14, style={"color": COLORS["text_dim"]}),
+                            rx.text("Review Simulation", style={"font_family": FONT_MONO, "font_size": "11px",
+                                                                  "color": COLORS["text_pri"], "margin_left": "6px"}),
+                            align="center",
+                            style={"padding": "4px 8px", "cursor": "pointer",
+                                   "_hover": {"background": COLORS["hover"]}},
+                        ),
+                        rx.flex(
+                            rx.icon(tag="cloud-upload", size=14, style={"color": COLORS["text_dim"]}),
+                            rx.text("Connect to Cloud", style={"font_family": FONT_MONO, "font_size": "11px",
+                                                                 "color": COLORS["text_pri"], "margin_left": "6px"}),
+                            align="center",
+                            style={"padding": "4px 8px", "cursor": "pointer",
+                                   "_hover": {"background": COLORS["hover"]}},
+                        ),
+                        rx.flex(
+                            rx.select(["BESS", "Green Star", "NABERS", "EN 17037", "WELL"],
+                                      default_value="BESS", size="1",
+                                      style={"font_family": FONT_MONO, "font_size": "11px", "flex": "1"}),
+                            rx.icon_button(rx.icon(tag="heart", size=14), variant="ghost", size="1",
+                                           style={"color": COLORS["text_dim"]}),
+                            align="center", gap="4px", style={"padding": "4px 8px"},
+                        ),
+                        style={"max_width": "320px", "border_radius": "6px",
+                               "border": "1px solid", "border_color": COLORS["panel_bdr"]},
+                        background=COLORS["panel_bg"],
+                    ),
+                    style={
+                        "flex": "1",
+                        "display": "flex", "flex_direction": "column",
+                        "align_items": "center", "justify_content": "center",
+                    },
                 ),
             ),
             rx.fragment(),

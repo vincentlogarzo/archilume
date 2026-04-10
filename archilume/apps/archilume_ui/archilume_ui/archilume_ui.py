@@ -2,7 +2,6 @@
 
 import reflex as rx
 
-from .components.bottom_row import bottom_row
 from .components.header import header
 from .components.modals import (
     accelerad_modal,
@@ -106,11 +105,7 @@ def index() -> rx.Component:
             rx.flex(
                 project_tree(),
                 rx.flex(
-                    rx.flex(
-                        viewport(),
-                        style={"flex": "1", "overflow": "hidden"},
-                    ),
-                    bottom_row(),
+                    viewport(),
                     direction="column",
                     style={"flex": "1", "overflow": "hidden"},
                 ),

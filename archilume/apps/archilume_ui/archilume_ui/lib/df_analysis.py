@@ -8,6 +8,7 @@ import numpy as np
 
 # DF% thresholds by room type
 DF_THRESHOLDS = {
+    "NONE": None,  # No threshold — untyped room
     "BED": 0.5,
     "LIVING": 1.0,
     "NON-RESI": 2.0,
@@ -18,7 +19,7 @@ DF_THRESHOLDS = {
 def compute_room_df(
     df_image: np.ndarray,
     vertices: list[list[float]],
-    room_type: str = "BED",
+    room_type: str = "NONE",
     image_width: int = 0,
     image_height: int = 0,
 ) -> Optional[dict]:

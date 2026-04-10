@@ -4,6 +4,7 @@ import reflex as rx
 
 from ..state import EditorState
 from ..styles import COLORS, FONT_MONO, PROJECT_TREE_WIDTH
+from .left_panel_sections import floor_plan_section
 
 _ROW_H = "26px"
 _FONT = {"font_family": FONT_MONO, "font_size": "11px"}
@@ -153,10 +154,12 @@ def _room_row(node: dict) -> rx.Component:
             rx.badge(
                 node["room_type"],
                 style={"font_family": FONT_MONO, "font_size": "9px",
-                       "padding": "0 4px", "flex_shrink": "0"},
-                color=COLORS["accent2"],
+                       "padding": "0 4px", "flex_shrink": "0", "cursor": "pointer"},
+                color=rx.cond(node["room_type"] == "NONE", COLORS["text_sec"], COLORS["accent2"]),
                 background=COLORS["deep"],
                 border="1px solid", border_color=COLORS["panel_bdr"],
+                _hover={"background": COLORS["hover"], "border_color": rx.cond(node["room_type"] == "NONE", COLORS["text_sec"], COLORS["accent2"])},
+                on_click=EditorState.cycle_room_type(node["room_idx"]).stop_propagation,
             ),
             rx.fragment(),
         ),
@@ -287,6 +290,7 @@ def project_tree() -> rx.Component:
                     "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
                 },
             ),
+            floor_plan_section(),
             rx.box(
                 id="project-tree-resize-handle",
                 style={

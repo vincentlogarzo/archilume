@@ -62,7 +62,7 @@ def _room_name_card() -> rx.Component:
     )
 
 
-_ROOM_TYPES = ["BED", "LIVING", "NON-RESI", "CIRC"]
+_ROOM_TYPES = ["NONE", "BED", "LIVING", "NON-RESI", "CIRC"]
 
 
 def _room_type_card() -> rx.Component:
