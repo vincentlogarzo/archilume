@@ -90,7 +90,7 @@ After modifying `archilume_ui`, use Playwright MCP to **functionally test** chan
 5. Screenshot after each interaction. Compare specifically: spacing, font sizes, exact colors, alignment, border-radius, shadows, interactive states.
 6. `browser_console_messages` — check for JS errors.
 7. **Minimum 2 comparison rounds** — screenshot → compare → fix → repeat. Stop only when no visible differences remain.
-8. Flush temp dir when done: `rm -rf .playwright-tmp/*`
+8. Screenshots are written to `C:/Users/VincentLogarzo/AppData/Local/Temp/playwright-mcp` — never to the repo.
 
 **Key tools:** `browser_snapshot`, `browser_click`, `browser_fill_form`, `browser_press_key`, `browser_select_option`, `browser_hover`, `browser_take_screenshot`, `browser_console_messages`.
 
