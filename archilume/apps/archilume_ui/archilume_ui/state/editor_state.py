@@ -221,7 +221,8 @@ class EditorState(rx.State):
     # =====================================================================
     df_stamps: dict = {}
     room_df_results: dict = {}
-    df_cursor_label: str = ""
+    df_cursor_label: str = ""   # "px(x,y) DF: x.xx%" — shown in status bar
+    df_cursor_df: str = ""      # "DF: x.xx%" — cursor overlay line 1
 
     # =====================================================================
     # §10 — Export / AcceleradRT
@@ -588,6 +589,48 @@ class EditorState(rx.State):
         return str(round(6.5 * self.annotation_scale * 0.12, 2))
 
     @rx.var
+    def df_stamp_radius(self) -> str:
+        """DF stamp dot radius, scaled by annotation_scale and inversely by zoom."""
+        r = 3.0 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(0.5, min(12.0, r)), 2))
+
+    @rx.var
+    def df_stamp_font_size(self) -> str:
+        """DF stamp label font size, scaled by annotation_scale and inversely by zoom."""
+        fs = 5.0 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(2.0, min(20.0, fs)), 1))
+
+    @rx.var
+    def df_stamp_bg_width(self) -> str:
+        """DF stamp background rect width."""
+        w = 55.0 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(16.0, min(220.0, w)), 1))
+
+    def _df_fs_val(self) -> float:
+        """Internal helper: clamped DF stamp font size as a number."""
+        return max(2.0, min(20.0, 5.0 * self.annotation_scale / max(self.zoom_level, 0.01)))
+
+    @rx.var
+    def df_stamp_bg_height(self) -> str:
+        """DF stamp background rect height (single line). ~2x font size."""
+        return str(round(self._df_fs_val() * 2.0, 1))
+
+    @rx.var
+    def df_stamp_bg_y_offset(self) -> float:
+        """Vertical offset from stamp y to top of background rect. ~3x font size."""
+        return round(self._df_fs_val() * 3.0, 1)
+
+    @rx.var
+    def df_stamp_text_y_offset(self) -> float:
+        """Vertical offset from stamp y to first text line. ~2x font size."""
+        return round(self._df_fs_val() * 2.0, 1)
+
+    @rx.var
+    def df_stamp_x_pad(self) -> float:
+        """Horizontal padding from stamp x to text. ~0.6x font size."""
+        return round(self._df_fs_val() * 0.6, 1)
+
+    @rx.var
     def room_stroke_width(self) -> str:
         """Boundary stroke width that stays visually consistent across zoom levels.
 
@@ -776,8 +819,10 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_css_transform(self) -> str:
+        if self.viewport_width <= 0:
+            return "translate(0px, 0px) scale(1, 1) rotate(0deg)"
         t = self._get_current_overlay_transform()
-        vw = self.viewport_width or self.image_width or 1
+        vw = self.viewport_width
         ox = t.get("offset_x", 0) * vw
         oy = t.get("offset_y", 0) * vw
         sx = t.get("scale_x", 1.0)
@@ -832,13 +877,15 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_offset_x_str(self) -> str:
-        vw = self.viewport_width or self.image_width or 1
-        return str(round(self._get_current_overlay_transform().get("offset_x", 0) * vw))
+        if self.viewport_width <= 0:
+            return "0"
+        return str(round(self._get_current_overlay_transform().get("offset_x", 0) * self.viewport_width))
 
     @rx.var
     def overlay_offset_y_str(self) -> str:
-        vw = self.viewport_width or self.image_width or 1
-        return str(round(self._get_current_overlay_transform().get("offset_y", 0) * vw))
+        if self.viewport_width <= 0:
+            return "0"
+        return str(round(self._get_current_overlay_transform().get("offset_y", 0) * self.viewport_width))
 
     @rx.var
     def overlay_scale_x_str(self) -> str:
@@ -923,6 +970,7 @@ class EditorState(rx.State):
         self._clear_modes()
         self.df_placement_mode = not was_on
         if self.df_placement_mode:
+            self.overlay_align_mode = False
             self._load_df_image_cache()
             loaded = _df_cache["image"] is not None
             self.status_message = "DF% placement ON — click to stamp values" if loaded else "DF% placement ON — HDR image could not be loaded"
@@ -930,6 +978,7 @@ class EditorState(rx.State):
             _df_cache["image"] = None
             _df_cache["hdr_path"] = ""
             self.df_cursor_label = ""
+            self.df_cursor_df = ""
             self.status_message = "Ready"
         self.status_colour = "accent" if self.df_placement_mode else "accent2"
 
@@ -1074,6 +1123,11 @@ class EditorState(rx.State):
                     self._rebuild_variants()
                     self.load_current_image()
                     self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
+                    # Invalidate DF cache; reload if placement mode is active
+                    _df_cache["image"] = None
+                    _df_cache["hdr_path"] = ""
+                    if self.df_placement_mode:
+                        self._load_df_image_cache()
                     break
 
     def room_or_stamp_click(self, idx: int, pointer: dict) -> None:
@@ -1108,6 +1162,11 @@ class EditorState(rx.State):
             self.current_hdr_idx = hdr_idx
             self._rebuild_variants()
             self.load_current_image()
+            # Invalidate DF cache; reload if placement mode is active
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
+            if self.df_placement_mode:
+                self._load_df_image_cache()
             # Toggle collapse for the clicked HDR
             self.toggle_hdr_collapse(hdr_name)
 
@@ -1204,12 +1263,21 @@ class EditorState(rx.State):
 
     @debug_handler
     def handle_canvas_click(self, data: dict) -> None:
-        """Route canvas click. data: {x, y, button, shiftKey, ctrlKey} from JS."""
+        """Route canvas click. data: {x, y, button, shiftKey, ctrlKey, zoom, pan_x, pan_y} from JS."""
         x = float(data.get("x", 0))
         y = float(data.get("y", 0))
         button = int(data.get("button", 0))
         shift = bool(data.get("shiftKey", False))
         ctrl = bool(data.get("ctrlKey", False))
+
+        # Sync zoom/pan from JS immediately — avoids stale zoom_level for
+        # inverse-zoom stamp sizing (the debounced sync_zoom may lag).
+        if "zoom" in data:
+            self.zoom_level = max(1.0, float(data["zoom"]))
+        if "pan_x" in data:
+            self.pan_x = float(data["pan_x"])
+        if "pan_y" in data:
+            self.pan_y = float(data["pan_y"])
 
         self.mouse_x = x
         self.mouse_y = y
@@ -1272,7 +1340,9 @@ class EditorState(rx.State):
             # Kept consistent with fractional offset storage for safety.
             dx = x - self._overlay_drag_start_x
             dy = y - self._overlay_drag_start_y
-            vw = self.viewport_width or self.image_width or 1
+            if self.viewport_width <= 0:
+                return
+            vw = self.viewport_width
             t = dict(self._get_current_overlay_transform())
             t["offset_x"] = self._overlay_drag_start_ox + dx / vw
             t["offset_y"] = self._overlay_drag_start_oy + dy / vw
@@ -1293,6 +1363,7 @@ class EditorState(rx.State):
                 df_val = read_df_at_pixel(df_image, x, y)
                 if df_val is not None:
                     df_val_str = f" DF: {df_val:.2f}%"
+            self.df_cursor_df = f"DF: {df_val:.2f}%" if df_val_str else ""
             self.df_cursor_label = f"px({px},{py}){df_val_str}"
             self.status_message = self.df_cursor_label
 
@@ -1876,6 +1947,14 @@ class EditorState(rx.State):
             logger.debug(f"[overlay] Failed to save pdf_path to toml: {e}")
 
     def toggle_overlay_align(self) -> None:
+        # DF placement relies on canvas clicks which overlay-align blocks at the JS level,
+        # so force it off to avoid silently broken state.
+        if self.df_placement_mode:
+            self.df_placement_mode = False
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
+            self.df_cursor_label = ""
+            self.df_cursor_df = ""
         self.overlay_align_mode = not self.overlay_align_mode
         self.align_points = []
 
@@ -1934,7 +2013,9 @@ class EditorState(rx.State):
 
     def set_overlay_offset_x(self, value: str) -> None:
         try:
-            vw = self.viewport_width or self.image_width or 1
+            if self.viewport_width <= 0:
+                return
+            vw = self.viewport_width
             t = dict(self._get_current_overlay_transform())
             t["offset_x"] = int(value) / vw
             self._set_current_overlay_transform(t)
@@ -1943,7 +2024,9 @@ class EditorState(rx.State):
 
     def set_overlay_offset_y(self, value: str) -> None:
         try:
-            vw = self.viewport_width or self.image_width or 1
+            if self.viewport_width <= 0:
+                return
+            vw = self.viewport_width
             t = dict(self._get_current_overlay_transform())
             t["offset_y"] = int(value) / vw
             self._set_current_overlay_transform(t)
@@ -1993,15 +2076,18 @@ class EditorState(rx.State):
         """Return a default transform that centres the PDF vertically on the HDR.
 
         Offsets stored as fractions of viewport width (resolution-independent).
+        Requires viewport_width to be set (from ResizeObserver); returns zero
+        offsets if the container hasn't been measured yet.
         """
         t = {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
         if (
-            self.overlay_img_width > 0
+            self.viewport_width > 0
+            and self.overlay_img_width > 0
             and self.overlay_img_height > 0
             and self.image_width > 0
             and self.image_height > 0
         ):
-            vw = self.viewport_width or self.image_width
+            vw = self.viewport_width
             hdr_h = vw * self.image_height / self.image_width
             pdf_h = vw * self.overlay_img_height / self.overlay_img_width
             t["offset_y"] = ((hdr_h - pdf_h) / 2) / vw  # fraction of viewport width
@@ -2046,7 +2132,9 @@ class EditorState(rx.State):
         return 1
 
     def nudge_overlay(self, dx: int, dy: int) -> None:
-        vw = self.viewport_width or self.image_width or 1
+        if self.viewport_width <= 0:
+            return
+        vw = self.viewport_width
         t = dict(self._get_current_overlay_transform())
         t["offset_x"] = t.get("offset_x", 0.0) + dx / vw
         t["offset_y"] = t.get("offset_y", 0.0) + dy / vw
@@ -2058,7 +2146,9 @@ class EditorState(rx.State):
         JS sends absolute CSS pixel values; we convert to fractional offsets
         (fraction of viewport width) before storing.
         """
-        vw = self.viewport_width or self.image_width or 1
+        if self.viewport_width <= 0:
+            return
+        vw = self.viewport_width
         t = dict(self._get_current_overlay_transform())
         if "offset_x" in data:
             t["offset_x"] = data["offset_x"] / vw
@@ -2177,7 +2267,7 @@ class EditorState(rx.State):
         hdr_stamps = self.df_stamps.get(hdr_name, [])
         if not hdr_stamps:
             return
-        best_i, best_d = -1, 20.0
+        best_i, best_d = -1, 20.0 / max(self.zoom_level, 0.01)
         for i, stamp in enumerate(hdr_stamps):
             d = math.hypot(x - stamp[0], y - stamp[1])
             if d < best_d:
@@ -2417,7 +2507,7 @@ class EditorState(rx.State):
         store them as fractions of viewport width (resolution-independent).
         Heuristic: fractions are always in (-5, 5); pixel values are larger.
         """
-        vw = self.viewport_width or self.image_width
+        vw = self.viewport_width
         if not vw:
             self._legacy_overlay_pending = True
             return

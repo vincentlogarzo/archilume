@@ -1,0 +1,95 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(which:*)",
+      "Bash(where:*)",
+      "Bash(sleep:*)",
+      "Bash(python -c*)",
+      "Bash(python --version*)",
+      "Bash(python3 -c*)",
+      "Bash(python3 --version*)",
+      "Bash(uv run python -c*)",
+      "Bash(uv sync --dry-run*)",
+      "Bash(tree:*)",
+      "Bash(file:*)",
+      "Bash(type:*)",
+      "Bash(Get-Content:*)",
+      "Bash(Get-ChildItem:*)",
+      "Bash(Test-Path:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import sys, platform; print(f'[SYSTEM CONTEXT] OS: {sys.platform} | Platform: {platform.system()} {platform.release()} | Shell note: use PowerShell-compatible commands on win32, bash on linux')\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MESSAGE=$(cat | jq -r '.message // empty'); echo \"$MESSAGE\" | grep -qiE 'archilume.ui|archilume_ui|reflex|rx\\.|component|state|styling|frontend|ui' && echo 'REFLEX DOCS REMINDER: This prompt may involve Reflex UI work. Before planning or implementing, search .claude/skills/reflex-docs/reference/ for relevant patterns. Read llms.txt for the overview, then grep components/core dirs for specifics. Use WebFetch on reflex.dev if local docs are insufficient. Do not invent workarounds when docs exist.' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *.py ]] && python -m py_compile \"$FILE\" 2>&1 || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *archilume_ui* ]] && cd $(git rev-parse --show-toplevel)/archilume/apps/archilume_ui && python -c \"import archilume_ui.archilume_ui\" 2>&1 || true",
+            "statusMessage": "Verifying archilume_ui imports..."
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "code-simplifier@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "caveman@caveman": true
+  },
+  "extraKnownMarketplaces": {
+    "caveman": {
+      "source": {
+        "source": "github",
+        "repo": "JuliusBrussee/caveman"
+      }
+    }
+  }
+}

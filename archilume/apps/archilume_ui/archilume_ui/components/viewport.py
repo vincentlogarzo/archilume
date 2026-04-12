@@ -499,33 +499,38 @@ def _render_edit_handle(vert: dict) -> rx.Component:
 
 
 def _render_stamp(stamp: dict) -> rx.Component:
-    """Render a DF% stamp dot + label (matching matplotlib editor style)."""
+    """Render a DF% stamp dot + single-line label."""
+    _text_x = (stamp["x"] + EditorState.df_stamp_x_pad).to(str)
     return rx.fragment(
-        # Cyan dot at stamped pixel
-        rx.el.circle(
-            cx=stamp["x"].to(str),
-            cy=stamp["y"].to(str),
-            r="4",
-            fill=COLORS["df_stamp"],
+        # Cyan dot — receives hover for tooltip
+        rx.el.svg.g(
+            rx.el.circle(
+                cx=stamp["x"].to(str),
+                cy=stamp["y"].to(str),
+                r=EditorState.df_stamp_radius,
+                fill=COLORS["df_stamp"],
+            ),
+            rx.el.title("Remove with right-click"),
+            cursor="pointer",
         ),
         # Background rect for readability
         rx.el.rect(
             x=stamp["x"].to(str),
-            y=(stamp["y"] - 16).to(str),
-            width="80",
-            height="22",
+            y=(stamp["y"] - EditorState.df_stamp_bg_y_offset).to(str),
+            width=EditorState.df_stamp_bg_width,
+            height=EditorState.df_stamp_bg_height,
             rx="3",
             fill="#222222",
             opacity="0.8",
             style={"pointer_events": "none"},
         ),
-        # DF value + pixel coords label
+        # Line 1: DF value
         rx.el.text(
-            "DF:" + stamp["value"].to(str) + "% px(" + stamp["px"].to(str) + "," + stamp["py"].to(str) + ")",
-            x=(stamp["x"] + 4).to(str),
-            y=(stamp["y"] - 5).to(str),
+            "DF: " + stamp["value"].to(str) + "%",
+            x=_text_x,
+            y=(stamp["y"] - EditorState.df_stamp_text_y_offset).to(str),
             fill="white",
-            font_size="8",
+            font_size=EditorState.df_stamp_font_size,
             font_family="DM Mono, monospace",
             dominant_baseline="middle",
             style={"pointer_events": "none"},
@@ -896,7 +901,7 @@ _CANVAS_JS = rx.script("""
             if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_canvas_click', {
-                data: {x: c.x, y: c.y, button: e.button, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}
+                data: {x: c.x, y: c.y, button: e.button, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY}
             });
         });
 
@@ -906,7 +911,7 @@ _CANVAS_JS = rx.script("""
             if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_canvas_click', {
-                data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey}
+                data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY}
             });
         });
 
@@ -1103,22 +1108,32 @@ def _svg_canvas() -> rx.Component:
             rx.cond(
                 EditorState.df_cursor_label != "",
                 rx.fragment(
+                    # Cyan dot — matches placed stamp
+                    rx.el.circle(
+                        cx=EditorState.mouse_x.to(str),
+                        cy=EditorState.mouse_y.to(str),
+                        r=EditorState.df_stamp_radius,
+                        fill=COLORS["df_stamp"],
+                        style={"pointer_events": "none"},
+                    ),
+                    # Background rect
                     rx.el.rect(
-                        x=(EditorState.mouse_x + 12).to(str),
-                        y=(EditorState.mouse_y - 20).to(str),
-                        width="120",
-                        height="18",
+                        x=(EditorState.mouse_x + EditorState.df_stamp_x_pad).to(str),
+                        y=(EditorState.mouse_y - EditorState.df_stamp_bg_y_offset).to(str),
+                        width=EditorState.df_stamp_bg_width,
+                        height=EditorState.df_stamp_bg_height,
                         rx="3",
                         fill="#222222",
                         opacity="0.85",
                         style={"pointer_events": "none"},
                     ),
+                    # Line 1: DF value
                     rx.el.text(
-                        EditorState.df_cursor_label,
-                        x=(EditorState.mouse_x + 16).to(str),
-                        y=(EditorState.mouse_y - 8).to(str),
+                        EditorState.df_cursor_df,
+                        x=(EditorState.mouse_x + EditorState.df_stamp_x_pad * 2).to(str),
+                        y=(EditorState.mouse_y - EditorState.df_stamp_text_y_offset).to(str),
                         fill="white",
-                        font_size="10",
+                        font_size=EditorState.df_stamp_font_size,
                         font_family="DM Mono, monospace",
                         dominant_baseline="middle",
                         style={"pointer_events": "none"},

@@ -206,12 +206,15 @@ def _tree_header() -> rx.Component:
             content="Toggle Image Layers [T]", side="bottom",
         ),
         rx.box(style={"width": "1px", "height": "16px", "background": COLORS["panel_bdr"], "flex_shrink": "0"}),
-        rx.button(
-            rx.cond(EditorState.all_rooms_selected, "Unselect All", "Select All"),
-            variant="ghost", size="1",
-            on_click=EditorState.select_all_rooms,
-            style={**_FONT, "font_size": "9px", "white_space": "nowrap",
-                   "color": COLORS["text_dim"], "padding": "0 4px", "flex_shrink": "0"},
+        rx.tooltip(
+            rx.button(
+                rx.cond(EditorState.all_rooms_selected, "Unselect All", "Select All"),
+                variant="ghost", size="1",
+                on_click=EditorState.select_all_rooms,
+                style={**_FONT, "font_size": "9px", "white_space": "nowrap",
+                       "color": COLORS["text_dim"], "padding": "0 4px", "flex_shrink": "0"},
+            ),
+            content="Ctrl+A", side="bottom",
         ),
         rx.box(style={"width": "1px", "height": "16px", "background": COLORS["panel_bdr"], "flex_shrink": "0"}),
         rx.tooltip(

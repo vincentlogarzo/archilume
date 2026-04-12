@@ -109,34 +109,28 @@ def _polygon_mask(
 def load_df_image(hdr_path: Path) -> Optional[np.ndarray]:
     """Load an HDR file and extract DF% values.
 
+    Uses pvalue -b (single-channel brightness) then converts
+    W/m² → DF% with the 1.79 factor (179 luminous efficacy × 100 / 10,000 lux).
+
     Returns 2D array (H, W) of DF percentages, or None.
     """
     try:
-        from .image_loader import _load_hdr, _read_hdr_dimensions
-
-        w, h = _read_hdr_dimensions(hdr_path)
-        if w <= 0 or h <= 0:
-            return None
-
-        # Load raw (non-tonemapped) HDR
-        arr = _load_hdr_raw(hdr_path)
+        arr = _load_hdr_raw(hdr_path, single_channel=True)
         if arr is None:
             return None
-
-        # Convert luminance to DF%
-        # Luminance from RGB: Y = 0.2126R + 0.7152G + 0.0722B
-        luminance = 0.2126 * arr[:, :, 0] + 0.7152 * arr[:, :, 1] + 0.0722 * arr[:, :, 2]
-
-        # DF% = (interior illuminance / exterior illuminance) * 100
-        # For daylight factor images, the values are already in DF% representation
-        # (illuminance values where exterior = 100 lux reference)
-        return luminance
+        # W/m² → DF%: factor = 179 (luminous efficacy) × 100 / 10000 (CIE overcast ref)
+        return arr * 1.79
     except Exception:
         return None
 
 
-def _load_hdr_raw(path: Path) -> Optional[np.ndarray]:
-    """Load HDR file as raw float32 values (no tone-mapping)."""
+def _load_hdr_raw(path: Path, *, single_channel: bool = False) -> Optional[np.ndarray]:
+    """Load HDR file as raw float32 values (no tone-mapping).
+
+    Args:
+        single_channel: If True, use pvalue -b for single-channel brightness
+                        and return shape (H, W). Otherwise return (H, W, 3).
+    """
     try:
         from .image_loader import _load_hdr_manual, _load_hdr_pvalue, _read_hdr_dimensions
         import subprocess
@@ -146,22 +140,35 @@ def _load_hdr_raw(path: Path) -> Optional[np.ndarray]:
             from archilume import config
             pvalue = config.RADIANCE_BIN_PATH / "pvalue"
             if pvalue.exists() or pvalue.with_suffix(".exe").exists():
+                cmd = [str(pvalue), "-h", "-H"]
+                if single_channel:
+                    cmd.append("-b")
+                cmd.extend(["-df", str(path)])
                 result = subprocess.run(
-                    [str(pvalue), "-h", "-H", "-df", str(path)],
+                    cmd,
                     capture_output=True,
                     timeout=30,
                 )
                 if result.returncode == 0:
                     w, h = _read_hdr_dimensions(path)
                     data = np.frombuffer(result.stdout, dtype=np.float32)
-                    expected = h * w * 3
-                    if data.size >= expected:
-                        return data[:expected].reshape(h, w, 3)
+                    if single_channel:
+                        expected = h * w
+                        if data.size >= expected:
+                            return data[:expected].reshape(h, w)
+                    else:
+                        expected = h * w * 3
+                        if data.size >= expected:
+                            return data[:expected].reshape(h, w, 3)
         except ImportError:
             pass
 
-        # Fallback to manual RGBE parser (returns non-tonemapped)
-        return _load_hdr_manual_raw(path)
+        # Fallback to manual RGBE parser (returns RGB H,W,3)
+        rgb = _load_hdr_manual_raw(path)
+        if rgb is not None and single_channel:
+            # Convert RGB to single-channel brightness using Radiance weights
+            return 0.265 * rgb[:, :, 0] + 0.670 * rgb[:, :, 1] + 0.065 * rgb[:, :, 2]
+        return rgb
     except Exception:
         return None
 

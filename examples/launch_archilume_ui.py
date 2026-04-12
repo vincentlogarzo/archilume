@@ -9,12 +9,21 @@ Run from docker image:
 
 Or use this script which changes directory and launches:
     python examples/launch_archilume_ui.py
+
+Pass --ensure to reuse an already-running dev server instead of relaunching:
+    python examples/launch_archilume_ui.py --ensure
 """
 
+import argparse
+import concurrent.futures
 import os
+import socket
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -23,10 +32,6 @@ _REFLEX_BACKEND_PORTS = range(8000, 8020)
 
 def _kill_stale_backends() -> None:
     """Kill any processes holding Reflex backend ports and wait for OS to release them."""
-    import concurrent.futures
-    import socket
-    import time
-
     if sys.platform == "win32":
         result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
         pids: set[str] = set()
@@ -47,11 +52,8 @@ def _kill_stale_backends() -> None:
                 for pid in ex.map(_kill_pid, pids):
                     print(f"  Killed stale backend PID {pid}")
     else:
-        def _fuser_kill(port: int) -> None:
-            subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
-
         with concurrent.futures.ThreadPoolExecutor() as ex:
-            ex.map(_fuser_kill, _REFLEX_BACKEND_PORTS)
+            ex.map(lambda port: subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True), _REFLEX_BACKEND_PORTS)
 
     # Poll all backend ports concurrently; unblock as soon as every one is free.
     # Do NOT use SO_REUSEADDR — it masks TIME_WAIT and gives false positives.
@@ -87,7 +89,6 @@ URL = "http://localhost:3000"
 def _find_free_port() -> int:
     """Return the first port in the Reflex backend range that is actually bindable.
     Does NOT use SO_REUSEADDR so the result matches what Reflex itself will see."""
-    import socket
     for port in _REFLEX_BACKEND_PORTS:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
@@ -134,24 +135,52 @@ def _get_browser() -> webbrowser.BaseBrowser:
     return webbrowser.get()
 
 
-def _open_browser_when_ready(proc: subprocess.Popen) -> None:
-    """Watch stdout for the Reflex 'App running' signal then open the browser."""
-    if proc.stdout is None:
-        return
-    browser = _get_browser()
-    for line in proc.stdout:
-        print(line, end="", flush=True)
-        if "App running" in line or "localhost:3000" in line:
-            browser.open(URL)
-            break
-    for line in proc.stdout:
-        print(line, end="", flush=True)
+def _is_serving(port: int = 3000, timeout: float = 2.0) -> bool:
+    """Return True if localhost:port responds with HTTP 200."""
+    try:
+        resp = urllib.request.urlopen(f"http://localhost:{port}", timeout=timeout)
+        return resp.status == 200
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+def _wait_until_ready(port: int = 3000, timeout: int = 120) -> bool:
+    """Poll localhost:port every 300ms until it serves, or timeout expires.
+
+    Returns True when ready, False on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _is_serving(port):
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def _open_browser_when_ready() -> None:
+    """Poll until the frontend is serving, then open the browser."""
+    if _wait_until_ready():
+        _get_browser().open(URL)
+    else:
+        print("Warning: UI did not become ready within timeout — browser not opened.", flush=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Launch the Archilume UI dev server.")
+    parser.add_argument(
+        "--ensure",
+        action="store_true",
+        help="Reuse an already-running dev server if :3000 is serving; skip relaunch.",
+    )
+    args = parser.parse_args()
+
+    if args.ensure and _is_serving():
+        print(f"UI already running at {URL}")
+        sys.exit(0)
+
     app_dir = Path(__file__).resolve().parent.parent / "archilume" / "apps" / "archilume_ui"
     if not app_dir.exists():
-        print(f"App directofry not found: {app_dir}")
+        print(f"App directory not found: {app_dir}")
         sys.exit(1)
 
     print("Cleaning up stale Reflex backend processes...")
@@ -166,13 +195,10 @@ if __name__ == "__main__":
     env["API_URL"] = f"http://localhost:{free_port}"
     proc = subprocess.Popen(
         [sys.executable, "-m", "reflex", "run", "--env", "dev", "--backend-port", str(free_port)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
         env=env,
     )
 
-    t = threading.Thread(target=_open_browser_when_ready, args=(proc,), daemon=True)
+    t = threading.Thread(target=_open_browser_when_ready, daemon=True)
     t.start()
 
     proc.wait()

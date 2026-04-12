@@ -2,16 +2,19 @@ __pycache__/
 *.egg-info/
 .venv/
 
-# AI tool settings
-.claude/
+# AI tool settings — .claude/ is tracked so settings travel with the repo
 .playwright-tmp/
 .playwright-mcp/
+.states/
 .env
 .env.local
 *.key
 
 # Documentation
 docs/radiance_scratchpad.md
+
+# Reflex framework reference docs (pulled, not project code)
+.claude/skills/reflex-docs/reference/
 
 # All simulation project data lives here — never commit project files
 projects/*
