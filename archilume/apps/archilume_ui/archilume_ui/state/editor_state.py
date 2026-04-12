@@ -190,6 +190,7 @@ class EditorState(rx.State):
     # =====================================================================
     divider_points: list[dict] = []
     divider_room_idx: int = -1
+    divider_room_name: str = ""  # name of target room at mode entry — re-resolves index after undo shifts
 
     # =====================================================================
     # §8 — PDF overlay
@@ -819,6 +820,7 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_css_transform(self) -> str:
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         if self.viewport_width <= 0:
             return "translate(0px, 0px) scale(1, 1) rotate(0deg)"
         t = self._get_current_overlay_transform()
@@ -827,7 +829,7 @@ class EditorState(rx.State):
         oy = t.get("offset_y", 0) * vw
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
-        rot = t.get("rotation_90", 0)
+        rot = (t.get("rotation_90", 0) % 4) * 90
         return f"translate({ox}px, {oy}px) scale({sx}, {sy}) rotate({rot}deg)"
 
     @rx.var
@@ -848,15 +850,6 @@ class EditorState(rx.State):
         return str(round(1.0 - self.overlay_alpha, 2))
 
     @rx.var
-    def overlay_transparency_pct(self) -> str:
-        return str(round((1.0 - self.overlay_alpha) * 100))
-
-    @rx.var
-    def overlay_rotation_deg_str(self) -> str:
-        t = self._get_current_overlay_transform()
-        return str(t.get("rotation_90", 0))
-
-    @rx.var
     def image_width_str(self) -> str:
         return str(self.image_width) if self.image_width > 0 else "1280"
 
@@ -867,6 +860,7 @@ class EditorState(rx.State):
     @rx.var
     def overlay_svg_transform(self) -> str:
         """SVG-syntax transform for the overlay image (no CSS units)."""
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         t = self._get_current_overlay_transform()
         iw = self.image_width or 1
         ox = t.get("offset_x", 0) * iw
@@ -877,26 +871,31 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_offset_x_str(self) -> str:
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         if self.viewport_width <= 0:
             return "0"
         return str(round(self._get_current_overlay_transform().get("offset_x", 0) * self.viewport_width))
 
     @rx.var
     def overlay_offset_y_str(self) -> str:
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         if self.viewport_width <= 0:
             return "0"
         return str(round(self._get_current_overlay_transform().get("offset_y", 0) * self.viewport_width))
 
     @rx.var
     def overlay_scale_x_str(self) -> str:
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         return str(self._get_current_overlay_transform().get("scale_x", 1.0))
 
     @rx.var
     def overlay_scale_y_str(self) -> str:
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         return str(self._get_current_overlay_transform().get("scale_y", 1.0))
 
     @rx.var
     def overlay_scale_str(self) -> str:
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         return str(self._get_current_overlay_transform().get("scale_x", 1.0))
 
     @rx.var
@@ -908,6 +907,7 @@ class EditorState(rx.State):
     @rx.var
     def overlay_rotation_deg_str(self) -> str:
         """Current rotation in degrees (0/90/180/270) as a string for the input field."""
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         rot90 = self._get_current_overlay_transform().get("rotation_90", 0)
         return str((rot90 % 4) * 90)
 
@@ -937,6 +937,8 @@ class EditorState(rx.State):
         self.snap_point = {}
         self.preview_point = {}
         self.divider_points = []
+        self.divider_room_idx = -1
+        self.divider_room_name = ""
         self.dragging_vertex_idx = -1
 
     @debug_handler
@@ -962,6 +964,7 @@ class EditorState(rx.State):
         self.divider_mode = not was_on
         if self.divider_mode and self.selected_room_idx >= 0:
             self.divider_room_idx = self.selected_room_idx
+            self.divider_room_name = self.rooms[self.selected_room_idx].get("name", "")
         self.status_message = "Divider mode ON — click to place cut line, S to split" if self.divider_mode else "Ready"
         self.status_colour = "accent2"
 
@@ -1131,9 +1134,19 @@ class EditorState(rx.State):
                     break
 
     def room_or_stamp_click(self, idx: int, pointer: dict) -> None:
-        """Polygon click handler — stamps DF% in placement mode, otherwise selects (or multi-selects) room."""
+        """Polygon click handler — stamps DF% in placement mode, otherwise selects (or multi-selects) room.
+
+        pointer is a Reflex pointer event dict containing client_x/client_y (screen pixels)
+        and optionally x/y SVG coords set by the JS click handler.  We prefer SVG coords from
+        the pointer dict so the stamp position matches the exact click — falling back to the
+        last mouse_move position only if SVG coords are not present.
+        """
         if self.df_placement_mode:
-            self._df_stamp(self.mouse_x, self.mouse_y)
+            # Prefer SVG-space coords forwarded in the pointer dict by the JS click handler;
+            # fall back to last mouse_move state if not available.
+            cx = pointer.get("x") if pointer.get("x") is not None else self.mouse_x
+            cy = pointer.get("y") if pointer.get("y") is not None else self.mouse_y
+            self._df_stamp(float(cx), float(cy))
         else:
             self.select_room_or_multi(idx, pointer)
 
@@ -1186,16 +1199,21 @@ class EditorState(rx.State):
 
     def set_room_type(self, rtype: str) -> None:
         self.room_type_input = rtype
+        mutated = False
         if self.multi_selected_idxs:
             rooms_copy = list(self.rooms)
             for idx in self.multi_selected_idxs:
                 if 0 <= idx < len(rooms_copy):
                     rooms_copy[idx] = {**rooms_copy[idx], "room_type": rtype}
             self.rooms = rooms_copy
+            mutated = True
         elif 0 <= self.selected_room_idx < len(self.rooms):
             rooms_copy = list(self.rooms)
             rooms_copy[self.selected_room_idx] = {**rooms_copy[self.selected_room_idx], "room_type": rtype}
             self.rooms = rooms_copy
+            mutated = True
+        if mutated:
+            self._auto_save()
 
     _ROOM_TYPE_CYCLE = ["NONE", "BED", "LIVING", "NON-RESI", "CIRC"]
 
@@ -1222,6 +1240,7 @@ class EditorState(rx.State):
             rooms_copy[room_idx] = {**rooms_copy[room_idx], "room_type": next_type}
             self.rooms = rooms_copy
         self.room_type_input = next_type
+        self._auto_save()
 
     def set_selected_parent(self, value: str) -> None:
         self.selected_parent = value
@@ -1248,10 +1267,21 @@ class EditorState(rx.State):
     def delete_room(self) -> None:
         if self.multi_selected_idxs:
             to_delete = set(self.multi_selected_idxs)
+            # Push undo entries in reverse index order so re-insertion restores positions correctly
+            entries = [
+                {"action": "delete", "room_idx": i, "room_data": dict(self.rooms[i])}
+                for i in sorted(to_delete, reverse=True)
+                if 0 <= i < len(self.rooms)
+            ]
+            self.draw_undo_stack = (self.draw_undo_stack + entries)[-self._UNDO_MAX:]
             self.rooms = [r for i, r in enumerate(self.rooms) if i not in to_delete]
             self.multi_selected_idxs = []
             self.selected_room_idx = -1
         elif 0 <= self.selected_room_idx < len(self.rooms):
+            room_data = dict(self.rooms[self.selected_room_idx])
+            self.draw_undo_stack = (self.draw_undo_stack + [
+                {"action": "delete", "room_idx": self.selected_room_idx, "room_data": room_data}
+            ])[-self._UNDO_MAX:]
             self.rooms = [r for i, r in enumerate(self.rooms) if i != self.selected_room_idx]
             self.selected_room_idx = -1
         self.status_message = "Room deleted"
@@ -1334,20 +1364,10 @@ class EditorState(rx.State):
         self.mouse_x = x
         self.mouse_y = y
 
-        if self._overlay_dragging:
-            # Note: this Python drag path is superseded by the JS drag handler
-            # (viewport.py capture-phase mousedown with stopImmediatePropagation).
-            # Kept consistent with fractional offset storage for safety.
-            dx = x - self._overlay_drag_start_x
-            dy = y - self._overlay_drag_start_y
-            if self.viewport_width <= 0:
-                return
-            vw = self.viewport_width
-            t = dict(self._get_current_overlay_transform())
-            t["offset_x"] = self._overlay_drag_start_ox + dx / vw
-            t["offset_y"] = self._overlay_drag_start_oy + dy / vw
-            self._set_current_overlay_transform(t)
-            return
+        # Overlay drag is handled entirely by the JS capture-phase listener in
+        # viewport.py (stopImmediatePropagation prevents on_mouse_move firing).
+        # sync_overlay_transform() is the canonical Python write path (called on drag end).
+        # _overlay_dragging and _overlay_drag_start_* are retained for handle_mouse_down/up.
 
         if self.draw_mode and self.draw_vertices:
             self._update_draw_preview(x, y)
@@ -1356,6 +1376,7 @@ class EditorState(rx.State):
             self._drag_vertex(x, y)
         elif self.df_placement_mode:
             px, py = int(round(x)), int(round(y))
+            df_val = None
             df_val_str = ""
             df_image = _df_cache["image"]
             if df_image is not None:
@@ -1363,7 +1384,7 @@ class EditorState(rx.State):
                 df_val = read_df_at_pixel(df_image, x, y)
                 if df_val is not None:
                     df_val_str = f" DF: {df_val:.2f}%"
-            self.df_cursor_df = f"DF: {df_val:.2f}%" if df_val_str else ""
+            self.df_cursor_df = f"DF: {df_val:.2f}%" if df_val is not None else ""
             self.df_cursor_label = f"px({px},{py}){df_val_str}"
             self.status_message = self.df_cursor_label
 
@@ -1396,6 +1417,9 @@ class EditorState(rx.State):
         self.zoom_level = max(1.0, float(data.get("zoom", self.zoom_level)))
         self.pan_x = float(data.get("pan_x", self.pan_x))
         self.pan_y = float(data.get("pan_y", self.pan_y))
+        # Complete deferred legacy overlay migration now that viewport_width is known
+        if self._legacy_overlay_pending and self.viewport_width > 0:
+            self._migrate_legacy_overlay_transforms()
 
     def reset_zoom(self):
         self.zoom_level = 1.0
@@ -1754,14 +1778,23 @@ class EditorState(rx.State):
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
             return
         room = self.rooms[self.selected_room_idx]
-        entry = {"room_idx": self.selected_room_idx, "vertices": [list(v) for v in room.get("vertices", [])]}
+        entry = {
+            "room_idx": self.selected_room_idx,
+            "room_name": room.get("name", ""),  # stored to re-resolve idx if rooms shift
+            "vertices": [list(v) for v in room.get("vertices", [])],
+        }
         self.edit_undo_stack = (self.edit_undo_stack + [entry])[-self._UNDO_MAX:]
 
     def undo(self) -> None:
         if self.edit_mode and self.edit_undo_stack:
             entry = self.edit_undo_stack[-1]
             self.edit_undo_stack = self.edit_undo_stack[:-1]
+            # Re-resolve index by name in case delete/undo shifted the rooms list
+            room_name = entry.get("room_name", "")
             idx = entry["room_idx"]
+            if room_name:
+                resolved = next((i for i, r in enumerate(self.rooms) if r.get("name") == room_name), idx)
+                idx = resolved
             if 0 <= idx < len(self.rooms):
                 rooms_copy = list(self.rooms)
                 rooms_copy[idx] = {**rooms_copy[idx], "vertices": entry["vertices"]}
@@ -1793,6 +1826,7 @@ class EditorState(rx.State):
             return
         if self.divider_room_idx < 0:
             self.divider_room_idx = self.selected_room_idx
+            self.divider_room_name = self.rooms[self.selected_room_idx].get("name", "") if 0 <= self.selected_room_idx < len(self.rooms) else ""
         if self.ortho_mode and self.divider_points:
             last = self.divider_points[-1]
             x, y = ortho_constrain(x, y, last["x"], last["y"])
@@ -1806,6 +1840,10 @@ class EditorState(rx.State):
         if len(self.divider_points) < 2 or self.divider_room_idx < 0:
             self.status_message = "Need at least 2 divider points"
             return
+        # Re-resolve index by name in case undo/delete shifted the rooms list
+        if self.divider_room_name:
+            resolved = next((i for i, r in enumerate(self.rooms) if r.get("name") == self.divider_room_name), self.divider_room_idx)
+            self.divider_room_idx = resolved
         if self.divider_room_idx >= len(self.rooms):
             return
         from ..lib.geometry import make_unique_name, ray_polygon_intersection, split_polygon_by_polyline
@@ -2146,6 +2184,7 @@ class EditorState(rx.State):
         JS sends absolute CSS pixel values; we convert to fractional offsets
         (fraction of viewport width) before storing.
         """
+        print(f"[SYNC] data={data} vw={self.viewport_width}")
         if self.viewport_width <= 0:
             return
         vw = self.viewport_width
@@ -2647,7 +2686,10 @@ class EditorState(rx.State):
 
     def init_on_load(self) -> None:
         self.scan_projects()
-        if len(self.available_projects) == 1:
+        initial = os.environ.get("ARCHILUME_INITIAL_PROJECT", "").strip()
+        if initial and initial in self.available_projects:
+            self.open_project(initial)
+        elif len(self.available_projects) == 1:
             self.open_project(self.available_projects[0])
 
     # =====================================================================
@@ -2778,6 +2820,7 @@ class EditorState(rx.State):
                 self.divider_mode = True
                 if self.selected_room_idx >= 0:
                     self.divider_room_idx = self.selected_room_idx
+                    self.divider_room_name = self.rooms[self.selected_room_idx].get("name", "")
                 self.status_message = "Divider mode ON"
                 self.status_colour = "accent2"
             else:

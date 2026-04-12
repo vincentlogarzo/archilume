@@ -54,19 +54,19 @@ _VX = "6px"
 # Width of the connector column for parent rows; children add a second column
 _COL_W = "16px"
 
+# --- Child room connector: dotted rail + rounded node ---
+_CHILD_DOT_SIZE = "5px"
+_CHILD_RAIL_COLOR = COLORS["accent"]
+_CHILD_RAIL_OPACITY = "0.22"
+_CHILD_DOT_OPACITY = "0.50"
+
 
 def _connector(node: dict) -> rx.Component:
     """
-    Classic tree connector rendered from the node's precomputed `connector`
-    ("T" or "L") and `parent_continues` fields.
-
-    Layout (two-column for child_room, one-column for parent_room):
-
-      col-A (16px): parent's vertical continuation line (child_room only, when parent_continues)
-      col-B (16px): own vertical + horizontal branch
-
-    For "T": vertical runs full height (continues to next sibling).
-    For "L": vertical runs top-half only (last sibling, line stops here).
+    Tree connector with two styles:
+    - parent_room: classic solid 1px lines (unchanged)
+    - child_room: refined dotted vertical rail with a small circular node
+      at the branch point, giving child rows a distinctive visual identity.
     """
     line_style_base = {
         "position": "absolute",
@@ -74,17 +74,13 @@ def _connector(node: dict) -> rx.Component:
         "opacity": _LINE_OPACITY,
     }
 
-    # col-B: own connector — vertical segment from top.
-    # "T" = more siblings → full height.
-    # "L" = last sibling → top-half only.
+    # --- Parent-room connector (unchanged classic style) ---
     own_vert_h = rx.cond(node["connector"] == "T", "100%", "50%")
 
-    col_b = rx.box(
-        # vertical segment
+    col_b_parent = rx.box(
         rx.box(style={**line_style_base,
                       "left": _VX, "top": "0",
                       "width": "1px", "height": own_vert_h}),
-        # horizontal branch to label (always at row midpoint)
         rx.box(style={**line_style_base,
                       "left": _VX, "top": "50%",
                       "width": _VX, "height": "1px"}),
@@ -92,9 +88,41 @@ def _connector(node: dict) -> rx.Component:
                "flex_shrink": "0", "align_self": "stretch"},
     )
 
-    # col-A: parent continuation — always rendered for child rows, but line is
-    # hidden via display:none when parent_continues is False.
-    col_a = rx.box(
+    # --- Child-room connector: dotted rail + dot node ---
+    child_rail_style = {
+        "position": "absolute",
+        "border_left": f"1px dashed {_CHILD_RAIL_COLOR}",
+        "opacity": _CHILD_RAIL_OPACITY,
+    }
+
+    child_vert_h = rx.cond(node["connector"] == "T", "100%", "50%")
+
+    col_b_child = rx.box(
+        # dashed vertical rail
+        rx.box(style={**child_rail_style,
+                      "left": _VX, "top": "0",
+                      "width": "0", "height": child_vert_h}),
+        # horizontal dashed branch
+        rx.box(style={**child_rail_style,
+                      "left": _VX, "top": "50%",
+                      "width": _VX, "height": "0",
+                      "border_left": "none",
+                      "border_top": f"1px dashed {_CHILD_RAIL_COLOR}"}),
+        # circular node at branch point
+        rx.box(style={
+            "position": "absolute",
+            "left": f"calc({_VX} - 2.5px)", "top": f"calc(50% - 2.5px)",
+            "width": _CHILD_DOT_SIZE, "height": _CHILD_DOT_SIZE,
+            "border_radius": "50%",
+            "background": _CHILD_RAIL_COLOR,
+            "opacity": _CHILD_DOT_OPACITY,
+        }),
+        style={"position": "relative", "width": _COL_W,
+               "flex_shrink": "0", "align_self": "stretch"},
+    )
+
+    # col-A: parent continuation line (child rows only)
+    col_a_classic = rx.box(
         rx.box(style={**line_style_base,
                       "left": _VX, "top": "0",
                       "width": "1px", "height": "100%",
@@ -102,16 +130,28 @@ def _connector(node: dict) -> rx.Component:
         style={"position": "relative", "width": _COL_W,
                "flex_shrink": "0", "align_self": "stretch"},
     )
+    col_a_child = rx.box(
+        rx.box(style={
+            "position": "absolute",
+            "left": _VX, "top": "0",
+            "width": "0", "height": "100%",
+            "border_left": f"1px dashed {_CHILD_RAIL_COLOR}",
+            "opacity": _CHILD_RAIL_OPACITY,
+            "display": rx.cond(node["parent_continues"] == "1", "block", "none"),
+        }),
+        style={"position": "relative", "width": _COL_W,
+               "flex_shrink": "0", "align_self": "stretch"},
+    )
 
     return rx.cond(
         node["node_type"] == "child_room",
         rx.flex(
-            col_a,
-            col_b,
+            col_a_child,
+            col_b_child,
             style={"flex_shrink": "0", "align_self": "stretch"},
         ),
-        # parent_room — single col_b only
-        col_b,
+        # parent_room — classic single col_b only
+        col_b_parent,
     )
 
 
@@ -132,22 +172,54 @@ def _room_row(node: dict) -> rx.Component:
         rx.box(style={
             "position": "absolute",
             "left": "53px", "top": "50%",
-            "width": "1px", "height": "50%",
-            "background": _LINE_COLOR,
-            "opacity": _LINE_OPACITY,
+            "width": "0", "height": "50%",
+            "border_left": f"1px dashed {_CHILD_RAIL_COLOR}",
+            "opacity": _CHILD_RAIL_OPACITY,
         }),
         rx.fragment(),
     )
+    # --- Child room rows get a refined accent treatment ---
+    is_child = node["node_type"] == "child_room"
+
+    # Left accent bar for child rooms (visible on selected/hover via CSS)
+    child_accent_bar = rx.cond(
+        is_child,
+        rx.box(style={
+            "position": "absolute",
+            "left": "0", "top": "3px", "bottom": "3px",
+            "width": "2px",
+            "border_radius": "1px",
+            "background": COLORS["accent"],
+            "opacity": rx.cond(node["selected"], "1", "0"),
+            "transition": "opacity 0.15s ease",
+        }),
+        rx.fragment(),
+    )
+
+    # Text color: child rooms use slightly softer default, brightens on select
+    child_text_color = rx.cond(
+        node["selected"],
+        COLORS["accent"],
+        rx.cond(is_child, COLORS["text_sec"], COLORS["text_pri"]),
+    )
+
+    # Font size: child rooms slightly smaller for visual hierarchy
+    child_font_size = rx.cond(is_child, "10.5px", "11px")
+
     return rx.flex(
         child_trunk,
+        child_accent_bar,
         spacer,
         connector,
         rx.text(
             node["label"],
             style={**_FONT,
                    "overflow": "hidden", "text_overflow": "ellipsis",
-                   "white_space": "nowrap", "flex": "1"},
-            color=rx.cond(node["selected"], COLORS["accent"], COLORS["text_pri"]),
+                   "white_space": "nowrap", "flex": "1",
+                   "font_size": child_font_size,
+                   "letter_spacing": rx.cond(is_child, "0.01em", "0"),
+                   "transition": "color 0.12s ease"},
+            color=child_text_color,
         ),
         rx.cond(
             node["room_type"] != "",
@@ -171,6 +243,7 @@ def _room_row(node: dict) -> rx.Component:
             "cursor": "pointer",
             "flex_shrink": "0",
             "position": "relative",
+            "transition": "background 0.12s ease",
         },
         background=rx.cond(node["selected"], COLORS["btn_on"], "transparent"),
         _hover={"background": COLORS["hover"]},

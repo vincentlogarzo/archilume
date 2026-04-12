@@ -86,7 +86,16 @@ If step 3 still fails: tell user to run **Reload Window** (`Ctrl+Shift+P` → "R
 
 ## Post-Edit UI Verification
 
-After any `archilume_ui` change, use **tiered verification** — match effort to the type of change:
+After any `archilume_ui` change, use **tiered verification** — match effort to the type of change.
+
+### Step 0 — Launch & select project (always)
+
+Before any tier check, ensure the app is running and the correct project is loaded:
+
+1. Run `python examples/launch_archilume_ui.py --ensure` to start or reuse the dev server.
+2. `browser_navigate` → `http://localhost:3000`.
+3. Select the project **`527DP-gcloud-lowRes-GregW`** from the project selector.
+4. Then proceed with the appropriate tier below.
 
 ### Tier 1 — Text, spacing, logic, state changes
 

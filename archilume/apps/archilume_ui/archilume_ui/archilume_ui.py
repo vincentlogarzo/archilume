@@ -48,10 +48,20 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
 
     // Stop keydown propagation when focus is inside an input so window_event_listener
     // does not trigger editor shortcuts while the user is typing in a field.
+    // Exception: arrow keys pass through when overlay align mode is active so they
+    // can nudge the PDF overlay even if a panel input has focus.
     window.addEventListener('keydown', function(e) {
         var tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
         if (tag === 'input' || tag === 'textarea' || tag === 'select' ||
             (document.activeElement && document.activeElement.isContentEditable)) {
+            var arrowKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+            if (arrowKeys.indexOf(e.key) !== -1) {
+                var container = document.getElementById('viewport-container');
+                if (container && container.dataset.overlayAlign === 'true') {
+                    document.activeElement.blur();
+                    return;
+                }
+            }
             e.stopImmediatePropagation();
         }
     }, { capture: true });

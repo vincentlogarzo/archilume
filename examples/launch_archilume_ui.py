@@ -172,6 +172,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Reuse an already-running dev server if :3000 is serving; skip relaunch.",
     )
+    parser.add_argument(
+        "--project",
+        default="527DP-gcloud-lowRes-GregW",
+        help="Project name to open automatically on load (default: 527DP-gcloud-lowRes-GregW).",
+    )
     args = parser.parse_args()
 
     if args.ensure and _is_serving():
@@ -193,6 +198,9 @@ if __name__ == "__main__":
     print(f"Using backend port: {free_port}")
     env = os.environ.copy()
     env["API_URL"] = f"http://localhost:{free_port}"
+    if args.project:
+        env["ARCHILUME_INITIAL_PROJECT"] = args.project
+        print(f"Auto-opening project: {args.project}")
     proc = subprocess.Popen(
         [sys.executable, "-m", "reflex", "run", "--env", "dev", "--backend-port", str(free_port)],
         env=env,

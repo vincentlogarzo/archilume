@@ -189,6 +189,7 @@ def _overlay_align_panel() -> rx.Component:
                 ),
                 style={"border_top": f"1px solid {COLORS['panel_bdr']}"},
             ),
+            id="overlay-align-panel",
             style={
                 "position": "absolute",
                 "top": "12px", "right": "12px",
@@ -422,7 +423,7 @@ def _render_room(room: dict) -> rx.Component:
                 stroke=rx.cond(room["selected"], COLORS["room_stroke_selected"], COLORS["room_stroke_unselected"]),
                 stroke_width=EditorState.room_stroke_width,
                 cursor=rx.cond(EditorState.df_placement_mode, "crosshair", "pointer"),
-                on_click=EditorState.room_or_stamp_click(room["idx"]),
+                on_click=lambda e: EditorState.room_or_stamp_click(room["idx"], e),
             ),
         ),
         # DF line 0: area result (larger font, coloured by percentage) — suppressed for CIRC
@@ -637,12 +638,7 @@ _CANVAS_JS = rx.script("""
     };
 
     function getOverlayImg() {
-        // The overlay <img> has opacity < 1 and is not the editor-img
-        var imgs = document.querySelectorAll('#viewport-container img:not(#editor-img)');
-        for (var i = 0; i < imgs.length; i++) {
-            if (parseFloat(window.getComputedStyle(imgs[i]).opacity) < 1) return imgs[i];
-        }
-        return null;
+        return document.getElementById('overlay-img');
     }
 
     function parseOverlayTransform(img) {
@@ -677,7 +673,10 @@ _CANVAS_JS = rx.script("""
 
     function scheduleOverlaySync(t) {
         if (_overlaySyncTimer) clearTimeout(_overlaySyncTimer);
+        // Immediate visual update of panel inputs (don't wait for Python round-trip)
+        updateAlignPanelInputs(t);
         _overlaySyncTimer = setTimeout(function() {
+            console.log('[overlay-sync] dispatching', t);
             dispatch('editor_state.sync_overlay_transform', {
                 data: {
                     offset_x: Math.round(t.ox),
@@ -686,13 +685,24 @@ _CANVAS_JS = rx.script("""
                     scale_y: Math.round(t.sy * 1000000) / 1000000,
                 }
             });
-            // Clear inline override after a short delay so the Reflex CSS
-            // class (updated by the state sync) takes back control.
-            setTimeout(function() {
-                var img = getOverlayImg();
-                if (img) img.style.transform = '';
-            }, 350);
-        }, 250);
+        }, 100);
+    }
+
+    function updateAlignPanelInputs(t) {
+        var panel = document.getElementById('overlay-align-panel');
+        if (!panel) return;
+        var inputs = panel.querySelectorAll('input[type="number"]');
+        if (inputs.length < 3) return;
+        var setter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+        ).set;
+        function setInput(input, val) {
+            setter.call(input, val);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        setInput(inputs[0], String(Math.round(t.ox)));
+        setInput(inputs[1], String(Math.round(t.oy)));
+        setInput(inputs[2], String(Math.round(t.sx * 1000000) / 1000000));
     }
 
     // ---------------------------------------------------------------------------
@@ -795,6 +805,9 @@ _CANVAS_JS = rx.script("""
         if (!isOverViewport(e)) return;
         var container = document.getElementById('viewport-container');
         if (!container || container.dataset.overlayAlign !== 'true') return;
+        // Don't capture clicks inside the alignment panel UI
+        var panel = document.getElementById('overlay-align-panel');
+        if (panel && panel.contains(e.target)) return;
         var overlayImg = getOverlayImg();
         if (!overlayImg) return;
         e.preventDefault();
@@ -827,6 +840,33 @@ _CANVAS_JS = rx.script("""
         if (_overlayDragT) scheduleOverlaySync(_overlayDragT);
         _overlayDragT = null;
     });
+
+    // ---------------------------------------------------------------------------
+    // Overlay transform sync via data-transform attribute.
+    // Reflex pushes state updates by changing data-transform on the <img>.
+    // We watch that attribute and apply it to style.transform — but only when
+    // not mid-drag (during drag JS owns style.transform directly).
+    // ---------------------------------------------------------------------------
+    function applyDataTransform(img) {
+        if (_overlayDragging) return;
+        var t = img.dataset.transform;
+        if (t) img.style.transform = t;
+    }
+
+    var _overlayMutObs = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            if (m.attributeName === 'data-transform') applyDataTransform(m.target);
+        });
+    });
+
+    function setupOverlayObserver() {
+        var img = getOverlayImg();
+        if (img && !img._overlayObserving) {
+            img._overlayObserving = true;
+            _overlayMutObs.observe(img, {attributes: true, attributeFilter: ['data-transform']});
+            applyDataTransform(img);
+        }
+    }
 
     // ---------------------------------------------------------------------------
     // Pixel inspector — shows RGB values when zoomed in to pixel level
@@ -946,6 +986,7 @@ _CANVAS_JS = rx.script("""
             svg._listenersAttached = true;
             attachSvgListeners(svg);
         }
+        setupOverlayObserver();
     }
 
     var observer = new MutationObserver(setupCanvas);
@@ -978,23 +1019,23 @@ def _svg_canvas() -> rx.Component:
             ),
             rx.fragment(),
         ),
-        # PDF overlay — use rx.el.img (native <img>) to avoid Next.js Image constraints
+        # PDF overlay — use rx.el.img (native <img>) to avoid Next.js Image constraints.
+        # Keep the img mounted whenever b64 data is present; toggle visibility via
+        # opacity/pointer-events so JS-set style.transform is preserved across
+        # hide/show cycles (avoids unmount/remount resetting the dragged position).
         rx.cond(
-            EditorState.overlay_visible,
-            rx.cond(
-                EditorState.overlay_image_b64 != "",
-                rx.el.img(
-                    src=EditorState.overlay_image_b64,
-                    style={
-                        "position": "absolute", "top": "0", "left": "0",
-                        "width": "100%", "height": "auto",
-                        "opacity": EditorState.overlay_alpha_str,
-                        "transform": EditorState.overlay_css_transform,
-                        "transform_origin": "top left",
-                        "pointer_events": "none",
-                    },
-                ),
-                rx.fragment(),
+            EditorState.overlay_image_b64 != "",
+            rx.el.img(
+                src=EditorState.overlay_image_b64,
+                id="overlay-img",
+                data_transform=EditorState.overlay_css_transform,
+                style={
+                    "position": "absolute", "top": "0", "left": "0",
+                    "width": "100%", "height": "auto",
+                    "opacity": rx.cond(EditorState.overlay_visible, EditorState.overlay_alpha_str, "0"),
+                    "transform_origin": "top left",
+                    "pointer_events": "none",
+                },
             ),
             rx.fragment(),
         ),
