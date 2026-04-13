@@ -54,7 +54,7 @@ COLORS = {
     "room_stroke_unselected":"#ef4444",
     "snap_highlight":   "#facc15",
     "df_stamp":         "#06b6d4",
-    "divider_preview":  "#4f6ef7",
+    "divider_preview":  "#ec4899",
     "edit_vertex":      "#0d9488",
 }
 

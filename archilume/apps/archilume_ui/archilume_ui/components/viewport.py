@@ -94,6 +94,7 @@ def _top_toolbar() -> rx.Component:
         _toolbar_btn("expand", "Fit (F)", on_click=EditorState.fit_zoom),
         _toolbar_btn("zoom-in", "Reset Zoom (R)", on_click=EditorState.reset_zoom),
         _toolbar_btn("move", "Pan (middle-mouse)"),
+        _toolbar_btn("refresh-cw", "Restart UI", on_click=EditorState.restart_app),
         align="center",
         style={"padding": "4px 8px", "gap": "4px", "height": "36px"},
         background=COLORS["panel_bg"],
@@ -175,8 +176,8 @@ def _overlay_align_panel() -> rx.Component:
             ),
             rx.flex(
                 rx.icon_button(
-                    rx.icon(tag="rotate-ccw", size=12),
-                    rx.text("Reset", style={"font_family": FONT_MONO, "font_size": "10px",
+                    rx.icon(tag="arrow-down-to-line", size=12),
+                    rx.text("Inherit from Below", style={"font_family": FONT_MONO, "font_size": "10px",
                                             "margin_left": "4px"}),
                     variant="ghost", size="1",
                     on_click=[
@@ -402,9 +403,8 @@ def _render_room(room: dict) -> rx.Component:
                     points=room["vertices_str"],
                     fill="none",
                     stroke=rx.cond(room["selected"], COLORS["room_stroke_selected"], COLORS["room_stroke_unselected"]),
-                    stroke_width=EditorState.room_stroke_width,
+                    stroke_width=EditorState.child_room_stroke_width,
                     stroke_dasharray="6,3",
-                    opacity="0.7",
                     cursor=rx.cond(EditorState.df_placement_mode, "crosshair", "pointer"),
                     on_click=lambda e: EditorState.room_or_stamp_click(room["idx"], e),
                     custom_attrs={"clip-path": "url(#clip-div-" + room["idx"].to(str) + ")"},
@@ -518,6 +518,19 @@ def _render_edit_handle(vert: dict) -> rx.Component:
         stroke="white",
         stroke_width="1",
         cursor="grab",
+    )
+
+
+def _render_divider_vertex(vert: dict) -> rx.Component:
+    """Non-draggable vertex indicator for divider mode snap targets."""
+    return rx.el.circle(
+        cx=vert["x"].to(str),
+        cy=vert["y"].to(str),
+        r=EditorState.divider_vertex_radius,
+        fill=COLORS["divider_preview"],
+        stroke="white",
+        stroke_width="0.5",
+        cursor="crosshair",
     )
 
 
@@ -974,8 +987,11 @@ _CANVAS_JS = rx.script("""
             var container = document.getElementById('viewport-container');
             if (container && container.dataset.overlayAlign === 'true') return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
+            var rect = container ? container.getBoundingClientRect() : {left: 0, top: 0};
+            var vx = e.clientX - rect.left;
+            var vy = e.clientY - rect.top;
             dispatch('editor_state.handle_canvas_click', {
-                data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY}
+                data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY, viewport_x: vx, viewport_y: vy}
             });
         });
 
@@ -1114,6 +1130,13 @@ def _svg_canvas() -> rx.Component:
                 rx.fragment(),
             ),
 
+            # Divider mode vertex indicators (non-draggable snap targets)
+            rx.cond(
+                EditorState.divider_mode,
+                rx.foreach(EditorState.divider_room_vertices, _render_divider_vertex),
+                rx.fragment(),
+            ),
+
             # Drawing-in-progress polyline
             rx.cond(
                 EditorState.has_draw_vertices,
@@ -1156,13 +1179,13 @@ def _svg_canvas() -> rx.Component:
                 rx.el.circle(
                     cx=EditorState.snap_point["x"].to(str),
                     cy=EditorState.snap_point["y"].to(str),
-                    r="12", fill="none",
-                    stroke=COLORS["snap_highlight"], stroke_width="2",
+                    r=EditorState.snap_ring_radius, fill="none",
+                    stroke=COLORS["snap_highlight"], stroke_width="1",
                 ),
                 rx.fragment(),
             ),
 
-            # Divider polyline
+            # Divider polyline (placed segments)
             rx.cond(
                 EditorState.has_divider_points,
                 rx.el.svg.polyline(
@@ -1171,6 +1194,20 @@ def _svg_canvas() -> rx.Component:
                     stroke=COLORS["divider_preview"],
                     stroke_width="2",
                     stroke_dasharray="6,3",
+                ),
+                rx.fragment(),
+            ),
+
+            # Divider preview (last placed point → cursor)
+            rx.cond(
+                EditorState.has_divider_preview,
+                rx.el.svg.polyline(
+                    points=EditorState.divider_preview_line_str,
+                    fill="none",
+                    stroke=COLORS["divider_preview"],
+                    stroke_width="1.5",
+                    stroke_dasharray="4,4",
+                    opacity="0.7",
                 ),
                 rx.fragment(),
             ),
@@ -1241,6 +1278,57 @@ def _svg_canvas() -> rx.Component:
                 "z_index": "3",
                 "container_type": "inline-size",
             },
+        ),
+        # Context menu — absolutely positioned within the canvas container
+        rx.cond(
+            EditorState.context_menu_visible,
+            rx.fragment(
+                # Transparent dismiss backdrop
+                rx.box(
+                    on_click=EditorState.dismiss_context_menu,
+                    style={
+                        "position": "absolute",
+                        "inset": "0",
+                        "z_index": "99",
+                        "background": "transparent",
+                    },
+                ),
+                # Menu panel
+                rx.box(
+                    rx.el.button(
+                        "Delete room",
+                        on_click=EditorState.context_menu_delete,
+                        style={
+                            "display": "block",
+                            "width": "100%",
+                            "padding": "6px 14px",
+                            "background": "transparent",
+                            "color": "#ef4444",
+                            "border": "none",
+                            "text_align": "left",
+                            "font_family": "DM Mono, monospace",
+                            "font_size": "13px",
+                            "cursor": "pointer",
+                            "white_space": "nowrap",
+                            "&:hover": {"background": "rgba(239,68,68,0.12)"},
+                        },
+                    ),
+                    style={
+                        "position": "absolute",
+                        "left": EditorState.context_menu_x_px,
+                        "top": EditorState.context_menu_y_px,
+                        "background": "#1a1a2e",
+                        "border": "1px solid #2d2d44",
+                        "border_radius": "6px",
+                        "box_shadow": "0 4px 16px rgba(0,0,0,0.5)",
+                        "z_index": "100",
+                        "min_width": "140px",
+                        "padding": "4px 0",
+                        "pointer_events": "all",
+                    },
+                ),
+            ),
+            rx.fragment(),
         ),
         # JS bridge for coordinate conversion and zoom/pan
         _CANVAS_JS,

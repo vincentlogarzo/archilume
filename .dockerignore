@@ -61,6 +61,9 @@ desktop.ini
 .coverage
 htmlcov/
 
+# Code review graph local DB — dev tool, not needed in image
+.code-review-graph/
+
 # Local environment files — NEVER bake secrets into images
 .env
 *.env

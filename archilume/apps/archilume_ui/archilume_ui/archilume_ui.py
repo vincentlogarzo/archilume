@@ -99,7 +99,16 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
                 });
             }
             e.stopImmediatePropagation();
-        } else if (isArrow) {
+        } else {
+            // Block browser default Ctrl+A (select-all page text) so the app's
+            // select_all_rooms handler is the only behaviour.
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey &&
+                e.key && e.key.toLowerCase() === 'a') {
+                e.preventDefault();
+                _trace('zoomguard_block_ctrl_a', {});
+            }
+        }
+        if (isArrow && !isFormField) {
             _trace('zoomguard_arrow_passthrough_no_input', {
                 key: e.key, activeTag: tag,
             });

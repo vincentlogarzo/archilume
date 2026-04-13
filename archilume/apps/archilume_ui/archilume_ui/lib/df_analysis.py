@@ -82,7 +82,7 @@ def compute_room_df(
             result_lines.append(f"{above_area_m2:.2f} m\u00b2 ({above:.0f}%)")
         else:
             result_lines.append(f"{above:.0f}% above {threshold:g}% DF")
-        result_lines.append(f"@ {threshold:g}% DF")
+        result_lines.append(f"\u2265 {threshold:g}% DF")
 
     return {
         "mean_df": mean_df,

@@ -3399,7 +3399,7 @@ class HdrAoiEditor:
         for tr in result['thresholds']:
             pct = (tr['area_m2'] / total_area * 100) if total_area > 0 else 0.0
             lines.append(f"{tr['area_m2']:.2f} m\u00b2 ({pct:.0f}%)")
-            lines.append(f"@ {tr['threshold']:g}% DF")
+            lines.append(f"\u2265 {tr['threshold']:g}% DF")
         return lines
 
     def _invalidate_room_df_cache(self, room_idx: int):

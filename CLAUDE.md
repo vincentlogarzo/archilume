@@ -74,6 +74,28 @@ python examples/launch_archilume_ui.py             # force fresh restart
 - Screenshots → `C:/Users/VincentLogarzo/AppData/Local/Temp/playwright-mcp`. Never write to repo.
 - Test project: **`527DP-gcloud-lowRes-GregW`**.
 
+## Code Review Graph
+
+Structural knowledge graph of the codebase available via MCP (`code-review-graph`).
+
+**Usage rules (token-efficient):**
+
+1. First call: `build_or_update_graph_tool` — builds or incrementally updates the graph.
+2. For context: `get_review_context_tool` — token-optimised structural summary.
+3. For impact: `get_impact_radius_tool` — blast radius of changed files.
+4. For queries: `query_graph_tool` — callers, callees, tests, imports for a target.
+5. For search: `semantic_search_nodes_tool` — find code entities by name or meaning.
+6. Prefer `detail_level="minimal"` unless more detail is needed.
+7. Follow `next_tool_suggestions` in each response for the optimal next step.
+8. Target: ≤5 tool calls per task, ≤800 total tokens of graph context.
+
+**When to use:** Code review, understanding call chains, assessing change impact,
+architecture questions, onboarding to unfamiliar modules. Skip for simple
+single-file edits where the change is self-contained.
+
+**Local storage:** `.code-review-graph/` (gitignored). Built/updated automatically
+via `build_or_update_graph_tool` — no manual CLI step needed.
+
 ## Reflex UI
 
 Before writing any Reflex UI code: **invoke the `frontend-design` skill**, then search `.claude/skills/reflex-docs/reference/` for relevant patterns. Follow documented patterns — do not invent workarounds when docs exist.

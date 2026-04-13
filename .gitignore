@@ -5,6 +5,7 @@ __pycache__/
 # AI tool settings — .claude/ is tracked so settings travel with the repo
 .playwright-tmp/
 .playwright-mcp/
+.code-review-graph/
 .states/
 .env
 .env.local

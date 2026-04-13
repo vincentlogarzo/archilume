@@ -217,8 +217,19 @@ class EditorState(rx.State):
     # §7 — Divider
     # =====================================================================
     divider_points: list[dict] = []
+    divider_preview_point: dict = {}  # cursor position for preview line; ortho-constrained
     divider_room_idx: int = -1
     divider_room_name: str = ""  # name of target room at mode entry — re-resolves index after undo shifts
+
+    # =====================================================================
+    # §7b — Context menu
+    # =====================================================================
+    context_menu_visible: bool = False
+    context_menu_x: float = 0.0   # viewport-relative px for rendering
+    context_menu_y: float = 0.0
+    context_menu_canvas_x: float = 0.0  # canvas-space coords for room hit-test
+    context_menu_canvas_y: float = 0.0
+    context_menu_room_idx: int = -1
 
     # =====================================================================
     # §8 — PDF overlay
@@ -675,6 +686,32 @@ class EditorState(rx.State):
         return str(round(max(base * 0.5, min(base * 4.0, lw)), 2))
 
     @rx.var
+    def child_room_stroke_width(self) -> str:
+        """Half the parent stroke width for child/division rooms."""
+        base = 1.5
+        lw = base / max(self.zoom_level, 0.01)
+        parent_w = max(base * 0.5, min(base * 4.0, lw))
+        return str(round(parent_w * 0.5, 2))
+
+    @rx.var
+    def divider_vertex_radius(self) -> str:
+        """Radius for divider mode vertex indicators — slightly larger than boundary stroke."""
+        base = 1.5
+        lw = base / max(self.zoom_level, 0.01)
+        stroke_w = max(base * 0.5, min(base * 4.0, lw))
+        return str(round(stroke_w * 1.2, 2))
+
+    @rx.var
+    def snap_ring_radius(self) -> str:
+        """Snap highlight ring radius. 3x vertex radius in divider mode; fixed 12 otherwise."""
+        if self.divider_mode:
+            base = 1.5
+            lw = base / max(self.zoom_level, 0.01)
+            stroke_w = max(base * 0.5, min(base * 4.0, lw))
+            return str(round(stroke_w * 1.2 * 3.0, 2))
+        return "12"
+
+    @rx.var
     def enriched_rooms(self) -> list[EnrichedRoom]:
         """Rooms for current HDR enriched with SVG rendering data."""
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
@@ -718,7 +755,7 @@ class EditorState(rx.State):
             if len(verts) < 3:
                 continue
 
-            is_div = "_DIV" in room.get("name", "")
+            is_div = bool(room.get("parent")) and room.get("room_type") == "CIRC"
             verts_str = " ".join(f"{v[0]},{v[1]}" for v in verts)
 
             # Label position via centroid
@@ -980,6 +1017,19 @@ class EditorState(rx.State):
         return len(self.divider_points) > 0
 
     @rx.var
+    def has_divider_preview(self) -> bool:
+        return bool(self.divider_points) and bool(self.divider_preview_point)
+
+    @rx.var
+    def divider_preview_line_str(self) -> str:
+        """Polyline from last placed divider point to current cursor (ortho-aware)."""
+        if not self.divider_points or not self.divider_preview_point:
+            return ""
+        last = self.divider_points[-1]
+        p = self.divider_preview_point
+        return f"{last['x']},{last['y']} {p['x']},{p['y']}"
+
+    @rx.var
     def is_dragging(self) -> bool:
         return self.dragging_vertex_idx >= 0
 
@@ -1123,6 +1173,14 @@ class EditorState(rx.State):
         verts = self.rooms[self.selected_room_idx].get("vertices", [])
         return [{"x": float(v[0]), "y": float(v[1])} for v in verts]
 
+    @rx.var
+    def divider_room_vertices(self) -> list[VertexPoint]:
+        """Pixel-space vertices of the room being divided, for non-draggable snap indicators."""
+        if not self.divider_mode or self.divider_room_idx < 0 or self.divider_room_idx >= len(self.rooms):
+            return []
+        verts = self._room_pixel_vertices(self.rooms[self.divider_room_idx])
+        return [{"x": float(v[0]), "y": float(v[1])} for v in verts]
+
     # =====================================================================
     # MODE TOGGLES
     # =====================================================================
@@ -1136,6 +1194,7 @@ class EditorState(rx.State):
         self.snap_point = {}
         self.preview_point = {}
         self.divider_points = []
+        self.divider_preview_point = {}
         self.divider_room_idx = -1
         self.divider_room_name = ""
         self.dragging_vertex_idx = -1
@@ -1157,14 +1216,15 @@ class EditorState(rx.State):
         self.status_colour = "warning" if self.edit_mode else "accent2"
 
     @debug_handler
-    def toggle_divider_mode(self) -> None:
+    def toggle_divider_mode(self):
         was_on = self.divider_mode
         self._clear_modes()
         self.divider_mode = not was_on
         if self.divider_mode and self.selected_room_idx >= 0:
             self.divider_room_idx = self.selected_room_idx
             self.divider_room_name = self.rooms[self.selected_room_idx].get("name", "")
-        self.status_message = "Divider mode ON — click to place cut line, S to split" if self.divider_mode else "Ready"
+            yield from self.fit_zoom()
+        self.status_message = "Divider mode — click to place cut line, S to split, Esc to cancel" if self.divider_mode else "Ready"
         self.status_colour = "accent2"
 
     def toggle_df_placement(self) -> None:
@@ -1208,6 +1268,7 @@ class EditorState(rx.State):
         self.status_message = f"Ortho {'ON' if self.ortho_mode else 'OFF'}"
 
     def exit_mode(self) -> None:
+        self.context_menu_visible = False
         if self.draw_mode or self.edit_mode or self.divider_mode or self.df_placement_mode or self.overlay_align_mode:
             self._clear_modes()
             self.overlay_align_mode = False
@@ -1341,6 +1402,8 @@ class EditorState(rx.State):
         the pointer dict so the stamp position matches the exact click — falling back to the
         last mouse_move position only if SVG coords are not present.
         """
+        # Dismiss context menu on any polygon click
+        self.context_menu_visible = False
         if self.df_placement_mode:
             # Prefer SVG-space coords forwarded in the pointer dict by the JS click handler;
             # fall back to last mouse_move state if not available.
@@ -1496,12 +1559,14 @@ class EditorState(rx.State):
 
     @debug_handler
     def handle_canvas_click(self, data: dict) -> None:
-        """Route canvas click. data: {x, y, button, shiftKey, ctrlKey, zoom, pan_x, pan_y} from JS."""
+        """Route canvas click. data: {x, y, button, shiftKey, ctrlKey, zoom, pan_x, pan_y[, viewport_x, viewport_y]} from JS."""
         x = float(data.get("x", 0))
         y = float(data.get("y", 0))
         button = int(data.get("button", 0))
         shift = bool(data.get("shiftKey", False))
         ctrl = bool(data.get("ctrlKey", False))
+        viewport_x = float(data.get("viewport_x", x))
+        viewport_y = float(data.get("viewport_y", y))
 
         # Sync zoom/pan from JS immediately — avoids stale zoom_level for
         # inverse-zoom stamp sizing (the debounced sync_zoom may lag).
@@ -1552,9 +1617,13 @@ class EditorState(rx.State):
             logger.debug(f"  → overlay_align: add align point at ({x:.1f}, {y:.1f}), points_so_far={len(self.align_points)}")
             self._add_align_point(x, y)
         else:
-            # Room selection is handled by polygon on_click handlers in the SVG.
-            # Only use coordinate-based selection as a fallback (clicks on empty canvas area).
-            if ctrl:
+            # Dismiss any open context menu on left-click
+            if button != 2 and self.context_menu_visible:
+                self.context_menu_visible = False
+            if button == 2:
+                logger.debug(f"  → normal: show_context_menu at canvas=({x:.1f},{y:.1f}) viewport=({viewport_x:.1f},{viewport_y:.1f})")
+                self.show_context_menu(x, y, viewport_x, viewport_y)
+            elif ctrl:
                 logger.debug(f"  → fallback: select_room_at({x:.1f}, {y:.1f}) multi=True")
                 self._select_room_at(x, y, multi=True)
             else:
@@ -1574,6 +1643,10 @@ class EditorState(rx.State):
 
         if self.draw_mode and self.draw_vertices:
             self._update_draw_preview(x, y)
+        elif self.divider_mode and self.divider_points:
+            self._update_divider_preview(x, y)
+        elif self.divider_mode and not self.divider_points:
+            self._update_divider_snap(x, y)
         elif self.edit_mode and self.dragging_vertex_idx >= 0:
             logger.debug(f"mouse_move drag: vertex_idx={self.dragging_vertex_idx} → ({x:.1f}, {y:.1f})")
             self._drag_vertex(x, y)
@@ -2004,11 +2077,18 @@ class EditorState(rx.State):
                 rooms_copy = list(self.rooms)
                 rooms_copy[idx] = {**rooms_copy[idx], "vertices": entry["vertices"]}
                 self.rooms = rooms_copy
+            self._auto_save()
+            self._recompute_df()
         elif self.draw_undo_stack:
             entry = self.draw_undo_stack[-1]
             self.draw_undo_stack = self.draw_undo_stack[:-1]
             action = entry.get("action")
-            if action == "create":
+            if action == "divider":
+                self.rooms = entry["snapshot"]
+                self.selected_room_idx = -1
+                self.status_message = "Division undone"
+                self.status_colour = "accent2"
+            elif action == "create":
                 idx = entry.get("room_idx", -1)
                 if 0 <= idx < len(self.rooms):
                     self.rooms = [r for i, r in enumerate(self.rooms) if i != idx]
@@ -2019,27 +2099,129 @@ class EditorState(rx.State):
                     rooms_copy = list(self.rooms)
                     rooms_copy.insert(min(idx, len(rooms_copy)), room_data)
                     self.rooms = rooms_copy
+            self._auto_save()
+            self._recompute_df()
 
     # =====================================================================
     # DIVIDER
     # =====================================================================
 
-    def _divider_add_point(self, x: float, y: float) -> None:
+    def _room_pixel_vertices(self, room: dict) -> list[list[float]]:
+        """Return room vertices in current-HDR pixel space.
+
+        Mirrors the reprojection logic in `enriched_rooms`: when ``world_vertices``
+        and view params exist, reproject to pixel coords; otherwise fall back to the
+        stored ``vertices`` list. Without this, the divider overlay uses stale
+        coords and renders offset from the polygon boundary.
+        """
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            return room.get("vertices", [])
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        img_w = self.image_width
+        img_h = self.image_height
+        vp_params = self.hdr_view_params.get(hdr_name)
+        world_verts = room.get("world_vertices", [])
+        if vp_params and len(world_verts) >= 3 and img_w > 0 and img_h > 0:
+            vp_x, vp_y, vh, vv, *_rest = vp_params
+            return [
+                [(wx - vp_x) / (vh / img_w) + img_w / 2,
+                 img_h / 2 - (wy - vp_y) / (vv / img_h)]
+                for wx, wy in world_verts
+            ]
+        return room.get("vertices", [])
+
+    def _get_divider_room_vertices(self) -> list[list[float]]:
+        """Return pixel-space vertices of the room being divided (current HDR)."""
+        idx = self.divider_room_idx
+        if 0 <= idx < len(self.rooms):
+            return self._room_pixel_vertices(self.rooms[idx])
+        return []
+
+    def _update_divider_snap(self, x: float, y: float) -> None:
+        """Update snap highlight when hovering near a room boundary vertex (first point only)."""
+        from ..lib.geometry import snap_to_vertex
+        room_verts = self._get_divider_room_vertices()
+        sx, sy, snapped = snap_to_vertex(x, y, room_verts, threshold=12.0)
+        if snapped:
+            self.snap_point = {"x": sx, "y": sy}
+        else:
+            self.snap_point = {}
+
+    def _update_divider_preview(self, x: float, y: float) -> None:
+        """Preview line from last placed divider point to cursor. Honours ortho mode."""
         from ..lib.geometry import ortho_constrain
+        if not self.divider_points:
+            self.divider_preview_point = {}
+            return
+        last = self.divider_points[-1]
+        if self.ortho_mode:
+            x, y = ortho_constrain(x, y, last["x"], last["y"])
+        self.divider_preview_point = {"x": x, "y": y}
+
+    def _divider_add_point(self, x: float, y: float) -> None:
+        from ..lib.geometry import (
+            nearest_point_on_edge,
+            ortho_constrain,
+            point_in_polygon,
+            snap_to_vertex,
+        )
         if self.selected_room_idx < 0:
             self.status_message = "Select a room first"
             return
         if self.divider_room_idx < 0:
             self.divider_room_idx = self.selected_room_idx
             self.divider_room_name = self.rooms[self.selected_room_idx].get("name", "") if 0 <= self.selected_room_idx < len(self.rooms) else ""
-        if self.ortho_mode and self.divider_points:
+        # Snap to room boundary vertices on first point (no ortho constraint yet)
+        if not self.divider_points:
+            room_verts = self._get_divider_room_vertices()
+            sx, sy, snapped = snap_to_vertex(x, y, room_verts, threshold=12.0)
+            if snapped:
+                x, y = sx, sy
+        elif self.ortho_mode:
             last = self.divider_points[-1]
             x, y = ortho_constrain(x, y, last["x"], last["y"])
+
+        # Clamp clicks outside the parent onto the nearest edge; auto-finalize
+        # on the 2nd-or-later point so the division stays fully inside the parent.
+        parent_verts = self._get_divider_room_vertices()
+        if parent_verts and not point_in_polygon(x, y, parent_verts):
+            best: tuple[float, float, float] | None = None
+            n = len(parent_verts)
+            for i in range(n):
+                x1, y1 = parent_verts[i]
+                x2, y2 = parent_verts[(i + 1) % n]
+                nx, ny, d = nearest_point_on_edge(x, y, x1, y1, x2, y2)
+                if best is None or d < best[2]:
+                    best = (nx, ny, d)
+            if best is not None:
+                x, y = best[0], best[1]
+                self.divider_points = self.divider_points + [{"x": x, "y": y}]
+                self.snap_point = {}
+                self.divider_preview_point = {}
+                if len(self.divider_points) >= 2:
+                    self._finalize_divider()
+                return
+
         self.divider_points = self.divider_points + [{"x": x, "y": y}]
+        self.snap_point = {}
+        self.divider_preview_point = {}
 
     def _divider_undo_point(self) -> None:
         if self.divider_points:
             self.divider_points = self.divider_points[:-1]
+
+    @staticmethod
+    def _poly_area(verts: list) -> float:
+        """Shoelace formula — returns absolute area of a polygon."""
+        n = len(verts)
+        if n < 3:
+            return 0.0
+        area = 0.0
+        for i in range(n):
+            x1, y1 = verts[i][0], verts[i][1]
+            x2, y2 = verts[(i + 1) % n][0], verts[(i + 1) % n][1]
+            area += x1 * y2 - x2 * y1
+        return abs(area) / 2.0
 
     def _finalize_divider(self) -> None:
         if len(self.divider_points) < 2 or self.divider_room_idx < 0:
@@ -2053,7 +2235,10 @@ class EditorState(rx.State):
             return
         from ..lib.geometry import make_unique_name, ray_polygon_intersection, split_polygon_by_polyline
         room = self.rooms[self.divider_room_idx]
-        polygon = room.get("vertices", [])
+        # Work in current-HDR pixel space so the divider polyline (from click coords)
+        # matches the polygon. Saved child gets both pixel vertices and world_vertices
+        # so render reprojection stays consistent across HDR switches.
+        polygon = self._room_pixel_vertices(room)
         if len(polygon) < 3:
             return
         polyline = [(p["x"], p["y"]) for p in self.divider_points]
@@ -2072,27 +2257,108 @@ class EditorState(rx.State):
         if poly_a is None or poly_b is None:
             self.status_message = "Division failed — try different points"
             self.divider_points = []
+            self.divider_preview_point = {}
             return
+
+        # Snapshot rooms before mutation for undo
+        snapshot = [dict(r, vertices=[list(v) for v in r["vertices"]]) for r in self.rooms]
+        self.draw_undo_stack = (self.draw_undo_stack + [{"action": "divider", "snapshot": snapshot}])[-self._UNDO_MAX:]
+
+        # Parent room stays intact — only the smaller polygon becomes a CIRC child.
+        # Deleting the child leaves the parent's full boundary / area unchanged.
+        area_a = self._poly_area(poly_a)
+        area_b = self._poly_area(poly_b)
+        child_poly_px = poly_a if area_a <= area_b else poly_b
+
+        # Reverse-project pixel-space child polygon back to world coords so it
+        # reprojects correctly when the HDR view changes.
+        hdr_name = room.get("hdr_file", "")
+        vp_params = self.hdr_view_params.get(hdr_name)
+        img_w = self.image_width
+        img_h = self.image_height
+        child_poly_world: list[list[float]] = []
+        if vp_params and img_w > 0 and img_h > 0:
+            vp_x, vp_y, vh, vv, *_rest = vp_params
+            for px, py in child_poly_px:
+                wx = (px - img_w / 2) * (vh / img_w) + vp_x
+                wy = (img_h / 2 - py) * (vv / img_h) + vp_y
+                child_poly_world.append([wx, wy])
+
+        # Parent chain: child references original room name (or its parent if nested)
+        original_name = room.get("name", "ROOM")
+        original_parent = room.get("parent")
+        division_parent = original_name if not original_parent else original_parent
+
         existing_names = [r.get("name", "") for r in self.rooms]
-        base_name = room.get("name", "ROOM")
-        name_a = make_unique_name(f"{base_name}_A", existing_names)
-        existing_names.append(name_a)
-        name_b = make_unique_name(f"{base_name}_B", existing_names)
-        room_a = {"name": name_a, "parent": room.get("parent"), "vertices": poly_a,
-                   "hdr_file": room.get("hdr_file", ""), "room_type": room.get("room_type", "NONE") or "NONE", "visible": True}
-        room_b = {"name": name_b, "parent": room.get("parent"), "vertices": poly_b,
-                   "hdr_file": room.get("hdr_file", ""), "room_type": room.get("room_type", "NONE") or "NONE", "visible": True}
+        child_name = make_unique_name(f"{original_name}_DIV", existing_names)
+        child_room: dict = {
+            "name": child_name,
+            "parent": division_parent,
+            "vertices": child_poly_px,
+            "hdr_file": hdr_name,
+            "room_type": "CIRC",
+            "visible": True,
+        }
+        if child_poly_world:
+            child_room["world_vertices"] = child_poly_world
         rooms_copy = list(self.rooms)
-        rooms_copy[self.divider_room_idx] = room_a
-        rooms_copy.insert(self.divider_room_idx + 1, room_b)
+        rooms_copy.insert(self.divider_room_idx + 1, child_room)
         self.rooms = rooms_copy
         self.divider_points = []
+        self.divider_preview_point = {}
         self.divider_room_idx = -1
         self._clear_modes()
-        self.status_message = f"Split into {name_a} and {name_b}"
+        self.status_message = f"Inserted CIRC child {child_name} inside {original_name}"
         self.status_colour = "accent"
         self._auto_save()
         self._recompute_df()
+
+    # =====================================================================
+    # CONTEXT MENU
+    # =====================================================================
+
+    @rx.var
+    def context_menu_x_px(self) -> str:
+        return f"{int(self.context_menu_x)}px"
+
+    @rx.var
+    def context_menu_y_px(self) -> str:
+        return f"{int(self.context_menu_y)}px"
+
+    def show_context_menu(self, canvas_x: float, canvas_y: float, viewport_x: float, viewport_y: float) -> None:
+        """Show context menu at viewport position, performing a room hit-test at canvas position."""
+        from ..lib.geometry import point_in_polygon
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"] if self.hdr_files else ""
+        hit_idx = -1
+        for i, room in enumerate(self.rooms):
+            if room.get("hdr_file", "") != hdr_name:
+                continue
+            verts = room.get("vertices", [])
+            if len(verts) >= 3 and point_in_polygon(canvas_x, canvas_y, verts):
+                hit_idx = i
+                break
+        if hit_idx >= 0:
+            self.context_menu_room_idx = hit_idx
+            self.context_menu_x = viewport_x
+            self.context_menu_y = viewport_y
+            self.context_menu_canvas_x = canvas_x
+            self.context_menu_canvas_y = canvas_y
+            self.context_menu_visible = True
+            # Also select the room
+            self.select_room(hit_idx)
+        else:
+            self.context_menu_visible = False
+
+    def dismiss_context_menu(self) -> None:
+        self.context_menu_visible = False
+
+    def context_menu_delete(self) -> None:
+        """Delete the room targeted by the context menu."""
+        if self.context_menu_room_idx >= 0:
+            self.selected_room_idx = self.context_menu_room_idx
+            self.multi_selected_idxs = []
+        self.context_menu_visible = False
+        self.delete_room()
 
     # =====================================================================
     # GRID OVERLAY
@@ -2325,10 +2591,22 @@ class EditorState(rx.State):
         return {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
 
     def reset_level_alignment(self) -> None:
-        """Reset transform for this HDR to centred default."""
+        """Clear this level's stored transform so it inherits from the nearest
+        level below. Level 0 has nothing below, so it gets a centred default.
+        """
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return
-        self._set_current_overlay_transform(self._centred_default_transform())
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        if self.current_hdr_idx == 0:
+            # Bottom level — no level below to inherit from, so centre it.
+            self._set_current_overlay_transform(self._centred_default_transform())
+            return
+        if hdr_name in self.overlay_transforms:
+            t = dict(self.overlay_transforms)
+            del t[hdr_name]
+            self.overlay_transforms = t
+            logger.debug("[overlay-clear] hdr=%s — now inherits from below", hdr_name)
+            self._auto_save()
 
     def _ensure_default_transform(self) -> None:
         """For the first HDR, store a centred default transform if none exists yet."""
@@ -2820,6 +3098,39 @@ class EditorState(rx.State):
         self.save_session()
         self.status_message = "Session saved"
 
+    def restart_app(self) -> None:
+        """Spawn a detached relaunch of the Archilume UI, then kill this process.
+
+        Uses the same ``examples/launch_archilume_ui.py`` entry point so the new
+        instance runs the full kill-stale-backends → reflex run flow. The current
+        Python process exits half a second later so the Reflex response flushes
+        to the client before the socket closes.
+        """
+        import threading
+        try:
+            self.save_session()
+        except Exception:
+            pass
+        try:
+            repo_root = Path(__file__).resolve().parents[5]
+            launch_script = repo_root / "examples" / "launch_archilume_ui.py"
+            if not launch_script.exists():
+                self.status_message = f"Restart failed — launch script not found: {launch_script}"
+                return
+            kwargs: dict = {"close_fds": True}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen([sys.executable, str(launch_script)], **kwargs)
+            self.status_message = "Restarting Archilume UI…"
+            self.status_colour = "accent2"
+            # Give the response a moment to flush, then kill this process.
+            # The detached relaunch will clear the backend port and start fresh.
+            threading.Timer(0.6, lambda: os._exit(0)).start()
+        except Exception as e:
+            self.status_message = f"Restart failed: {e}"
+
     def _auto_save(self) -> None:
         if not self._session_load_ok:
             logger.debug("[session] auto-save skipped — no successful load yet")
@@ -3155,8 +3466,12 @@ class EditorState(rx.State):
             logger.debug("  → routing to: force_save()")
             self.force_save()
         elif key in ("Delete", "Backspace"):
-            logger.debug("  → routing to: delete_hovered_vertex()")
-            self.delete_hovered_vertex()
+            if self.edit_mode:
+                logger.debug("  → routing to: delete_hovered_vertex()")
+                self.delete_hovered_vertex()
+            elif self.selected_room_idx >= 0 or self.multi_selected_idxs:
+                logger.debug("  → routing to: delete_room()")
+                self.delete_room()
         elif key.lower() == "f":
             logger.debug("  → routing to: fit_zoom()")
             yield from self.fit_zoom()
@@ -3181,7 +3496,8 @@ class EditorState(rx.State):
                 if self.selected_room_idx >= 0:
                     self.divider_room_idx = self.selected_room_idx
                     self.divider_room_name = self.rooms[self.selected_room_idx].get("name", "")
-                self.status_message = "Divider mode ON"
+                    yield from self.fit_zoom()
+                self.status_message = "Divider mode — click to place cut line, S to split, Esc to cancel"
                 self.status_colour = "accent2"
             else:
                 logger.debug(f"  handle_key 'd': single press ({elapsed:.3f}s) → toggle_draw_mode")
