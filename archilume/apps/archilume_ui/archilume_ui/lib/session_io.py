@@ -68,7 +68,9 @@ def build_session_dict(
     overlay_alpha: float = 0.6,
     overlay_pdf_path: str = "",
     overlay_page_idx: int = 0,
-    transform_version: int = 2,
+    transform_version: int = 4,
+    overlay_img_width: int = 0,
+    overlay_img_height: int = 0,
 ) -> dict[str, Any]:
     """Build a session dict ready for saving."""
     return {
@@ -85,4 +87,6 @@ def build_session_dict(
         "overlay_alpha": overlay_alpha,
         "overlay_pdf_path": overlay_pdf_path,
         "overlay_page_idx": overlay_page_idx,
+        "overlay_img_width": overlay_img_width,
+        "overlay_img_height": overlay_img_height,
     }

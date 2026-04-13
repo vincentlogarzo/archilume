@@ -15,8 +15,18 @@ from typing import Any, TypedDict
 
 import reflex as rx
 
-from ..lib.debug import debug_handler, logger, trace
-from ..lib.geometry import max_inscribed_rect, polygon_label_point
+from ..lib.debug import (
+    debug_handler,
+    logger,
+    new_correlation_id,
+    trace,
+    with_correlation_id,
+)
+from ..lib.geometry import (
+    max_inscribed_rect,
+    max_inscribed_rect_aspect,
+    polygon_label_point,
+)
 
 # Module-level DF image cache (numpy arrays can't be Reflex state vars)
 _df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
@@ -76,6 +86,10 @@ class EnrichedRoom(TypedDict):
     clip_polygon_css: str    # CSS clip-path polygon string
     df_line_0_text_stroke: str  # e.g. "1.2px white"
     lbl_text_stroke: str
+    bbox_left_pct: str
+    bbox_top_pct: str
+    bbox_w_pct: str
+    bbox_h_pct: str
 
 
 class VertexDict(TypedDict):
@@ -230,6 +244,7 @@ class EditorState(rx.State):
     _overlay_drag_start_ox: float = 0.0
     _overlay_drag_start_oy: float = 0.0
     _legacy_overlay_pending: bool = False
+    _session_load_ok: bool = False  # guards auto-save; True only after a successful load
 
     # =====================================================================
     # §9 — DF% analysis
@@ -684,6 +699,8 @@ class EditorState(rx.State):
             return result_v
 
         result = []
+        intermediates = []   # pass-1 data per room
+        per_room_fs = []     # max font size per visible room
         for i, room in enumerate(self.rooms):
             if room.get("hdr_file") != hdr_name:
                 continue
@@ -743,58 +760,130 @@ class EditorState(rx.State):
                 line_0_stroke = "black"
                 line_0_stroke_w = _stroke_norm
 
-            # Adaptive per-room font sizing: pure 1/zoom scaling (no clamping).
-            _lbl_fs = _df_fs * 0.75
-            # Line spacing for HTML overlay (tighter than SVG stroke-padded layout)
-            stroke_pad = 1.0
-            line_step = _df_fs * 1.2 * stroke_pad
-            name_step = _lbl_fs * 1.1 * stroke_pad
+            # ---- Pass 1: compute max font size per room ----
+            LBL_RATIO = 0.75
+            GAP_01 = 0.6                # gap after line 0 (tighter)
+            GAP_12 = LBL_RATIO * 0.5    # gap after line 1 (tighter)
 
-            # Fit factor: inscribed rectangle from label anchor inside polygon.
-            half_w, half_h = max_inscribed_rect(lx, ly, verts)
-            avail_w = half_w * 2 * 0.90
-            avail_h = half_h * 2 * 0.90
-            stack_height = _df_fs * stroke_pad + line_step + name_step + _lbl_fs * stroke_pad
-            # Estimate text width (~0.6em per char, monospace)
-            max_chars = max(
-                len(df_lines_raw[0]) if has_df else 0,
-                len(df_lines_raw[1]) if len(df_lines_raw) >= 2 else 0,
-                len(room.get("name", "")),
-            )
-            est_text_width = max_chars * _df_fs * 0.6
-            fit_h = avail_h / stack_height if stack_height > 0 else 1.0
-            fit_w = avail_w / est_text_width if est_text_width > 0 else 1.0
-            fit = min(1.0, fit_h, fit_w)
-            # Hide labels entirely if room is too small
-            show_labels = fit >= 0.15
-
-            room_df_fs  = str(round(_df_fs  * fit, 2))
-            room_lbl_fs = str(round(_lbl_fs * fit, 2))
-            room_step   = _df_fs  * fit * 1.5 * stroke_pad
-            room_nstep  = _lbl_fs * fit * 1.4 * stroke_pad
-            room_stroke_w = str(round(_lbl_fs * fit * 0.12, 2))
-
-            # Y positions: line_0 at centroid, line_1 below, name below that
-            df_line_0_y = ly
-            df_line_1_y = ly + room_step
             if has_df and len(df_lines_raw) >= 2:
-                name_y_val = ly + room_step + room_nstep
+                stack_mult = 1.0 + GAP_01 + LBL_RATIO + GAP_12 + LBL_RATIO
             elif has_df:
-                name_y_val = ly + room_nstep
+                stack_mult = 1.0 + GAP_12 + LBL_RATIO
             else:
-                name_y_val = ly
+                stack_mult = LBL_RATIO
+
+            chars_0 = len(df_lines_raw[0]) if has_df else 0
+            chars_1 = len(df_lines_raw[1]) if len(df_lines_raw) >= 2 else 0
+            chars_name = len(room.get("name", ""))
+            CHAR_W = 0.65  # DM Mono + special chars + bold safety
+            STROKE_PAD = 0.12  # -webkit-text-stroke extends visual bbox
+            width_mult = max(
+                chars_0 * CHAR_W,
+                chars_1 * CHAR_W * LBL_RATIO,
+                chars_name * CHAR_W * LBL_RATIO,
+                0.01,
+            ) + STROKE_PAD  # add stroke margin (in F units)
+            stack_mult_padded = stack_mult + STROKE_PAD
 
             is_circ = room.get("room_type", "") == "CIRC"
+
+            # Aspect-aware inscribed rect — checks corners & edge midpoints
+            # so concave polygons don't permit overflow.
+            half_w, half_h = max_inscribed_rect_aspect(
+                lx, ly, width_mult, stack_mult_padded, verts,
+            )
+            avail_w = half_w * 2 * 0.95
+            avail_h = half_h * 2 * 0.95
+
+            fs_from_h = avail_h / stack_mult_padded if stack_mult_padded > 0 else 999
+            fs_from_w = avail_w / width_mult if width_mult > 0 else 999
+            max_fs = min(fs_from_h, fs_from_w) * scale
+
+            # Stash intermediate data for pass 2
+            intermediates.append({
+                "i": i, "room": room, "verts": verts, "verts_str": verts_str,
+                "lx": lx, "ly": ly, "is_div": is_div, "is_circ": is_circ,
+                "has_df": has_df, "df_lines_raw": df_lines_raw,
+                "df_status": df_status, "pct_above": pct_above,
+                "line_0_color": line_0_color, "line_0_weight": line_0_weight,
+                "line_0_stroke": line_0_stroke, "line_0_stroke_w": line_0_stroke_w,
+                "stack_mult": stack_mult, "max_fs": max_fs,
+                "width_mult": width_mult, "stack_mult_padded": stack_mult_padded,
+            })
+            # Include ALL non-circ rooms in min() — even tiny ones — so
+            # uniform_fs cannot exceed any rendered room's local capacity.
+            if not is_circ:
+                per_room_fs.append(max_fs)
+
+        # ---- Uniform font size: smallest across all visible rooms ----
+        uniform_fs = min(per_room_fs) if per_room_fs else 0.0
+
+        # ---- Pass 2: build result dicts using uniform font size ----
+        LBL_RATIO = 0.75
+        GAP_01 = 0.6
+        GAP_12 = LBL_RATIO * 0.5
+
+        for info in intermediates:
+            i = info["i"]
+            room = info["room"]
+            verts = info["verts"]
+            lx, ly = info["lx"], info["ly"]
+            has_df = info["has_df"]
+            df_lines_raw = info["df_lines_raw"]
+
+            _df_fs_fit = uniform_fs
+            _lbl_fs_fit = _df_fs_fit * LBL_RATIO
+            # Hide if uniform size exceeds this room's local capacity
+            # (defensive — uniform_fs = min(per_room_fs) so should always fit).
+            show_labels = (
+                _df_fs_fit >= 1.0
+                and not info["is_circ"]
+                and uniform_fs <= info["max_fs"] + 1e-6
+            )
+
+            room_df_fs = str(round(_df_fs_fit, 2))
+            room_lbl_fs = str(round(_lbl_fs_fit, 2))
+            room_step = _df_fs_fit * GAP_01
+            room_nstep = _df_fs_fit * GAP_12
+            room_stroke_w = str(round(_lbl_fs_fit * 0.12, 2))
+
+            # Y positions: vertically centre text stack on label anchor
+            if has_df and len(df_lines_raw) >= 2:
+                total_h = _df_fs_fit + room_step + _lbl_fs_fit + room_nstep + _lbl_fs_fit
+            elif has_df:
+                total_h = _df_fs_fit + room_nstep + _lbl_fs_fit
+            else:
+                total_h = _lbl_fs_fit
+            top_y = ly - total_h / 2
+
+            if has_df and len(df_lines_raw) >= 2:
+                df_line_0_y = top_y + _df_fs_fit / 2
+                df_line_1_y = df_line_0_y + room_step + _lbl_fs_fit / 2
+                name_y_val = df_line_1_y + room_nstep + _lbl_fs_fit / 2
+            elif has_df:
+                df_line_0_y = top_y + _df_fs_fit / 2
+                df_line_1_y = df_line_0_y
+                name_y_val = df_line_0_y + room_nstep + _lbl_fs_fit / 2
+            else:
+                df_line_0_y = ly
+                df_line_1_y = ly
+                name_y_val = ly
+
+            # Annotation bounding box (image-pixel space, centred on lx,ly)
+            _bbox_w = info["width_mult"] * _df_fs_fit
+            _bbox_h = info["stack_mult_padded"] * _df_fs_fit
+            _bbox_left_pct = str(round((lx - _bbox_w / 2) / img_w * 100, 4)) if img_w > 0 else "0"
+            _bbox_top_pct = str(round((ly - _bbox_h / 2) / img_h * 100, 4)) if img_h > 0 else "0"
+            _bbox_w_pct = str(round(_bbox_w / img_w * 100, 4)) if img_w > 0 else "0"
+            _bbox_h_pct = str(round(_bbox_h / img_h * 100, 4)) if img_h > 0 else "0"
 
             # HTML overlay: percentage-based positioning & font sizes
             _lx_pct = str(round(lx / img_w * 100, 4)) if img_w > 0 else "0"
             _dl0y_pct = str(round(df_line_0_y / img_h * 100, 4)) if img_h > 0 else "0"
             _dl1y_pct = str(round(df_line_1_y / img_h * 100, 4)) if img_h > 0 else "0"
             _ny_pct = str(round(name_y_val / img_h * 100, 4)) if img_h > 0 else "0"
-            _df_fs_val = _df_fs * fit
-            _lbl_fs_val = _lbl_fs * fit
-            _df_fs_pct = str(round(_df_fs_val / img_w * 100, 4)) if img_w > 0 else "0"
-            _lbl_fs_pct = str(round(_lbl_fs_val / img_w * 100, 4)) if img_w > 0 else "0"
+            _df_fs_pct = str(round(_df_fs_fit / img_w * 100, 4)) if img_w > 0 else "0"
+            _lbl_fs_pct = str(round(_lbl_fs_fit / img_w * 100, 4)) if img_w > 0 else "0"
 
             # CSS clip-path polygon (percentage coords)
             if img_w > 0 and img_h > 0 and len(verts) >= 3:
@@ -806,9 +895,10 @@ class EditorState(rx.State):
             else:
                 _clip_css = "none"
 
-            # Text stroke for outline (smooth rendering via -webkit-text-stroke + paint-order)
-            _df_stroke_w = round(_df_fs_val * 0.12, 2)
-            _lbl_stroke_w = round(_lbl_fs_val * 0.12, 2)
+            # Text stroke for outline
+            _df_stroke_w = round(_df_fs_fit * 0.12, 2)
+            _lbl_stroke_w = round(_lbl_fs_fit * 0.12, 2)
+            line_0_stroke = info["line_0_stroke"]
             _df_text_stroke = f"{_df_stroke_w}px {line_0_stroke}"
             _lbl_text_stroke = f"{_lbl_stroke_w}px black"
 
@@ -817,17 +907,17 @@ class EditorState(rx.State):
                 "name": room.get("name", ""),
                 "room_type": room.get("room_type", "") or "NONE",
                 "parent": room.get("parent") or "",
-                "is_circ": is_circ,
-                "is_div": is_div,
-                "vertices_str": verts_str,
+                "is_circ": info["is_circ"],
+                "is_div": info["is_div"],
+                "vertices_str": info["verts_str"],
                 "label_x": str(lx),
                 "label_y": str(ly),
                 "df_line_0": df_lines_raw[0] if has_df else "",
                 "df_line_0_y": str(df_line_0_y),
-                "df_line_0_color": line_0_color,
-                "df_line_0_weight": line_0_weight,
+                "df_line_0_color": info["line_0_color"],
+                "df_line_0_weight": info["line_0_weight"],
                 "df_line_0_stroke": line_0_stroke,
-                "df_line_0_stroke_w": line_0_stroke_w,
+                "df_line_0_stroke_w": info["line_0_stroke_w"],
                 "df_line_1": df_lines_raw[1] if len(df_lines_raw) >= 2 else "",
                 "df_line_1_y": str(df_line_1_y),
                 "name_y": str(name_y_val),
@@ -837,7 +927,7 @@ class EditorState(rx.State):
                 "has_df": has_df,
                 "show_labels": show_labels,
                 "selected": i == self.selected_room_idx or i in self.multi_selected_idxs,
-                "df_status": df_status,
+                "df_status": info["df_status"],
                 # HTML overlay fields
                 "label_x_pct": _lx_pct,
                 "df_line_0_y_pct": _dl0y_pct,
@@ -848,6 +938,10 @@ class EditorState(rx.State):
                 "clip_polygon_css": _clip_css,
                 "df_line_0_text_stroke": _df_text_stroke,
                 "lbl_text_stroke": _lbl_text_stroke,
+                "bbox_left_pct": _bbox_left_pct,
+                "bbox_top_pct": _bbox_top_pct,
+                "bbox_w_pct": _bbox_w_pct,
+                "bbox_h_pct": _bbox_h_pct,
             })
         return result
 
@@ -910,14 +1004,23 @@ class EditorState(rx.State):
     @rx.var
     def overlay_css_transform(self) -> str:
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
-        if self.viewport_width <= 0:
+        if self.viewport_width <= 0 or self.image_width <= 0:
             return "translate(0px, 0px) scale(1, 1) rotate(0deg)"
         t = self._get_current_overlay_transform()
         vw = self.viewport_width
-        ox = t.get("offset_x", 0) * vw
-        oy = t.get("offset_y", 0) * vw
+        iw = self.image_width
+        ih = self.image_height or 1
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
+        # Centring term: with transform-origin top-left, scaled PDF top-left stays at (0,0).
+        # Translate the scaled PDF so its centre coincides with HDR centre, then apply
+        # the user-controlled offset (offset_x/y are fractions of HDR image dimensions,
+        # measured as displacement of PDF centre from HDR centre).
+        pdf_aspect = (self.overlay_img_height / self.overlay_img_width) if self.overlay_img_width > 0 else (ih / iw)
+        cx = vw * (1.0 - sx) / 2.0
+        cy = (vw * ih / iw - vw * pdf_aspect * sy) / 2.0
+        ox = cx + t.get("offset_x", 0) * vw
+        oy = cy + t.get("offset_y", 0) * (vw * ih / iw)
         rot = (t.get("rotation_90", 0) % 4) * 90
         return f"translate({ox}px, {oy}px) scale({sx}, {sy}) rotate({rot}deg)"
 
@@ -952,25 +1055,32 @@ class EditorState(rx.State):
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         t = self._get_current_overlay_transform()
         iw = self.image_width or 1
-        ox = t.get("offset_x", 0) * iw
-        oy = t.get("offset_y", 0) * iw
+        ih = self.image_height or 1
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
+        # PDF rendered to fill HDR width (= iw) at scale 1.
+        pdf_aspect = (self.overlay_img_height / self.overlay_img_width) if self.overlay_img_width > 0 else (ih / iw)
+        cx = iw * (1.0 - sx) / 2.0
+        cy = (ih - iw * pdf_aspect * sy) / 2.0
+        ox = cx + t.get("offset_x", 0) * iw
+        oy = cy + t.get("offset_y", 0) * ih
         return f"translate({ox},{oy}) scale({sx},{sy})"
 
     @rx.var
     def overlay_offset_x_str(self) -> str:
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
-        if self.viewport_width <= 0:
+        iw = self.image_width
+        if iw <= 0:
             return "0"
-        return str(round(self._get_current_overlay_transform().get("offset_x", 0) * self.viewport_width))
+        return str(round(self._get_current_overlay_transform().get("offset_x", 0) * iw))
 
     @rx.var
     def overlay_offset_y_str(self) -> str:
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
-        if self.viewport_width <= 0:
+        ih = self.image_height
+        if ih <= 0:
             return "0"
-        return str(round(self._get_current_overlay_transform().get("offset_y", 0) * self.viewport_width))
+        return str(round(self._get_current_overlay_transform().get("offset_y", 0) * ih))
 
     @rx.var
     def overlay_scale_x_str(self) -> str:
@@ -2147,22 +2257,22 @@ class EditorState(rx.State):
 
     def set_overlay_offset_x(self, value: str) -> None:
         try:
-            if self.viewport_width <= 0:
+            iw = self.image_width
+            if iw <= 0:
                 return
-            vw = self.viewport_width
             t = dict(self._get_current_overlay_transform())
-            t["offset_x"] = int(value) / vw
+            t["offset_x"] = int(value) / iw
             self._set_current_overlay_transform(t)
         except ValueError:
             pass
 
     def set_overlay_offset_y(self, value: str) -> None:
         try:
-            if self.viewport_width <= 0:
+            ih = self.image_height
+            if ih <= 0:
                 return
-            vw = self.viewport_width
             t = dict(self._get_current_overlay_transform())
-            t["offset_y"] = int(value) / vw
+            t["offset_y"] = int(value) / ih
             self._set_current_overlay_transform(t)
         except ValueError:
             pass
@@ -2207,39 +2317,18 @@ class EditorState(rx.State):
             pass
 
     def _centred_default_transform(self) -> dict:
-        """Return a default transform that centres the PDF vertically on the HDR.
+        """Default transform: PDF centre coincident with HDR centre.
 
-        Offsets stored as fractions of viewport width (resolution-independent).
-        Requires viewport_width to be set (from ResizeObserver); returns zero
-        offsets if the container hasn't been measured yet.
+        offset_x / offset_y are fractions of HDR image dimensions, measured as the
+        displacement of the PDF centre from the HDR centre. (0, 0) → centred.
         """
-        t = {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
-        if (
-            self.viewport_width > 0
-            and self.overlay_img_width > 0
-            and self.overlay_img_height > 0
-            and self.image_width > 0
-            and self.image_height > 0
-        ):
-            vw = self.viewport_width
-            hdr_h = vw * self.image_height / self.image_width
-            pdf_h = vw * self.overlay_img_height / self.overlay_img_width
-            t["offset_y"] = ((hdr_h - pdf_h) / 2) / vw  # fraction of viewport width
-        return t
+        return {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
 
     def reset_level_alignment(self) -> None:
-        """Remove the stored transform for this HDR so it inherits from the previous level."""
+        """Reset transform for this HDR to centred default."""
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return
-        if self.current_hdr_idx == 0:
-            # First HDR: reset to centred default
-            self._set_current_overlay_transform(self._centred_default_transform())
-            return
-        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        t = dict(self.overlay_transforms)
-        t.pop(hdr_name, None)
-        self.overlay_transforms = t
-        self._auto_save()
+        self._set_current_overlay_transform(self._centred_default_transform())
 
     def _ensure_default_transform(self) -> None:
         """For the first HDR, store a centred default transform if none exists yet."""
@@ -2251,6 +2340,13 @@ class EditorState(rx.State):
                 self._set_current_overlay_transform(self._centred_default_transform())
 
     def _arrow_accel(self, direction: str) -> int:
+        """Return the nudge step in CSS pixels for one arrow-key press.
+
+        Single tap = 5 px (visible at any viewport size). Holding the key
+        escalates to 15 px then 40 px so bulk alignment is quick. Previous
+        tuning (1/5/20 px) was invisible on wide viewports — a 1 px shift
+        on a 2248 px canvas is a 0.04 % translation, below perception.
+        """
         now = time.time()
         elapsed = now - self._arrow_last_time
         if direction == self._arrow_last_dir and elapsed < 0.15:
@@ -2260,13 +2356,25 @@ class EditorState(rx.State):
         self._arrow_last_time = now
         self._arrow_last_dir = direction
         if self._arrow_repeat_count >= 10:
-            return 20
+            step = 40
         elif self._arrow_repeat_count >= 4:
-            return 5
-        return 1
+            step = 15
+        else:
+            step = 5
+        logger.debug(
+            f"[accel] dir={direction} elapsed={elapsed*1000:.0f}ms "
+            f"count={self._arrow_repeat_count} step={step}"
+        )
+        return step
 
     def nudge_overlay(self, dx: int, dy: int) -> None:
+        logger.debug(
+            f"[nudge] dx={dx} dy={dy} vw={self.viewport_width} "
+            f"hdr_idx={self.current_hdr_idx} hdr_count={len(self.hdr_files)} "
+            f"align={self.overlay_align_mode} vis={self.overlay_visible}"
+        )
         if self.viewport_width <= 0:
+            logger.debug("[nudge] ABORT: viewport_width <= 0")
             return
         vw = self.viewport_width
         t = dict(self._get_current_overlay_transform())
@@ -2277,20 +2385,27 @@ class EditorState(rx.State):
     def sync_overlay_transform(self, data: dict) -> None:
         """Debounced sync from JS after Ctrl+scroll overlay scaling or drag.
 
-        JS sends absolute CSS pixel values; we convert to fractional offsets
-        (fraction of viewport width) before storing.
+        JS sends absolute CSS pixel translate (centring + offset baked in). Subtract
+        the centring term to recover offset-from-centre, then convert to fractions
+        of HDR image dimensions.
         """
-        print(f"[SYNC] data={data} vw={self.viewport_width}")
-        if self.viewport_width <= 0:
+        if self.viewport_width <= 0 or self.image_width <= 0:
             return
         vw = self.viewport_width
+        iw = self.image_width
+        ih = self.image_height or 1
         t = dict(self._get_current_overlay_transform())
+        sx = data.get("scale_x", t.get("scale_x", 1.0))
+        sy = data.get("scale_y", t.get("scale_y", 1.0))
+        pdf_aspect = (self.overlay_img_height / self.overlay_img_width) if self.overlay_img_width > 0 else (ih / iw)
+        cx = vw * (1.0 - sx) / 2.0
+        cy = (vw * ih / iw - vw * pdf_aspect * sy) / 2.0
         if "offset_x" in data:
-            t["offset_x"] = data["offset_x"] / vw
+            t["offset_x"] = (data["offset_x"] - cx) / vw
         if "offset_y" in data:
-            t["offset_y"] = data["offset_y"] / vw
-        t["scale_x"] = data.get("scale_x", t.get("scale_x", 1.0))
-        t["scale_y"] = data.get("scale_y", t.get("scale_y", 1.0))
+            t["offset_y"] = (data["offset_y"] - cy) / (vw * ih / iw)
+        t["scale_x"] = sx
+        t["scale_y"] = sy
         self._set_current_overlay_transform(t)
 
     def _get_current_overlay_transform(self) -> dict:
@@ -2312,6 +2427,14 @@ class EditorState(rx.State):
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
         stored = dict(transform)
         stored["is_manual"] = True
+        logger.debug(
+            "[overlay-set] hdr=%s ox=%.6f oy=%.6f sx=%.4f sy=%.4f rot=%s vw=%d iw=%d ih=%d pw=%d ph=%d",
+            hdr_name, stored.get("offset_x", 0), stored.get("offset_y", 0),
+            stored.get("scale_x", 1), stored.get("scale_y", 1),
+            stored.get("rotation_90", 0),
+            self.viewport_width, self.image_width, self.image_height,
+            self.overlay_img_width, self.overlay_img_height,
+        )
         t = dict(self.overlay_transforms)
         t[hdr_name] = stored
         self.overlay_transforms = t
@@ -2357,10 +2480,16 @@ class EditorState(rx.State):
         t = dict(self._get_current_overlay_transform())
         t["scale_x"] = scale
         t["scale_y"] = scale
-        # Input coords are SVG user units (= image intrinsic pixels); convert to fraction
+        # Input coords are SVG user units (= HDR image intrinsic pixels). Solve so
+        # PDF point pdf1 lands on img point img1 under: img = c + offset*dim + scale*pdf,
+        # where c is the centring term (so offset is displacement of PDF centre from HDR centre).
         iw = self.image_width or 1
-        t["offset_x"] = (img1["x"] - pdf1["x"] * scale) / iw
-        t["offset_y"] = (img1["y"] - pdf1["y"] * scale) / iw
+        ih = self.image_height or 1
+        pdf_aspect = (self.overlay_img_height / self.overlay_img_width) if self.overlay_img_width > 0 else (ih / iw)
+        cx = iw * (1.0 - scale) / 2.0
+        cy = (ih - iw * pdf_aspect * scale) / 2.0
+        t["offset_x"] = (img1["x"] - cx - pdf1["x"] * scale) / iw
+        t["offset_y"] = (img1["y"] - cy - pdf1["y"] * scale) / ih
         self._set_current_overlay_transform(t)
         self.align_points = []
         self.status_message = "Alignment applied"
@@ -2611,11 +2740,20 @@ class EditorState(rx.State):
         from ..lib.session_io import load_session
         data = load_session(Path(self.session_path))
         if data is None:
+            session_file = Path(self.session_path)
+            if session_file.exists():
+                # File exists but couldn't be parsed — do NOT allow auto-save to
+                # overwrite the on-disk session with empty/stale in-memory state.
+                logger.warning("[session] Failed to parse %s — auto-save blocked until next successful load", session_file)
+                self._session_load_ok = False
+            else:
+                # New project, no session file yet — safe to create one.
+                self._session_load_ok = True
             return
         self.rooms = data.get("rooms", [])
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
-        _needs_migration = data.get("transform_version", 0) < 2 and bool(self.overlay_transforms)
+        _needs_migration = data.get("transform_version", 0) < 3 and bool(self.overlay_transforms)
         hdr_idx = data.get("current_hdr_idx", 0)
         if 0 <= hdr_idx < len(self.hdr_files):
             self.current_hdr_idx = hdr_idx
@@ -2630,10 +2768,21 @@ class EditorState(rx.State):
             self.overlay_pdf_path = pdf_path
         # else: keep the path already resolved by _init_project_paths
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
+        # Restore cached PDF intrinsic dimensions so overlay_css_transform can
+        # compute the correct centring term before rasterization completes.
+        self.overlay_img_width = data.get("overlay_img_width", 0)
+        self.overlay_img_height = data.get("overlay_img_height", 0)
         self._rebuild_variants()
         # Migrate legacy pixel offsets AFTER _rebuild_variants sets image_width.
         if _needs_migration:
             self._migrate_legacy_overlay_transforms()
+        self._session_load_ok = True
+        logger.info(
+            "[session-load] transforms=%s pw=%d ph=%d tv=%s vis=%s",
+            {k: {kk: round(vv, 6) if isinstance(vv, float) else vv for kk, vv in v.items()} for k, v in self.overlay_transforms.items()},
+            self.overlay_img_width, self.overlay_img_height,
+            data.get("transform_version", "?"), self.overlay_visible,
+        )
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
         if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
             self._rasterize_current_page()
@@ -2643,9 +2792,17 @@ class EditorState(rx.State):
         if not self.session_path:
             return
         from ..lib.session_io import build_session_dict, save_session
-        # Only mark as v2 when migration is complete; otherwise keep unmarked
-        # so that re-loading will re-attempt migration with the correct viewport_width.
-        tv = 2 if not self._legacy_overlay_pending else 1
+        # Write tv=4 when all transforms are v4 (manual or migrated).
+        # Only keep tv=1 if genuinely un-migrated legacy transforms remain,
+        # so next load re-attempts migration with correct viewport dimensions.
+        if not self._legacy_overlay_pending:
+            tv = 4
+        elif self.overlay_transforms and all(
+            t.get("is_manual") for t in self.overlay_transforms.values()
+        ):
+            tv = 4  # all transforms set by user — safe even if migration was pending
+        else:
+            tv = 1
         data = build_session_dict(
             rooms=self.rooms, df_stamps=self.df_stamps,
             overlay_transforms=self.overlay_transforms,
@@ -2654,6 +2811,8 @@ class EditorState(rx.State):
             overlay_dpi=self.overlay_dpi, overlay_visible=self.overlay_visible,
             overlay_alpha=self.overlay_alpha, overlay_pdf_path=self.overlay_pdf_path,
             overlay_page_idx=self.overlay_page_idx, transform_version=tv,
+            overlay_img_width=self.overlay_img_width,
+            overlay_img_height=self.overlay_img_height,
         )
         save_session(Path(self.session_path), data)
 
@@ -2662,32 +2821,62 @@ class EditorState(rx.State):
         self.status_message = "Session saved"
 
     def _auto_save(self) -> None:
+        if not self._session_load_ok:
+            logger.debug("[session] auto-save skipped — no successful load yet")
+            return
         self.save_session()
         if self.debug_mode:
             trace.flush()
 
     def _migrate_legacy_overlay_transforms(self) -> None:
-        """Convert legacy absolute CSS pixel offsets to fractional offsets.
+        """Convert legacy offsets to centre-relative image-fraction offsets (v4).
 
-        Old sessions stored offset_x/y as integer CSS pixels. New sessions
-        store them as fractions of viewport width (resolution-independent).
-        Heuristic: fractions are always in (-5, 5); pixel values are larger.
+        v1: absolute CSS pixels → image fractions (heuristic: abs > 5)
+        v2: viewport-width fractions → image fractions
+        v3: top-left-relative image fractions → centre-relative image fractions (v4)
+        v4 (current): fractions of HDR image dimensions, displacement of PDF centre
+            from HDR centre.
         """
+        iw = self.image_width
+        ih = self.image_height
         vw = self.viewport_width
-        if not vw:
+        from_version = getattr(self, "_legacy_overlay_from_version", 0)
+        # v3→v4 also needs PDF intrinsic dimensions to compute the centring shift.
+        needs_pdf = from_version >= 3 or from_version == 0
+        pw = self.overlay_img_width
+        ph = self.overlay_img_height
+        if not iw or not ih or not vw or (needs_pdf and (not pw or not ph)):
             self._legacy_overlay_pending = True
             return
+        pdf_aspect = (ph / pw) if (pw and ph) else (ih / iw)
+        pdf_h_frac = pdf_aspect * (iw / ih)  # rendered PDF height as fraction of HDR height
         migrated = {}
         for hdr_name, t in self.overlay_transforms.items():
+            if t.get("is_manual"):
+                # Already v4 — user set this transform manually; never re-migrate.
+                migrated[hdr_name] = t
+                continue
             t2 = dict(t)
             ox = t.get("offset_x", 0)
             oy = t.get("offset_y", 0)
-            if abs(ox) > 5 or abs(oy) > 5:
-                t2["offset_x"] = ox / vw
-                t2["offset_y"] = oy / vw
+            sx = t.get("scale_x", 1.0)
+            sy = t.get("scale_y", 1.0)
+            if from_version < 3:
+                if abs(ox) > 5 or abs(oy) > 5:
+                    # v1: absolute CSS pixels → image fractions
+                    ox = ox / iw
+                    oy = oy / ih
+                else:
+                    # v2: viewport-width fractions → image fractions
+                    ox = ox * vw / iw
+                    oy = oy * iw / ih
+            # v3 → v4: top-left-relative → centre-relative
+            t2["offset_x"] = ox + (sx - 1.0) / 2.0
+            t2["offset_y"] = oy + (pdf_h_frac * sy - 1.0) / 2.0
             migrated[hdr_name] = t2
         self.overlay_transforms = migrated
         self._legacy_overlay_pending = False
+        self._legacy_overlay_from_version = 4
 
     # =====================================================================
     # PROJECT MANAGEMENT
@@ -2877,15 +3066,59 @@ class EditorState(rx.State):
     # KEYBOARD HANDLER
     # =====================================================================
 
+    def log_js_trace(self, payload: dict) -> None:
+        """Sink for JS-side tracer messages — logs one line per event to the
+        unified trace file (``~/.archilume/logs/archilume_ui.log``) when
+        ``debug_mode`` is enabled.
+
+        Invoked via ``window.applyEvent('editor_state.log_js_trace', {...})``.
+        If the payload carries a ``rid`` field, it's adopted as the active
+        correlation ID for the duration of this log line so JS traces
+        interleave cleanly with backend handler traces.
+        """
+        if not self.debug_mode:
+            return
+        try:
+            tag = payload.get("tag", "?")
+            rid = payload.get("rid")
+            if rid:
+                with with_correlation_id(rid):
+                    logger.debug(f"[JS:{tag}] {payload}")
+            else:
+                logger.debug(f"[JS:{tag}] {payload}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[JS:err] failed to log trace: {exc}")
+
     def handle_key_event(self, key: str, key_info: dict):  # type: ignore[override]
         """Route keyboard events from the Reflex on_key_down handler.
 
         This is the correct Reflex pattern — compiled to addEvents, not window.applyEvent.
         key_info contains: alt_key, ctrl_key, meta_key, shift_key.
+
+        A fresh correlation ID is allocated per keystroke so sub-handlers
+        (``handle_key`` → ``nudge_overlay`` → state change) share a rid
+        that makes the chain trivially greppable in the unified log.
         """
         # Skip modifier-only keys — they generate noise with no action
         if key in ("Shift", "Control", "Alt", "Meta"):
             return
+
+        with with_correlation_id(new_correlation_id()):
+            # Unconditional arrow-key tracer — proves Reflex's
+            # window_event_listener actually received the event.
+            if self.debug_mode and key.startswith("Arrow"):
+                logger.debug(
+                    f"[PY:handle_key_event] received key={key!r} | "
+                    f"overlay_align_mode={self.overlay_align_mode} "
+                    f"overlay_visible={self.overlay_visible} "
+                    f"viewport_width={self.viewport_width} "
+                    f"key_info={key_info}"
+                )
+            yield from self._handle_key_event_body(key, key_info)
+
+    def _handle_key_event_body(self, key: str, key_info: dict):
+        """Core key dispatch, split out so ``handle_key_event`` can wrap it
+        in a ``with_correlation_id`` block without cluttering the logic."""
 
         ctrl = key_info.get("ctrl_key", False)
         shift = key_info.get("shift_key", False)
@@ -2990,7 +3223,7 @@ class EditorState(rx.State):
             )
             self.exit_mode()
         elif k == "ArrowUp":
-            if self.overlay_align_mode and self.overlay_visible:
+            if self.overlay_align_mode:
                 step = self._arrow_accel("up")
                 logger.debug(f"  handle_key 'ArrowUp' → nudge_overlay(0, -{step})")
                 self.nudge_overlay(0, -step)
@@ -2998,7 +3231,7 @@ class EditorState(rx.State):
                 logger.debug(f"  handle_key 'ArrowUp' → navigate_hdr(-1) (current={self.current_hdr_idx})")
                 self.navigate_hdr(-1)
         elif k == "ArrowDown":
-            if self.overlay_align_mode and self.overlay_visible:
+            if self.overlay_align_mode:
                 step = self._arrow_accel("down")
                 logger.debug(f"  handle_key 'ArrowDown' → nudge_overlay(0, {step})")
                 self.nudge_overlay(0, step)
@@ -3006,12 +3239,12 @@ class EditorState(rx.State):
                 logger.debug(f"  handle_key 'ArrowDown' → navigate_hdr(1) (current={self.current_hdr_idx})")
                 self.navigate_hdr(1)
         elif k == "ArrowLeft":
-            if self.overlay_align_mode and self.overlay_visible:
+            if self.overlay_align_mode:
                 step = self._arrow_accel("left")
                 logger.debug(f"  handle_key 'ArrowLeft' → nudge_overlay(-{step}, 0)")
                 self.nudge_overlay(-step, 0)
         elif k == "ArrowRight":
-            if self.overlay_align_mode and self.overlay_visible:
+            if self.overlay_align_mode:
                 step = self._arrow_accel("right")
                 logger.debug(f"  handle_key 'ArrowRight' → nudge_overlay({step}, 0)")
                 self.nudge_overlay(step, 0)

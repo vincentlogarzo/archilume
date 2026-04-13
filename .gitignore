@@ -20,6 +20,15 @@ docs/radiance_scratchpad.md
 projects/*
 !projects/.gitkeep
 
+# Local debug logs. Unified trace file lives at ~/.archilume/logs/ (user
+# home, not repo). These rules cover any stray log files that may still
+# exist in the working tree from pre-refactor runs.
+*.log
+*.log.1
+archilume_ui_debug.log
+archilume_ui_debug.log.*
+debug_trace.json
+
 # SSH configuration (contains private keys - keep these secret!)
 .ssh/
 !.ssh/config.template

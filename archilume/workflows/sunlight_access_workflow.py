@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 import math
-import sys
 
 from archilume import (
     SkyGenerator,
@@ -24,170 +23,48 @@ class SunlightAccessWorkflow:
     Orchestrates a full sunlight access simulation from geometry to results.
     """
 
-    class InputsValidator:
-        """
-        Holds and validates simulation inputs for the Sunlight Access Workflow.
-        """
-        def __init__(
-            self,
-            building_latitude: float,
-            month: int,
-            day: int,
-            start_hour: int,
-            end_hour: int,
-            timestep: int,
-            ffl_offset: float,
-            grid_resolution: int,
-            rendering_mode: str,
-            rendering_quality: str,
-            room_boundaries_csv: Path | str,
-            obj_paths: List[Path | str],
-            project: str,
-            animation_format: str = "apng"
-        ):
-            self.building_latitude = building_latitude
-            self.month = month
-            self.day = day
-            self.start_hour = start_hour
-            self.end_hour = end_hour
-            self.timestep = timestep
-            self.ffl_offset = ffl_offset
-            self.grid_resolution = grid_resolution
-            self.image_resolution = None
-            self.rendering_mode = rendering_mode
-            self.rendering_quality = rendering_quality
-            self.animation_format = animation_format.lower()
-            self.project = project
-            self.paths = config.get_project_paths(project)
-
-            base_dir = self.paths.inputs_dir
-            self.room_boundaries_csv = self.paths.aoi_inputs_dir / room_boundaries_csv if not Path(room_boundaries_csv).is_absolute() else Path(room_boundaries_csv)
-            self.obj_paths = [base_dir / p if not Path(p).is_absolute() else Path(p) for p in obj_paths]
-
-            self._errors = []
-            self._warnings = []
-
-            self._validate()
-            self._report()
-
-        def _validate(self):
-            # --- Geographic ---
-            if not isinstance(self.building_latitude, (int, float)):
-                self._errors.append("[X] building_latitude: Must be numeric.")
-            elif not -90 <= self.building_latitude <= 90:
-                self._errors.append("[X] building_latitude: Must be -90 to 90.")
-
-            # --- Time ---
-            if not (0 <= self.start_hour <= 23): self._errors.append("[X] start_hour: Must be 0-23.")
-            if not (0 <= self.end_hour <= 23): self._errors.append("[X] end_hour: Must be 0-23.")
-            if self.start_hour >= self.end_hour: self._errors.append("[X] Time range: end_hour must be > start_hour.")
-
-            if self.timestep < 1: self._errors.append("[X] timestep: Must be >= 1.")
-            elif self.timestep < 5: self._warnings.append(f"[!] timestep ({self.timestep} min) is very low. High computation time.")
-
-            # --- Grid Resolution ---
-            if not isinstance(self.grid_resolution, int) or self.grid_resolution < 10:
-                self._errors.append("[X] grid_resolution: Must be an integer >= 10 mm.")
-            elif self.grid_resolution > 50:
-                self._errors.append("[X] grid_resolution: Must be <= 50 mm. Larger values produce images too coarse for meaningful analysis.")
-
-            valid_modes = ['cpu', 'gpu']
-            if self.rendering_mode.lower() not in valid_modes:
-                self._errors.append(f"[X] rendering_mode: Must be one of {valid_modes}")
-
-            valid_qualities = ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']
-            if self.rendering_quality.lower() not in valid_qualities:
-                self._errors.append(f"[X] rendering_quality: Must be one of {valid_qualities}")
-
-            valid_formats = ['gif', 'apng']
-            if self.animation_format not in valid_formats:
-                self._errors.append(f"[X] animation_format: Must be one of {valid_formats}")
-
-            # --- Files ---
-            if not self.room_boundaries_csv.exists():
-                self._errors.append(f"[X] CSV not found: {self.room_boundaries_csv}")
-
-            # --- Geometry ---
-            if not self.obj_paths: self._errors.append("[X] obj_paths: List is empty.")
-            else:
-                for idx, obj in enumerate(self.obj_paths):
-                    if not obj.exists():
-                        self._errors.append(f"[X] obj_paths[{idx}]: Not found: {obj}")
-                        continue
-                    if not obj.with_suffix('.mtl').exists():
-                        self._errors.append(f"[X] obj_paths[{idx}]: Missing .mtl file.")
-
-                    is_m, max_c, diag = self._check_obj_units(obj)
-                    if not is_m: self._errors.append(f"[X] obj_paths[{idx}] is in MILLIMETERS (max: {max_c:,.0f}). Re-export in Meters.")
-
-        def _check_obj_units(self, path):
-            try:
-                max_c = 0.0
-                with open(path, 'r') as f:
-                    for i, line in enumerate(f):
-                        if line.startswith('v '):
-                            parts = line.split()
-                            if len(parts) >= 4:
-                                max_c = max(max_c, abs(float(parts[1])), abs(float(parts[2])), abs(float(parts[3])))
-                                if max_c > 10000: return False, max_c, "mm"
-                                if i > 5000: break
-                if max_c > 1000: return False, max_c, "mm"
-                return True, max_c, "m"
-            except: return True, 0, "err"
-
-        def _report(self):
-            if self._errors:
-                # # print("\n" + "="*100)
-                print("INPUT VALIDATION FAILED - EXECUTION BLOCKED")
-                print("="*100)
-                for e in self._errors: print(f" {e}")
-                if self._warnings:
-                    print("-" * 100)
-                    print("Warnings also detected:")
-                    for w in self._warnings: print(f" {w}")
-                sys.exit(1)
-
-            print("\n" + "="*100)
-            print(f"{'CONFIGURATION VALIDATED SUCCESSFULLY':^100}")
-            print("="*100)
-            print(f"{'PARAMETER':<30} {'VALUE':<30} {'VALIDATION RULES / REASONING':<40}")
-            print("-" * 100)
-            print(f"{'Building Latitude':<30} {self.building_latitude:<30} {'Range: -90.0 to 90.0 (Decimal Degrees)'}")
-            print(f"{'Date':<30} {self.month}/{self.day:<30} {'Month: 1-12, Day: 1-31'}")
-            print(f"{'Time Range':<30} {self.start_hour}:00 - {self.end_hour}:00{'Start must be < End (0-23h fmt)'}")
-            print(f"{'Timestep':<30} {self.timestep} min{'Integer >= 1 (Rec: >5min)'}")
-            print(f"{'Camera Height (FFL)':<30} {self.ffl_offset}m{'Numeric value > 0.0m'}")
-            print(f"{'Grid Resolution':<30} {self.grid_resolution} mm/px{'Integer 10-50 mm'}")
-            print(f"{'Rendering Mode':<30} {self.rendering_mode.upper():<30} {'Must be CPU or GPU'}")
-            print(f"{'Quality Preset':<30} {self.rendering_quality.upper():<30} {'Valid preset name'}")
-            print(f"{'Room Boundaries CSV':<30} {self.room_boundaries_csv.name:<30} {'File exists & extension is .csv'}")
-            print("-" * 100)
-            print(f"GEOMETRY FILES ({len(self.obj_paths)})")
-            for i, obj in enumerate(self.obj_paths, 1):
-                print(f"  {i}. {obj.name:<25} {'DETECTED: Meters':<30} {'Max Coord < 1000m & .mtl exists'}")
-            if self._warnings:
-                print("\n" + "="*100)
-                print("WARNINGS DETECTED (Script will continue)")
-                for w in self._warnings: print(f" {w}")
-            print("="*100 + "\n")
-
-    def run(self, inputs: InputsValidator | None = None, **kwargs):
-        """
-        Execute the full sunlight analysis pipeline.
-
-        Accepts either a pre-built InputsValidator or keyword arguments
-        that will be forwarded to InputsValidator for validation.
-        """
-        if inputs is None:
-            inputs = self.InputsValidator(**kwargs)
-        elif kwargs:
-            raise ValueError("Pass either 'inputs' or keyword arguments, not both.")
+    def run(
+        self,
+        *,
+        building_latitude: float,
+        month: int,
+        day: int,
+        start_hour: int,
+        end_hour: int,
+        timestep: int,
+        ffl_offset: float,
+        grid_resolution: int,
+        rendering_mode: str,
+        rendering_quality: str,
+        room_boundaries_csv: Path,
+        obj_paths: List[Path],
+        paths: config.ProjectPaths,
+        animation_format: str = "apng",
+    ) -> bool:
+        """Execute the full sunlight analysis pipeline."""
         timer = PhaseTimer()
 
+        print("\n" + "=" * 100)
+        print(f"{'SUNLIGHT ACCESS WORKFLOW':^100}")
+        print("=" * 100)
+        print(f"{'Building Latitude':<30} {building_latitude}")
+        print(f"{'Date':<30} {month}/{day}")
+        print(f"{'Time Range':<30} {start_hour}:00 - {end_hour}:00")
+        print(f"{'Timestep':<30} {timestep} min")
+        print(f"{'Camera Height (FFL)':<30} {ffl_offset}m")
+        print(f"{'Grid Resolution':<30} {grid_resolution} mm/px")
+        print(f"{'Rendering Mode':<30} {rendering_mode.upper()}")
+        print(f"{'Quality Preset':<30} {rendering_quality.upper()}")
+        print(f"{'Room Boundaries CSV':<30} {room_boundaries_csv.name}")
+        print(f"{'Geometry Files':<30} {len(obj_paths)}")
+        for i, obj in enumerate(obj_paths, 1):
+            print(f"  {i}. {obj.name}")
+        print("=" * 100 + "\n")
+
         with timer("Phase 0: Setup and Cleanup"):
-            inputs.paths.create_dirs()
+            paths.create_dirs()
             smart_cleanup(
-                paths=inputs.paths,
+                paths=paths,
                 timestep_changed=True,
                 resolution_changed=True,
                 rendering_mode_changed=True,
@@ -196,81 +73,80 @@ class SunlightAccessWorkflow:
 
         with timer("Phase 1: Establishing 3D Scene"):
             octree_generator = Objs2Octree(
-                input_obj_paths=inputs.obj_paths,
-                output_dir=inputs.paths.octree_dir,
-                rad_dir=inputs.paths.rad_dir,
+                input_obj_paths=obj_paths,
+                output_dir=paths.octree_dir,
+                rad_dir=paths.rad_dir,
             )
             octree_generator.create_skyless_octree_for_analysis()
 
         with timer("Phase 2: Generate Sky Conditions"):
             sky_generator = SkyGenerator(
-                lat=inputs.building_latitude,
-                sky_file_dir=inputs.paths.sky_dir,
+                lat=building_latitude,
+                sky_file_dir=paths.sky_dir,
             )
             sky_generator.generate_TenK_cie_overcast_skyfile()
             sky_generator.generate_sunny_sky_series(
-                month=inputs.month,
-                day=inputs.day,
-                start_hour_24hr_format=inputs.start_hour,
-                end_hour_24hr_format=inputs.end_hour,
-                minute_increment=inputs.timestep
+                month=month,
+                day=day,
+                start_hour_24hr_format=start_hour,
+                end_hour_24hr_format=end_hour,
+                minute_increment=timestep
             )
 
         with timer("Phase 3: Prepare Camera Views"):
             view_generator = ViewGenerator(
-                room_boundaries_csv_path=inputs.room_boundaries_csv,
-                ffl_offset=inputs.ffl_offset,
-                view_file_dir=inputs.paths.view_dir,
-                aoi_dir=inputs.paths.aoi_dir,
+                room_boundaries_csv_path=room_boundaries_csv,
+                ffl_offset=ffl_offset,
+                view_file_dir=paths.view_dir,
+                aoi_dir=paths.aoi_dir,
             )
             view_generator.create_plan_view_files()
 
             # Compute pixel resolution from grid_resolution and view horizontal extent
-            # Radiance derives y_res from the view aspect ratio (-vh/-vv)
             view_h_mm = view_generator.view_horizontal * 1000
-            inputs.image_resolution = math.ceil(view_h_mm / inputs.grid_resolution)
+            image_resolution = math.ceil(view_h_mm / grid_resolution)
 
-            # Runtime validation on computed pixel resolution
-            if inputs.image_resolution < 128:
-                print(f"[!] WARNING: Computed resolution {inputs.image_resolution}px is below 128px.")
+            if image_resolution < 128:
+                print(f"[!] WARNING: Computed resolution {image_resolution}px is below 128px.")
                 print(f"    This is unlikely to produce useful results. Consider decreasing grid_resolution.")
-            if inputs.image_resolution > 4000:
-                print(f"[!] WARNING: Computed resolution {inputs.image_resolution}px exceeds 4000px.")
-                print(f"    grid_resolution={inputs.grid_resolution}mm on view width {view_generator.view_horizontal:.2f}m")
+            if image_resolution > 4000:
+                print(f"[!] WARNING: Computed resolution {image_resolution}px exceeds 4000px.")
+                print(f"    grid_resolution={grid_resolution}mm on view width {view_generator.view_horizontal:.2f}m")
                 print(f"    This may cause long render times or memory issues. Consider increasing grid_resolution.")
-            if inputs.image_resolution > 6000:
-                print(f"[X] ERROR: Computed resolution {inputs.image_resolution}px exceeds 6000px hard limit.")
-                print(f"    Increase grid_resolution to reduce pixel count.")
-                sys.exit(1)
+            if image_resolution > 6000:
+                raise ValueError(
+                    f"Computed resolution {image_resolution}px exceeds 6000px hard limit. "
+                    f"Increase grid_resolution to reduce pixel count."
+                )
 
-            print(f"Grid: {inputs.grid_resolution}mm/px -> Resolution: {inputs.image_resolution}px "
+            print(f"Grid: {grid_resolution}mm/px -> Resolution: {image_resolution}px "
                   f"(view width: {view_generator.view_horizontal:.2f}m)")
 
         with timer("Phase 4: Execute Image Rendering"):
             renderer = SunlightRenderer(
                 skyless_octree_path=octree_generator.skyless_octree_path,
                 overcast_sky_file_path=sky_generator.TenK_cie_overcast_sky_file_path,
-                x_res=inputs.image_resolution,
-                y_res=inputs.image_resolution,
-                rendering_mode=inputs.rendering_mode,
-                gpu_quality=inputs.rendering_quality,
-                skies_dir=inputs.paths.sky_dir,
-                views_dir=inputs.paths.view_dir,
-                image_dir=inputs.paths.image_dir,
+                x_res=image_resolution,
+                y_res=image_resolution,
+                rendering_mode=rendering_mode,
+                gpu_quality=rendering_quality,
+                skies_dir=paths.sky_dir,
+                views_dir=paths.view_dir,
+                image_dir=paths.image_dir,
             )
             renderer.sunlight_rendering_pipeline()
 
         with timer("Phase 5: Post-Process & Results Stamping"):
             with timer("  5a: Generate AOI files..."):
-                coordinate_map_path = utils.create_pixel_to_world_coord_map(inputs.paths.image_dir)
+                coordinate_map_path = utils.create_pixel_to_world_coord_map(paths.image_dir)
                 view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
 
             with timer("  5b: Generate Sunlit WPD and send to .xlsx..."):
                 converter = Hdr2Wpd(
                     pixel_to_world_map=coordinate_map_path,
-                    aoi_dir=inputs.paths.aoi_dir,
-                    wpd_dir=inputs.paths.wpd_dir,
-                    image_dir=inputs.paths.image_dir,
+                    aoi_dir=paths.aoi_dir,
+                    wpd_dir=paths.wpd_dir,
+                    image_dir=paths.image_dir,
                 )
                 converter.sunlight_sequence_wpd_extraction()
 
@@ -280,18 +156,18 @@ class SunlightAccessWorkflow:
                     overcast_sky_file_path=sky_generator.TenK_cie_overcast_sky_file_path,
                     x_res=renderer.x_res,
                     y_res=renderer.y_res,
-                    latitude=inputs.building_latitude,
-                    ffl_offset=inputs.ffl_offset,
-                    sky_files_dir=inputs.paths.sky_dir,
-                    view_files_dir=inputs.paths.view_dir,
-                    image_dir=inputs.paths.image_dir,
-                    aoi_dir=inputs.paths.aoi_dir,
-                    animation_format=inputs.animation_format,
+                    latitude=building_latitude,
+                    ffl_offset=ffl_offset,
+                    sky_files_dir=paths.sky_dir,
+                    view_files_dir=paths.view_dir,
+                    image_dir=paths.image_dir,
+                    aoi_dir=paths.aoi_dir,
+                    animation_format=animation_format,
                 )
                 tiff_annotator.nsw_adg_sunlight_access_results_pipeline()
 
         with timer("Phase 6: Final Reporting"):
             pass
 
-        timer.print_report(output_dir=inputs.paths.outputs_dir)
+        timer.print_report(output_dir=paths.outputs_dir)
         return True

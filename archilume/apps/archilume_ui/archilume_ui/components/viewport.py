@@ -426,60 +426,71 @@ def _render_room(room: dict) -> rx.Component:
 
 def _render_room_html(room: dict) -> rx.Component:
     """HTML overlay labels for a single room, clipped to polygon."""
-    _label_base = {
-        "position": "absolute",
-        "transform": "translate(-50%, -50%)",
+    _text_base = {
         "font_family": "DM Mono, monospace",
         "white_space": "nowrap",
         "pointer_events": "none",
         "paint_order": "stroke fill",
+        "text_align": "center",
+        "line_height": "1",
     }
     return rx.cond(
         ~room["is_circ"] & room["show_labels"],
         rx.box(
-            # DF line 0 (area result)
-            rx.cond(
-                room["has_df"] & (room["df_line_0"] != ""),
-                rx.el.div(
-                    room["df_line_0"],
-                    style={
-                        **_label_base,
-                        "left": room["label_x_pct"] + "%",
-                        "top": room["df_line_0_y_pct"] + "%",
-                        "font_size": room["room_df_fs_pct"] + "cqw",
-                        "color": room["df_line_0_color"],
-                        "font_weight": room["df_line_0_weight"],
-                        "WebkitTextStroke": room["df_line_0_text_stroke"],
-                    },
+            # Annotation bounding box with centred text stack
+            rx.el.div(
+                # DF line 0 (area result)
+                rx.cond(
+                    room["has_df"] & (room["df_line_0"] != ""),
+                    rx.el.div(
+                        room["df_line_0"],
+                        style={
+                            **_text_base,
+                            "font_size": room["room_df_fs_pct"] + "cqw",
+                            "color": room["df_line_0_color"],
+                            "font_weight": room["df_line_0_weight"],
+                            "WebkitTextStroke": room["df_line_0_text_stroke"],
+                        },
+                    ),
+                    rx.fragment(),
                 ),
-                rx.fragment(),
-            ),
-            # DF line 1 (threshold)
-            rx.cond(
-                room["has_df"] & (room["df_line_1"] != ""),
+                # DF line 1 (threshold)
+                rx.cond(
+                    room["has_df"] & (room["df_line_1"] != ""),
+                    rx.el.div(
+                        room["df_line_1"],
+                        style={
+                            **_text_base,
+                            "font_size": room["room_lbl_fs_pct"] + "cqw",
+                            "color": "white",
+                            "WebkitTextStroke": room["lbl_text_stroke"],
+                        },
+                    ),
+                    rx.fragment(),
+                ),
+                # Room name
                 rx.el.div(
-                    room["df_line_1"],
+                    room["name"],
                     style={
-                        **_label_base,
-                        "left": room["label_x_pct"] + "%",
-                        "top": room["df_line_1_y_pct"] + "%",
+                        **_text_base,
                         "font_size": room["room_lbl_fs_pct"] + "cqw",
-                        "color": "white",
+                        "color": rx.cond(room["selected"], COLORS["accent"], "white"),
                         "WebkitTextStroke": room["lbl_text_stroke"],
                     },
                 ),
-                rx.fragment(),
-            ),
-            # Room name
-            rx.el.div(
-                room["name"],
                 style={
-                    **_label_base,
-                    "left": room["label_x_pct"] + "%",
-                    "top": room["name_y_pct"] + "%",
-                    "font_size": room["room_lbl_fs_pct"] + "cqw",
-                    "color": rx.cond(room["selected"], COLORS["accent"], "white"),
-                    "WebkitTextStroke": room["lbl_text_stroke"],
+                    "position": "absolute",
+                    "left": room["bbox_left_pct"] + "%",
+                    "top": room["bbox_top_pct"] + "%",
+                    "width": room["bbox_w_pct"] + "%",
+                    "height": room["bbox_h_pct"] + "%",
+                    "border": "1px solid rgba(180,180,180,0.8)",
+                    "pointer_events": "none",
+                    "box_sizing": "border-box",
+                    "display": "flex",
+                    "flex_direction": "column",
+                    "align_items": "center",
+                    "justify_content": "center",
                 },
             ),
             # Per-room container clipped to polygon shape
@@ -700,6 +711,12 @@ _CANVAS_JS = rx.script("""
     }
 
     function updateAlignPanelInputs(t) {
+        // Visual-only update of the alignment panel inputs during JS drag/scroll.
+        // Uses the native value setter to change what the user sees instantly,
+        // but does NOT dispatch an input event — that would trigger Reflex
+        // on_change handlers with CSS-pixel values where they expect image-pixel
+        // values, writing wrong transform fractions to state.  The debounced
+        // sync_overlay_transform call is the sole write-path from JS to Python.
         var panel = document.getElementById('overlay-align-panel');
         if (!panel) return;
         var inputs = panel.querySelectorAll('input[type="number"]');
@@ -707,13 +724,9 @@ _CANVAS_JS = rx.script("""
         var setter = Object.getOwnPropertyDescriptor(
             window.HTMLInputElement.prototype, 'value'
         ).set;
-        function setInput(input, val) {
-            setter.call(input, val);
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        setInput(inputs[0], String(Math.round(t.ox)));
-        setInput(inputs[1], String(Math.round(t.oy)));
-        setInput(inputs[2], String(Math.round(t.sx * 1000000) / 1000000));
+        setter.call(inputs[0], String(Math.round(t.ox)));
+        setter.call(inputs[1], String(Math.round(t.oy)));
+        setter.call(inputs[2], String(Math.round(t.sx * 1000000) / 1000000));
     }
 
     // ---------------------------------------------------------------------------
@@ -1015,22 +1028,8 @@ _CANVAS_JS = rx.script("""
 
 def _svg_canvas() -> rx.Component:
     return rx.box(
-        # Background image — normal flow element, drives container height
-        rx.cond(
-            EditorState.current_image_b64 != "",
-            rx.el.img(
-                src=EditorState.current_image_b64,
-                id="editor-img",
-                style={
-                    "display": "block",
-                    "width": "100%",
-                    "height": "auto",
-                    "image_rendering": "pixelated",
-                },
-            ),
-            rx.fragment(),
-        ),
-        # PDF overlay — use rx.el.img (native <img>) to avoid Next.js Image constraints.
+        # PDF underlay — lowest layer, sits behind the HDR image.
+        # Uses rx.el.img (native <img>) to avoid Next.js Image constraints.
         # Keep the img mounted whenever b64 data is present; toggle visibility via
         # opacity/pointer-events so JS-set style.transform is preserved across
         # hide/show cycles (avoids unmount/remount resetting the dragged position).
@@ -1043,9 +1042,32 @@ def _svg_canvas() -> rx.Component:
                 style={
                     "position": "absolute", "top": "0", "left": "0",
                     "width": "100%", "height": "auto",
-                    "opacity": rx.cond(EditorState.overlay_visible, EditorState.overlay_alpha_str, "0"),
+                    "opacity": rx.cond(EditorState.overlay_visible, "1", "0"),
                     "transform_origin": "top left",
                     "pointer_events": "none",
+                    "z_index": "0",
+                },
+            ),
+            rx.fragment(),
+        ),
+        # Background image — normal flow element, drives container height
+        rx.cond(
+            EditorState.current_image_b64 != "",
+            rx.el.img(
+                src=EditorState.current_image_b64,
+                id="editor-img",
+                style={
+                    "display": "block",
+                    "position": "relative",
+                    "width": "100%",
+                    "height": "auto",
+                    "image_rendering": "pixelated",
+                    "z_index": "1",
+                    "opacity": rx.cond(
+                        EditorState.overlay_visible,
+                        EditorState.overlay_alpha_str,
+                        "1",
+                    ),
                 },
             ),
             rx.fragment(),
@@ -1204,6 +1226,7 @@ def _svg_canvas() -> rx.Component:
                 "width": "100%", "height": "100%",
                 "pointer_events": "all",
                 "cursor": rx.cond(EditorState.overlay_align_mode, "grab", "default"),
+                "z_index": "2",
             },
         ),
         # HTML annotation overlay (labels rendered as HTML, clipped per-room)
@@ -1215,7 +1238,7 @@ def _svg_canvas() -> rx.Component:
                 "top": "0", "left": "0",
                 "width": "100%", "height": "100%",
                 "pointer_events": "none",
-                "z_index": "2",
+                "z_index": "3",
                 "container_type": "inline-size",
             },
         ),
@@ -1237,27 +1260,12 @@ def _svg_canvas() -> rx.Component:
 # ---------------------------------------------------------------------------
 
 def _viewport_resize_js() -> rx.Component:
-    return rx.script("""
-(function() {
-    function dispatch(event, payload) {
-        var fn = window.applyEvent || window.__reflex?.['$/utils/state']?.applyEvent;
-        if (typeof fn === 'function') fn(event, payload);
-    }
-    function report(el) {
-        dispatch('editor_state.set_viewport_size', {
-            data: {w: Math.round(el.clientWidth), h: Math.round(el.clientHeight)}
-        });
-    }
-    function setup() {
-        const el = document.getElementById('viewport-container');
-        if (!el) return;
-        report(el);
-        new ResizeObserver(function() { report(el); }).observe(el);
-    }
-    if (document.readyState === 'complete') setup();
-    else window.addEventListener('load', setup);
-})();
-""")
+    """Placeholder — the resize observer now lives in ``_ZOOM_GUARD_SCRIPT``
+    in ``archilume_ui.py``. Consolidated there because the IIFE in that file
+    demonstrably runs and has ``applyEvent`` installed in the same scope,
+    removing a class of timing bugs where this script mounted before the
+    bridge was ready. Kept as a no-op stub so call sites stay valid."""
+    return rx.fragment()
 
 
 # ---------------------------------------------------------------------------
@@ -1450,7 +1458,7 @@ def viewport() -> rx.Component:
                     align="center",
                     justify="center",
                     data_overlay_align=rx.cond(
-                        EditorState.overlay_align_mode & EditorState.overlay_visible,
+                        EditorState.overlay_align_mode,
                         "true", "false",
                     ),
                     style={"position": "relative", "flex": "1", "overflow": "hidden"},

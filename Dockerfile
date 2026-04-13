@@ -110,10 +110,12 @@ RUN uv pip install --system \
         "plotly>=6.6.0" "openpyxl>=3.1.5" "pyradiance>=1.2.0" \
         "pyvista>=0.46.4" "vtk>=9.6.0" "ifcopenshell>=0.8.3.post1" \
         "selenium>=4.41.0" \
+        "fastapi>=0.135.3" "uvicorn>=0.34.0" \
     && uv cache clean
 
 WORKDIR /app
-CMD ["python", "-c", "import archilume; print('Archilume engine ready.')"]
+EXPOSE 8100
+CMD ["python", "-m", "archilume.api.run"]
 
 
 # ── archilume-dev ─────────────────────────────────────────────────────────────

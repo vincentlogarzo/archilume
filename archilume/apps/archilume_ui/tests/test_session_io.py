@@ -93,6 +93,7 @@ class TestBuildSessionDict:
             "current_hdr_idx", "current_variant_idx", "selected_parent",
             "annotation_scale", "overlay_dpi", "overlay_visible",
             "overlay_alpha", "overlay_pdf_path", "overlay_page_idx",
+            "overlay_img_width", "overlay_img_height",
         }
         assert expected_keys == set(d.keys())
 
@@ -107,7 +108,7 @@ class TestBuildSessionDict:
         assert d["overlay_alpha"] == 0.6
         assert d["overlay_pdf_path"] == ""
         assert d["overlay_page_idx"] == 0
-        assert d["transform_version"] == 2
+        assert d["transform_version"] == 4
 
     def test_custom_values_preserved(self):
         d = build_session_dict(

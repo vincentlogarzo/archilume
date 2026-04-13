@@ -13,6 +13,7 @@ from archilume_ui.lib.geometry import (
     _find_edge_for_point,
     _min_edge_distance,
     _point_to_segment_dist,
+    _signed_edge_distance,
     find_nearest_edge,
     inset_polygon,
     make_unique_name,
@@ -640,3 +641,111 @@ class TestPolygonLabelPoint:
     def test_thin_rectangle_label_inside(self):
         lx, ly = polygon_label_point(THIN_RECTANGLE)
         assert point_in_polygon(lx, ly, THIN_RECTANGLE)
+
+    def test_unit_square_anchors_at_centre(self):
+        """Pole of inaccessibility for a square is its centre."""
+        lx, ly = polygon_label_point(UNIT_SQUARE)
+        assert abs(lx - 0.5) < 0.05
+        assert abs(ly - 0.5) < 0.05
+
+    def test_rectangle_anchors_at_centre(self):
+        """Uniform rectangle → anchor at geometric centre (known limitation)."""
+        lx, ly = polygon_label_point(RECTANGLE_10x5)
+        assert abs(lx - 5.0) < 0.2
+        assert abs(ly - 2.5) < 0.1
+
+    def test_l_shape_anchors_in_thicker_arm(self):
+        """L-shape bulk is along the bottom (0..2 x 0..1) and left (0..1 x 0..2).
+        Pole of inaccessibility should sit near one of those arms' centres,
+        well clear of the concave pocket around (1.5, 1.5)."""
+        lx, ly = polygon_label_point(L_SHAPE)
+        # Anchor must not fall into the concave pocket (the missing 1..2 x 1..2 quadrant)
+        assert not (lx > 1.0 and ly > 1.0)
+        # Anchor should be at least as far from any edge as the arm half-thickness
+        assert _signed_edge_distance(lx, ly, L_SHAPE) >= 0.4
+
+    def test_portrait_stem_with_bulge_anchors_in_bulge(self):
+        """Portrait-bbox polygon: narrow stem with wider bulge on top.
+        Height > width triggers pole-of-inaccessibility → anchor in bulge."""
+        # Stem: x in [4, 6], y in [0, 10]; bulge: x in [0, 10], y in [10, 14].
+        # bbox 10 x 14 — portrait → polylabel branch.
+        poly: list[list[float]] = [
+            [4.0, 0.0], [6.0, 0.0], [6.0, 10.0],
+            [10.0, 10.0], [10.0, 14.0], [0.0, 14.0], [0.0, 10.0], [4.0, 10.0],
+        ]
+        lx, ly = polygon_label_point(poly)
+        assert point_in_polygon(lx, ly, poly)
+        # Label should land inside the bulge (y >= 10), not in the stem.
+        assert ly >= 10.0
+        # Should be notably closer to the bulge centre (5, 12) than the stem.
+        assert abs(lx - 5.0) < 1.5
+
+    def test_landscape_uses_centroid_even_with_fat_region(self):
+        """Landscape-bbox polygon: thin stem extending sideways from a fat
+        square. Rule: width > height → shoelace centroid (not polylabel),
+        so the anchor sits near the centroid — not planted in the fat square."""
+        # Fat square x in [0, 4], y in [0, 4]; thin stem x in [4, 14], y in [1, 2].
+        # bbox 14 x 4 — landscape → centroid branch.
+        poly: list[list[float]] = [
+            [0.0, 0.0], [4.0, 0.0],
+            [4.0, 1.0], [14.0, 1.0], [14.0, 2.0], [4.0, 2.0],
+            [4.0, 4.0], [0.0, 4.0],
+        ]
+        lx, ly = polygon_label_point(poly)
+        # Must be interior
+        assert point_in_polygon(lx, ly, poly)
+        # Centroid lands roughly between the square and stem — NOT at the
+        # fat-square centre (2, 2) that polylabel would choose.
+        from archilume_ui.lib.geometry import polygon_centroid
+        cx, cy = polygon_centroid(poly)
+        assert abs(lx - cx) < 1e-6
+        assert abs(ly - cy) < 1e-6
+
+    def test_landscape_concave_falls_back_to_polylabel(self):
+        """Landscape-bbox concave polygon whose centroid lies outside the
+        shape still gets an interior anchor via fallback."""
+        # Landscape C-shape: bbox 10 x 6, mouth on the right.
+        poly: list[list[float]] = [
+            [0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [3.0, 2.0],
+            [3.0, 4.0], [10.0, 4.0], [10.0, 6.0], [0.0, 6.0],
+        ]
+        lx, ly = polygon_label_point(poly)
+        assert point_in_polygon(lx, ly, poly)
+
+    def test_concave_polygon_centroid_outside_returns_interior(self):
+        """Strongly concave C-shape whose shoelace centroid falls outside the polygon."""
+        c_shape: list[list[float]] = [
+            [0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [2.0, 2.0],
+            [2.0, 8.0], [10.0, 8.0], [10.0, 10.0], [0.0, 10.0],
+        ]
+        lx, ly = polygon_label_point(c_shape)
+        assert point_in_polygon(lx, ly, c_shape)
+
+    def test_degenerate_two_vertices(self):
+        lx, ly = polygon_label_point([[3.0, 7.0], [4.0, 8.0]])
+        assert lx == 3.0 and ly == 7.0
+
+    def test_empty_polygon(self):
+        lx, ly = polygon_label_point([])
+        assert lx == 0.0 and ly == 0.0
+
+
+# ===========================================================================
+# _signed_edge_distance
+# ===========================================================================
+
+class TestSignedEdgeDistance:
+    def test_inside_positive(self):
+        assert _signed_edge_distance(0.5, 0.5, UNIT_SQUARE) > 0
+
+    def test_outside_negative(self):
+        assert _signed_edge_distance(2.0, 2.0, UNIT_SQUARE) < 0
+
+    def test_magnitude_matches_unsigned(self):
+        d_signed = _signed_edge_distance(0.5, 0.5, UNIT_SQUARE)
+        d_unsigned = _min_edge_distance(0.5, 0.5, UNIT_SQUARE)
+        assert abs(abs(d_signed) - d_unsigned) < 1e-9
+
+    def test_concave_pocket_negative(self):
+        # The L_SHAPE concave pocket at (1.5, 1.5) is outside
+        assert _signed_edge_distance(1.5, 1.5, L_SHAPE) < 0

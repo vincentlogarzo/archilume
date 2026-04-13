@@ -1,5 +1,6 @@
 """Geometry utilities for the AOI editor: snapping, point-in-polygon, polygon splitting, ortho."""
 
+import heapq
 import math
 from typing import Optional
 
@@ -52,42 +53,132 @@ def polygon_centroid(vertices: list[list[float]]) -> tuple[float, float]:
     return (cx, cy)
 
 
-def polygon_label_point(vertices: list[list[float]]) -> tuple[float, float]:
+def polygon_label_point(
+    vertices: list[list[float]], precision: float = 1.0
+) -> tuple[float, float]:
     """Find an interior point suitable for label placement.
 
-    Uses centroid if inside; falls back to grid search for concave polygons.
-    """
-    cx, cy = polygon_centroid(vertices)
-    if point_in_polygon(cx, cy, vertices):
-        return (cx, cy)
+    Rule is aspect-dependent:
 
-    # Grid-search fallback for concave polygons
+    * **Landscape rooms** (bbox width > height) → shoelace centroid
+      (equivalent to the centre of mass of a uniformly-filled polygon).
+      Keeps labels visually balanced in rooms that are already wide
+      enough to comfortably fit horizontal text.
+    * **Portrait or square rooms** (bbox height ≥ width) → pole of
+      inaccessibility (centre of the largest inscribed circle). Biases
+      labels toward the thickest interior region, so tall narrow rooms
+      with a bulge get the anchor in the bulge rather than the cramped
+      stem.
+
+    Either branch falls back to the pole of inaccessibility if the
+    centroid is not inside the polygon (concave shapes), so the
+    returned point is always interior.
+    """
+    n = len(vertices)
+    if n < 3:
+        if n == 0:
+            return (0.0, 0.0)
+        return (vertices[0][0], vertices[0][1])
+
+    xs = [v[0] for v in vertices]
+    ys = [v[1] for v in vertices]
+    width = max(xs) - min(xs)
+    height = max(ys) - min(ys)
+
+    if width > height:
+        cx, cy = polygon_centroid(vertices)
+        if point_in_polygon(cx, cy, vertices):
+            return (cx, cy)
+        # Concave landscape polygon with exterior centroid — fall through
+
+    return _polygon_pole_of_inaccessibility(vertices, precision)
+
+
+def _polygon_pole_of_inaccessibility(
+    vertices: list[list[float]], precision: float = 1.0
+) -> tuple[float, float]:
+    """Interior point maximising distance to the polygon boundary.
+
+    Uses the Mapbox `polylabel` algorithm: priority-queue-driven quadtree
+    subdivision of the polygon bbox using signed distance-to-edge as the
+    cell score, with the cell half-diagonal as the pruning upper bound.
+    Assumes `len(vertices) >= 3`.
+    """
     xs = [v[0] for v in vertices]
     ys = [v[1] for v in vertices]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
+    width = max_x - min_x
+    height = max_y - min_y
+    cell_size = min(width, height)
+    if cell_size < 1e-9:
+        return (min_x, min_y)
 
-    best_point = (cx, cy)
-    best_dist = -1.0
-    steps = 20
-    dx = (max_x - min_x) / steps
-    dy = (max_y - min_y) / steps
+    h = cell_size / 2.0
 
-    for i in range(steps + 1):
-        for j in range(steps + 1):
-            px = min_x + i * dx
-            py = min_y + j * dy
-            if point_in_polygon(px, py, vertices):
-                d = _min_edge_distance(px, py, vertices)
-                if d > best_dist:
-                    best_dist = d
-                    best_point = (px, py)
+    # Seed with centroid as a cheap starting best
+    cx, cy = polygon_centroid(vertices)
+    best_x, best_y = cx, cy
+    best_d = _signed_edge_distance(cx, cy, vertices)
 
-    return best_point
+    # Also try bbox centre as a second seed
+    bcx, bcy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    bcd = _signed_edge_distance(bcx, bcy, vertices)
+    if bcd > best_d:
+        best_d = bcd
+        best_x, best_y = bcx, bcy
+
+    # Priority queue of cells: (-max_possible_distance, counter, x, y, h)
+    # Negated so heapq (min-heap) yields the most promising cell first.
+    queue: list[tuple[float, int, float, float, float]] = []
+    counter = 0
+
+    def _push_cell(x: float, y: float, half: float) -> None:
+        nonlocal counter
+        d = _signed_edge_distance(x, y, vertices)
+        # Upper bound: any point within this square cell is at most
+        # half * sqrt(2) farther from the polygon boundary than its centre.
+        upper = d + half * math.sqrt(2.0)
+        heapq.heappush(queue, (-upper, counter, x, y, half))
+        counter += 1
+        nonlocal best_d, best_x, best_y
+        if d > best_d:
+            best_d = d
+            best_x, best_y = x, y
+
+    # Tile the bbox with cells of side `cell_size`
+    x = min_x
+    while x < max_x:
+        y = min_y
+        while y < max_y:
+            _push_cell(x + h, y + h, h)
+            y += cell_size
+        x += cell_size
+
+    while queue:
+        neg_upper, _, x, y, half = heapq.heappop(queue)
+        upper = -neg_upper
+        # Prune: this cell can't beat the current best by more than `precision`
+        if upper - best_d <= precision:
+            continue
+        # Subdivide into four children
+        sub_h = half / 2.0
+        _push_cell(x - sub_h, y - sub_h, sub_h)
+        _push_cell(x + sub_h, y - sub_h, sub_h)
+        _push_cell(x - sub_h, y + sub_h, sub_h)
+        _push_cell(x + sub_h, y + sub_h, sub_h)
+
+    # Guarantee the returned point is inside the polygon. For degenerate
+    # or numerically pathological inputs the search may still score a
+    # near-boundary point — fall back to the seeded centroid if it was
+    # interior.
+    if not point_in_polygon(best_x, best_y, vertices) and point_in_polygon(cx, cy, vertices):
+        return (cx, cy)
+    return (best_x, best_y)
 
 
 def _min_edge_distance(px: float, py: float, vertices: list[list[float]]) -> float:
-    """Minimum distance from point to any polygon edge."""
+    """Minimum unsigned distance from point to any polygon edge."""
     min_d = float("inf")
     n = len(vertices)
     for i in range(n):
@@ -97,6 +188,14 @@ def _min_edge_distance(px: float, py: float, vertices: list[list[float]]) -> flo
         if d < min_d:
             min_d = d
     return min_d
+
+
+def _signed_edge_distance(
+    px: float, py: float, vertices: list[list[float]]
+) -> float:
+    """Signed distance to polygon boundary — positive inside, negative outside."""
+    d = _min_edge_distance(px, py, vertices)
+    return d if point_in_polygon(px, py, vertices) else -d
 
 
 def _point_to_segment_dist(
@@ -143,7 +242,9 @@ def max_inscribed_rect(
 ) -> tuple[float, float]:
     """Max axis-aligned rectangle centred at (cx, cy) inside polygon.
 
-    Returns (half_width, half_height).
+    Returns (half_width, half_height). Cardinal-ray bound only; corners
+    may extend outside polygon for concave shapes — use
+    `max_inscribed_rect_aspect()` for corner-safe sizing.
     """
     if len(vertices) < 3:
         return (0.0, 0.0)
@@ -152,6 +253,58 @@ def max_inscribed_rect(
     dist_up = _ray_to_edge(cx, cy, 0, -1, vertices)
     dist_down = _ray_to_edge(cx, cy, 0, 1, vertices)
     return (min(dist_left, dist_right), min(dist_up, dist_down))
+
+
+def max_inscribed_rect_aspect(
+    cx: float, cy: float, ratio_w: float, ratio_h: float,
+    vertices: list[list[float]], samples_per_edge: int = 3,
+) -> tuple[float, float]:
+    """Max rectangle with aspect (ratio_w:ratio_h) centred at (cx, cy)
+    where all corners and edge samples lie inside polygon.
+
+    Binary search on scale factor. Tests rect corners + midpoints to
+    catch concave-edge intrusions.
+
+    Returns (half_width, half_height).
+    """
+    if len(vertices) < 3 or ratio_w <= 0 or ratio_h <= 0:
+        return (0.0, 0.0)
+
+    # Upper bound: cardinal rays
+    cw, ch = max_inscribed_rect(cx, cy, vertices)
+    if cw <= 0 or ch <= 0:
+        return (0.0, 0.0)
+
+    s_hi = min(2 * cw / ratio_w, 2 * ch / ratio_h)
+    s_lo = 0.0
+
+    def _fits(s: float) -> bool:
+        hw = ratio_w * s / 2
+        hh = ratio_h * s / 2
+        # Sample rect perimeter — corners and midpoints
+        n = max(1, samples_per_edge)
+        pts: list[tuple[float, float]] = []
+        for k in range(n + 1):
+            t = k / n
+            x = -hw + t * 2 * hw
+            pts.append((x, -hh))
+            pts.append((x, hh))
+            y = -hh + t * 2 * hh
+            pts.append((-hw, y))
+            pts.append((hw, y))
+        for dx, dy in pts:
+            if not point_in_polygon(cx + dx, cy + dy, vertices):
+                return False
+        return True
+
+    # Binary search ~20 iterations → 1e-6 relative precision
+    for _ in range(20):
+        s_mid = (s_lo + s_hi) / 2
+        if _fits(s_mid):
+            s_lo = s_mid
+        else:
+            s_hi = s_mid
+    return (ratio_w * s_lo / 2, ratio_h * s_lo / 2)
 
 
 def snap_to_vertex(

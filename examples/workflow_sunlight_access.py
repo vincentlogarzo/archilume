@@ -2,10 +2,10 @@
 Archilume Example: Sunlight Exposure Analysis (Simplified)
 =============================================================
 
-This example demonstrates how to configure and run a sunlight 
-access workflow to determine the quantity of sunlight on 
+This example demonstrates how to configure and run a sunlight
+access workflow to determine the quantity of sunlight on
 horizontal plane over a single day across many rooms in a
-building. The core simulation logic is handled by the 
+building. The core simulation logic is handled by the
 `SunlightAccessWorkflow` class in sunlight_access_workflow.py
 
 Workflow Overview:
@@ -18,27 +18,31 @@ Workflow Overview:
 # fmt: off
 # autopep8: off
 
+from archilume import config
 from archilume.workflows import SunlightAccessWorkflow
 
 def run_sunlight_analysis():
+    project = "cowles"
+    paths = config.get_project_paths(project)
+
     SunlightAccessWorkflow().run(
-        building_latitude   = -37.8134,  # Melbourne, Australia
-        month               = 6,         # June
-        day                 = 21,        # Winter Solstice
-        start_hour          = 9,         # 9:00 AM
-        end_hour            = 15,        # 3:00 PM
-        timestep            = 15,        # 15-minute intervals
-        ffl_offset          = 1.0,       # Image height above floor (m)
-        grid_resolution     = 15,        # Grid spacing in mm per pixel
-        rendering_mode      = "gpu",     # Backend: 'cpu' or 'gpu'
-        rendering_quality   = "fast",    # Quality: 'draft', 'stand', 'prod', etc.
-        animation_format    = "apng",    # Options: 'apng', 'gif'
-        project             = "cowles",  # Required: project name under projects/ (e.g. projects/cowles/)
-        room_boundaries_csv = "87cowles_BLD_room_boundaries.csv",
+        building_latitude   = -37.8134,
+        month               = 6,
+        day                 = 21,
+        start_hour          = 9,
+        end_hour            = 15,
+        timestep            = 15,
+        ffl_offset          = 1.0,
+        grid_resolution     = 15,
+        rendering_mode      = "gpu",
+        rendering_quality   = "fast",
+        animation_format    = "apng",
+        paths               = paths,
+        room_boundaries_csv = paths.aoi_inputs_dir / "87cowles_BLD_room_boundaries.csv",
         obj_paths           = [
-                                "87Cowles_BLD_withWindows.obj",
-                                "87cowles_site_decimated.obj" #add to this list if necessary
-                                ]
+                                paths.inputs_dir / "87Cowles_BLD_withWindows.obj",
+                                paths.inputs_dir / "87cowles_site_decimated.obj",
+                              ],
     )
 
 if __name__ == "__main__":
