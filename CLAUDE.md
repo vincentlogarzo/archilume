@@ -60,99 +60,25 @@ python examples/launch_obj_editor.py              # launch OBJ/AOI editor
 
 ## Launching the Reflex App
 
-Use the launcher — it reuses an already-running dev server or launches one:
-
 ```bash
-# Reuse if running, launch if not (fast path for Claude sessions):
-python examples/launch_archilume_ui.py --ensure
-
-# Force a fresh restart (kills stale backends):
-python examples/launch_archilume_ui.py
+python examples/launch_archilume_ui.py --ensure   # reuse if running, launch if not
+python examples/launch_archilume_ui.py             # force fresh restart
 ```
 
-`--ensure` checks `:3000` first — exits instantly if already serving. Otherwise kills stale backends, launches, and polls until ready (no blind sleep).
+## Playwright
 
-Playwright uses its own sandboxed Chromium — not the user's browser.
-
-## Playwright "Browser Already In Use" Fix
-
-`Error: Browser is already in use for ...mcp-chrome-...` = stale session lock. Auto-recover — do NOT ask the user:
-
-1. `browser_close` (will fail — expected, ignore).
-2. `sleep 2`.
-3. `browser_navigate` again — MCP server re-initialises on retry.
-
-If step 3 still fails: tell user to run **Reload Window** (`Ctrl+Shift+P` → "Reload Window"). Do NOT tell them to restart VS Code.
-
-## Post-Edit UI Verification
-
-After any `archilume_ui` change, use **tiered verification** — match effort to the type of change.
-
-### Step 0 — Launch & select project (always)
-
-Before any tier check, ensure the app is running and the correct project is loaded:
-
-1. Run `python examples/launch_archilume_ui.py --ensure` to start or reuse the dev server.
-2. `browser_navigate` → `http://localhost:3000`.
-3. Select the project **`527DP-gcloud-lowRes-GregW`** from the project selector.
-4. Then proceed with the appropriate tier below.
-
-### Tier 1 — Text, spacing, logic, state changes
-
-1. `browser_navigate` → `http://localhost:3000`.
-2. `browser_snapshot` → verify DOM structure and text content.
-3. `browser_console_messages` → check JS errors.
-4. **No screenshots** unless snapshot reveals something unexpected.
-
-### Tier 2 — Visual changes (colors, fonts, shadows, borders)
-
-1. `browser_navigate` → `http://localhost:3000`.
-2. `browser_snapshot` → get element refs.
-3. **One screenshot** → compare against intent.
-4. Fix if needed → **one more screenshot** only if changes were made.
-5. `browser_console_messages` → check JS errors.
-
-### Tier 3 — Layout, new components, major redesigns
-
-1. `browser_navigate` → `http://localhost:3000`.
-2. `browser_snapshot` → get element refs.
-3. Interact with changed elements. Screenshot after each action.
-4. Compare: spacing, font sizes, colors, alignment, border-radius, shadows, interactive states.
-5. `browser_console_messages` → check JS errors.
-6. Minimum 2 rounds: screenshot → compare → fix → repeat. Stop only when diff is clean.
-
-### Cleanup — always do last
-
-Call `browser_close` at the end of every verification session to prevent stale MCP locks in the next conversation.
-
-Screenshots → `C:/Users/VincentLogarzo/AppData/Local/Temp/playwright-mcp`. Never write to repo.
-
-**Gotchas:**
-
+- "Browser already in use" → `browser_close` (ignore failure) → `sleep 2` → `browser_navigate` again. If still fails: user runs **Reload Window** (`Ctrl+Shift+P`).
 - `browser_evaluate`: always arrow functions `() => { ... }`. No top-level `var`/`const`/`let`.
-- Reflex SVG fill: `window.getComputedStyle(el).fill` — not `el.getAttribute('fill')` (always `null`).
+- Reflex SVG fill: use `getComputedStyle(el).fill`, not `getAttribute('fill')`.
+- Always `browser_close` at end of any Playwright session.
+- Screenshots → `C:/Users/VincentLogarzo/AppData/Local/Temp/playwright-mcp`. Never write to repo.
+- Test project: **`527DP-gcloud-lowRes-GregW`**.
 
-## Reflex UI — Always Do First
+## Reflex UI
 
-Before writing any Reflex UI code, every session, no exceptions: **invoke the `frontend-design` skill**.
+Before writing any Reflex UI code: **invoke the `frontend-design` skill**, then search `.claude/skills/reflex-docs/reference/` for relevant patterns. Follow documented patterns — do not invent workarounds when docs exist.
 
-**Then**: search `.claude/skills/reflex-docs/reference/` for the relevant Reflex component or pattern (`grep -ri "<topic>"` on that directory). Read matched files and follow documented patterns — do not invent workarounds when docs exist. If no match, state that explicitly before proceeding.
-
-**If a reference image is provided:** match layout, spacing, typography, and color exactly. Use placeholder content where needed (`https://placehold.co/`). Do not improve or add to the design — just match it.
-
-**If no reference image:** design from scratch using the standards below.
-
-## Reflex UI Design Standards
-
-Target audience: architects and engineers. UI must feel precise and professional.
-
-- **Colors**: No default Tailwind palette (indigo-500 etc.). Derive a custom palette. Use radial gradients for depth; SVG noise for texture.
-- **Typography**: Never the same font for headings and body. Pair display/serif + clean sans. Headings: tight tracking (`-0.03em`). Body: generous line-height (`1.7`).
-- **Shadows & Depth**: Layered, color-tinted shadows (low opacity). Clear z-plane system: base → elevated → floating.
-- **Animations**: Only `transform` and `opacity`. Never `transition-all`. Spring-style easing.
-- **Interactive States**: Every clickable element needs hover, focus-visible, and active states — no exceptions.
-- **Images**: Gradient overlay (`from-black/60`) + `mix-blend-multiply` color treatment layer.
-- **Spacing**: Consistent tokens — not arbitrary Tailwind steps.
+Design standards for this project are in `.claude/skills/reflex-docs/design-standards.md`. Read that file before any UI work.
 
 ## Coding Conventions
 
@@ -161,6 +87,27 @@ Target audience: architects and engineers. UI must feel precise and professional
 - **Parallelism**: `utils.execute_new_radiance_commands`. Respect `config.WORKERS`.
 - **Cleanup**: `utils.smart_cleanup()` before re-runs. Verify HDR outputs in `outputs/image/` before post-processing.
 - **Units**: SI only — metres, millimetres, lux. Never imperial.
+
+## Code Changes
+
+- When editing TypedDict or dataclass definitions, always update **ALL** locations where that type is constructed or referenced. After adding a field to a TypedDict, grep for every place that type is instantiated and add the new field there too.
+- After making multi-file edits, do a final pass to check for: (1) duplicate/leftover imports, (2) accidentally deleted functions, (3) dead code from previous approaches. Run a quick grep for any function names you touched.
+
+## Tech Stack
+
+- This is a **Reflex** (Python web framework) application. Before using any `rx.el.*` component, verify it exists in the project's installed Reflex version by checking imports or docs. Do not assume React-like sub-components (e.g., `rx.el.tspan`) exist.
+
+## Testing & Verification
+
+- Do **NOT** use Playwright for visual verification during iterative debugging loops. Instead, describe what you changed and let the user verify visually. Only use Playwright for automated testing when explicitly asked.
+
+## Session Management
+
+- When a session is running low on context or usage, stop attempting new fixes and instead write a clear handoff summary to `.claude/handoff.md`: what was tried, what the root cause is, and what the next session should do.
+
+## Domain-Specific Notes
+
+- For overlay/positioning/zoom bugs: always check whether values are stored as pixels vs. percentages/fractions, and whether transforms are applied in the right coordinate space. Draw out the transform chain before coding a fix.
 
 ## Project Root Hygiene
 

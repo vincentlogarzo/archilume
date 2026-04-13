@@ -128,15 +128,23 @@ class MeshSlicer:
         self.cache_size_limit = 50  # Store up to 50 slices
 
     def _inject_material_ids(self, obj_path: Path):
-        """Parse OBJ usemtl/f lines to build per-face MaterialIds and inject into mesh cell_data.
+        """Parse OBJ usemtl/f/l/p lines to build per-cell MaterialIds and inject into mesh cell_data.
+
+        PyVista may load line (`l`) and point (`p`) elements as additional cells
+        beyond face (`f`) elements.  VTK orders cells as: vertices, then lines,
+        then polygons.  We parse all element types from the OBJ so the resulting
+        array length matches ``mesh.n_cells``.
 
         Builds:
           mesh.field_data['MaterialNames'] – ordered list of material names (only those used by faces)
           mesh.cell_data['MaterialIds']    – per-cell integer index into MaterialNames
+                                             (-1 for line/point elements)
         """
         mat_names = []        # ordered, only materials that have at least one face
         mat_index = {}        # name -> index
         face_mat_ids = []     # one entry per f-line in the OBJ
+        line_count = 0        # number of l-lines
+        point_count = 0       # number of p-lines
         current_mat = None
 
         try:
@@ -149,6 +157,10 @@ class MeshSlicer:
                             mat_index[current_mat] = len(mat_names)
                             mat_names.append(current_mat)
                         face_mat_ids.append(mat_index.get(current_mat, -1))
+                    elif line.startswith('l '):
+                        line_count += 1
+                    elif line.startswith('p '):
+                        point_count += 1
         except OSError as e:
             print(f"Could not parse OBJ for material IDs: {e}")
             return
@@ -156,14 +168,26 @@ class MeshSlicer:
         if not mat_names or not face_mat_ids:
             return
 
+        # VTK cell ordering: vertices first, then lines, then polygons (faces).
+        # Build the full cell_data array in that order.
+        n_non_face = point_count + line_count
+        all_mat_ids = ([-1] * n_non_face) + face_mat_ids
+
         n_cells = self.mesh.n_cells
-        if len(face_mat_ids) != n_cells:
-            print(f"Material ID count ({len(face_mat_ids)}) != mesh cell count ({n_cells}); skipping material injection.")
+        if len(all_mat_ids) != n_cells:
+            print(f"Material ID count ({len(all_mat_ids)}) [faces={len(face_mat_ids)}, "
+                  f"lines={line_count}, points={point_count}] != mesh cell count ({n_cells}); "
+                  f"skipping material injection.")
             return
 
         self.mesh.field_data['MaterialNames'] = np.array(mat_names, dtype=object)
-        self.mesh.cell_data['MaterialIds'] = np.array(face_mat_ids, dtype=np.int32)
-        print(f"Injected {len(mat_names)} materials across {n_cells:,} faces.")
+        self.mesh.cell_data['MaterialIds'] = np.array(all_mat_ids, dtype=np.int32)
+        n_face = len(face_mat_ids)
+        if n_non_face:
+            print(f"Injected {len(mat_names)} materials across {n_face:,} faces "
+                  f"({n_non_face} non-face elements skipped).")
+        else:
+            print(f"Injected {len(mat_names)} materials across {n_face:,} faces.")
 
     def get_floor_finish_polygons(self, z_height: float, z_band: float = 0.5):
         """Extract horizontal face polygons near z_height for floor finish overlay.
@@ -172,48 +196,57 @@ class MeshSlicer:
           - Nearly horizontal (|normal.z| > 0.8)
           - Whose centroid Z is within z_band of z_height
 
+        Normals and centroids are computed directly from vertex positions to avoid
+        calling VTK's compute_normals() / cell_centers() on the full mesh, which
+        would OOM on large models (>1M cells).
+
         Returns:
             List of (xy_points, material_id) where xy_points is an (N, 2) array
             of the face vertices projected onto the XY plane.
         """
-        mesh_n = self.mesh.compute_normals(cell_normals=True, point_normals=False)
-        normals = mesh_n['Normals']                    # (n_cells, 3)
-        centers = mesh_n.cell_centers().points         # (n_cells, 3)
+        pts = self.mesh.points   # (n_pts, 3)
+        faces = self.mesh.faces  # flat VTK connectivity array (polygons only)
         mat_ids = self.mesh.cell_data.get('MaterialIds',
                       np.full(self.mesh.n_cells, -1, dtype=np.int32))
 
-        horiz_mask = (np.abs(normals[:, 2]) > 0.8) & \
-                     (np.abs(centers[:, 2] - z_height) <= z_band)
+        # mesh.faces only covers polygon-type cells.  VTK orders cells as
+        # vertices → lines → polygons, so face-local index = global_cell_idx
+        # minus the number of non-polygon cells that precede them.
+        n_non_face = (getattr(self.mesh, 'n_verts', 0)
+                      + getattr(self.mesh, 'n_lines', 0)
+                      + getattr(self.mesh, 'n_strips', 0))
 
-        if not horiz_mask.any():
-            return []
-
-        cell_indices = np.where(horiz_mask)[0]
-        polygons = []
-
-        # Extract face vertices for each matching cell
-        faces = self.mesh.faces  # flat VTK connectivity array
-        # Build per-cell face index map via cell sizes
-        cell_sizes = self.mesh.get_cell(0)  # probe — use direct faces array parsing
-        # Parse the flat faces array: [n, i0, i1, ..., n, i0, ...]
-        pts = self.mesh.points  # (n_pts, 3)
-
-        # Build a mapping: cell_idx -> slice into faces array
-        cell_offsets = []
-        i = 0
+        # Parse flat faces array once into (start, n_verts) entries.
+        # Also compute centroid-Z and normal-Z per face without any VTK call.
         arr = faces
-        while i < len(arr):
+        total = len(arr)
+        face_meta = []   # [(global_cell_idx, start, n_verts, centroid_z, normal_z_abs)]
+        i = 0
+        face_local = 0
+        while i < total:
             n = int(arr[i])
-            cell_offsets.append((i + 1, n))
+            start = i + 1
+            if n >= 3:
+                verts = pts[arr[start:start + n]]           # (n, 3)
+                cz = verts[:, 2].mean()                     # centroid Z
+                if abs(cz - z_height) <= z_band:
+                    # Cross product of first two edges → face normal
+                    e1 = verts[1] - verts[0]
+                    e2 = verts[2] - verts[0]
+                    nx, ny, nz = np.cross(e1, e2)
+                    length = (nx*nx + ny*ny + nz*nz) ** 0.5
+                    nz_abs = abs(nz) / length if length > 1e-12 else 0.0
+                    if nz_abs > 0.8:
+                        global_idx = n_non_face + face_local
+                        face_meta.append((global_idx, start, n, cz, nz_abs))
             i += n + 1
+            face_local += 1
 
-        for cell_idx in cell_indices:
-            if cell_idx >= len(cell_offsets):
-                continue
-            start, n_verts = cell_offsets[cell_idx]
+        polygons = []
+        for global_idx, start, n_verts, _cz, _nz in face_meta:
             vert_indices = arr[start:start + n_verts]
-            xy = pts[vert_indices, :2]      # project to XY
-            mid = int(mat_ids[cell_idx])
+            xy = pts[vert_indices, :2]
+            mid = int(mat_ids[global_idx])
             polygons.append((xy, mid))
 
         return polygons

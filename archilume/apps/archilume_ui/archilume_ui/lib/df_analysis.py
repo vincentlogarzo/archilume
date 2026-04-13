@@ -22,6 +22,7 @@ def compute_room_df(
     room_type: str = "NONE",
     image_width: int = 0,
     image_height: int = 0,
+    area_per_pixel_m2: float = 0.0,
 ) -> Optional[dict]:
     """Compute DF% statistics for a room polygon on a DF image.
 
@@ -31,6 +32,8 @@ def compute_room_df(
         room_type: Room type for threshold lookup.
         image_width: Image width (for bounds checking).
         image_height: Image height (for bounds checking).
+        area_per_pixel_m2: Real-world area per pixel in m². When provided,
+            result_lines show area in m² matching the matplotlib editor format.
 
     Returns dict with: mean_df, median_df, pct_above, threshold, pass_status, result_lines
     """
@@ -54,23 +57,32 @@ def compute_room_df(
 
     mean_df = float(np.mean(values))
     median_df = float(np.median(values))
+    total_pixels = values.size
 
     threshold = DF_THRESHOLDS.get(room_type)
     if threshold is not None:
-        above = float(np.sum(values >= threshold)) / values.size * 100.0
-        if above >= 100.0:
+        above_pixels = int(np.sum(values >= threshold))
+        above = above_pixels / total_pixels * 100.0
+        if above >= 90.0:
             status = "pass"
         elif above >= 50.0:
             status = "marginal"
         else:
             status = "fail"
     else:
+        above_pixels = 0
         above = 0.0
         status = "none"
 
-    result_lines = [f"DF avg: {mean_df:.2f}%"]
+    # Format lines matching matplotlib: "X.XX m² (YY%)" / "@ Z% DF"
+    result_lines: list[str] = []
     if threshold is not None:
-        result_lines.append(f"Above {threshold}%: {above:.0f}%")
+        if area_per_pixel_m2 > 0:
+            above_area_m2 = above_pixels * area_per_pixel_m2
+            result_lines.append(f"{above_area_m2:.2f} m\u00b2 ({above:.0f}%)")
+        else:
+            result_lines.append(f"{above:.0f}% above {threshold:g}% DF")
+        result_lines.append(f"@ {threshold:g}% DF")
 
     return {
         "mean_df": mean_df,
@@ -85,24 +97,48 @@ def compute_room_df(
 def _polygon_mask(
     vertices: list[list[float]], width: int, height: int
 ) -> np.ndarray:
-    """Create a boolean mask for pixels inside a polygon."""
+    """Create a boolean mask for pixels inside a polygon.
+
+    Uses skimage scanline rasterisation (fast). Falls back to matplotlib
+    path containment if skimage is unavailable.
+    """
+    try:
+        from skimage.draw import polygon as sk_polygon
+
+        ys = [v[1] for v in vertices]
+        xs = [v[0] for v in vertices]
+        rr, cc = sk_polygon(ys, xs, shape=(height, width))
+        mask = np.zeros((height, width), dtype=bool)
+        mask[rr, cc] = True
+        return mask
+    except ImportError:
+        pass
+
+    try:
+        from matplotlib.path import Path as MplPath
+
+        path = MplPath(vertices)
+        yy, xx = np.mgrid[:height, :width]
+        points = np.column_stack([xx.ravel(), yy.ravel()])
+        mask = path.contains_points(points).reshape(height, width)
+        return mask
+    except ImportError:
+        pass
+
+    # Last-resort: bounding-box pixel scan
     from .geometry import point_in_polygon
 
     mask = np.zeros((height, width), dtype=bool)
-
-    # Bounding box for efficiency
     xs = [v[0] for v in vertices]
     ys = [v[1] for v in vertices]
     min_x = max(0, int(math.floor(min(xs))))
     max_x = min(width - 1, int(math.ceil(max(xs))))
     min_y = max(0, int(math.floor(min(ys))))
     max_y = min(height - 1, int(math.ceil(max(ys))))
-
     for y in range(min_y, max_y + 1):
         for x in range(min_x, max_x + 1):
             if point_in_polygon(float(x), float(y), vertices):
                 mask[y, x] = True
-
     return mask
 
 

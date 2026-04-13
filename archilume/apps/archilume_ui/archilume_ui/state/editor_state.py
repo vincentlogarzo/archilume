@@ -16,7 +16,7 @@ from typing import Any, TypedDict
 import reflex as rx
 
 from ..lib.debug import debug_handler, logger, trace
-from ..lib.geometry import polygon_label_point
+from ..lib.geometry import max_inscribed_rect, polygon_label_point
 
 # Module-level DF image cache (numpy arrays can't be Reflex state vars)
 _df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
@@ -59,9 +59,23 @@ class EnrichedRoom(TypedDict):
     df_line_1: str           # Threshold, e.g. "Above 0.5%: 85%"
     df_line_1_y: str         # Y position
     name_y: str              # Room name Y (below DF lines, or at label_y if no DF)
+    room_df_fs: str          # Per-room adaptive font size for DF area line
+    room_lbl_fs: str         # Per-room adaptive font size for threshold + name
+    room_stroke_w: str       # Per-room stroke width (scales with room_lbl_fs)
     has_df: bool             # Whether DF results exist
     selected: bool
     df_status: str
+    show_labels: bool        # Whether labels fit within the room polygon
+    # HTML overlay fields (percentage-based positioning)
+    label_x_pct: str         # left position as percentage string
+    df_line_0_y_pct: str     # top position as percentage
+    df_line_1_y_pct: str
+    name_y_pct: str
+    room_df_fs_pct: str      # font-size as percentage of container width
+    room_lbl_fs_pct: str
+    clip_polygon_css: str    # CSS clip-path polygon string
+    df_line_0_text_stroke: str  # e.g. "1.2px white"
+    lbl_text_stroke: str
 
 
 class VertexDict(TypedDict):
@@ -147,7 +161,7 @@ class EditorState(rx.State):
     image_width: int = 0
     image_height: int = 0
 
-    # -- View params per HDR: maps hdr_name -> [vp_x, vp_y, vh, vv]
+    # -- View params per HDR: maps hdr_name -> [vp_x, vp_y, vh, vv, img_w, img_h]
     hdr_view_params: dict[str, list[float]] = {}
 
     # =====================================================================
@@ -544,7 +558,7 @@ class EditorState(rx.State):
         vp_params = self.hdr_view_params.get(hdr_name)
         if not vp_params or self.image_width <= 0:
             return "0"
-        vp_x, _, vh, _ = vp_params
+        vp_x, _, vh, _, *_rest = vp_params
         metres_per_pixel = vh / self.image_width
         spacing_m = self.grid_spacing_mm / 1000.0
         # World origin (0,0) maps to pixel: img_w/2 - vp_x/mpp
@@ -564,7 +578,7 @@ class EditorState(rx.State):
         vp_params = self.hdr_view_params.get(hdr_name)
         if not vp_params or self.image_height <= 0:
             return "0"
-        _, vp_y, _, vv = vp_params
+        _, vp_y, _, vv, *_rest = vp_params
         metres_per_pixel = vv / self.image_height
         spacing_m = self.grid_spacing_mm / 1000.0
         origin_py = self.image_height / 2.0 + vp_y / metres_per_pixel
@@ -576,18 +590,21 @@ class EditorState(rx.State):
 
     @rx.var
     def label_font_size(self) -> str:
-        """Room name + threshold font size (base 6.5) scaled by annotation_scale."""
-        return str(round(6.5 * self.annotation_scale, 1))
+        """Room name + threshold font size (base 6.5), scaled by annotation_scale and inversely by zoom."""
+        fs = 6.5 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(2.0, min(30.0, fs)), 1))
 
     @rx.var
     def df_area_font_size(self) -> str:
-        """DF area result font size (base 8.5) scaled by annotation_scale."""
-        return str(round(8.5 * self.annotation_scale, 1))
+        """DF area result font size (base 8.5), scaled by annotation_scale and inversely by zoom."""
+        fs = 8.5 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(2.0, min(40.0, fs)), 1))
 
     @rx.var
     def label_stroke_width(self) -> str:
         """Stroke outline width for room name and threshold text."""
-        return str(round(6.5 * self.annotation_scale * 0.12, 2))
+        fs = 6.5 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(2.0, min(30.0, fs)) * 0.12, 2))
 
     @rx.var
     def df_stamp_radius(self) -> str:
@@ -676,7 +693,7 @@ class EditorState(rx.State):
             # Use reprojected world_vertices when view params are available
             world_verts = room.get("world_vertices", [])
             if vp_params and len(world_verts) >= 3 and img_w > 0 and img_h > 0:
-                vp_x, vp_y, vh, vv = vp_params
+                vp_x, vp_y, vh, vv, *_rest = vp_params
                 verts = reproject(world_verts, vp_x, vp_y, vh, vv)
             else:
                 verts = room.get("vertices", [])
@@ -699,43 +716,101 @@ class EditorState(rx.State):
             # DF colour from pct_above (numeric), matching matplotlib thresholds
             pct_above = df_info.get("pct_above")
             scale = self.annotation_scale
+            # Base font size in image-pixel units — zoom-independent.
+            # The inscribed-rect fit factor sizes text to fill the room.
+            _df_fs = 8.5 * scale
+            _stroke_bold = str(round(_df_fs * 0.06, 2))
+            _stroke_norm = str(round(_df_fs * 0.12, 2))
             if pct_above is not None and has_df:
                 if pct_above >= 90:
                     line_0_color = "#000000"
                     line_0_weight = "bold"
                     line_0_stroke = "white"
-                    line_0_stroke_w = str(round(8.5 * scale * 0.06, 2))
+                    line_0_stroke_w = _stroke_bold
                 elif pct_above >= 50:
                     line_0_color = "#E97132"
                     line_0_weight = "normal"
                     line_0_stroke = "black"
-                    line_0_stroke_w = str(round(8.5 * scale * 0.12, 2))
+                    line_0_stroke_w = _stroke_norm
                 else:
                     line_0_color = "#EE0000"
                     line_0_weight = "normal"
                     line_0_stroke = "black"
-                    line_0_stroke_w = str(round(8.5 * scale * 0.12, 2))
+                    line_0_stroke_w = _stroke_norm
             else:
                 line_0_color = "#ffffff"
                 line_0_weight = "normal"
                 line_0_stroke = "black"
-                line_0_stroke_w = str(round(8.5 * scale * 0.12, 2))
+                line_0_stroke_w = _stroke_norm
 
-            # Line spacing matching matplotlib: line_step = base * scale * 1.6
-            line_step = 6.5 * scale * 1.6
-            name_step = line_step * 0.7
+            # Adaptive per-room font sizing: pure 1/zoom scaling (no clamping).
+            _lbl_fs = _df_fs * 0.75
+            # Line spacing for HTML overlay (tighter than SVG stroke-padded layout)
+            stroke_pad = 1.0
+            line_step = _df_fs * 1.2 * stroke_pad
+            name_step = _lbl_fs * 1.1 * stroke_pad
+
+            # Fit factor: inscribed rectangle from label anchor inside polygon.
+            half_w, half_h = max_inscribed_rect(lx, ly, verts)
+            avail_w = half_w * 2 * 0.90
+            avail_h = half_h * 2 * 0.90
+            stack_height = _df_fs * stroke_pad + line_step + name_step + _lbl_fs * stroke_pad
+            # Estimate text width (~0.6em per char, monospace)
+            max_chars = max(
+                len(df_lines_raw[0]) if has_df else 0,
+                len(df_lines_raw[1]) if len(df_lines_raw) >= 2 else 0,
+                len(room.get("name", "")),
+            )
+            est_text_width = max_chars * _df_fs * 0.6
+            fit_h = avail_h / stack_height if stack_height > 0 else 1.0
+            fit_w = avail_w / est_text_width if est_text_width > 0 else 1.0
+            fit = min(1.0, fit_h, fit_w)
+            # Hide labels entirely if room is too small
+            show_labels = fit >= 0.15
+
+            room_df_fs  = str(round(_df_fs  * fit, 2))
+            room_lbl_fs = str(round(_lbl_fs * fit, 2))
+            room_step   = _df_fs  * fit * 1.5 * stroke_pad
+            room_nstep  = _lbl_fs * fit * 1.4 * stroke_pad
+            room_stroke_w = str(round(_lbl_fs * fit * 0.12, 2))
 
             # Y positions: line_0 at centroid, line_1 below, name below that
             df_line_0_y = ly
-            df_line_1_y = ly + line_step
+            df_line_1_y = ly + room_step
             if has_df and len(df_lines_raw) >= 2:
-                name_y_val = ly + line_step + name_step
+                name_y_val = ly + room_step + room_nstep
             elif has_df:
-                name_y_val = ly + name_step
+                name_y_val = ly + room_nstep
             else:
                 name_y_val = ly
 
             is_circ = room.get("room_type", "") == "CIRC"
+
+            # HTML overlay: percentage-based positioning & font sizes
+            _lx_pct = str(round(lx / img_w * 100, 4)) if img_w > 0 else "0"
+            _dl0y_pct = str(round(df_line_0_y / img_h * 100, 4)) if img_h > 0 else "0"
+            _dl1y_pct = str(round(df_line_1_y / img_h * 100, 4)) if img_h > 0 else "0"
+            _ny_pct = str(round(name_y_val / img_h * 100, 4)) if img_h > 0 else "0"
+            _df_fs_val = _df_fs * fit
+            _lbl_fs_val = _lbl_fs * fit
+            _df_fs_pct = str(round(_df_fs_val / img_w * 100, 4)) if img_w > 0 else "0"
+            _lbl_fs_pct = str(round(_lbl_fs_val / img_w * 100, 4)) if img_w > 0 else "0"
+
+            # CSS clip-path polygon (percentage coords)
+            if img_w > 0 and img_h > 0 and len(verts) >= 3:
+                _clip_parts = ", ".join(
+                    f"{round(v[0] / img_w * 100, 4)}% {round(v[1] / img_h * 100, 4)}%"
+                    for v in verts
+                )
+                _clip_css = f"polygon({_clip_parts})"
+            else:
+                _clip_css = "none"
+
+            # Text stroke for outline (smooth rendering via -webkit-text-stroke + paint-order)
+            _df_stroke_w = round(_df_fs_val * 0.12, 2)
+            _lbl_stroke_w = round(_lbl_fs_val * 0.12, 2)
+            _df_text_stroke = f"{_df_stroke_w}px {line_0_stroke}"
+            _lbl_text_stroke = f"{_lbl_stroke_w}px black"
 
             result.append({
                 "idx": i,
@@ -756,9 +831,23 @@ class EditorState(rx.State):
                 "df_line_1": df_lines_raw[1] if len(df_lines_raw) >= 2 else "",
                 "df_line_1_y": str(df_line_1_y),
                 "name_y": str(name_y_val),
+                "room_df_fs": room_df_fs,
+                "room_lbl_fs": room_lbl_fs,
+                "room_stroke_w": room_stroke_w,
                 "has_df": has_df,
+                "show_labels": show_labels,
                 "selected": i == self.selected_room_idx or i in self.multi_selected_idxs,
                 "df_status": df_status,
+                # HTML overlay fields
+                "label_x_pct": _lx_pct,
+                "df_line_0_y_pct": _dl0y_pct,
+                "df_line_1_y_pct": _dl1y_pct,
+                "name_y_pct": _ny_pct,
+                "room_df_fs_pct": _df_fs_pct,
+                "room_lbl_fs_pct": _lbl_fs_pct,
+                "clip_polygon_css": _clip_css,
+                "df_line_0_text_stroke": _df_text_stroke,
+                "lbl_text_stroke": _lbl_text_stroke,
             })
         return result
 
@@ -1033,11 +1122,12 @@ class EditorState(rx.State):
             self.load_current_image()
             hdr_name = self.hdr_files[new_idx]["name"]
             self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
-            # Invalidate DF image cache; will reload if placement mode is active
+            # Invalidate DF image cache; recompute will reload on next call
             _df_cache["image"] = None
             _df_cache["hdr_path"] = ""
             if self.df_placement_mode:
                 self._load_df_image_cache()
+            self._recompute_df()
 
     def toggle_image_variant(self) -> None:
         if not self.image_variants:
@@ -1214,6 +1304,7 @@ class EditorState(rx.State):
             mutated = True
         if mutated:
             self._auto_save()
+            self._recompute_df()
 
     _ROOM_TYPE_CYCLE = ["NONE", "BED", "LIVING", "NON-RESI", "CIRC"]
 
@@ -1241,6 +1332,7 @@ class EditorState(rx.State):
             self.rooms = rooms_copy
         self.room_type_input = next_type
         self._auto_save()
+        self._recompute_df()
 
     def set_selected_parent(self, value: str) -> None:
         self.selected_parent = value
@@ -1286,6 +1378,7 @@ class EditorState(rx.State):
             self.selected_room_idx = -1
         self.status_message = "Room deleted"
         self._auto_save()
+        self._recompute_df()
 
     # =====================================================================
     # CANVAS — click routing, coordinate conversion, zoom/pan
@@ -1641,6 +1734,7 @@ class EditorState(rx.State):
         self.status_message = f"Saved room: {full_name}"
         self.status_colour = "accent"
         self._auto_save()
+        self._recompute_df()
 
     def _save_edited_room(self) -> None:
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
@@ -1655,6 +1749,7 @@ class EditorState(rx.State):
         self.rooms = rooms_copy
         self.status_message = f"Updated: {room['name']}"
         self._auto_save()
+        self._recompute_df()
 
     def _auto_detect_parent(self, x: float, y: float) -> None:
         from ..lib.geometry import point_in_polygon
@@ -1887,6 +1982,7 @@ class EditorState(rx.State):
         self.status_message = f"Split into {name_a} and {name_b}"
         self.status_colour = "accent"
         self._auto_save()
+        self._recompute_df()
 
     # =====================================================================
     # GRID OVERLAY
@@ -2321,19 +2417,49 @@ class EditorState(rx.State):
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return
         hdr_info = self.hdr_files[self.current_hdr_idx]
+        hdr_path = hdr_info["hdr_path"]
         hdr_name = hdr_info["name"]
         from ..lib.df_analysis import compute_room_df, load_df_image
-        df_image = load_df_image(Path(hdr_info["hdr_path"]))
+
+        # Use module-level cache — HDR image load is expensive (subprocess + disk I/O)
+        if _df_cache.get("hdr_path") == hdr_path and _df_cache.get("image") is not None:
+            df_image = _df_cache["image"]
+        else:
+            df_image = load_df_image(Path(hdr_path))
+            _df_cache["image"] = df_image
+            _df_cache["hdr_path"] = hdr_path if df_image is not None else ""
+
         if df_image is None:
             return
-        results = dict(self.room_df_results)
+
+        # Compute real-world area per pixel from Radiance orthographic view params.
+        # Use image dims stored alongside the view params (read from the HDR header)
+        # so this is independent of self.image_width/height which may not be set yet.
+        area_per_pixel_m2 = 0.0
+        vp_params = self.hdr_view_params.get(hdr_name)
+        if vp_params and len(vp_params) >= 6:
+            _vp_x, _vp_y, vh, vv, _iw, _ih = vp_params[:6]
+            if _iw > 0 and _ih > 0:
+                area_per_pixel_m2 = (vh / _iw) * (vv / _ih)
+
+        results = {}
         for i, room in enumerate(self.rooms):
             if room.get("hdr_file") != hdr_name:
                 continue
-            result = compute_room_df(df_image, room.get("vertices", []), room.get("room_type", "NONE") or "NONE")
+            result = compute_room_df(
+                df_image,
+                room.get("vertices", []),
+                room.get("room_type", "NONE") or "NONE",
+                area_per_pixel_m2=area_per_pixel_m2,
+            )
             if result:
                 results[str(i)] = result
         self.room_df_results = results
+
+    def _recompute_df(self) -> None:
+        """Clear stale results and recompute DF for rooms on current HDR."""
+        self.room_df_results = {}
+        self.compute_df_for_current_hdr()
 
     # =====================================================================
     # EXPORT / ARCHIVE
@@ -2511,6 +2637,7 @@ class EditorState(rx.State):
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
         if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
             self._rasterize_current_page()
+        self._recompute_df()
 
     def save_session(self) -> None:
         if not self.session_path:

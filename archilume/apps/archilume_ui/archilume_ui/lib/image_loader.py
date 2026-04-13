@@ -228,27 +228,35 @@ def _read_hdr_dimensions(path: Path) -> tuple[int, int]:
     return (0, 0)
 
 
-def read_hdr_view_params(path: Path) -> tuple[float, float, float, float] | None:
-    """Extract (vp_x, vp_y, vh, vv) from a Radiance HDR file's VIEW= header line.
+def read_hdr_view_params(path: Path) -> tuple[float, float, float, float, int, int] | None:
+    """Extract (vp_x, vp_y, vh, vv, img_w, img_h) from a Radiance HDR file's VIEW= header.
 
-    Returns None if the VIEW line is missing or incomplete.
+    Reads all header lines up to the blank separator line (same approach as the
+    matplotlib editor's _read_view_params). Returns None if VIEW= is missing or
+    incomplete. img_w / img_h come from the resolution string in the same file.
     """
     import re
+    view_line: str | None = None
     try:
         with open(path, "rb") as f:
-            for _ in range(50):
+            for _ in range(500):
                 raw = f.readline()
                 if not raw or raw.strip() == b"":
                     break
                 line = raw.decode("ascii", errors="replace")
-                if not line.startswith("VIEW="):
-                    continue
-                vp = re.search(r"-vp\s+([-\d.]+)\s+([-\d.]+)", line)
-                vh = re.search(r"-vh\s+([-\d.]+)", line)
-                vv = re.search(r"-vv\s+([-\d.]+)", line)
-                if vp and vh and vv:
-                    return (float(vp.group(1)), float(vp.group(2)),
-                            float(vh.group(1)), float(vv.group(1)))
+                if line.startswith("VIEW="):
+                    view_line = line
+        if not view_line:
+            return None
+        vp = re.search(r"-vp\s+([-\d.]+)\s+([-\d.]+)", view_line)
+        vh = re.search(r"-vh\s+([-\d.]+)", view_line)
+        vv = re.search(r"-vv\s+([-\d.]+)", view_line)
+        if not (vp and vh and vv):
+            return None
+        img_w, img_h = _read_hdr_dimensions(path)
+        return (float(vp.group(1)), float(vp.group(2)),
+                float(vh.group(1)), float(vv.group(1)),
+                img_w, img_h)
     except Exception:
         pass
     return None

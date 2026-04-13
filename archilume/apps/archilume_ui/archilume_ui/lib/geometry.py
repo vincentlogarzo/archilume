@@ -114,6 +114,46 @@ def _point_to_segment_dist(
     return math.hypot(px - proj_x, py - proj_y)
 
 
+def _ray_to_edge(
+    cx: float, cy: float, dx: float, dy: float,
+    vertices: list[list[float]],
+) -> float:
+    """Distance from (cx,cy) along direction (dx,dy) to nearest polygon edge.
+
+    Uses ray-segment intersection. Returns a large value if no intersection.
+    """
+    best = 1e9
+    n = len(vertices)
+    for i in range(n):
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[(i + 1) % n]
+        ex, ey = x2 - x1, y2 - y1
+        denom = dx * ey - dy * ex
+        if abs(denom) < 1e-12:
+            continue
+        t = ((x1 - cx) * ey - (y1 - cy) * ex) / denom
+        u = ((x1 - cx) * dy - (y1 - cy) * dx) / denom
+        if t > 1e-9 and 0.0 <= u <= 1.0 and t < best:
+            best = t
+    return best
+
+
+def max_inscribed_rect(
+    cx: float, cy: float, vertices: list[list[float]],
+) -> tuple[float, float]:
+    """Max axis-aligned rectangle centred at (cx, cy) inside polygon.
+
+    Returns (half_width, half_height).
+    """
+    if len(vertices) < 3:
+        return (0.0, 0.0)
+    dist_left = _ray_to_edge(cx, cy, -1, 0, vertices)
+    dist_right = _ray_to_edge(cx, cy, 1, 0, vertices)
+    dist_up = _ray_to_edge(cx, cy, 0, -1, vertices)
+    dist_down = _ray_to_edge(cx, cy, 0, 1, vertices)
+    return (min(dist_left, dist_right), min(dist_up, dist_down))
+
+
 def snap_to_vertex(
     x: float,
     y: float,

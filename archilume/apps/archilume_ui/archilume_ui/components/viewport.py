@@ -376,12 +376,6 @@ def _progress_bar() -> rx.Component:
 # Room polygon renderer (used by rx.foreach)
 # ---------------------------------------------------------------------------
 
-_TEXT_STROKE_STYLE = {
-    "pointer_events": "none",
-    "paint_order": "stroke",
-    "stroke_linejoin": "round",
-}
-
 
 def _render_room(room: dict) -> rx.Component:
     """Render a single enriched room dict as SVG polygon + label + DF annotation.
@@ -426,63 +420,80 @@ def _render_room(room: dict) -> rx.Component:
                 on_click=lambda e: EditorState.room_or_stamp_click(room["idx"], e),
             ),
         ),
-        # DF line 0: area result (larger font, coloured by percentage) — suppressed for CIRC
-        rx.cond(
-            ~room["is_circ"] & room["has_df"] & (room["df_line_0"] != ""),
-            rx.el.text(
-                room["df_line_0"],
-                x=room["label_x"],
-                y=room["df_line_0_y"],
-                text_anchor="middle",
-                dominant_baseline="middle",
-                fill=room["df_line_0_color"],
-                font_size=EditorState.df_area_font_size,
-                font_weight=room["df_line_0_weight"],
-                font_family="DM Mono, monospace",
-                stroke=room["df_line_0_stroke"],
-                stroke_width=room["df_line_0_stroke_w"],
-                style=_TEXT_STROKE_STYLE,
+        # Labels moved to HTML overlay — see _render_room_html()
+    )
+
+
+def _render_room_html(room: dict) -> rx.Component:
+    """HTML overlay labels for a single room, clipped to polygon."""
+    _label_base = {
+        "position": "absolute",
+        "transform": "translate(-50%, -50%)",
+        "font_family": "DM Mono, monospace",
+        "white_space": "nowrap",
+        "pointer_events": "none",
+        "paint_order": "stroke fill",
+    }
+    return rx.cond(
+        ~room["is_circ"] & room["show_labels"],
+        rx.box(
+            # DF line 0 (area result)
+            rx.cond(
+                room["has_df"] & (room["df_line_0"] != ""),
+                rx.el.div(
+                    room["df_line_0"],
+                    style={
+                        **_label_base,
+                        "left": room["label_x_pct"] + "%",
+                        "top": room["df_line_0_y_pct"] + "%",
+                        "font_size": room["room_df_fs_pct"] + "cqw",
+                        "color": room["df_line_0_color"],
+                        "font_weight": room["df_line_0_weight"],
+                        "WebkitTextStroke": room["df_line_0_text_stroke"],
+                    },
+                ),
+                rx.fragment(),
             ),
-            rx.fragment(),
-        ),
-        # DF line 1: threshold (smaller font, always white, black stroke) — suppressed for CIRC
-        rx.cond(
-            ~room["is_circ"] & room["has_df"] & (room["df_line_1"] != ""),
-            rx.el.text(
-                room["df_line_1"],
-                x=room["label_x"],
-                y=room["df_line_1_y"],
-                text_anchor="middle",
-                dominant_baseline="middle",
-                fill="white",
-                font_size=EditorState.label_font_size,
-                font_weight="normal",
-                font_family="DM Mono, monospace",
-                stroke="black",
-                stroke_width=EditorState.label_stroke_width,
-                style=_TEXT_STROKE_STYLE,
+            # DF line 1 (threshold)
+            rx.cond(
+                room["has_df"] & (room["df_line_1"] != ""),
+                rx.el.div(
+                    room["df_line_1"],
+                    style={
+                        **_label_base,
+                        "left": room["label_x_pct"] + "%",
+                        "top": room["df_line_1_y_pct"] + "%",
+                        "font_size": room["room_lbl_fs_pct"] + "cqw",
+                        "color": "white",
+                        "WebkitTextStroke": room["lbl_text_stroke"],
+                    },
+                ),
+                rx.fragment(),
             ),
-            rx.fragment(),
-        ),
-        # Room name label — suppressed for CIRC rooms
-        rx.cond(
-            ~room["is_circ"],
-            rx.el.text(
+            # Room name
+            rx.el.div(
                 room["name"],
-                x=room["label_x"],
-                y=room["name_y"],
-                text_anchor="middle",
-                dominant_baseline="middle",
-                fill=rx.cond(room["selected"], COLORS["accent"], "white"),
-                font_size=EditorState.label_font_size,
-                font_weight="normal",
-                font_family="DM Mono, monospace",
-                stroke="black",
-                stroke_width=EditorState.label_stroke_width,
-                style=_TEXT_STROKE_STYLE,
+                style={
+                    **_label_base,
+                    "left": room["label_x_pct"] + "%",
+                    "top": room["name_y_pct"] + "%",
+                    "font_size": room["room_lbl_fs_pct"] + "cqw",
+                    "color": rx.cond(room["selected"], COLORS["accent"], "white"),
+                    "WebkitTextStroke": room["lbl_text_stroke"],
+                },
             ),
-            rx.fragment(),
+            # Per-room container clipped to polygon shape
+            style={
+                "position": "absolute",
+                "top": "0",
+                "left": "0",
+                "width": "100%",
+                "height": "100%",
+                "pointer_events": "none",
+                "clip_path": room["clip_polygon_css"],
+            },
         ),
+        rx.fragment(),
     )
 
 
@@ -1193,6 +1204,19 @@ def _svg_canvas() -> rx.Component:
                 "width": "100%", "height": "100%",
                 "pointer_events": "all",
                 "cursor": rx.cond(EditorState.overlay_align_mode, "grab", "default"),
+            },
+        ),
+        # HTML annotation overlay (labels rendered as HTML, clipped per-room)
+        rx.box(
+            rx.foreach(EditorState.enriched_rooms, _render_room_html),
+            id="html-annotations",
+            style={
+                "position": "absolute",
+                "top": "0", "left": "0",
+                "width": "100%", "height": "100%",
+                "pointer_events": "none",
+                "z_index": "2",
+                "container_type": "inline-size",
             },
         ),
         # JS bridge for coordinate conversion and zoom/pan
