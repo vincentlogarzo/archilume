@@ -1,18 +1,17 @@
 """
-Archilume Example: Sunlight Exposure Analysis (Simplified)
+Archilume Example: Sunlight Exposure Analysis
 =============================================================
 
-This example demonstrates how to configure and run a sunlight
-access workflow to determine the quantity of sunlight on
-horizontal plane over a single day across many rooms in a
-building. The core simulation logic is handled by the
-`SunlightAccessWorkflow` class in sunlight_access_workflow.py
+This example simulates the quantity sunlight on a plane in 
+rooms of a building over a timeseries. The core simulation 
+logic is handled by the`SunlightAccessWorkflow` class in 
+sunlight_access_workflow.py
 
 Workflow Overview:
-1. Load 3D geometry (OBJ/MTL).
-2. Generate solar conditions for a specific date/latitude.
-3. Render time-series floor plans.
-4. Export results to Excel and animated APNG/GIF.
+1. Load 3D geometry (OBJ + MTL).
+2. Generate Sunny Sky for a specific date, location and timeseries
+3. Render sunlight on each plane for each timestep
+4. Export tabulated results and animation sunlight APNG/MP4.
 """
 
 # fmt: off
