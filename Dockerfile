@@ -71,6 +71,8 @@ COPY --from=archilume-app-builder /app/archilume_ui_app/.web/build \
 WORKDIR /app/archilume_ui_app
 
 EXPOSE 3000 8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:3000/ || exit 1
 CMD ["reflex", "run", "--env", "prod", "--backend-host", "0.0.0.0"]
 
 
@@ -115,6 +117,8 @@ RUN uv pip install --system \
 
 WORKDIR /app
 EXPOSE 8100
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8100/health || exit 1
 CMD ["python", "-m", "archilume.api.run"]
 
 
