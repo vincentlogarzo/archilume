@@ -89,7 +89,7 @@ logger.setLevel(_initial_level)
 # Unified trace location — ``~/.archilume/logs/`` matches the repo's
 # existing ``~/.archilume_gcp_config.json`` user-state convention and keeps
 # logs out of the working tree.
-LOG_DIR: Path = Path.home() / ".archilume" / "logs"
+LOG_DIR: Path = Path(os.environ.get("ARCHILUME_LOG_DIR", str(Path.home() / ".archilume" / "logs")))
 LOG_FILE_PATH: Path = LOG_DIR / "archilume_ui.log"
 
 try:

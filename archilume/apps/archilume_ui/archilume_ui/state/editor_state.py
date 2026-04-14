@@ -25,6 +25,7 @@ from ..lib.debug import (
 from ..lib.geometry import (
     max_inscribed_rect,
     max_inscribed_rect_aspect,
+    polygon_bbox,
     polygon_label_point,
 )
 
@@ -153,6 +154,7 @@ class EditorState(rx.State):
     available_projects: list[str] = []
     project_mode: str = "archilume"
     session_path: str = ""
+    is_project_loading: bool = False
 
     # -- Create project form
     new_project_name: str = ""
@@ -195,6 +197,7 @@ class EditorState(rx.State):
     edit_mode: bool = False
     divider_mode: bool = False
     df_placement_mode: bool = False
+    pan_mode: bool = False
     ortho_mode: bool = True
 
     # =====================================================================
@@ -210,8 +213,13 @@ class EditorState(rx.State):
     dragging_vertex_idx: int = -1
     hover_vertex_idx: int = -1
     hover_edge_idx: int = -1
-    edit_undo_stack: list[dict] = []
-    draw_undo_stack: list[dict] = []
+    # Unified undo/redo stacks (replaces old edit_undo_stack + draw_undo_stack)
+    _undo_stack: list[dict] = []
+    _redo_stack: list[dict] = []
+    _last_undo_push_time: float = 0.0
+    # Overlay-scoped undo (only active in overlay_align_mode)
+    _overlay_undo_stack: list[dict] = []
+    _overlay_session_start: dict = {}
 
     # =====================================================================
     # §7 — Divider
@@ -314,7 +322,7 @@ class EditorState(rx.State):
     status_message: str = "Ready"
     status_colour: str = "accent2"
     _last_d_press: float = 0.0
-    _UNDO_MAX: int = 50
+    _UNDO_MAX: int = 100
 
     # =====================================================================
     # §14 — Debug
@@ -410,7 +418,8 @@ class EditorState(rx.State):
             else ""
         )
 
-        for hdr_idx, hdr in enumerate(self.hdr_files):
+        for hdr_idx in range(len(self.hdr_files) - 1, -1, -1):
+            hdr = self.hdr_files[hdr_idx]
             hdr_name = hdr["name"]
             is_current = hdr_name == current_hdr_name
             collapsed = hdr_name in self.collapsed_hdrs
@@ -1186,10 +1195,12 @@ class EditorState(rx.State):
     # =====================================================================
 
     def _clear_modes(self) -> None:
+        self._finalize_vertex_edit_undo()
         self.draw_mode = False
         self.edit_mode = False
         self.divider_mode = False
         self.df_placement_mode = False
+        self.pan_mode = False
         self.draw_vertices = []
         self.snap_point = {}
         self.preview_point = {}
@@ -1244,6 +1255,14 @@ class EditorState(rx.State):
             self.status_message = "Ready"
         self.status_colour = "accent" if self.df_placement_mode else "accent2"
 
+    @debug_handler
+    def toggle_pan_mode(self) -> None:
+        was_on = self.pan_mode
+        self._clear_modes()
+        self.pan_mode = not was_on
+        self.status_message = "Pan mode ON — click-drag to pan" if self.pan_mode else "Ready"
+        self.status_colour = "accent" if self.pan_mode else "accent2"
+
     def _load_df_image_cache(self) -> None:
         """Load and cache the DF image for the current HDR."""
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
@@ -1269,7 +1288,7 @@ class EditorState(rx.State):
 
     def exit_mode(self) -> None:
         self.context_menu_visible = False
-        if self.draw_mode or self.edit_mode or self.divider_mode or self.df_placement_mode or self.overlay_align_mode:
+        if self.draw_mode or self.edit_mode or self.divider_mode or self.df_placement_mode or self.pan_mode or self.overlay_align_mode:
             self._clear_modes()
             self.overlay_align_mode = False
             self.align_points = []
@@ -1288,6 +1307,8 @@ class EditorState(rx.State):
             return
         new_idx = self.current_hdr_idx + direction
         if 0 <= new_idx < len(self.hdr_files):
+            old_hdr_idx = self.current_hdr_idx
+            old_variant_idx = self.current_variant_idx
             self.current_hdr_idx = new_idx
             self._rebuild_variants()
             self.load_current_image()
@@ -1299,6 +1320,12 @@ class EditorState(rx.State):
             if self.df_placement_mode:
                 self._load_df_image_cache()
             self._recompute_df()
+            self._push_undo({
+                "action": "hdr_navigate",
+                "desc": f"Navigate to {hdr_name}",
+                "before": {"hdr_idx": old_hdr_idx, "variant_idx": old_variant_idx},
+                "after": {"hdr_idx": new_idx, "variant_idx": self.current_variant_idx},
+            })
 
     def toggle_image_variant(self) -> None:
         if not self.image_variants:
@@ -1434,6 +1461,8 @@ class EditorState(rx.State):
 
     def navigate_to_hdr(self, hdr_idx: int) -> None:
         if 0 <= hdr_idx < len(self.hdr_files):
+            old_hdr_idx = self.current_hdr_idx
+            old_variant_idx = self.current_variant_idx
             hdr_name = self.hdr_files[hdr_idx]["name"]
             self.current_hdr_idx = hdr_idx
             self._rebuild_variants()
@@ -1445,6 +1474,13 @@ class EditorState(rx.State):
                 self._load_df_image_cache()
             # Toggle collapse for the clicked HDR
             self.toggle_hdr_collapse(hdr_name)
+            if old_hdr_idx != hdr_idx:
+                self._push_undo({
+                    "action": "hdr_navigate",
+                    "desc": f"Navigate to {hdr_name}",
+                    "before": {"hdr_idx": old_hdr_idx, "variant_idx": old_variant_idx},
+                    "after": {"hdr_idx": hdr_idx, "variant_idx": self.current_variant_idx},
+                })
 
     def select_all_rooms(self) -> None:
         if not self.hdr_files:
@@ -1462,22 +1498,26 @@ class EditorState(rx.State):
 
     def set_room_type(self, rtype: str) -> None:
         self.room_type_input = rtype
-        mutated = False
-        if self.multi_selected_idxs:
-            rooms_copy = list(self.rooms)
-            for idx in self.multi_selected_idxs:
-                if 0 <= idx < len(rooms_copy):
-                    rooms_copy[idx] = {**rooms_copy[idx], "room_type": rtype}
-            self.rooms = rooms_copy
-            mutated = True
-        elif 0 <= self.selected_room_idx < len(self.rooms):
-            rooms_copy = list(self.rooms)
-            rooms_copy[self.selected_room_idx] = {**rooms_copy[self.selected_room_idx], "room_type": rtype}
-            self.rooms = rooms_copy
-            mutated = True
-        if mutated:
-            self._auto_save()
-            self._recompute_df()
+        affected = list(self.multi_selected_idxs) if self.multi_selected_idxs else (
+            [self.selected_room_idx] if 0 <= self.selected_room_idx < len(self.rooms) else []
+        )
+        affected = [i for i in affected if 0 <= i < len(self.rooms)]
+        if not affected:
+            return
+        before_changes = [{"idx": i, "room_name": self.rooms[i].get("name", ""), "room_type": self.rooms[i].get("room_type", "NONE")} for i in affected]
+        rooms_copy = list(self.rooms)
+        for idx in affected:
+            rooms_copy[idx] = {**rooms_copy[idx], "room_type": rtype}
+        self.rooms = rooms_copy
+        after_changes = [{"idx": i, "room_name": self.rooms[i].get("name", ""), "room_type": rtype} for i in affected]
+        self._push_undo({
+            "action": "room_type",
+            "desc": f"Set room type to {rtype}",
+            "before": {"changes": before_changes},
+            "after": {"changes": after_changes},
+        })
+        self._auto_save()
+        self._recompute_df()
 
     _ROOM_TYPE_CYCLE = ["NONE", "BED", "LIVING", "NON-RESI", "CIRC"]
 
@@ -1492,17 +1532,20 @@ class EditorState(rx.State):
             ]
         except ValueError:
             next_type = self._ROOM_TYPE_CYCLE[0]
-        # Bulk: apply to all selected rooms when multi-selected
-        if self.multi_selected_idxs:
-            rooms_copy = list(self.rooms)
-            for idx in self.multi_selected_idxs:
-                if 0 <= idx < len(rooms_copy):
-                    rooms_copy[idx] = {**rooms_copy[idx], "room_type": next_type}
-            self.rooms = rooms_copy
-        else:
-            rooms_copy = list(self.rooms)
-            rooms_copy[room_idx] = {**rooms_copy[room_idx], "room_type": next_type}
-            self.rooms = rooms_copy
+        affected = list(self.multi_selected_idxs) if self.multi_selected_idxs else [room_idx]
+        affected = [i for i in affected if 0 <= i < len(self.rooms)]
+        before_changes = [{"idx": i, "room_name": self.rooms[i].get("name", ""), "room_type": self.rooms[i].get("room_type", "NONE")} for i in affected]
+        rooms_copy = list(self.rooms)
+        for idx in affected:
+            rooms_copy[idx] = {**rooms_copy[idx], "room_type": next_type}
+        self.rooms = rooms_copy
+        after_changes = [{"idx": i, "room_name": self.rooms[i].get("name", ""), "room_type": next_type} for i in affected]
+        self._push_undo({
+            "action": "room_type",
+            "desc": f"Cycle room type to {next_type}",
+            "before": {"changes": before_changes},
+            "after": {"changes": after_changes},
+        })
         self.room_type_input = next_type
         self._auto_save()
         self._recompute_df()
@@ -1532,21 +1575,29 @@ class EditorState(rx.State):
     def delete_room(self) -> None:
         if self.multi_selected_idxs:
             to_delete = set(self.multi_selected_idxs)
-            # Push undo entries in reverse index order so re-insertion restores positions correctly
-            entries = [
-                {"action": "delete", "room_idx": i, "room_data": dict(self.rooms[i])}
-                for i in sorted(to_delete, reverse=True)
+            # Build compound undo entry with rooms in ascending index order for correct re-insertion
+            undo_rooms = [
+                {"idx": i, "data": dict(self.rooms[i])}
+                for i in sorted(to_delete)
                 if 0 <= i < len(self.rooms)
             ]
-            self.draw_undo_stack = (self.draw_undo_stack + entries)[-self._UNDO_MAX:]
+            self._push_undo({
+                "action": "room_delete",
+                "desc": f"Delete {len(undo_rooms)} room(s)",
+                "before": {"rooms": undo_rooms},
+                "after": {},
+            })
             self.rooms = [r for i, r in enumerate(self.rooms) if i not in to_delete]
             self.multi_selected_idxs = []
             self.selected_room_idx = -1
         elif 0 <= self.selected_room_idx < len(self.rooms):
             room_data = dict(self.rooms[self.selected_room_idx])
-            self.draw_undo_stack = (self.draw_undo_stack + [
-                {"action": "delete", "room_idx": self.selected_room_idx, "room_data": room_data}
-            ])[-self._UNDO_MAX:]
+            self._push_undo({
+                "action": "room_delete",
+                "desc": f"Delete room {room_data.get('name', '?')}",
+                "before": {"rooms": [{"idx": self.selected_room_idx, "data": room_data}]},
+                "after": {},
+            })
             self.rooms = [r for i, r in enumerate(self.rooms) if i != self.selected_room_idx]
             self.selected_room_idx = -1
         self.status_message = "Room deleted"
@@ -1704,67 +1755,64 @@ class EditorState(rx.State):
         yield rx.call_script("window._archiZoom && window._archiZoom.setTransform(1.0, 0, 0);")
 
     def fit_zoom(self):
-        """Zoom and pan so the selected room fills the viewport container.
+        """Zoom/pan so the selected room's bounding rect maximally fills the viewport.
 
         Transform model: translate(pan_x, pan_y) scale(zoom), origin 0 0.
-        The transform is applied to the canvas element itself.
+        The canvas (width:100%, height:auto) is CSS-centred vertically via
+        margin:auto.  CSS transforms don't alter layout, so at any zoom the
+        visible clip region is the viewport (vw × vh), not the zoom-1 canvas.
 
-        The canvas always fills container width (width=100%), and is vertically
-        centred via margin:auto, so at zoom=1:
-            canvas_w = vw
-            canvas_h = vw * image_height / image_width  (canvas_h_at_1)
-            canvas top offset = (vh - canvas_h_at_1) / 2  (CSS margin:auto)
-
-        Because pan_y shifts the canvas from its already-centred position, to
-        place image point cy at the container centre:
-            canvas_offset + pan_y + cy * pxscale = vh / 2
-            (vh - canvas_h_at_1)/2 + pan_y + cy * pxscale = vh / 2
-            pan_y = canvas_h_at_1 / 2 - cy * pxscale
-
-        For zoom, the visible canvas height IS canvas_h_at_1 (margin:auto means
-        it's never clipped by vh when smaller). For tall images where canvas_h_at_1
-        > vh, cap to vh so the room still fits within the visible area.
+        Zoom is computed so the room bbox fills the constraining dimension
+        (width or height) of the viewport edge-to-edge, with small proportional
+        padding.  Pan centres the bbox midpoint in the viewport.
         """
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
             yield from self.reset_zoom()
             return
         room = self.rooms[self.selected_room_idx]
-        verts = room.get("vertices", [])
-        if not verts or self.image_width <= 0:
+        verts = self._room_pixel_vertices(room)
+        if len(verts) < 3 or self.image_width <= 0:
             yield from self.reset_zoom()
             return
-        from ..lib.geometry import polygon_bbox
+
         min_x, min_y, max_x, max_y = polygon_bbox(verts)
-        pad = 10  # small padding in image pixels so boundary stroke is visible
-        bw = max_x - min_x + 2 * pad
-        bh = max_y - min_y + 2 * pad
-        if bw <= 0 or bh <= 0:
+        raw_w = max_x - min_x
+        raw_h = max_y - min_y
+        if raw_w <= 0 or raw_h <= 0:
             yield from self.reset_zoom()
             return
-        # Viewport container dimensions in screen pixels (from ResizeObserver)
+
+        # Proportional padding — 5% of each dimension, min 2px
+        pad_x = max(raw_w * 0.05, 2.0)
+        pad_y = max(raw_h * 0.05, 2.0)
+        bw = raw_w + 2 * pad_x
+        bh = raw_h + 2 * pad_y
+
+        # Viewport dimensions (screen pixels)
         vw = self.viewport_width if self.viewport_width > 0 else self.image_width
         vh = self.viewport_height if self.viewport_height > 0 else self.image_height
-        if self.image_width <= 0 or self.image_height <= 0 or vw <= 0:
+        if vw <= 0 or vh <= 0:
             yield from self.reset_zoom()
             return
+
         image_scale = vw / self.image_width  # screen px per image px at zoom=1
-        canvas_h_at_1 = vw * self.image_height / self.image_width
-        # canvas_offset_top: CSS margin:auto vertically centres the canvas in the
-        # container when canvas_h_at_1 < vh.  For tall images it is 0.
-        canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
-        # fit_vh: use the actual canvas height for zoom, not the full container.
-        # Using vh would over-zoom when canvas_h_at_1 < vh, pushing wide rooms
-        # off the sides because zy inflates beyond the image coordinate space.
-        fit_vh = min(vh, canvas_h_at_1) if canvas_h_at_1 > 0 else vh
+
+        # Zoom: maximise room in viewport.  Use vw and vh directly — the
+        # viewport is the clip boundary at any zoom, not the zoom-1 canvas.
         zx = vw / (bw * image_scale)
-        zy = fit_vh / (bh * image_scale)
+        zy = vh / (bh * image_scale)
         self.zoom_level = min(zx, zy, 200.0)
+        self.zoom_level = max(self.zoom_level, 1.0)
+
+        # Centre room bbox midpoint in viewport, accounting for CSS margin:auto
         cx = (min_x + max_x) / 2
         cy = (min_y + max_y) / 2
         pxscale = image_scale * self.zoom_level
-        # Centre the bbox midpoint in the container, accounting for canvas_offset_top.
+        canvas_h_at_1 = vw * self.image_height / self.image_width
+        canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
         self.pan_x = vw / 2 - cx * pxscale
         self.pan_y = vh / 2 - canvas_offset_top - cy * pxscale
+
         yield rx.call_script(
             f"window._archiZoom && window._archiZoom.setTransform("
             f"{self.zoom_level}, {self.pan_x}, {self.pan_y});"
@@ -1904,11 +1952,6 @@ class EditorState(rx.State):
             "room_type": self.room_type_input or "NONE",
             "visible": True,
         }
-        # Push draw undo
-        self.draw_undo_stack = (self.draw_undo_stack + [
-            {"action": "create", "room_idx": len(self.rooms)}
-        ])[-self._UNDO_MAX:]
-
         self.rooms = self.rooms + [new_room]
         self.draw_vertices = []
         self.snap_point = {}
@@ -2052,55 +2095,283 @@ class EditorState(rx.State):
     # UNDO
     # =====================================================================
 
+    # ------------------------------------------------------------------
+    # Unified undo/redo infrastructure
+    # ------------------------------------------------------------------
+
+    def _push_undo(self, entry: dict) -> None:
+        """Push an undo entry onto the unified stack; clear redo stack."""
+        now = time.time()
+        # Coalesce rapid same-type entries (hdr_navigate)
+        if (
+            self._undo_stack
+            and entry["action"] in ("hdr_navigate",)
+            and self._undo_stack[-1]["action"] == entry["action"]
+            and now - self._last_undo_push_time < 0.5
+        ):
+            top = dict(self._undo_stack[-1])
+            top["after"] = entry["after"]
+            self._undo_stack = self._undo_stack[:-1] + [top]
+        else:
+            self._undo_stack = (self._undo_stack + [entry])[-self._UNDO_MAX:]
+        self._redo_stack = []
+        self._last_undo_push_time = now
+
+    def _push_overlay_undo(self, entry: dict) -> None:
+        """Push to the overlay-scoped undo stack (only used in overlay_align_mode)."""
+        now = time.time()
+        if (
+            self._overlay_undo_stack
+            and self._overlay_undo_stack[-1]["action"] == entry["action"]
+            and now - self._last_undo_push_time < 0.5
+        ):
+            top = dict(self._overlay_undo_stack[-1])
+            top["after"] = entry["after"]
+            self._overlay_undo_stack = self._overlay_undo_stack[:-1] + [top]
+        else:
+            self._overlay_undo_stack = (self._overlay_undo_stack + [entry])[-self._UNDO_MAX:]
+        self._last_undo_push_time = now
+
     def _push_edit_undo(self) -> None:
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
             return
+        self._finalize_vertex_edit_undo()
         room = self.rooms[self.selected_room_idx]
-        entry = {
-            "room_idx": self.selected_room_idx,
-            "room_name": room.get("name", ""),  # stored to re-resolve idx if rooms shift
-            "vertices": [list(v) for v in room.get("vertices", [])],
-        }
-        self.edit_undo_stack = (self.edit_undo_stack + [entry])[-self._UNDO_MAX:]
+        self._push_undo({
+            "action": "vertex_edit",
+            "desc": f"Edit vertices of {room.get('name', '?')}",
+            "before": {
+                "room_idx": self.selected_room_idx,
+                "room_name": room.get("name", ""),
+                "vertices": [list(v) for v in room.get("vertices", [])],
+            },
+            "after": {},
+        })
+
+    def _finalize_vertex_edit_undo(self) -> None:
+        """Fill in the ``after`` vertices for the most recent vertex_edit entry if empty."""
+        if not self._undo_stack:
+            return
+        top = self._undo_stack[-1]
+        if top["action"] == "vertex_edit" and not top.get("after"):
+            room_name = top["before"].get("room_name", "")
+            idx = top["before"]["room_idx"]
+            if room_name:
+                idx = next((i for i, r in enumerate(self.rooms) if r.get("name") == room_name), idx)
+            if 0 <= idx < len(self.rooms):
+                updated_top = dict(top)
+                updated_top["after"] = {
+                    "room_idx": idx,
+                    "room_name": room_name,
+                    "vertices": [list(v) for v in self.rooms[idx].get("vertices", [])],
+                }
+                self._undo_stack = self._undo_stack[:-1] + [updated_top]
 
     def undo(self) -> None:
-        if self.edit_mode and self.edit_undo_stack:
-            entry = self.edit_undo_stack[-1]
-            self.edit_undo_stack = self.edit_undo_stack[:-1]
-            # Re-resolve index by name in case delete/undo shifted the rooms list
-            room_name = entry.get("room_name", "")
-            idx = entry["room_idx"]
+        # Overlay-align mode: use scoped overlay stack
+        if self.overlay_align_mode:
+            self._undo_overlay()
+            return
+        self._finalize_vertex_edit_undo()
+        if not self._undo_stack:
+            self.status_message = "Nothing to undo"
+            return
+        entry = self._undo_stack[-1]
+        self._undo_stack = self._undo_stack[:-1]
+        self._apply_undo(entry)
+        self._redo_stack = (self._redo_stack + [entry])[-self._UNDO_MAX:]
+        self._auto_save()
+        self._recompute_df()
+
+    def redo(self) -> None:
+        # Overlay-align mode: no redo for overlay (keep it simple)
+        if self.overlay_align_mode:
+            self.status_message = "Redo not available in adjust-plan mode"
+            return
+        if not self._redo_stack:
+            self.status_message = "Nothing to redo"
+            return
+        entry = self._redo_stack[-1]
+        self._redo_stack = self._redo_stack[:-1]
+        self._apply_redo(entry)
+        self._undo_stack = (self._undo_stack + [entry])[-self._UNDO_MAX:]
+        self._auto_save()
+        self._recompute_df()
+
+    def _apply_undo(self, entry: dict) -> None:
+        action = entry["action"]
+        before = entry.get("before", {})
+        after = entry.get("after", {})
+        if action == "vertex_edit":
+            self._restore_vertices(before)
+            self.status_message = "Vertex edit undone"
+        elif action == "room_delete":
+            self._undo_room_delete(before)
+        elif action == "room_divide":
+            self._restore_rooms_snapshot(before)
+            self.status_message = "Division undone"
+            self.status_colour = "accent2"
+        elif action == "room_type":
+            self._restore_room_types(before)
+            self.status_message = "Room type change undone"
+        elif action == "df_stamp_add":
+            self._remove_df_stamp(after)
+            self.status_message = "DF stamp undone"
+        elif action == "df_stamp_remove":
+            self._insert_df_stamp(before)
+            self.status_message = "DF stamp removal undone"
+        elif action == "hdr_navigate":
+            self._apply_hdr_navigate(before)
+
+    def _apply_redo(self, entry: dict) -> None:
+        action = entry["action"]
+        before = entry.get("before", {})
+        after = entry.get("after", {})
+        if action == "vertex_edit":
+            self._restore_vertices(after)
+            self.status_message = "Vertex edit redone"
+        elif action == "room_delete":
+            self._redo_room_delete(before)
+        elif action == "room_divide":
+            self._restore_rooms_snapshot(after)
+            self.status_message = "Division redone"
+        elif action == "room_type":
+            self._restore_room_types(after)
+            self.status_message = "Room type change redone"
+        elif action == "df_stamp_add":
+            self._insert_df_stamp(after)
+            self.status_message = "DF stamp redone"
+        elif action == "df_stamp_remove":
+            self._remove_df_stamp(before)
+            self.status_message = "DF stamp removal redone"
+        elif action == "hdr_navigate":
+            self._apply_hdr_navigate(after)
+
+    # -- Individual restore handlers --
+
+    def _restore_vertices(self, data: dict) -> None:
+        room_name = data.get("room_name", "")
+        idx = data.get("room_idx", -1)
+        if room_name:
+            idx = next((i for i, r in enumerate(self.rooms) if r.get("name") == room_name), idx)
+        if 0 <= idx < len(self.rooms):
+            rooms_copy = list(self.rooms)
+            rooms_copy[idx] = {**rooms_copy[idx], "vertices": data["vertices"]}
+            self.rooms = rooms_copy
+
+    def _undo_room_delete(self, before: dict) -> None:
+        rooms_copy = list(self.rooms)
+        for room_info in before.get("rooms", []):
+            idx = room_info["idx"]
+            data = room_info["data"]
+            rooms_copy.insert(min(idx, len(rooms_copy)), data)
+        self.rooms = rooms_copy
+        self.selected_room_idx = -1
+        self.status_message = "Room deletion undone"
+
+    def _redo_room_delete(self, before: dict) -> None:
+        indices = sorted([r["idx"] for r in before.get("rooms", [])], reverse=True)
+        rooms_copy = list(self.rooms)
+        for idx in indices:
+            if 0 <= idx < len(rooms_copy):
+                del rooms_copy[idx]
+        self.rooms = rooms_copy
+        self.selected_room_idx = -1
+        self.status_message = "Room deletion redone"
+
+    def _restore_rooms_snapshot(self, data: dict) -> None:
+        self.rooms = data["rooms_snapshot"]
+        self.selected_room_idx = -1
+
+    def _restore_room_types(self, data: dict) -> None:
+        rooms_copy = list(self.rooms)
+        for change in data.get("changes", []):
+            room_name = change.get("room_name", "")
+            idx = change["idx"]
             if room_name:
-                resolved = next((i for i, r in enumerate(self.rooms) if r.get("name") == room_name), idx)
-                idx = resolved
-            if 0 <= idx < len(self.rooms):
-                rooms_copy = list(self.rooms)
-                rooms_copy[idx] = {**rooms_copy[idx], "vertices": entry["vertices"]}
-                self.rooms = rooms_copy
-            self._auto_save()
+                idx = next((i for i, r in enumerate(self.rooms) if r.get("name") == room_name), idx)
+            if 0 <= idx < len(rooms_copy):
+                rooms_copy[idx] = {**rooms_copy[idx], "room_type": change["room_type"]}
+        self.rooms = rooms_copy
+
+    def _remove_df_stamp(self, data: dict) -> None:
+        hdr = data["hdr_name"]
+        idx = data["stamp_idx"]
+        stamps = dict(self.df_stamps)
+        hdr_stamps = list(stamps.get(hdr, []))
+        if 0 <= idx < len(hdr_stamps):
+            del hdr_stamps[idx]
+        stamps[hdr] = hdr_stamps
+        self.df_stamps = stamps
+
+    def _insert_df_stamp(self, data: dict) -> None:
+        hdr = data["hdr_name"]
+        idx = data["stamp_idx"]
+        stamp = data["stamp"]
+        stamps = dict(self.df_stamps)
+        hdr_stamps = list(stamps.get(hdr, []))
+        hdr_stamps.insert(min(idx, len(hdr_stamps)), stamp)
+        stamps[hdr] = hdr_stamps
+        self.df_stamps = stamps
+
+    def _apply_hdr_navigate(self, data: dict) -> None:
+        idx = data["hdr_idx"]
+        if 0 <= idx < len(self.hdr_files):
+            self.current_hdr_idx = idx
+            self.current_variant_idx = data.get("variant_idx", 0)
+            self._rebuild_variants()
+            self.load_current_image()
+            hdr_name = self.hdr_files[idx]["name"]
+            self.collapsed_hdrs = [h["name"] for h in self.hdr_files if h["name"] != hdr_name]
+            _df_cache["image"] = None
+            _df_cache["hdr_path"] = ""
+            if self.df_placement_mode:
+                self._load_df_image_cache()
             self._recompute_df()
-        elif self.draw_undo_stack:
-            entry = self.draw_undo_stack[-1]
-            self.draw_undo_stack = self.draw_undo_stack[:-1]
-            action = entry.get("action")
-            if action == "divider":
-                self.rooms = entry["snapshot"]
-                self.selected_room_idx = -1
-                self.status_message = "Division undone"
-                self.status_colour = "accent2"
-            elif action == "create":
-                idx = entry.get("room_idx", -1)
-                if 0 <= idx < len(self.rooms):
-                    self.rooms = [r for i, r in enumerate(self.rooms) if i != idx]
-            elif action == "delete":
-                room_data = entry.get("room_data")
-                idx = entry.get("room_idx", len(self.rooms))
-                if room_data:
-                    rooms_copy = list(self.rooms)
-                    rooms_copy.insert(min(idx, len(rooms_copy)), room_data)
-                    self.rooms = rooms_copy
-            self._auto_save()
-            self._recompute_df()
+            self.status_message = f"Navigated to {hdr_name}"
+
+    def _undo_overlay(self) -> None:
+        """Undo within overlay-align mode (scoped stack)."""
+        if not self._overlay_undo_stack:
+            # Restore session start baseline
+            if self._overlay_session_start:
+                hdr_name = self._overlay_session_start.get("hdr_name", "")
+                transform = self._overlay_session_start.get("transform")
+                if hdr_name:
+                    t = dict(self.overlay_transforms)
+                    if transform is None:
+                        t.pop(hdr_name, None)
+                    else:
+                        t[hdr_name] = transform
+                    self.overlay_transforms = t
+                    self._auto_save()
+                self.status_message = "Overlay restored to session start"
+            else:
+                self.status_message = "Nothing to undo"
+            return
+        entry = self._overlay_undo_stack[-1]
+        self._overlay_undo_stack = self._overlay_undo_stack[:-1]
+        before = entry.get("before", {})
+        hdr_name = before.get("hdr_name", "")
+        transform = before.get("transform")
+        if hdr_name:
+            t = dict(self.overlay_transforms)
+            if transform is None:
+                t.pop(hdr_name, None)
+            else:
+                t[hdr_name] = transform
+            self.overlay_transforms = t
+        # Handle overlay props restore
+        if "dpi" in before:
+            dpi_changed = self.overlay_dpi != before.get("dpi", self.overlay_dpi)
+            page_changed = self.overlay_page_idx != before.get("page_idx", self.overlay_page_idx)
+            self.overlay_dpi = before.get("dpi", self.overlay_dpi)
+            self.overlay_alpha = before.get("alpha", self.overlay_alpha)
+            self.overlay_page_idx = before.get("page_idx", self.overlay_page_idx)
+            if dpi_changed or page_changed:
+                self._rasterize_current_page()
+        self._auto_save()
+        self.status_message = "Overlay change undone"
 
     # =====================================================================
     # DIVIDER
@@ -2261,8 +2532,7 @@ class EditorState(rx.State):
             return
 
         # Snapshot rooms before mutation for undo
-        snapshot = [dict(r, vertices=[list(v) for v in r["vertices"]]) for r in self.rooms]
-        self.draw_undo_stack = (self.draw_undo_stack + [{"action": "divider", "snapshot": snapshot}])[-self._UNDO_MAX:]
+        snapshot_before = [dict(r, vertices=[list(v) for v in r["vertices"]]) for r in self.rooms]
 
         # Parent room stays intact — only the smaller polygon becomes a CIRC child.
         # Deleting the child leaves the parent's full boundary / area unchanged.
@@ -2304,6 +2574,13 @@ class EditorState(rx.State):
         rooms_copy = list(self.rooms)
         rooms_copy.insert(self.divider_room_idx + 1, child_room)
         self.rooms = rooms_copy
+        snapshot_after = [dict(r, vertices=[list(v) for v in r["vertices"]]) for r in self.rooms]
+        self._push_undo({
+            "action": "room_divide",
+            "desc": f"Divide room {original_name}",
+            "before": {"rooms_snapshot": snapshot_before},
+            "after": {"rooms_snapshot": snapshot_after},
+        })
         self.divider_points = []
         self.divider_preview_point = {}
         self.divider_room_idx = -1
@@ -2347,7 +2624,19 @@ class EditorState(rx.State):
             # Also select the room
             self.select_room(hit_idx)
         else:
-            self.context_menu_visible = False
+            # No room hit — show reinstate-from-AOI option
+            self.context_menu_room_idx = -1
+            self.context_menu_x = viewport_x
+            self.context_menu_y = viewport_y
+            self.context_menu_canvas_x = canvas_x
+            self.context_menu_canvas_y = canvas_y
+            self.context_menu_visible = True
+
+    @rx.var
+    def context_menu_has_room(self) -> bool:
+        """True when the context menu targets an existing room (show Delete);
+        False when targeting empty space (show Reinstate from AOI)."""
+        return self.context_menu_room_idx >= 0
 
     def dismiss_context_menu(self) -> None:
         self.context_menu_visible = False
@@ -2359,6 +2648,214 @@ class EditorState(rx.State):
             self.multi_selected_idxs = []
         self.context_menu_visible = False
         self.delete_room()
+
+    @staticmethod
+    def _parse_level_aoi(path: Path) -> tuple[str, str, list[list[float]]] | None:
+        """Parse a level-suffixed AOI file (e.g. L200002B_L2.aoi).
+
+        Returns (zone_name, ffl_string, world_vertices) or None on failure.
+        """
+        import re
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return None
+        if len(lines) < 6:
+            return None
+        # Line 1: "AOI Points File: L200002B L2"
+        m_zone = re.match(r"AOI Points File:\s*(\S+)", lines[0])
+        if not m_zone:
+            return None
+        zone_name = m_zone.group(1)
+        # Line 2: "ASSOCIATED VIEW FILE: plan_ffl_14300.vp"
+        m_view = re.search(r"plan_ffl_(\d+)", lines[1])
+        if not m_view:
+            return None
+        ffl_str = m_view.group(1)
+        # Line 5: "NO. PERIMETER POINTS N: ..."
+        m_pts = re.search(r"POINTS\s+(\d+)", lines[4])
+        if not m_pts:
+            return None
+        n_pts = int(m_pts.group(1))
+        if len(lines) < 5 + n_pts:
+            return None
+        verts: list[list[float]] = []
+        for line in lines[5 : 5 + n_pts]:
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    verts.append([float(parts[0]), float(parts[1])])
+                except ValueError:
+                    return None
+        if len(verts) < 3:
+            return None
+        return (zone_name, ffl_str, verts)
+
+
+    @staticmethod
+    def _parse_base_aoi(path: Path) -> tuple[str, str, list[list[float]]] | None:
+        """Parse a base-format AOI file. Returns (zone_name, level_code, world_vertices)."""
+        import re
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return None
+        if len(lines) < 4:
+            return None
+        m_zone = re.match(r"ZONE\s+(\S+)\s+(\S+)", lines[1])
+        if not m_zone:
+            return None
+        zone_name, level_code = m_zone.group(1), m_zone.group(2)
+        m_pts = re.search(r"POINTS\s+(\d+)", lines[2])
+        if not m_pts:
+            return None
+        n_pts = int(m_pts.group(1))
+        if len(lines) < 3 + n_pts:
+            return None
+        verts: list[list[float]] = []
+        for line in lines[3 : 3 + n_pts]:
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    verts.append([float(parts[0]), float(parts[1])])
+                except ValueError:
+                    return None
+        if len(verts) < 3:
+            return None
+        return (zone_name, level_code, verts)
+
+    @staticmethod
+    def _build_level_ffl_map(aoi_inputs_dir: Path) -> dict[str, str]:
+        """Build level_code->ffl_string map from outputs/aoi/ _L*.aoi files."""
+        import re
+        outputs_aoi = aoi_inputs_dir.parent.parent / "outputs" / "aoi"
+        level_map: dict[str, str] = {}
+        if not outputs_aoi.exists():
+            return level_map
+        for p in outputs_aoi.glob("*_L*.aoi"):
+            try:
+                top_lines = p.read_text(encoding="utf-8").splitlines()[:2]
+            except Exception:
+                continue
+            if len(top_lines) < 2:
+                continue
+            m_view = re.search(r"plan_ffl_(\d+)", top_lines[1])
+            if not m_view:
+                continue
+            m_level = re.search(r"_([Ll]\d+)\.aoi$", p.name)
+            if m_level:
+                level_map[m_level.group(1).upper()] = m_view.group(1)
+        return level_map
+
+    def reinstate_room_from_aoi(self) -> None:
+        """Reinstate a deleted room by finding the AOI file that contains the clicked location."""
+        import re
+        from ..lib.geometry import point_in_polygon
+
+        self.context_menu_visible = False
+
+        # Current HDR info
+        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            self.status_message = "No HDR loaded"
+            return
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        vp_params = self.hdr_view_params.get(hdr_name)
+        if not vp_params:
+            self.status_message = "No view params for current HDR"
+            return
+
+        vp_x, vp_y, vh, vv, *_rest = vp_params
+        img_w = self.image_width
+        img_h = self.image_height
+        if img_w <= 0 or img_h <= 0:
+            self.status_message = "Image not loaded"
+            return
+
+        # Convert click pixel coords to world coords
+        px = self.context_menu_canvas_x
+        py = self.context_menu_canvas_y
+        wx = (px - img_w / 2) * (vh / img_w) + vp_x
+        wy = (img_h / 2 - py) * (vv / img_h) + vp_y
+
+        # Extract FFL from current HDR name (e.g. "527DP_plan_ffl_14300" → "14300")
+        m_ffl = re.search(r"ffl_(\d+)", hdr_name)
+        if not m_ffl:
+            self.status_message = "Cannot determine floor level from HDR name"
+            return
+        current_ffl = m_ffl.group(1)
+
+        from archilume.config import get_project_paths
+        aoi_dir = get_project_paths(self.project).aoi_inputs_dir
+        if not aoi_dir.exists():
+            self.status_message = "AOI directory not found"
+            return
+
+        existing_names = {r.get("name", "") for r in self.rooms if r.get("hdr_file") == hdr_name}
+        match_zone: str | None = None
+        match_verts: list[list[float]] = []
+
+        # Strategy 1: level-suffixed AOI files in inputs/aoi/
+        for aoi_path in sorted(aoi_dir.glob("*_L*.aoi")):
+            parsed = self._parse_level_aoi(aoi_path)
+            if parsed is None:
+                continue
+            zone_name, ffl_str, world_verts = parsed
+            if ffl_str != current_ffl:
+                continue
+            if zone_name in existing_names:
+                continue
+            if point_in_polygon(wx, wy, world_verts):
+                match_zone = zone_name
+                match_verts = world_verts
+                break
+
+        # Strategy 2: base-format AOI files with level->FFL map from outputs/
+        if match_zone is None:
+            level_ffl_map = self._build_level_ffl_map(aoi_dir)
+            for aoi_path in sorted(aoi_dir.glob("*.aoi")):
+                if "_L" in aoi_path.stem or aoi_path.stem == "aoi_session":
+                    continue
+                parsed_base = self._parse_base_aoi(aoi_path)
+                if parsed_base is None:
+                    continue
+                zone_name, level_code, world_verts = parsed_base
+                mapped_ffl = level_ffl_map.get(level_code.upper())
+                if mapped_ffl != current_ffl:
+                    continue
+                if zone_name in existing_names:
+                    continue
+                if point_in_polygon(wx, wy, world_verts):
+                    match_zone = zone_name
+                    match_verts = world_verts
+                    break
+
+        if match_zone is None:
+            self.status_message = "No matching AOI file found at this location"
+            return
+
+        # Project world vertices to pixel space
+        pixel_verts = [
+            [(wvx - vp_x) / (vh / img_w) + img_w / 2,
+             img_h / 2 - (wvy - vp_y) / (vv / img_h)]
+            for wvx, wvy in match_verts
+        ]
+
+        new_room: dict = {
+            "name": match_zone,
+            "parent": "",
+            "room_type": "NONE",
+            "hdr_file": hdr_name,
+            "vertices": pixel_verts,
+            "world_vertices": match_verts,
+            "visible": True,
+        }
+        new_idx = len(self.rooms)
+        self.rooms = self.rooms + [new_room]
+        self.selected_room_idx = new_idx
+        self.multi_selected_idxs = []
+        self.status_message = f"Reinstated room {match_zone} from AOI"
+        self._auto_save()
+        self._recompute_df()
 
     # =====================================================================
     # GRID OVERLAY
@@ -2465,13 +2962,34 @@ class EditorState(rx.State):
             _df_cache["hdr_path"] = ""
             self.df_cursor_label = ""
             self.df_cursor_df = ""
+        entering = not self.overlay_align_mode
         self.overlay_align_mode = not self.overlay_align_mode
         self.align_points = []
+        if entering:
+            # Snapshot current overlay state as the committed baseline
+            hdr_name = ""
+            if self.hdr_files and 0 <= self.current_hdr_idx < len(self.hdr_files):
+                hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+            transform = dict(self.overlay_transforms.get(hdr_name, {})) if hdr_name and hdr_name in self.overlay_transforms else None
+            self._overlay_session_start = {"hdr_name": hdr_name, "transform": transform}
+            self._overlay_undo_stack = []
+        else:
+            # Exiting: commit final position, clear overlay undo stack
+            self._overlay_undo_stack = []
+            self._overlay_session_start = {}
 
     def cycle_overlay_page(self) -> None:
         if self.overlay_page_count <= 0:
             return
+        old_page = self.overlay_page_idx
         self.overlay_page_idx = (self.overlay_page_idx + 1) % self.overlay_page_count
+        if self.overlay_align_mode:
+            self._push_overlay_undo({
+                "action": "overlay_props",
+                "desc": "Change overlay page",
+                "before": {"page_idx": old_page, "dpi": self.overlay_dpi, "alpha": self.overlay_alpha},
+                "after": {"page_idx": self.overlay_page_idx, "dpi": self.overlay_dpi, "alpha": self.overlay_alpha},
+            })
         self._rasterize_current_page()
 
     def set_overlay_dpi(self, dpi: str) -> None:
@@ -2483,11 +3001,19 @@ class EditorState(rx.State):
 
     def cycle_overlay_dpi(self) -> None:
         _DPI_STEPS = [72, 100, 150, 200, 300]
+        old_dpi = self.overlay_dpi
         try:
             idx = _DPI_STEPS.index(self.overlay_dpi)
         except ValueError:
             idx = 2  # default to 150
         self.overlay_dpi = _DPI_STEPS[(idx + 1) % len(_DPI_STEPS)]
+        if self.overlay_align_mode:
+            self._push_overlay_undo({
+                "action": "overlay_props",
+                "desc": "Change overlay DPI",
+                "before": {"dpi": old_dpi, "alpha": self.overlay_alpha, "page_idx": self.overlay_page_idx},
+                "after": {"dpi": self.overlay_dpi, "alpha": self.overlay_alpha, "page_idx": self.overlay_page_idx},
+            })
         self._rasterize_current_page()
 
     def set_overlay_alpha(self, value: str) -> None:
@@ -2713,6 +3239,15 @@ class EditorState(rx.State):
             self.viewport_width, self.image_width, self.image_height,
             self.overlay_img_width, self.overlay_img_height,
         )
+        # Push to overlay-scoped undo stack if in adjust-plan mode
+        if self.overlay_align_mode:
+            old_transform = dict(self.overlay_transforms[hdr_name]) if hdr_name in self.overlay_transforms else None
+            self._push_overlay_undo({
+                "action": "overlay_transform",
+                "desc": "Overlay transform change",
+                "before": {"hdr_name": hdr_name, "transform": old_transform},
+                "after": {"hdr_name": hdr_name, "transform": dict(stored)},
+            })
         t = dict(self.overlay_transforms)
         t[hdr_name] = stored
         self.overlay_transforms = t
@@ -2796,9 +3331,16 @@ class EditorState(rx.State):
 
         stamps_copy = dict(self.df_stamps)
         hdr_stamps = list(stamps_copy.get(hdr_name, []))
-        hdr_stamps.append([x, y, round(df_val, 2), px, py])
+        stamp_data = [x, y, round(df_val, 2), px, py]
+        hdr_stamps.append(stamp_data)
         stamps_copy[hdr_name] = hdr_stamps
         self.df_stamps = stamps_copy
+        self._push_undo({
+            "action": "df_stamp_add",
+            "desc": f"Place DF stamp ({df_val:.2f}%)",
+            "before": {},
+            "after": {"hdr_name": hdr_name, "stamp_idx": len(hdr_stamps) - 1, "stamp": stamp_data},
+        })
         self.status_message = f"DF: {df_val:.2f}% at px({px},{py})"
         self.status_colour = "accent"
 
@@ -2816,6 +3358,13 @@ class EditorState(rx.State):
                 best_d = d
                 best_i = i
         if best_i >= 0:
+            removed_stamp = list(hdr_stamps[best_i])
+            self._push_undo({
+                "action": "df_stamp_remove",
+                "desc": "Remove DF stamp",
+                "before": {"hdr_name": hdr_name, "stamp_idx": best_i, "stamp": removed_stamp},
+                "after": {},
+            })
             stamps_copy = dict(self.df_stamps)
             stamps_copy[hdr_name] = [s for j, s in enumerate(hdr_stamps) if j != best_i]
             self.df_stamps = stamps_copy
@@ -3012,6 +3561,55 @@ class EditorState(rx.State):
     # SESSION PERSISTENCE
     # =====================================================================
 
+    def _load_session_core(self) -> None:
+        """Load session JSON and restore state, but skip rasterization and DF compute.
+
+        Used by _open_project_progressive to defer heavy work until after the
+        UI has rendered the main image.
+        """
+        if not self.session_path:
+            return
+        from ..lib.session_io import load_session
+        data = load_session(Path(self.session_path))
+        if data is None:
+            session_file = Path(self.session_path)
+            if session_file.exists():
+                logger.warning("[session] Failed to parse %s — auto-save blocked until next successful load", session_file)
+                self._session_load_ok = False
+            else:
+                self._session_load_ok = True
+            return
+        self.rooms = data.get("rooms", [])
+        self.df_stamps = data.get("df_stamps", {})
+        self.overlay_transforms = data.get("overlay_transforms", {})
+        _needs_migration = data.get("transform_version", 0) < 3 and bool(self.overlay_transforms)
+        hdr_idx = data.get("current_hdr_idx", 0)
+        if 0 <= hdr_idx < len(self.hdr_files):
+            self.current_hdr_idx = hdr_idx
+        self.current_variant_idx = data.get("current_variant_idx", 0)
+        self.selected_parent = data.get("selected_parent", "")
+        self.annotation_scale = data.get("annotation_scale", 1.0)
+        self.overlay_dpi = data.get("overlay_dpi", 150)
+        self.overlay_visible = data.get("overlay_visible", False)
+        self.overlay_alpha = data.get("overlay_alpha", 0.6)
+        pdf_path = data.get("overlay_pdf_path", "")
+        if pdf_path and Path(pdf_path).exists():
+            self.overlay_pdf_path = pdf_path
+        self.overlay_page_idx = data.get("overlay_page_idx", 0)
+        self.overlay_img_width = data.get("overlay_img_width", 0)
+        self.overlay_img_height = data.get("overlay_img_height", 0)
+        self._rebuild_variants()
+        if _needs_migration:
+            self._migrate_legacy_overlay_transforms()
+        self._session_load_ok = True
+        logger.info(
+            "[session-load] transforms=%s pw=%d ph=%d tv=%s vis=%s",
+            {k: {kk: round(vv, 6) if isinstance(vv, float) else vv for kk, vv in v.items()} for k, v in self.overlay_transforms.items()},
+            self.overlay_img_width, self.overlay_img_height,
+            data.get("transform_version", "?"), self.overlay_visible,
+        )
+        self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
+
     def load_session(self) -> None:
         if not self.session_path:
             return
@@ -3101,7 +3699,7 @@ class EditorState(rx.State):
     def restart_app(self) -> None:
         """Spawn a detached relaunch of the Archilume UI, then kill this process.
 
-        Uses the same ``examples/launch_archilume_ui.py`` entry point so the new
+        Uses the same ``examples/launch_archilume_app.py`` entry point so the new
         instance runs the full kill-stale-backends → reflex run flow. The current
         Python process exits half a second later so the Reflex response flushes
         to the client before the socket closes.
@@ -3113,7 +3711,7 @@ class EditorState(rx.State):
             pass
         try:
             repo_root = Path(__file__).resolve().parents[5]
-            launch_script = repo_root / "examples" / "launch_archilume_ui.py"
+            launch_script = repo_root / "examples" / "launch_archilume_app.py"
             if not launch_script.exists():
                 self.status_message = f"Restart failed — launch script not found: {launch_script}"
                 return
@@ -3197,10 +3795,15 @@ class EditorState(rx.State):
         try:
             from archilume.config import PROJECTS_DIR
             if PROJECTS_DIR.exists():
-                self.available_projects = sorted([
-                    p.name for p in PROJECTS_DIR.iterdir()
-                    if p.is_dir() and (p / "project.toml").exists()
-                ])
+                # Use os.scandir for fewer filesystem calls (is_dir() is free
+                # from the directory entry on most OSes — important for Docker
+                # bind-mounts where each syscall adds latency).
+                with os.scandir(PROJECTS_DIR) as it:
+                    self.available_projects = sorted([
+                        e.name for e in it
+                        if e.is_dir(follow_symlinks=False)
+                        and (Path(e.path) / "project.toml").exists()
+                    ])
             else:
                 self.available_projects = []
         except ImportError:
@@ -3219,6 +3822,43 @@ class EditorState(rx.State):
         self.open_project_modal_open = False
         self.status_message = f"Opened: {name}"
         self.status_colour = "accent"
+
+    def _open_project_progressive(self, name: str):
+        """Open a project with progressive UI updates via yield.
+
+        Used by init_on_load so the UI becomes interactive before heavy
+        compute (PDF rasterization, DF analysis) finishes.
+        """
+        if not name:
+            return
+        self.is_project_loading = True
+        self.save_session()
+        self.project = name
+        self.status_message = f"Loading {name}..."
+        self.status_colour = "accent"
+
+        # Phase 1: paths + file scan (~100ms)
+        self._init_project_paths()
+        self._rebuild_variants()
+        yield
+
+        # Phase 2: session restore (JSON parse, no heavy compute)
+        self._load_session_core()
+        yield
+
+        # Phase 3: load main image — app feels "ready" after this
+        self.load_current_image()
+        self.scan_projects()
+        self.open_project_modal_open = False
+        self.is_project_loading = False
+        self.status_message = f"Opened: {name}"
+        yield
+
+        # Phase 4: deferred heavy compute
+        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
+            self._rasterize_current_page()
+            yield
+        self._recompute_df()
 
     def set_new_project_name(self, value: str) -> None:
         self.new_project_name = value
@@ -3311,13 +3951,14 @@ class EditorState(rx.State):
         except ImportError:
             pass
 
-    def init_on_load(self) -> None:
+    def init_on_load(self):
         self.scan_projects()
+        yield
         initial = os.environ.get("ARCHILUME_INITIAL_PROJECT", "").strip()
         if initial and initial in self.available_projects:
-            self.open_project(initial)
+            yield from self._open_project_progressive(initial)
         elif len(self.available_projects) == 1:
-            self.open_project(self.available_projects[0])
+            yield from self._open_project_progressive(self.available_projects[0])
 
     # =====================================================================
     # UI CHROME TOGGLES
@@ -3454,8 +4095,15 @@ class EditorState(rx.State):
         # the tab_index=-1 on the trap div means this only fires when the div is focused;
         # in practice document-level focus means we get all keys not consumed by inputs.
         if ctrl and key.lower() == "z":
-            logger.debug("  → routing to: undo()")
-            self.undo()
+            if shift:
+                logger.debug("  → routing to: redo()")
+                self.redo()
+            else:
+                logger.debug("  → routing to: undo()")
+                self.undo()
+        elif ctrl and key.lower() == "y":
+            logger.debug("  → routing to: redo()")
+            self.redo()
         elif ctrl and key.lower() == "a":
             logger.debug("  → routing to: select_all_rooms()")
             self.select_all_rooms()
@@ -3514,6 +4162,9 @@ class EditorState(rx.State):
         elif k == "p":
             logger.debug(f"  handle_key 'p' → toggle_df_placement (was {self.df_placement_mode})")
             self.toggle_df_placement()
+        elif k == "g":
+            logger.debug(f"  handle_key 'g' → toggle_pan_mode (was {self.pan_mode})")
+            self.toggle_pan_mode()
         elif k == "t":
             logger.debug(f"  handle_key 't' → toggle_image_variant (idx={self.current_variant_idx})")
             self.toggle_image_variant()
@@ -3544,16 +4195,16 @@ class EditorState(rx.State):
                 logger.debug(f"  handle_key 'ArrowUp' → nudge_overlay(0, -{step})")
                 self.nudge_overlay(0, -step)
             else:
-                logger.debug(f"  handle_key 'ArrowUp' → navigate_hdr(-1) (current={self.current_hdr_idx})")
-                self.navigate_hdr(-1)
+                logger.debug(f"  handle_key 'ArrowUp' → navigate_hdr(1) (current={self.current_hdr_idx})")
+                self.navigate_hdr(1)
         elif k == "ArrowDown":
             if self.overlay_align_mode:
                 step = self._arrow_accel("down")
                 logger.debug(f"  handle_key 'ArrowDown' → nudge_overlay(0, {step})")
                 self.nudge_overlay(0, step)
             else:
-                logger.debug(f"  handle_key 'ArrowDown' → navigate_hdr(1) (current={self.current_hdr_idx})")
-                self.navigate_hdr(1)
+                logger.debug(f"  handle_key 'ArrowDown' → navigate_hdr(-1) (current={self.current_hdr_idx})")
+                self.navigate_hdr(-1)
         elif k == "ArrowLeft":
             if self.overlay_align_mode:
                 step = self._arrow_accel("left")

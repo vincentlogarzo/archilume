@@ -8,14 +8,22 @@ Run from docker image:
     docker run -p 3000:3000 -p 8000:8000 -v C:/Projects/test-archilume/projects:/app/projects vlogarzo/archilume-ui
 
 Or use this script which changes directory and launches:
-    python examples/launch_archilume_ui.py
+    python examples/launch_archilume_app.py
 
 Pass --ensure to reuse an already-running dev server instead of relaunching:
-    python examples/launch_archilume_ui.py --ensure
+    python examples/launch_archilume_app.py --ensure
+
+Pass --fast to skip compilation and cleanup (fastest restart when code is unchanged):
+    python examples/launch_archilume_app.py --fast
+
+Pass --force-compile to force a full recompile:
+    python examples/launch_archilume_app.py --force-compile
 """
 
 import argparse
 import concurrent.futures
+import hashlib
+import json
 import os
 import socket
 import subprocess
@@ -28,6 +36,70 @@ import webbrowser
 from pathlib import Path
 
 _REFLEX_BACKEND_PORTS = range(8000, 8020)
+
+
+def _compute_mtime_fingerprint(src_dir: Path) -> str:
+    """Hash the modification times of all .py files under *src_dir*."""
+    entries: list[str] = []
+    for py_file in sorted(src_dir.rglob("*.py")):
+        try:
+            entries.append(f"{py_file.relative_to(src_dir)}:{py_file.stat().st_mtime_ns}")
+        except OSError:
+            entries.append(f"{py_file.relative_to(src_dir)}:missing")
+    return hashlib.sha256("\n".join(entries).encode()).hexdigest()[:16]
+
+
+def _should_skip_compile(app_dir: Path) -> bool:
+    """Return True if .web/ is up-to-date and compilation can be skipped."""
+    web_dir = app_dir / ".web"
+    reflex_json = web_dir / "reflex.json"
+    fingerprint_file = web_dir / ".archilume_compile_fingerprint"
+
+    # Compiled output must exist
+    if not reflex_json.exists():
+        return False
+
+    # Reflex version must match
+    try:
+        import importlib.metadata
+        meta = json.loads(reflex_json.read_text(encoding="utf-8"))
+        installed = importlib.metadata.version("reflex")
+        if meta.get("version") != installed:
+            return False
+    except Exception:
+        return False
+
+    # Source fingerprint must match
+    src_dir = app_dir / "archilume_ui"
+    current_fp = _compute_mtime_fingerprint(src_dir)
+    # Also include rxconfig.py in the fingerprint
+    rxconfig = app_dir / "rxconfig.py"
+    if rxconfig.exists():
+        current_fp += f":{rxconfig.stat().st_mtime_ns}"
+
+    if fingerprint_file.exists():
+        try:
+            stored_fp = fingerprint_file.read_text(encoding="utf-8").strip()
+            if stored_fp == current_fp:
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _write_compile_fingerprint(app_dir: Path) -> None:
+    """Write the current mtime fingerprint to .web/ for next launch."""
+    web_dir = app_dir / ".web"
+    fingerprint_file = web_dir / ".archilume_compile_fingerprint"
+    src_dir = app_dir / "archilume_ui"
+    fp = _compute_mtime_fingerprint(src_dir)
+    rxconfig = app_dir / "rxconfig.py"
+    if rxconfig.exists():
+        fp += f":{rxconfig.stat().st_mtime_ns}"
+    try:
+        fingerprint_file.write_text(fp, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _kill_stale_backends() -> None:
@@ -51,6 +123,9 @@ def _kill_stale_backends() -> None:
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(pids)) as ex:
                 for pid in ex.map(_kill_pid, pids):
                     print(f"  Killed stale backend PID {pid}")
+        else:
+            print("  No stale backends found.")
+            return
     else:
         with concurrent.futures.ThreadPoolExecutor() as ex:
             ex.map(lambda port: subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True), _REFLEX_BACKEND_PORTS)
@@ -145,15 +220,18 @@ def _is_serving(port: int = 3000, timeout: float = 2.0) -> bool:
 
 
 def _wait_until_ready(port: int = 3000, timeout: int = 120) -> bool:
-    """Poll localhost:port every 300ms until it serves, or timeout expires.
+    """Poll localhost:port until it serves, or timeout expires.
 
+    Uses exponential backoff: starts at 100ms, caps at 1s.
     Returns True when ready, False on timeout.
     """
     deadline = time.monotonic() + timeout
+    interval = 0.1
     while time.monotonic() < deadline:
         if _is_serving(port):
             return True
-        time.sleep(0.3)
+        time.sleep(interval)
+        interval = min(interval * 1.3, 1.0)
     return False
 
 
@@ -177,6 +255,16 @@ if __name__ == "__main__":
         default="527DP-gcloud-lowRes-GregW",
         help="Project name to open automatically on load (default: 527DP-gcloud-lowRes-GregW).",
     )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Skip compile and cleanup for fastest possible restart (use when code is unchanged).",
+    )
+    parser.add_argument(
+        "--force-compile",
+        action="store_true",
+        help="Force a full recompile even if code appears unchanged.",
+    )
     args = parser.parse_args()
 
     if args.ensure and _is_serving():
@@ -188,15 +276,41 @@ if __name__ == "__main__":
         print(f"App directory not found: {app_dir}")
         sys.exit(1)
 
-    print("Cleaning up stale Reflex backend processes...")
-    _kill_stale_backends()
+    env = os.environ.copy()
+
+    # --- Compile skip logic ---
+    if args.fast:
+        env["REFLEX_SKIP_COMPILE"] = "1"
+        env["REFLEX_PERSIST_WEB_DIR"] = "1"
+        print("Fast mode: skipping compile and cleanup")
+    elif args.force_compile:
+        print("Force compile: full recompile requested")
+    elif _should_skip_compile(app_dir):
+        env["REFLEX_SKIP_COMPILE"] = "1"
+        env["REFLEX_PERSIST_WEB_DIR"] = "1"
+        print("Skipping compile (code unchanged)")
+    else:
+        print("Full compile required (code changed or first run)")
+
+    # --- Stale backend cleanup ---
+    if not args.fast:
+        print("Cleaning up stale Reflex backend processes...")
+        _kill_stale_backends()
+
     print(f"Launching Archilume UI from: {app_dir}")
     print(f"Browser will open automatically at {URL}")
     os.chdir(app_dir)
 
-    free_port = _find_free_port()
+    try:
+        free_port = _find_free_port()
+    except RuntimeError:
+        if args.fast:
+            print("No free port — falling back to stale backend cleanup...")
+            _kill_stale_backends()
+            free_port = _find_free_port()
+        else:
+            raise
     print(f"Using backend port: {free_port}")
-    env = os.environ.copy()
     env["API_URL"] = f"http://localhost:{free_port}"
     if args.project:
         env["ARCHILUME_INITIAL_PROJECT"] = args.project
@@ -210,3 +324,4 @@ if __name__ == "__main__":
     t.start()
 
     proc.wait()
+    _write_compile_fingerprint(app_dir)

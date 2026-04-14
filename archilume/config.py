@@ -25,7 +25,7 @@ from typing import List
 PROJECT_ROOT        = Path(__file__).parent.parent
 
 # Top-level projects directory — each simulation project lives here
-PROJECTS_DIR        = PROJECT_ROOT / "projects"
+PROJECTS_DIR        = Path(os.getenv("ARCHILUME_PROJECTS_DIR", str(PROJECT_ROOT / "projects")))
 
 # ============================================================================
 # GCLOUD CLI PATH

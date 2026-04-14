@@ -27,7 +27,7 @@ uv sync                                           # install dependencies
 pytest                                            # run all tests
 python examples/workflow_sunlight_access.py       # sunlight access example
 python examples/workflow_daylight_iesve.py        # daylight/IESVE example
-python examples/launch_archilume_ui.py            # launch Reflex UI (preferred)
+python examples/launch_archilume_app.py            # launch Reflex UI (preferred)
 python examples/launch_hdr_editor.py              # launch HDR/AOI matplotlib editor
 python examples/launch_obj_editor.py              # launch OBJ/AOI editor
 ```
@@ -61,8 +61,8 @@ python examples/launch_obj_editor.py              # launch OBJ/AOI editor
 ## Launching the Reflex App
 
 ```bash
-python examples/launch_archilume_ui.py --ensure   # reuse if running, launch if not
-python examples/launch_archilume_ui.py             # force fresh restart
+python examples/launch_archilume_app.py --ensure   # reuse if running, launch if not
+python examples/launch_archilume_app.py             # force fresh restart
 ```
 
 ## Playwright

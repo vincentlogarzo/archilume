@@ -37,10 +37,10 @@ def _top_toolbar() -> rx.Component:
         rx.flex(
             rx.icon_button(rx.icon(tag="chevron-up", size=14),
                            variant="outline", size="1",
-                           on_click=lambda: EditorState.navigate_hdr(-1)),
+                           on_click=lambda: EditorState.navigate_hdr(1)),
             rx.icon_button(rx.icon(tag="chevron-down", size=14),
                            variant="outline", size="1",
-                           on_click=lambda: EditorState.navigate_hdr(1)),
+                           on_click=lambda: EditorState.navigate_hdr(-1)),
             gap="2px",
         ),
         # Filename
@@ -93,7 +93,20 @@ def _top_toolbar() -> rx.Component:
         _toolbar_btn("undo", "Undo", "Ctrl+Z", on_click=EditorState.undo),
         _toolbar_btn("expand", "Fit (F)", on_click=EditorState.fit_zoom),
         _toolbar_btn("zoom-in", "Reset Zoom (R)", on_click=EditorState.reset_zoom),
-        _toolbar_btn("move", "Pan (middle-mouse)"),
+        rx.button(
+            rx.icon(tag="move", size=14),
+            rx.text("Pan", style={"font_family": FONT_MONO, "font_size": "11px",
+                                    "margin_left": "4px"}),
+            rx.text("G", style=KBD_BADGE),
+            variant="outline", size="1",
+            on_click=EditorState.toggle_pan_mode,
+            style={
+                "color": rx.cond(EditorState.pan_mode, COLORS["accent"], COLORS["text_sec"]),
+                "border_color": rx.cond(EditorState.pan_mode, COLORS["accent"], COLORS["panel_bdr"]),
+                "gap": "4px",
+                "box_shadow": "0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06)",
+            },
+        ),
         _toolbar_btn("refresh-cw", "Restart UI", on_click=EditorState.restart_app),
         align="center",
         style={"padding": "4px 8px", "gap": "4px", "height": "36px"},
@@ -401,7 +414,7 @@ def _render_room(room: dict) -> rx.Component:
                 ),
                 rx.el.polygon(
                     points=room["vertices_str"],
-                    fill="none",
+                    fill=rx.cond(room["selected"], "url(#hatch-circ-selected)", "url(#hatch-circ)"),
                     stroke=rx.cond(room["selected"], COLORS["room_stroke_selected"], COLORS["room_stroke_unselected"]),
                     stroke_width=EditorState.child_room_stroke_width,
                     stroke_dasharray="6,3",
@@ -799,6 +812,26 @@ _CANVAS_JS = rx.script("""
     }, {passive: false});
 
     // ---------------------------------------------------------------------------
+    // Right-click context menu — document-level, matching wheel handler pattern.
+    // Prevents browser default menu anywhere in viewport, dispatches to Python.
+    // ---------------------------------------------------------------------------
+    document.addEventListener('contextmenu', function(e) {
+        if (!isOverViewport(e)) return;
+        e.preventDefault();
+        if (isModalMode()) return;
+        var svg = document.getElementById('editor-svg');
+        var container = document.getElementById('viewport-container');
+        if (!svg || !container) return;
+        var c = getSvgCoords(svg, e.clientX, e.clientY);
+        var rect = container.getBoundingClientRect();
+        var vx = e.clientX - rect.left;
+        var vy = e.clientY - rect.top;
+        dispatch('editor_state.handle_canvas_click', {
+            data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY, viewport_x: vx, viewport_y: vy}
+        });
+    }, {passive: false});
+
+    // ---------------------------------------------------------------------------
     // Middle-mouse pan — pure JS
     // ---------------------------------------------------------------------------
     var panning = false, panStartX = 0, panStartY = 0;
@@ -826,6 +859,64 @@ _CANVAS_JS = rx.script("""
     window.addEventListener('mouseup', function(e) {
         if (e.button === 1) panning = false;
     });
+
+    // ---------------------------------------------------------------------------
+    // Left-click pan — active when pan_mode data attribute is 'true'.
+    // Uses capture phase to intercept before SVG event listeners.
+    // ---------------------------------------------------------------------------
+    var _leftPanning = false, _leftPanStartX = 0, _leftPanStartY = 0;
+
+    document.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        if (!isOverViewport(e)) return;
+        var container = document.getElementById('viewport-container');
+        if (!container || container.dataset.panMode !== 'true') return;
+        var toolbar = e.target.closest('[data-radix-collection-item]');
+        if (toolbar) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        _leftPanning = true;
+        _leftPanStartX = e.clientX;
+        _leftPanStartY = e.clientY;
+        container.style.cursor = 'grabbing';
+        var svg = document.getElementById('editor-svg');
+        if (svg) svg.style.cursor = 'grabbing';
+    }, true);
+
+    window.addEventListener('mousemove', function(e) {
+        if (!_leftPanning) return;
+        _panX += e.clientX - _leftPanStartX;
+        _panY += e.clientY - _leftPanStartY;
+        _leftPanStartX = e.clientX;
+        _leftPanStartY = e.clientY;
+        if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
+        applyTransform();
+        scheduleSync();
+    });
+
+    window.addEventListener('mouseup', function(e) {
+        if (e.button !== 0 || !_leftPanning) return;
+        _leftPanning = false;
+        // Clear inline cursor — let Reflex CSS handle the resting state
+        var container = document.getElementById('viewport-container');
+        if (container) container.style.cursor = '';
+        var svg = document.getElementById('editor-svg');
+        if (svg) svg.style.cursor = '';
+    });
+
+    // Watch for pan_mode data attribute toggling off — clear any lingering inline cursor
+    (function watchPanMode() {
+        var container = document.getElementById('viewport-container');
+        if (!container) { setTimeout(watchPanMode, 500); return; }
+        var mo = new MutationObserver(function() {
+            if (container.dataset.panMode !== 'true') {
+                container.style.cursor = '';
+                var svg = document.getElementById('editor-svg');
+                if (svg) svg.style.cursor = '';
+            }
+        });
+        mo.observe(container, {attributes: true, attributeFilter: ['data-pan-mode']});
+    })();
 
     // ---------------------------------------------------------------------------
     // Overlay drag — left-click drag in Adjust Plan Mode moves the PDF underlay.
@@ -972,26 +1063,17 @@ _CANVAS_JS = rx.script("""
     // All other SVG events — click, mousemove, mousedown, mouseup
     // Re-attached via MutationObserver when Reflex re-renders the SVG.
     // ---------------------------------------------------------------------------
+    function isModalMode() {
+        var container = document.getElementById('viewport-container');
+        return container && (container.dataset.overlayAlign === 'true' || container.dataset.panMode === 'true');
+    }
+
     function attachSvgListeners(svg) {
         svg.addEventListener('click', function(e) {
-            var container = document.getElementById('viewport-container');
-            if (container && container.dataset.overlayAlign === 'true') return;
+            if (isModalMode()) return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_canvas_click', {
                 data: {x: c.x, y: c.y, button: e.button, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY}
-            });
-        });
-
-        svg.addEventListener('contextmenu', function(e) {
-            e.preventDefault();
-            var container = document.getElementById('viewport-container');
-            if (container && container.dataset.overlayAlign === 'true') return;
-            var c = getSvgCoords(svg, e.clientX, e.clientY);
-            var rect = container ? container.getBoundingClientRect() : {left: 0, top: 0};
-            var vx = e.clientX - rect.left;
-            var vy = e.clientY - rect.top;
-            dispatch('editor_state.handle_canvas_click', {
-                data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY, viewport_x: vx, viewport_y: vy}
             });
         });
 
@@ -999,23 +1081,20 @@ _CANVAS_JS = rx.script("""
             var now = Date.now();
             if (now - lastMoveTime < MOVE_THROTTLE_MS) return;
             lastMoveTime = now;
-            var container = document.getElementById('viewport-container');
-            if (container && container.dataset.overlayAlign === 'true') return;
+            if (isModalMode()) return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_mouse_move', {data: {x: c.x, y: c.y}});
         });
 
         svg.addEventListener('mousedown', function(e) {
             if (e.button !== 0) return;
-            var container = document.getElementById('viewport-container');
-            if (container && container.dataset.overlayAlign === 'true') return;
+            if (isModalMode()) return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
             dispatch('editor_state.handle_mouse_down', {data: {x: c.x, y: c.y}});
         });
 
         svg.addEventListener('mouseup', function(e) {
-            var container = document.getElementById('viewport-container');
-            if (container && container.dataset.overlayAlign === 'true') return;
+            if (isModalMode()) return;
             dispatch('editor_state.handle_mouse_up', {data: {}});
         });
     }
@@ -1090,6 +1169,29 @@ def _svg_canvas() -> rx.Component:
         ),
         # SVG overlay — absolutely positioned on top of the image
         rx.el.svg(
+            # Diagonal hatch patterns for CIRC/DIV excluded rooms
+            rx.el.svg.defs(
+                rx.el.svg.pattern(
+                    rx.el.svg.line(
+                        x1="0", y1="6", x2="6", y2="0",
+                        stroke="#ef4444",
+                        stroke_width=EditorState.child_room_stroke_width,
+                    ),
+                    id="hatch-circ",
+                    width="6", height="6",
+                    custom_attrs={"patternUnits": "userSpaceOnUse"},
+                ),
+                rx.el.svg.pattern(
+                    rx.el.svg.line(
+                        x1="0", y1="6", x2="6", y2="0",
+                        stroke="#facc15",
+                        stroke_width=EditorState.child_room_stroke_width,
+                    ),
+                    id="hatch-circ-selected",
+                    width="6", height="6",
+                    custom_attrs={"patternUnits": "userSpaceOnUse"},
+                ),
+            ),
             # Grid dot pattern (defined in <defs>, applied via <rect>)
             rx.cond(
                 EditorState.grid_visible,
@@ -1262,7 +1364,10 @@ def _svg_canvas() -> rx.Component:
                 "position": "absolute", "top": "0", "left": "0",
                 "width": "100%", "height": "100%",
                 "pointer_events": "all",
-                "cursor": rx.cond(EditorState.overlay_align_mode, "grab", "default"),
+                "cursor": rx.cond(
+                    EditorState.pan_mode, "grab",
+                    rx.cond(EditorState.overlay_align_mode, "grab", "default"),
+                ),
                 "z_index": "2",
             },
         ),
@@ -1295,23 +1400,44 @@ def _svg_canvas() -> rx.Component:
                 ),
                 # Menu panel
                 rx.box(
-                    rx.el.button(
-                        "Delete room",
-                        on_click=EditorState.context_menu_delete,
-                        style={
-                            "display": "block",
-                            "width": "100%",
-                            "padding": "6px 14px",
-                            "background": "transparent",
-                            "color": "#ef4444",
-                            "border": "none",
-                            "text_align": "left",
-                            "font_family": "DM Mono, monospace",
-                            "font_size": "13px",
-                            "cursor": "pointer",
-                            "white_space": "nowrap",
-                            "&:hover": {"background": "rgba(239,68,68,0.12)"},
-                        },
+                    rx.cond(
+                        EditorState.context_menu_has_room,
+                        rx.el.button(
+                            "Delete room",
+                            on_click=EditorState.context_menu_delete,
+                            style={
+                                "display": "block",
+                                "width": "100%",
+                                "padding": "6px 14px",
+                                "background": "transparent",
+                                "color": "#ef4444",
+                                "border": "none",
+                                "text_align": "left",
+                                "font_family": "DM Mono, monospace",
+                                "font_size": "13px",
+                                "cursor": "pointer",
+                                "white_space": "nowrap",
+                                "&:hover": {"background": "rgba(239,68,68,0.12)"},
+                            },
+                        ),
+                        rx.el.button(
+                            "Reinstate room from AOI",
+                            on_click=EditorState.reinstate_room_from_aoi,
+                            style={
+                                "display": "block",
+                                "width": "100%",
+                                "padding": "6px 14px",
+                                "background": "transparent",
+                                "color": "#60a5fa",
+                                "border": "none",
+                                "text_align": "left",
+                                "font_family": "DM Mono, monospace",
+                                "font_size": "13px",
+                                "cursor": "pointer",
+                                "white_space": "nowrap",
+                                "&:hover": {"background": "rgba(96,165,250,0.12)"},
+                            },
+                        ),
                     ),
                     style={
                         "position": "absolute",
@@ -1330,8 +1456,6 @@ def _svg_canvas() -> rx.Component:
             ),
             rx.fragment(),
         ),
-        # JS bridge for coordinate conversion and zoom/pan
-        _CANVAS_JS,
         id="editor-canvas",
         style={
             "position": "relative", "width": "100%",
@@ -1531,29 +1655,54 @@ def viewport() -> rx.Component:
         # Results Viewer — HDR/AOI editor
         rx.cond(
             EditorState.active_tab == "results",
-            rx.flex(
-                _top_toolbar(),
-                rx.flex(
-                    _svg_canvas(),
-                    _overlay_align_panel(),
-                    _zoom_indicator(),
-                    _pixel_info_tooltip(),
-                    _empty_state(),
-                    _viewport_resize_js(),
-                    _legend_popout(),
-                    _legend_button(),
-                    id="viewport-container",
-                    align="center",
-                    justify="center",
-                    data_overlay_align=rx.cond(
-                        EditorState.overlay_align_mode,
-                        "true", "false",
+            rx.fragment(
+                # JS bridge must live outside is_project_loading conditional so it
+                # is in the DOM during Next.js hydration — otherwise the IIFE misses
+                # the hydration window and zoom/pan/overlay transforms never initialise.
+                _CANVAS_JS,
+                rx.cond(
+                    EditorState.is_project_loading,
+                    rx.center(
+                        rx.flex(
+                            rx.icon(tag="loader", size=24,
+                                    style={"color": COLORS["text_dim"],
+                                           "animation": "spin 1s linear infinite"}),
+                            rx.text("Loading project\u2026",
+                                    style={"font_family": FONT_MONO, "font_size": "13px",
+                                           "color": COLORS["text_sec"], "margin_top": "8px"}),
+                            direction="column", align="center",
+                        ),
+                        style={"flex": "1"},
                     ),
-                    style={"position": "relative", "flex": "1", "overflow": "hidden"},
+                    rx.flex(
+                        _top_toolbar(),
+                        rx.flex(
+                            _svg_canvas(),
+                            _overlay_align_panel(),
+                            _zoom_indicator(),
+                            _pixel_info_tooltip(),
+                            _empty_state(),
+                            _viewport_resize_js(),
+                            _legend_popout(),
+                            _legend_button(),
+                            id="viewport-container",
+                            align="center",
+                            justify="center",
+                            data_overlay_align=rx.cond(
+                                EditorState.overlay_align_mode,
+                                "true", "false",
+                            ),
+                            data_pan_mode=rx.cond(
+                                EditorState.pan_mode,
+                                "true", "false",
+                            ),
+                            style={"position": "relative", "flex": "1", "overflow": "hidden"},
+                        ),
+                        _progress_bar(),
+                        direction="column",
+                        style={"flex": "1", "overflow": "hidden"},
+                    ),
                 ),
-                _progress_bar(),
-                direction="column",
-                style={"flex": "1", "overflow": "hidden"},
             ),
             rx.fragment(),
         ),

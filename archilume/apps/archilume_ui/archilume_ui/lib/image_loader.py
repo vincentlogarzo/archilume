@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import io
+import os
 import subprocess
 import struct
 import threading
@@ -228,13 +229,34 @@ def _read_hdr_dimensions(path: Path) -> tuple[int, int]:
     return (0, 0)
 
 
+_hdr_params_cache: dict[str, tuple[float, object]] = {}  # path -> (mtime, result)
+
+
 def read_hdr_view_params(path: Path) -> tuple[float, float, float, float, int, int] | None:
     """Extract (vp_x, vp_y, vh, vv, img_w, img_h) from a Radiance HDR file's VIEW= header.
 
     Reads all header lines up to the blank separator line (same approach as the
     matplotlib editor's _read_view_params). Returns None if VIEW= is missing or
     incomplete. img_w / img_h come from the resolution string in the same file.
+
+    Results are cached by file path + mtime so repeated calls (e.g. after a
+    project switch) only need a stat() rather than a full file open+read.
     """
+    key = str(path)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _hdr_params_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    result = _read_hdr_view_params_uncached(path)
+    _hdr_params_cache[key] = (mtime, result)
+    return result
+
+
+def _read_hdr_view_params_uncached(path: Path) -> tuple[float, float, float, float, int, int] | None:
     import re
     view_line: str | None = None
     try:
@@ -278,33 +300,51 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
     """Scan directory for HDR/PIC files and their associated TIFF/PNG variants.
 
     Returns list of dicts: {hdr_path, tiff_paths, name, suffix}.
+
+    Uses a single ``os.scandir()`` pass instead of multiple ``glob()`` calls
+    to minimise filesystem round-trips (critical for Docker bind-mounts on
+    Windows where each syscall adds ~5-50 ms latency).
     """
     if not image_dir.exists():
         return []
 
-    # Build directory-level legend map: {"df_cntr": "/path/to/df_cntr_legend.png", ...}
-    legend_map: dict[str, str] = {}
-    for lp in image_dir.glob("*_legend.png"):
-        key = lp.stem.removesuffix("_legend")
-        legend_map[key] = str(lp)
+    # Single directory scan — collect all files in one syscall
+    all_files: dict[str, Path] = {}
+    try:
+        with os.scandir(image_dir) as it:
+            for entry in it:
+                if entry.is_file(follow_symlinks=False):
+                    all_files[entry.name] = Path(entry.path)
+    except OSError:
+        return []
 
-    hdr_files = []
-    for ext in ("*.hdr", "*.pic"):
-        hdr_files.extend(image_dir.glob(ext))
-    hdr_files.sort(key=lambda p: p.stem.lower())
+    # Build legend map from collected entries
+    legend_map: dict[str, str] = {}
+    for name, fpath in all_files.items():
+        if name.endswith("_legend.png"):
+            key = name.removesuffix("_legend.png")
+            legend_map[key] = str(fpath)
+
+    # Separate HDR/PIC files and variant files
+    hdr_files: list[Path] = sorted(
+        (p for n, p in all_files.items() if n.lower().endswith((".hdr", ".pic"))),
+        key=lambda p: p.stem.lower(),
+    )
+    variant_files: list[Path] = [
+        p for n, p in all_files.items()
+        if n.lower().endswith((".tif", ".tiff", ".png"))
+        and "_aoi_overlay" not in n
+        and not n.endswith("_legend.png")
+    ]
 
     result = []
     for hdr_path in hdr_files:
         stem = hdr_path.stem
-        tiff_paths = []
-        for tiff_ext in ("*.tif", "*.tiff", "*.png"):
-            for tp in image_dir.glob(tiff_ext):
-                if (tp.stem.startswith(stem + "_")
-                        and "_aoi_overlay" not in tp.stem
-                        and not tp.stem.endswith("_legend")):
-                    tiff_paths.append(tp)
-        tiff_paths.sort(key=lambda p: p.stem)
-
+        prefix = stem + "_"
+        tiff_paths = sorted(
+            (p for p in variant_files if p.stem.startswith(prefix)),
+            key=lambda p: p.stem,
+        )
         result.append({
             "hdr_path": str(hdr_path),
             "tiff_paths": [str(p) for p in tiff_paths],

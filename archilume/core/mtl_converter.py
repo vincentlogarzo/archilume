@@ -36,9 +36,11 @@ class MtlConverter:
     def __post_init__(self):
         """Initializes the output directory for Radiance material files."""
 
-        # Use provided output_dir or fall back to project rad_dir
+        # Require explicit output_dir — never fall back to source tree
         if self.output_dir is None:
-            self.output_dir = Path(__file__).parent.parent / "outputs" / "rad"
+            raise ValueError(
+                "output_dir is required. Pass paths.rad_dir from get_project_paths()."
+            )
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 

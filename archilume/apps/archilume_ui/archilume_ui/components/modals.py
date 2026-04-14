@@ -12,6 +12,7 @@ _SHORTCUTS = [
     ("D", "Toggle draw mode"),
     ("DD", "Enter room divider mode"),
     ("E", "Toggle edit mode"),
+    ("G", "Toggle pan mode"),
     ("O", "Toggle ortho lines"),
     ("P", "Toggle DF% placement mode"),
     ("S", "Save room / confirm divider"),
