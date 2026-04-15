@@ -1,6 +1,6 @@
 # Reflex Docs Reference
 
-**Trigger:** Use when writing or modifying Reflex UI code — especially under `archilume/apps/archilume_ui/`. Consult before implementing state, components, styling, events, routing, or database patterns.
+**Trigger:** Use when writing or modifying Reflex UI code — especially under `archilume/apps/archilume_app/`. Consult before implementing state, components, styling, events, routing, or database patterns.
 
 ## Mandatory procedure
 

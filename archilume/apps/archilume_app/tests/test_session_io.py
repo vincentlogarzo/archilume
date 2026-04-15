@@ -1,4 +1,4 @@
-"""Tests for archilume_ui.lib.session_io — session persistence.
+"""Tests for archilume_app.lib.session_io — session persistence.
 
 All tests use tmp_path (pytest fixture) — no permanent files created.
 Regression strategy: when a serialisation or load bug is found, add a test here.
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from archilume_ui.lib.session_io import (
+from archilume_app.lib.session_io import (
     _prepare_for_json,
     build_session_dict,
     load_session,

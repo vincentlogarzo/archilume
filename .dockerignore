@@ -38,8 +38,8 @@ intermediates/
 .devcontainer/Radiance_7abde14f_Windows/
 
 # Reflex generated frontend and state cache — rebuilt inside the builder stage
-archilume/apps/archilume_ui/.web/
-archilume/apps/archilume_ui/.states/
+archilume/apps/archilume_app/.web/
+archilume/apps/archilume_app/.states/
 
 # Git history — not needed at runtime (saves ~MB)
 .git/

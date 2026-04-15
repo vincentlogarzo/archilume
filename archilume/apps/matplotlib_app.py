@@ -4162,7 +4162,7 @@ class HdrAoiEditor:
             h, w = self._df_image.shape[:2]
             if 0 <= py < h and 0 <= px < w:
                 df_val = self._df_image[py, px]
-                self._df_cursor_text.set_text(f"DF: {df_val:.2f}%")
+                self._df_cursor_text.set_text(f"{df_val:.2f}% DF")
                 # Fixed 14-pixel offset in display space → convert to data coords
                 disp_x, disp_y = self.ax.transData.transform((x, y))
                 data_x, data_y = self.ax.transData.inverted().transform(
@@ -4755,13 +4755,14 @@ class HdrAoiEditor:
             px = stamp[3] if len(stamp) > 3 else int(round(x))
             py = stamp[4] if len(stamp) > 4 else int(round(y))
             self.ax.text(
-                x, y, f"DF: {df_val:.2f}%\npx({px},{py})",
+                x, y, f"{df_val:.2f}% DF\npx({px},{py})",
                 fontsize=7, color='white', va='bottom', ha='left',
                 bbox=dict(boxstyle='round,pad=0.2', facecolor='#222222', alpha=0.8, edgecolor='none'),
                 zorder=310,
             )
-            # Small dot at the stamped pixel
-            self.ax.plot(x, y, 'o', color='cyan', markersize=4, zorder=311)
+            # Crosshair at the stamped pixel
+            self.ax.plot(x, y, '+', color='white', markeredgecolor='black',
+                         markersize=6, markeredgewidth=0.5, zorder=311)
 
     # === POLYGON SELECTOR ======================================================
 
@@ -8819,7 +8820,7 @@ class HdrAoiEditor:
             ix, iy = int(round(sx)), int(round(sy))
             r = max(3, font_size // 4)
             draw.ellipse((ix - r, iy - r, ix + r, iy + r), fill=(0, 255, 255))
-            label = f"DF: {df_val:.2f}%\npx({px},{py})"
+            label = f"{df_val:.2f}% DF\npx({px},{py})"
             _outlined_text(ix + r + 2, iy - font_size_small // 2, label, font_sm)
 
         out_path = output_dir / f"{tiff_path.stem}_aoi_overlay.png"
@@ -9098,7 +9099,7 @@ class HdrAoiEditor:
                 px_lbl = stamp[3] if len(stamp) > 3 else int(round(sx_stamp))
                 py_lbl = stamp[4] if len(stamp) > 4 else int(round(sy_stamp))
                 _stroked_text(ix + r + 2, iy - fs_small // 2,
-                              f"DF: {df_val:.2f}%\npx({px_lbl},{py_lbl})",
+                              f"{df_val:.2f}% DF\npx({px_lbl},{py_lbl})",
                               font_small, white, black, fs_small * 0.03)
 
             # --- Copy to Windows clipboard via PowerShell ---
@@ -9389,7 +9390,7 @@ class HdrAoiEditor:
             px_lbl = stamp[3] if len(stamp) > 3 else int(round(sx_stamp))
             py_lbl = stamp[4] if len(stamp) > 4 else int(round(sy_stamp))
             _stroked_text(ix + r + 2, iy - fs_small // 2,
-                          f"DF: {df_val:.2f}%\npx({px_lbl},{py_lbl})",
+                          f"{df_val:.2f}% DF\npx({px_lbl},{py_lbl})",
                           font_small, white, black, fs_small * 0.03)
 
         base_stem = df_false_path.stem.split('_df_false')[0] if '_df_false' in df_false_path.stem else df_false_path.stem

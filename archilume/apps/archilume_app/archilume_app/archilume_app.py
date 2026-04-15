@@ -8,6 +8,7 @@ from .components.modals import (
     create_project_modal,
     extract_archive_modal,
     open_project_modal,
+    project_settings_modal,
     shortcuts_modal,
 )
 from .components.font_preview import font_preview_page
@@ -154,7 +155,7 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
         var _addEvents = addEvents;
         window.applyEvent = function(eventName, payload) {
             var name = eventName.indexOf('.') === -1 ? eventName :
-                'reflex___state____state.archilume_ui___state___editor_state____editor_state.' +
+                'reflex___state____state.archilume_app___state___editor_state____editor_state.' +
                 eventName.replace('editor_state.', '');
             _addEvents([mod.ReflexEvent(name, payload || {})], [], {});
         };
@@ -243,6 +244,7 @@ def index() -> rx.Component:
         shortcuts_modal(),
         open_project_modal(),
         create_project_modal(),
+        project_settings_modal(),
         extract_archive_modal(),
         accelerad_modal(),
         style={

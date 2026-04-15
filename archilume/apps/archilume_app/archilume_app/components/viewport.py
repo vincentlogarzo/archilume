@@ -93,6 +93,11 @@ def _top_toolbar() -> rx.Component:
         _toolbar_btn("undo", "Undo", "Ctrl+Z", on_click=EditorState.undo),
         _toolbar_btn("expand", "Fit (F)", on_click=EditorState.fit_zoom),
         _toolbar_btn("zoom-in", "Reset Zoom (R)", on_click=EditorState.reset_zoom),
+        rx.cond(
+            EditorState.overlay_has_pdf & EditorState.overlay_visible,
+            _toolbar_btn("scan", "Fit PDF", on_click=EditorState.fit_to_overlay),
+            rx.fragment(),
+        ),
         rx.button(
             rx.icon(tag="move", size=14),
             rx.text("Pan", style={"font_family": FONT_MONO, "font_size": "11px",
@@ -547,25 +552,55 @@ def _render_divider_vertex(vert: dict) -> rx.Component:
     )
 
 
+def _df_stamp_icon(cx, cy) -> rx.Component:
+    """Lucide crosshair icon (circle + 4 inward arms) centered at (cx, cy).
+
+    Matches rx.icon(tag="crosshair") used on the DF% sidebar button. Rendered
+    in the native SVG editor viewport via a translate+scale transform on a
+    <g> wrapping the 24×24 lucide paths.
+    """
+    tx = (cx - EditorState.df_stamp_icon_half).to(str)
+    ty = (cy - EditorState.df_stamp_icon_half).to(str)
+    transform = (
+        "translate(" + tx + "," + ty + ") scale(" + EditorState.df_stamp_icon_scale + ")"
+    )
+    common = {
+        "stroke": "white",
+        "stroke_width": "2",
+        "stroke_linecap": "round",
+        "stroke_linejoin": "round",
+        "fill": "none",
+    }
+    return rx.el.svg.g(
+        rx.el.circle(cx="12", cy="12", r="10", **common),
+        rx.el.svg.line(x1="22", y1="12", x2="18", y2="12", **common),
+        rx.el.svg.line(x1="6",  y1="12", x2="2",  y2="12", **common),
+        rx.el.svg.line(x1="12", y1="6",  x2="12", y2="2",  **common),
+        rx.el.svg.line(x1="12", y1="22", x2="12", y2="18", **common),
+        transform=transform,
+    )
+
+
 def _render_stamp(stamp: dict) -> rx.Component:
-    """Render a DF% stamp dot + single-line label."""
-    _text_x = (stamp["x"] + EditorState.df_stamp_x_pad).to(str)
+    """Render a DF% stamp: lucide crosshair icon at click pixel + label above-right.
+
+    Layout: the clicked pixel sits at the icon's visual center AND the
+    bottom-left corner of the text box. Box extends up-and-right from the click.
+    """
+    _cx = stamp["x"]
+    _cy = stamp["y"]
+    _text_x = (_cx + EditorState.df_stamp_x_pad).to(str)
     return rx.fragment(
-        # Cyan dot — receives hover for tooltip
+        # Icon centered at click point — receives hover for tooltip
         rx.el.svg.g(
-            rx.el.circle(
-                cx=stamp["x"].to(str),
-                cy=stamp["y"].to(str),
-                r=EditorState.df_stamp_radius,
-                fill=COLORS["df_stamp"],
-            ),
+            _df_stamp_icon(_cx, _cy),
             rx.el.title("Remove with right-click"),
             cursor="pointer",
         ),
-        # Background rect for readability
+        # Background rect — bottom-left corner at click point, extends up
         rx.el.rect(
-            x=stamp["x"].to(str),
-            y=(stamp["y"] - EditorState.df_stamp_bg_y_offset).to(str),
+            x=_cx.to(str),
+            y=(_cy - EditorState.df_stamp_bg_height_f).to(str),
             width=EditorState.df_stamp_bg_width,
             height=EditorState.df_stamp_bg_height,
             rx="3",
@@ -573,11 +608,11 @@ def _render_stamp(stamp: dict) -> rx.Component:
             opacity="0.8",
             style={"pointer_events": "none"},
         ),
-        # Line 1: DF value
+        # DF value — vertically centered in repositioned box
         rx.el.text(
-            "DF: " + stamp["value"].to(str) + "%",
+            stamp["value"].to(str) + "% DF",
             x=_text_x,
-            y=(stamp["y"] - EditorState.df_stamp_text_y_offset).to(str),
+            y=(_cy - EditorState.df_stamp_bg_half_f).to(str),
             fill="white",
             font_size=EditorState.df_stamp_font_size,
             font_family="DM Mono, monospace",
@@ -610,12 +645,48 @@ _CANVAS_JS = rx.script("""
     function applyTransform() {
         var canvas = getCanvas();
         if (!canvas) return;
-        canvas.style.transform = 'translate(' + _panX + 'px,' + _panY + 'px) scale(' + _zoom + ')';
+        var t = 'translate(' + _panX + 'px,' + _panY + 'px) scale(' + _zoom + ')';
+        canvas.style.transform = t;
+        // Latch into data-transform so subsequent Reflex re-renders (which
+        // may wipe inline style.transform) can be caught by the MutationObserver
+        // and re-applied. Without this, JS-set zoom is lost when Python state
+        // changes (e.g. stroke widths recompute on zoom_level).
+        canvas.dataset.transform = t;
         canvas.style.transformOrigin = '0 0';
         // Update zoom% indicator if present
         var ind = document.getElementById('zoom-indicator');
         if (ind) ind.textContent = Math.round(_zoom * 100) + '%';
     }
+
+    // Canvas transform survival across Reflex re-renders —
+    // Reflex drives #editor-canvas's data-transform from canvas_css_transform.
+    // We mirror that into style.transform whenever it changes.
+    function applyCanvasDataTransform(canvas) {
+        var t = canvas.dataset.transform;
+        if (t && canvas.style.transform !== t) canvas.style.transform = t;
+    }
+    var _canvasMutObs = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            if (m.attributeName === 'data-transform') applyCanvasDataTransform(m.target);
+        });
+    });
+    function setupCanvasObserver() {
+        var canvas = getCanvas();
+        if (!canvas || canvas._canvasObserving) return;
+        canvas._canvasObserving = true;
+        _canvasMutObs.observe(canvas, {attributes: true, attributeFilter: ['data-transform']});
+        applyCanvasDataTransform(canvas);
+        // Seed JS-local vars from the Python-driven initial transform so the
+        // first wheel/pan gesture doesn't snap back to zoom=1, pan=0.
+        var m = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)\s*scale\(([-\d.]+)\)/.exec(
+            canvas.dataset.transform || ''
+        );
+        if (m) { _panX = parseFloat(m[1]); _panY = parseFloat(m[2]); _zoom = parseFloat(m[3]); }
+    }
+    (function pollCanvas() {
+        if (!getCanvas()) { setTimeout(pollCanvas, 100); return; }
+        setupCanvasObserver();
+    })();
 
     function scheduleSync() {
         if (_syncTimer) clearTimeout(_syncTimer);
@@ -630,8 +701,7 @@ _CANVAS_JS = rx.script("""
     // Public API — called by Python via rx.call_script for Fit/Reset
     window._archiZoom = {
         setTransform: function(zoom, panX, panY) {
-            _zoom = Math.max(1.0, zoom); _panX = panX; _panY = panY;
-            if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
+            _zoom = Math.max(0.05, zoom); _panX = panX; _panY = panY;
             applyTransform();
         },
         getTransform: function() { return {zoom: _zoom, panX: _panX, panY: _panY}; },
@@ -816,16 +886,19 @@ _CANVAS_JS = rx.script("""
     // Prevents browser default menu anywhere in viewport, dispatches to Python.
     // ---------------------------------------------------------------------------
     document.addEventListener('contextmenu', function(e) {
-        if (!isOverViewport(e)) return;
+        var overVP = isOverViewport(e);
+        console.log('[DFDIAG] contextmenu fired overVP=', overVP, 'target=', e.target && e.target.tagName, 'modal=', isModalMode());
+        if (!overVP) return;
         e.preventDefault();
         if (isModalMode()) return;
         var svg = document.getElementById('editor-svg');
         var container = document.getElementById('viewport-container');
-        if (!svg || !container) return;
+        if (!svg || !container) { console.log('[DFDIAG]   abort: no svg/container'); return; }
         var c = getSvgCoords(svg, e.clientX, e.clientY);
         var rect = container.getBoundingClientRect();
         var vx = e.clientX - rect.left;
         var vy = e.clientY - rect.top;
+        console.log('[DFDIAG]   dispatching handle_canvas_click button=2 at svg=(', c.x.toFixed(1), c.y.toFixed(1), ') zoom=', _zoom);
         dispatch('editor_state.handle_canvas_click', {
             data: {x: c.x, y: c.y, button: 2, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, zoom: _zoom, pan_x: _panX, pan_y: _panY, viewport_x: vx, viewport_y: vy}
         });
@@ -1321,18 +1394,15 @@ def _svg_canvas() -> rx.Component:
             rx.cond(
                 EditorState.df_cursor_label != "",
                 rx.fragment(
-                    # Cyan dot — matches placed stamp
-                    rx.el.circle(
-                        cx=EditorState.mouse_x.to(str),
-                        cy=EditorState.mouse_y.to(str),
-                        r=EditorState.df_stamp_radius,
-                        fill=COLORS["df_stamp"],
+                    # Lucide crosshair icon centered at cursor — matches placed stamp
+                    rx.el.svg.g(
+                        _df_stamp_icon(EditorState.mouse_x, EditorState.mouse_y),
                         style={"pointer_events": "none"},
                     ),
-                    # Background rect
+                    # Background rect — bottom-left corner at cursor, extends up
                     rx.el.rect(
-                        x=(EditorState.mouse_x + EditorState.df_stamp_x_pad).to(str),
-                        y=(EditorState.mouse_y - EditorState.df_stamp_bg_y_offset).to(str),
+                        x=EditorState.mouse_x.to(str),
+                        y=(EditorState.mouse_y - EditorState.df_stamp_bg_height_f).to(str),
                         width=EditorState.df_stamp_bg_width,
                         height=EditorState.df_stamp_bg_height,
                         rx="3",
@@ -1340,11 +1410,11 @@ def _svg_canvas() -> rx.Component:
                         opacity="0.85",
                         style={"pointer_events": "none"},
                     ),
-                    # Line 1: DF value
+                    # DF value — vertically centered in repositioned box
                     rx.el.text(
                         EditorState.df_cursor_df,
-                        x=(EditorState.mouse_x + EditorState.df_stamp_x_pad * 2).to(str),
-                        y=(EditorState.mouse_y - EditorState.df_stamp_text_y_offset).to(str),
+                        x=(EditorState.mouse_x + EditorState.df_stamp_x_pad).to(str),
+                        y=(EditorState.mouse_y - EditorState.df_stamp_bg_half_f).to(str),
                         fill="white",
                         font_size=EditorState.df_stamp_font_size,
                         font_family="DM Mono, monospace",
@@ -1457,6 +1527,7 @@ def _svg_canvas() -> rx.Component:
             rx.fragment(),
         ),
         id="editor-canvas",
+        data_transform=EditorState.canvas_css_transform,
         style={
             "position": "relative", "width": "100%",
             "margin": "auto 0",
@@ -1473,7 +1544,7 @@ def _svg_canvas() -> rx.Component:
 
 def _viewport_resize_js() -> rx.Component:
     """Placeholder — the resize observer now lives in ``_ZOOM_GUARD_SCRIPT``
-    in ``archilume_ui.py``. Consolidated there because the IIFE in that file
+    in ``archilume_app.py``. Consolidated there because the IIFE in that file
     demonstrably runs and has ``applyEvent`` installed in the same scope,
     removing a class of timing bugs where this script mounted before the
     bridge was ready. Kept as a no-op stub so call sites stay valid."""

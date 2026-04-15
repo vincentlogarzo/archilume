@@ -28,9 +28,21 @@ from ..lib.geometry import (
     polygon_bbox,
     polygon_label_point,
 )
+from ..lib import project_modes
 
 # Module-level DF image cache (numpy arrays can't be Reflex state vars)
 _df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
+
+
+class _StagedUploadBytes:
+    """Tiny container used by project-create/settings upload handlers to pass
+    already-read upload bytes into the synchronous staging helper."""
+
+    __slots__ = ("name", "data")
+
+    def __init__(self, name: str, data: bytes) -> None:
+        self.name = name
+        self.data = data
 
 
 class HdrFileInfo(TypedDict):
@@ -158,8 +170,22 @@ class EditorState(rx.State):
 
     # -- Create project form
     new_project_name: str = ""
-    new_project_mode: str = "archilume"
+    new_project_mode: str = "sunlight-markup"
     create_error: str = ""
+    # Per-file staging for Create New Project. field_id -> list of entries where
+    # each entry has keys: path (str), name (str), ok (bool), error (str).
+    new_project_staged: dict[str, list[dict]] = {}
+    new_project_staging_dir: str = ""
+
+    # -- Project settings modal (post-create edits)
+    settings_modal_open: bool = False
+    settings_error: str = ""
+    settings_staged: dict[str, list[dict]] = {}
+    settings_staging_dir: str = ""
+    # Filenames the user has marked for removal from canonical dirs, keyed by
+    # field_id. Only deleted when apply_settings runs AND integrity check
+    # confirms the field still has at least one file afterwards.
+    settings_pending_removals: dict[str, list[str]] = {}
 
     # =====================================================================
     # §2 — Image navigation
@@ -300,7 +326,7 @@ class EditorState(rx.State):
     viewport_height: int = 0
 
     # -- Grid overlay
-    grid_visible: bool = False
+    grid_visible: bool = True
     grid_spacing_mm: int = 50  # default 50mm = 5cm, min 5mm
 
     # =====================================================================
@@ -642,26 +668,20 @@ class EditorState(rx.State):
         return str(round(max(2.0, min(30.0, fs)) * 0.12, 2))
 
     @rx.var
-    def df_stamp_radius(self) -> str:
-        """DF stamp dot radius, scaled by annotation_scale and inversely by zoom."""
-        r = 3.0 * self.annotation_scale / max(self.zoom_level, 0.01)
-        return str(round(max(0.5, min(12.0, r)), 2))
-
-    @rx.var
     def df_stamp_font_size(self) -> str:
         """DF stamp label font size, scaled by annotation_scale and inversely by zoom."""
-        fs = 5.0 * self.annotation_scale / max(self.zoom_level, 0.01)
-        return str(round(max(2.0, min(20.0, fs)), 1))
+        fs = 2.5 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(1.0, min(10.0, fs)), 1))
 
     @rx.var
     def df_stamp_bg_width(self) -> str:
         """DF stamp background rect width."""
-        w = 55.0 * self.annotation_scale / max(self.zoom_level, 0.01)
-        return str(round(max(16.0, min(220.0, w)), 1))
+        w = 27.5 * self.annotation_scale / max(self.zoom_level, 0.01)
+        return str(round(max(8.0, min(110.0, w)), 1))
 
     def _df_fs_val(self) -> float:
         """Internal helper: clamped DF stamp font size as a number."""
-        return max(2.0, min(20.0, 5.0 * self.annotation_scale / max(self.zoom_level, 0.01)))
+        return max(1.0, min(10.0, 2.5 * self.annotation_scale / max(self.zoom_level, 0.01)))
 
     @rx.var
     def df_stamp_bg_height(self) -> str:
@@ -669,14 +689,29 @@ class EditorState(rx.State):
         return str(round(self._df_fs_val() * 2.0, 1))
 
     @rx.var
-    def df_stamp_bg_y_offset(self) -> float:
-        """Vertical offset from stamp y to top of background rect. ~3x font size."""
-        return round(self._df_fs_val() * 3.0, 1)
+    def df_stamp_bg_height_f(self) -> float:
+        """DF stamp background rect height as float for SVG coordinate arithmetic."""
+        return round(self._df_fs_val() * 2.0, 2)
 
     @rx.var
-    def df_stamp_text_y_offset(self) -> float:
-        """Vertical offset from stamp y to first text line. ~2x font size."""
-        return round(self._df_fs_val() * 2.0, 1)
+    def df_stamp_bg_half_f(self) -> float:
+        """Half the background rect height — used for vertically centering text."""
+        return round(self._df_fs_val(), 2)
+
+    @rx.var
+    def df_stamp_icon_size(self) -> float:
+        """Lucide crosshair icon size in image-pixel units — matches box height."""
+        return round(max(2.0, min(16.0, self._df_fs_val() * 2.0)), 2)
+
+    @rx.var
+    def df_stamp_icon_half(self) -> float:
+        """Half icon size — used to center the icon on a point via translate."""
+        return round(max(2.0, min(16.0, self._df_fs_val() * 2.0)) / 2.0, 2)
+
+    @rx.var
+    def df_stamp_icon_scale(self) -> str:
+        """Scale factor mapping 24×24 lucide viewBox into image-pixel units."""
+        return str(round(max(2.0, min(16.0, self._df_fs_val() * 2.0)) / 24.0, 4))
 
     @rx.var
     def df_stamp_x_pad(self) -> float:
@@ -692,14 +727,14 @@ class EditorState(rx.State):
         """
         base = 1.5
         lw = base / max(self.zoom_level, 0.01)
-        return str(round(max(base * 0.5, min(base * 4.0, lw)), 2))
+        return str(round(max(base * 0.5, min(base * 2.5, lw)), 2))
 
     @rx.var
     def child_room_stroke_width(self) -> str:
         """Half the parent stroke width for child/division rooms."""
         base = 1.5
         lw = base / max(self.zoom_level, 0.01)
-        parent_w = max(base * 0.5, min(base * 4.0, lw))
+        parent_w = max(base * 0.5, min(base * 2.5, lw))
         return str(round(parent_w * 0.5, 2))
 
     @rx.var
@@ -707,7 +742,7 @@ class EditorState(rx.State):
         """Radius for divider mode vertex indicators — slightly larger than boundary stroke."""
         base = 1.5
         lw = base / max(self.zoom_level, 0.01)
-        stroke_w = max(base * 0.5, min(base * 4.0, lw))
+        stroke_w = max(base * 0.5, min(base * 2.5, lw))
         return str(round(stroke_w * 1.2, 2))
 
     @rx.var
@@ -1061,6 +1096,17 @@ class EditorState(rx.State):
         ]
 
     @rx.var
+    def canvas_css_transform(self) -> str:
+        """CSS transform for #editor-canvas, driven by zoom/pan state.
+
+        Exposed via a data-transform attribute + MutationObserver so the
+        transform survives Reflex re-renders. Normal scroll/pan gestures
+        update JS local vars directly; this computed var reflects the last
+        synced value (or explicit setTransform calls from fit/reset).
+        """
+        return f"translate({self.pan_x}px, {self.pan_y}px) scale({self.zoom_level})"
+
+    @rx.var
     def overlay_css_transform(self) -> str:
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         if self.viewport_width <= 0 or self.image_width <= 0:
@@ -1289,9 +1335,15 @@ class EditorState(rx.State):
     def exit_mode(self) -> None:
         self.context_menu_visible = False
         if self.draw_mode or self.edit_mode or self.divider_mode or self.df_placement_mode or self.pan_mode or self.overlay_align_mode:
+            was_df = self.df_placement_mode
             self._clear_modes()
             self.overlay_align_mode = False
             self.align_points = []
+            if was_df:
+                _df_cache["image"] = None
+                _df_cache["hdr_path"] = ""
+                self.df_cursor_label = ""
+                self.df_cursor_df = ""
             self.status_message = "Ready"
             self.status_colour = "accent2"
         else:
@@ -1621,8 +1673,10 @@ class EditorState(rx.State):
 
         # Sync zoom/pan from JS immediately — avoids stale zoom_level for
         # inverse-zoom stamp sizing (the debounced sync_zoom may lag).
+        # No clamp: JS wheel handler already clamps at 1.0 for user scroll;
+        # only programmatic Fit PDF sets sub-1.0, which must be preserved.
         if "zoom" in data:
-            self.zoom_level = max(1.0, float(data["zoom"]))
+            self.zoom_level = float(data["zoom"])
         if "pan_x" in data:
             self.pan_x = float(data["pan_x"])
         if "pan_y" in data:
@@ -1631,14 +1685,13 @@ class EditorState(rx.State):
         self.mouse_x = x
         self.mouse_y = y
 
-        if self.debug_mode:
-            btn_name = {0: "left", 1: "middle", 2: "right"}.get(button, str(button))
-            logger.debug(
-                f"  canvas_click at ({x:.1f}, {y:.1f}) btn={btn_name} "
-                f"shift={shift} ctrl={ctrl} | modes: draw={self.draw_mode} "
-                f"edit={self.edit_mode} divider={self.divider_mode} "
-                f"df_place={self.df_placement_mode} overlay_align={self.overlay_align_mode}"
-            )
+        btn_name = {0: "left", 1: "middle", 2: "right"}.get(button, str(button))
+        logger.info(
+            f"[DFDIAG] canvas_click at ({x:.1f}, {y:.1f}) btn={btn_name} "
+            f"shift={shift} ctrl={ctrl} | modes: draw={self.draw_mode} "
+            f"edit={self.edit_mode} divider={self.divider_mode} "
+            f"df_place={self.df_placement_mode} overlay_align={self.overlay_align_mode}"
+        )
 
         if self.draw_mode:
             if button == 2:
@@ -1710,8 +1763,8 @@ class EditorState(rx.State):
                 from ..lib.df_analysis import read_df_at_pixel
                 df_val = read_df_at_pixel(df_image, x, y)
                 if df_val is not None:
-                    df_val_str = f" DF: {df_val:.2f}%"
-            self.df_cursor_df = f"DF: {df_val:.2f}%" if df_val is not None else ""
+                    df_val_str = f" {df_val:.2f}% DF"
+            self.df_cursor_df = f"{df_val:.2f}% DF" if df_val is not None else ""
             self.df_cursor_label = f"px({px},{py}){df_val_str}"
             self.status_message = self.df_cursor_label
 
@@ -1740,8 +1793,13 @@ class EditorState(rx.State):
             self.dragging_vertex_idx = -1
 
     def sync_zoom(self, data: dict) -> None:
-        """Receive zoom/pan state from JS after a gesture ends (debounced)."""
-        self.zoom_level = max(1.0, float(data.get("zoom", self.zoom_level)))
+        """Receive zoom/pan state from JS after a gesture ends (debounced).
+
+        No 1.0 clamp — JS wheel handler already clamps user scroll at 1.0;
+        only the programmatic Fit PDF path produces sub-1.0 zoom and that
+        value must persist so the canvas transform binding stays in sync.
+        """
+        self.zoom_level = float(data.get("zoom", self.zoom_level))
         self.pan_x = float(data.get("pan_x", self.pan_x))
         self.pan_y = float(data.get("pan_y", self.pan_y))
         # Complete deferred legacy overlay migration now that viewport_width is known
@@ -1812,6 +1870,70 @@ class EditorState(rx.State):
         canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
         self.pan_x = vw / 2 - cx * pxscale
         self.pan_y = vh / 2 - canvas_offset_top - cy * pxscale
+
+        yield rx.call_script(
+            f"window._archiZoom && window._archiZoom.setTransform("
+            f"{self.zoom_level}, {self.pan_x}, {self.pan_y});"
+        )
+
+    def fit_to_overlay(self):
+        """Zoom/pan so the entire PDF underlay fills the viewport."""
+        if not self.overlay_pdf_path or self.image_width <= 0 or self.overlay_img_width <= 0:
+            yield from self.reset_zoom()
+            return
+
+        t = self._get_current_overlay_transform()
+        iw = self.image_width
+        ih = self.image_height or 1
+        sx = t.get("scale_x", 1.0)
+        sy = t.get("scale_y", 1.0)
+        pdf_aspect = self.overlay_img_height / self.overlay_img_width
+
+        # PDF bbox in SVG image-pixel coords (mirrors overlay_svg_transform).
+        # The PDF <img> has width:100% (= iw at zoom-1) before its own CSS
+        # scale is applied, so its native extent is iw × (iw * pdf_aspect).
+        # The overlay_svg_transform translates then scales from top-left, so:
+        #   top-left  = (ox, oy)
+        #   bot-right = (ox + iw*sx, oy + iw*pdf_aspect*sy)
+        cx_term = iw * (1.0 - sx) / 2.0
+        cy_term = (ih - iw * pdf_aspect * sy) / 2.0
+        ox = cx_term + t.get("offset_x", 0) * iw
+        oy = cy_term + t.get("offset_y", 0) * ih
+        pdf_w = iw * sx
+        pdf_h = iw * pdf_aspect * sy
+
+        # Combine HDR extent (0,0)→(iw,ih) with PDF extent to get full union bbox
+        min_x = min(0.0, ox)
+        min_y = min(0.0, oy)
+        max_x = max(float(iw), ox + pdf_w)
+        max_y = max(float(ih), oy + pdf_h)
+
+        bbox_w = max_x - min_x
+        bbox_h = max_y - min_y
+        pad_x = max(bbox_w * 0.03, 2.0)
+        pad_y = max(bbox_h * 0.03, 2.0)
+        bw = bbox_w + 2 * pad_x
+        bh = bbox_h + 2 * pad_y
+
+        vw = self.viewport_width if self.viewport_width > 0 else iw
+        vh = self.viewport_height if self.viewport_height > 0 else ih
+        if vw <= 0 or vh <= 0:
+            yield from self.reset_zoom()
+            return
+
+        image_scale = vw / iw
+        zx = vw / (bw * image_scale)
+        zy = vh / (bh * image_scale)
+        self.zoom_level = min(zx, zy, 200.0)
+        self.zoom_level = max(self.zoom_level, 0.1)
+
+        mid_x = (min_x + max_x) / 2
+        mid_y = (min_y + max_y) / 2
+        pxscale = image_scale * self.zoom_level
+        canvas_h_at_1 = vw * ih / iw
+        canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
+        self.pan_x = vw / 2 - mid_x * pxscale
+        self.pan_y = vh / 2 - canvas_offset_top - mid_y * pxscale
 
         yield rx.call_script(
             f"window._archiZoom && window._archiZoom.setTransform("
@@ -2747,6 +2869,194 @@ class EditorState(rx.State):
                 level_map[m_level.group(1).upper()] = m_view.group(1)
         return level_map
 
+    @staticmethod
+    def _project_world_to_pixels(
+        world_verts: list[list[float]],
+        vp_x: float, vp_y: float, vh: float, vv: float,
+        img_w: float, img_h: float,
+    ) -> list[list[float]]:
+        """World (metres) -> pixel coords via Radiance -vtl inverse projection."""
+        return [
+            [(wx - vp_x) / (vh / img_w) + img_w / 2,
+             img_h / 2 - (wy - vp_y) / (vv / img_h)]
+            for wx, wy in world_verts
+        ]
+
+    def _seed_rooms_from_modern_aoi(self, aoi_dir: Path) -> int:
+        """Seed ``self.rooms`` from modern ``.aoi`` files that already contain
+        pixel coordinates alongside world coordinates (produced by
+        ``ViewGenerator.create_aoi_files``). Parity with
+        ``matplotlib_app._load_from_aoi_files``.
+        """
+        import re
+        seeded = 0
+        for aoi_path in sorted(aoi_dir.glob("*.aoi")):
+            if aoi_path.stem == "aoi_session":
+                continue
+            try:
+                lines = [l.strip() for l in aoi_path.read_text(encoding="utf-8").splitlines()]
+            except Exception:
+                continue
+            if len(lines) < 6:
+                continue
+            m_name = re.match(r"AOI Points File:\s*(.+)", lines[0])
+            if not m_name:
+                # Not a modern-format file (likely IESVE "AoI Points File :") — skip.
+                continue
+            name = m_name.group(1).strip()
+            m_view = re.search(r"plan_ffl_(\d+)", lines[1])
+            if not m_view:
+                continue
+            ffl_str = m_view.group(1)
+            ffl_pat = re.compile(r"plan_ffl_" + ffl_str + r"(?!\d)")
+            hdr_name = next(
+                (entry["name"] for entry in self.hdr_files
+                 if ffl_pat.search(entry["name"])),
+                None,
+            )
+            if hdr_name is None:
+                continue
+            m_ffl_z = re.search(r"FFL z height\(m\):\s*([\d.]+)", lines[2])
+            ffl = float(m_ffl_z.group(1)) if m_ffl_z else 0.0
+            pixel_verts: list[list[float]] = []
+            world_verts: list[list[float]] = []
+            for line in lines[5:]:
+                parts = line.split()
+                if len(parts) >= 4:
+                    try:
+                        world_verts.append([float(parts[0]), float(parts[1])])
+                        pixel_verts.append([float(parts[2]), float(parts[3])])
+                    except ValueError:
+                        continue
+            if len(pixel_verts) < 3:
+                continue
+            self.rooms.append({
+                "name": name,
+                "parent": None,
+                "vertices": pixel_verts,
+                "world_vertices": world_verts,
+                "ffl": ffl,
+                "hdr_file": hdr_name,
+                "visible": True,
+            })
+            seeded += 1
+        return seeded
+
+    def _seed_rooms_from_iesve_aoi(self, aoi_dir: Path) -> int:
+        """Seed ``self.rooms`` from IESVE ``.aoi`` files (world X/Y only).
+
+        FFL per zone is looked up in the converted ``room_boundaries.csv`` when
+        available. Rooms are projected into the first HDR matching their FFL
+        (or level-code prefix) using ``hdr_view_params``. Parity with
+        ``matplotlib_app._load_from_iesve_aoi``.
+        """
+        import re
+        if not self.hdr_files or not self.hdr_view_params:
+            return 0
+
+        ffl_lookup: dict[str, float] = {}
+        # Try any xlsx/csv file in aoi_dir whose columns match the IESVE room-data
+        # schema. Some projects keep the original xlsx, others have it
+        # misnamed as .csv; we accept either and sniff the format.
+        def _try_load_room_data(path: Path) -> dict[str, float]:
+            try:
+                import pandas as pd
+                try:
+                    df = pd.read_excel(path)
+                except Exception:
+                    try:
+                        df = pd.read_csv(path, encoding="utf-8")
+                    except (UnicodeDecodeError, pd.errors.ParserError):
+                        df = pd.read_csv(path, encoding="cp1252")
+                if "Space ID" in df.columns and "Min. Height (m) (Real)" in df.columns:
+                    return dict(zip(
+                        df["Space ID"].astype(str),
+                        df["Min. Height (m) (Real)"].astype(float),
+                    ))
+            except Exception as exc:
+                logger.debug("IESVE FFL candidate %s unreadable: %s", path.name, exc)
+            return {}
+
+        for cand in sorted(aoi_dir.glob("*.xlsx")) + sorted(aoi_dir.glob("*.csv")):
+            ffl_lookup = _try_load_room_data(cand)
+            if ffl_lookup:
+                break
+
+        ffl_mm_to_entry: dict[int, tuple[dict, list[float]]] = {}
+        for entry in self.hdr_files:
+            m = re.search(r"plan_ffl_(\d+)", entry["name"])
+            vp = self.hdr_view_params.get(entry["name"])
+            if m and vp and len(vp) >= 6:
+                ffl_mm_to_entry.setdefault(int(m.group(1)), (entry, vp))
+
+        use_ffl_filter = bool(ffl_mm_to_entry)
+        level_cache: dict[str, tuple[dict, list[float]]] = {}
+        if not use_ffl_filter:
+            for entry in self.hdr_files:
+                m_lvl = re.match(r"^(L\d+)", entry["name"], re.IGNORECASE)
+                vp = self.hdr_view_params.get(entry["name"])
+                if m_lvl and vp and len(vp) >= 6:
+                    level_cache.setdefault(m_lvl.group(1).upper(), (entry, vp))
+
+        seeded = 0
+        for aoi_path in sorted(aoi_dir.glob("*.aoi")):
+            if aoi_path.stem == "aoi_session":
+                continue
+            parsed = self._parse_base_aoi(aoi_path)
+            if parsed is None:
+                continue
+            space_id, level_code, world_verts = parsed
+            ffl = ffl_lookup.get(space_id, 0.0)
+            if use_ffl_filter:
+                cached = ffl_mm_to_entry.get(int(round(ffl * 1000)))
+            else:
+                cached = level_cache.get(level_code.upper())
+            if cached is None:
+                continue
+            entry, vp = cached
+            pixel_verts = self._project_world_to_pixels(
+                world_verts, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5],
+            )
+            self.rooms.append({
+                "name": f"{space_id} {level_code}".strip(),
+                "parent": None,
+                "vertices": pixel_verts,
+                "world_vertices": world_verts,
+                "ffl": ffl,
+                "hdr_file": entry["name"],
+                "visible": True,
+            })
+            seeded += 1
+        return seeded
+
+    def _maybe_seed_from_aoi_files(self) -> int:
+        """If the current project has ``.aoi`` files but no session yet, seed
+        ``self.rooms`` from them and return the count. Callers should invoke
+        ``save_session()`` afterwards so the seeded rooms persist.
+        """
+        if not self.project:
+            return 0
+        try:
+            from archilume.config import get_project_paths
+            aoi_dir = get_project_paths(self.project).aoi_inputs_dir
+        except Exception:
+            return 0
+        if not aoi_dir.exists():
+            return 0
+        aoi_files = [p for p in aoi_dir.glob("*.aoi") if p.stem != "aoi_session"]
+        if not aoi_files:
+            return 0
+        is_iesve = False
+        try:
+            header = aoi_files[0].read_text(encoding="utf-8").splitlines()[:1]
+            if header and header[0].startswith("AoI Points File :"):
+                is_iesve = True
+        except Exception:
+            pass
+        if is_iesve:
+            return self._seed_rooms_from_iesve_aoi(aoi_dir)
+        return self._seed_rooms_from_modern_aoi(aoi_dir)
+
     def reinstate_room_from_aoi(self) -> None:
         """Reinstate a deleted room by finding the AOI file that contains the clicked location."""
         import re
@@ -2834,11 +3144,9 @@ class EditorState(rx.State):
             return
 
         # Project world vertices to pixel space
-        pixel_verts = [
-            [(wvx - vp_x) / (vh / img_w) + img_w / 2,
-             img_h / 2 - (wvy - vp_y) / (vv / img_h)]
-            for wvx, wvy in match_verts
-        ]
+        pixel_verts = self._project_world_to_pixels(
+            match_verts, vp_x, vp_y, vh, vv, img_w, img_h,
+        )
 
         new_room: dict = {
             "name": match_zone,
@@ -3341,22 +3649,30 @@ class EditorState(rx.State):
             "before": {},
             "after": {"hdr_name": hdr_name, "stamp_idx": len(hdr_stamps) - 1, "stamp": stamp_data},
         })
-        self.status_message = f"DF: {df_val:.2f}% at px({px},{py})"
+        self.status_message = f"{df_val:.2f}% DF at px({px},{py})"
         self.status_colour = "accent"
 
     def _df_remove_nearest(self, x: float, y: float) -> None:
+        logger.info(f"[DFDIAG] _df_remove_nearest ENTER click=({x:.1f},{y:.1f}) zoom={self.zoom_level:.3f}")
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+            logger.info(f"[DFDIAG]   → abort: no hdr_files or bad idx ({self.current_hdr_idx}/{len(self.hdr_files)})")
             return
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
         hdr_stamps = self.df_stamps.get(hdr_name, [])
+        logger.info(f"[DFDIAG]   hdr_name={hdr_name!r}  stamps_keys={list(self.df_stamps.keys())}  count={len(hdr_stamps)}")
         if not hdr_stamps:
+            logger.info(f"[DFDIAG]   → abort: no stamps under key {hdr_name!r}")
             return
-        best_i, best_d = -1, 20.0 / max(self.zoom_level, 0.01)
+        threshold = 20.0 / max(self.zoom_level, 0.01)
+        best_i, best_d = -1, threshold
+        all_dists = []
         for i, stamp in enumerate(hdr_stamps):
             d = math.hypot(x - stamp[0], y - stamp[1])
+            all_dists.append(f"{i}:{d:.2f}")
             if d < best_d:
                 best_d = d
                 best_i = i
+        logger.info(f"[DFDIAG]   threshold={threshold:.2f}  dists=[{', '.join(all_dists)}]  best_i={best_i}  best_d={best_d:.2f}")
         if best_i >= 0:
             removed_stamp = list(hdr_stamps[best_i])
             self._push_undo({
@@ -3576,8 +3892,15 @@ class EditorState(rx.State):
             if session_file.exists():
                 logger.warning("[session] Failed to parse %s — auto-save blocked until next successful load", session_file)
                 self._session_load_ok = False
-            else:
-                self._session_load_ok = True
+                return
+            # No session file yet — seed rooms from any .aoi files present so
+            # first-open of a project created from staged AOI inputs isn't empty.
+            self._session_load_ok = True
+            seeded = self._maybe_seed_from_aoi_files()
+            if seeded > 0:
+                logger.info("[session-load] seeded %d rooms from .aoi files", seeded)
+                self.save_session()
+                self.status_message = f"Seeded {seeded} rooms from .aoi files"
             return
         self.rooms = data.get("rooms", [])
         self.df_stamps = data.get("df_stamps", {})
@@ -3622,9 +3945,15 @@ class EditorState(rx.State):
                 # overwrite the on-disk session with empty/stale in-memory state.
                 logger.warning("[session] Failed to parse %s — auto-save blocked until next successful load", session_file)
                 self._session_load_ok = False
-            else:
-                # New project, no session file yet — safe to create one.
-                self._session_load_ok = True
+                return
+            # New project, no session file yet — seed rooms from any .aoi files
+            # present, then persist so subsequent opens take the normal path.
+            self._session_load_ok = True
+            seeded = self._maybe_seed_from_aoi_files()
+            if seeded > 0:
+                logger.info("[session-load] seeded %d rooms from .aoi files", seeded)
+                self.save_session()
+                self.status_message = f"Seeded {seeded} rooms from .aoi files"
             return
         self.rooms = data.get("rooms", [])
         self.df_stamps = data.get("df_stamps", {})
@@ -3697,7 +4026,7 @@ class EditorState(rx.State):
         self.status_message = "Session saved"
 
     def restart_app(self) -> None:
-        """Spawn a detached relaunch of the Archilume UI, then kill this process.
+        """Spawn a detached relaunch of the Archilume app, then kill this process.
 
         Uses the same ``examples/launch_archilume_app.py`` entry point so the new
         instance runs the full kill-stale-backends → reflex run flow. The current
@@ -3721,7 +4050,7 @@ class EditorState(rx.State):
             else:
                 kwargs["start_new_session"] = True
             subprocess.Popen([sys.executable, str(launch_script)], **kwargs)
-            self.status_message = "Restarting Archilume UI…"
+            self.status_message = "Restarting Archilume app…"
             self.status_colour = "accent2"
             # Give the response a moment to flush, then kill this process.
             # The detached relaunch will clear the backend port and start fresh.
@@ -3863,50 +4192,241 @@ class EditorState(rx.State):
     def set_new_project_name(self, value: str) -> None:
         self.new_project_name = value
 
-    def set_new_project_mode(self, value: str) -> None:
-        self.new_project_mode = value
+    # set_new_project_mode defined below (purges stale staged files on switch).
 
     def create_project(self) -> None:
+        """Scaffold the project, move staged files into canonical locations, and
+        write ``project.toml``. Atomic: on any failure the partially-created
+        project dir is rolled back so the user can retry without cleanup.
+        """
+        import shutil
+
         name = self.new_project_name.strip()
         if not name:
             self.create_error = "Project name is required"
             return
+
         try:
             from archilume.config import get_project_paths
-            paths = get_project_paths(name)
-            if paths.project_dir.exists():
-                self.create_error = f"Project '{name}' already exists"
-                return
-            paths.create_dirs()
-            toml_path = paths.project_dir / "project.toml"
-            toml_path.write_text(
-                f'[project]\nname = "{name}"\nmode = "{self.new_project_mode}"\n',
-                encoding="utf-8",
-            )
-            self.project = name
-            self.project_mode = self.new_project_mode
-            self._init_project_paths()
-            self._rebuild_variants()
-            self.load_session()
-            self.load_current_image()
-            self.scan_projects()
-            self.create_project_modal_open = False
-            self.create_error = ""
-            self.new_project_name = ""
-            self.status_message = f"Created: {name}"
-            self.status_colour = "accent"
         except ImportError:
             self.create_error = "archilume config not available"
+            return
+
+        paths = get_project_paths(name)
+        if paths.project_dir.exists():
+            self.create_error = f"Project '{name}' already exists"
+            return
+
+        mode_id = self.new_project_mode
+        if mode_id not in project_modes.MODES:
+            self.create_error = f"Unknown mode: {mode_id}"
+            return
+
+        missing = project_modes.missing_required(mode_id, self.new_project_staged)
+        if missing:
+            self.create_error = f"Missing: {', '.join(missing)}"
+            return
+
+        # Reject if any staged file failed validation.
+        invalid = [
+            e.get("name", "?")
+            for entries in self.new_project_staged.values()
+            for e in entries
+            if not e.get("ok")
+        ]
+        if invalid:
+            self.create_error = f"Fix invalid files: {', '.join(invalid)}"
+            return
+
+        try:
+            paths.create_dirs()
+            self._move_staged_into_project(paths, mode_id, self.new_project_staged)
+            self._maybe_convert_iesve_room_data(paths)
+            self._write_project_toml(name, mode_id, paths)
         except Exception as e:
-            self.create_error = str(e)
+            shutil.rmtree(paths.project_dir, ignore_errors=True)
+            logger.exception("create_project failed")
+            self.create_error = f"Create failed: {e}"
+            return
+
+        self._cleanup_create_staging_dir()
+        self.new_project_staged = {}
+        self.create_error = ""
+        self.new_project_name = ""
+
+        self.project = name
+        self.project_mode = mode_id
+        self._init_project_paths()
+        self._rebuild_variants()
+        self.load_session()
+        self.load_current_image()
+        self.scan_projects()
+        self.create_project_modal_open = False
+        self.status_message = f"Created: {name}"
+        self.status_colour = "accent"
+
+    def _move_staged_into_project(
+        self, paths, mode_id: str, staged: dict[str, list[dict]],
+    ) -> None:
+        """Move every valid staged file to its canonical destination directory."""
+        import shutil
+
+        for field_id, entries in staged.items():
+            field = project_modes.field_by_id(mode_id, field_id)
+            if field is None:
+                continue
+            dest_dir = getattr(paths, field.dest_attr, None)
+            if dest_dir is None:
+                continue
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for entry in entries:
+                if not entry.get("ok"):
+                    continue
+                src = entry.get("path") or ""
+                if not src:
+                    continue
+                shutil.move(src, dest_dir / Path(src).name)
+
+    def _maybe_convert_iesve_room_data(self, paths) -> None:
+        """If an ``iesve_room_data.xlsx`` landed in ``aoi_inputs_dir``, convert
+        it to the canonical ``room_boundaries.csv`` (matplotlib_app parity)."""
+        xlsx_candidates = sorted(paths.aoi_inputs_dir.glob("*.xlsx"))
+        if not xlsx_candidates:
+            return
+        try:
+            from archilume.utils import iesve_aoi_to_room_boundaries_csv
+        except ImportError:
+            logger.warning("iesve_aoi_to_room_boundaries_csv unavailable; skipping conversion")
+            return
+        for xlsx in xlsx_candidates:
+            try:
+                iesve_aoi_to_room_boundaries_csv(
+                    xlsx, paths.aoi_inputs_dir / "room_boundaries.csv",
+                )
+            except Exception as e:
+                logger.warning("xlsx conversion failed for %s: %s", xlsx, e)
+
+    def _write_project_toml(self, name: str, mode_id: str, paths) -> None:
+        """Write ``project.toml`` referencing only the files present for this mode."""
+
+        toml_path = paths.project_dir / "project.toml"
+        lines = [
+            "[project]",
+            f'name = "{name}"',
+            f'mode = "{mode_id}"',
+            "",
+            "[paths]",
+        ]
+        mode = project_modes.MODES[mode_id]
+        for f in mode.fields:
+            dest_dir = getattr(paths, f.dest_attr, None)
+            if dest_dir is None or not dest_dir.exists():
+                continue
+            hits: list[str] = []
+            for ext in f.allowed_extensions:
+                hits.extend(sorted(str(p.relative_to(paths.project_dir)).replace("\\", "/")
+                                   for p in dest_dir.glob(f"*{ext}")))
+            if not hits:
+                continue
+            if f.multiple:
+                lines.append(f'{f.id} = {hits!r}')
+            else:
+                lines.append(f'{f.id} = "{hits[0]}"')
+        toml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # =====================================================================
+    # APPLY SETTINGS
+    # =====================================================================
+
+    def apply_settings(self) -> None:
+        """Apply staged replacements / additions and confirmed removals to the
+        current project. Overwrites canonical files in place. Refuses to run if
+        a required field would be left empty.
+        """
+        import shutil
+
+        if not self.project:
+            self.settings_error = "No project loaded"
+            return
+        paths = self._current_project_paths()
+        if paths is None:
+            self.settings_error = "Could not resolve project paths"
+            return
+
+        invalid = [
+            e.get("name", "?")
+            for entries in self.settings_staged.values()
+            for e in entries
+            if not e.get("ok")
+        ]
+        if invalid:
+            self.settings_error = f"Fix invalid files: {', '.join(invalid)}"
+            return
+
+        violated = self._settings_required_field_violations(paths)
+        if violated:
+            self.settings_error = f"Cannot remove required inputs: {', '.join(violated)}"
+            return
+
+        try:
+            # 1. Apply confirmed removals.
+            for field_id, removals in self.settings_pending_removals.items():
+                field = project_modes.field_by_id(self.project_mode, field_id)
+                if field is None:
+                    continue
+                dest_dir = getattr(paths, field.dest_attr, None)
+                if dest_dir is None or not dest_dir.exists():
+                    continue
+                for fname in removals:
+                    (dest_dir / fname).unlink(missing_ok=True)
+
+            # 2. Move staged files in (overwriting in place).
+            self._move_staged_into_project(paths, self.project_mode, self.settings_staged)
+
+            # 3. Re-run xlsx -> csv conversion in case room data was replaced.
+            self._maybe_convert_iesve_room_data(paths)
+
+            # 4. Rewrite project.toml so paths reflect the new canonical set.
+            self._write_project_toml(self.project, self.project_mode, paths)
+        except Exception as e:
+            logger.exception("apply_settings failed")
+            self.settings_error = f"Apply failed: {e}"
+            return
+
+        self._cleanup_settings_staging_dir()
+        self.settings_staged = {}
+        self.settings_pending_removals = {}
+        self.settings_error = ""
+        self.settings_modal_open = False
+
+        # Reload session & current image so the editor picks up new files.
+        self._init_project_paths()
+        self._rebuild_variants()
+        self.load_session()
+        self.load_current_image()
+        self.status_message = "Project inputs updated"
+        self.status_colour = "accent"
 
     def _init_project_paths(self) -> None:
         if not self.project:
             return
         try:
             from archilume.config import get_project_paths
+            from ..lib import project_migration
+            # Upgrade legacy project.toml ("archilume"/"hdr"/"iesve") to the
+            # new four-mode taxonomy in place. Idempotent — no-op if already new.
+            migrated = project_migration.migrate_project_toml(self.project)
+            if migrated is not None:
+                self.project_mode = migrated
+                self.status_message = f"Migrated project mode → {migrated}"
+                self.status_colour = "accent2"
             paths = get_project_paths(self.project)
-            image_dir = paths.pic_dir if self.project_mode == "iesve" else paths.image_dir
+            # Editor scans pic_dir for IESVE daylight markup (user-supplied .pic
+            # files land there). Everything else reads from outputs/image/.
+            image_dir = (
+                paths.pic_dir if self.project_mode == "daylight-markup"
+                else paths.image_dir
+            )
             toml_path = paths.project_dir / "project.toml"
             if toml_path.exists():
                 try:
@@ -4002,10 +4522,528 @@ class EditorState(rx.State):
         self.open_project_modal_open = False
 
     def open_create_project_modal(self) -> None:
+        import tempfile
+        self._cleanup_create_staging_dir()
+        self.new_project_staging_dir = tempfile.mkdtemp(prefix="archilume-new-")
+        self.new_project_staged = {}
+        self.create_error = ""
         self.create_project_modal_open = True
 
     def close_create_project_modal(self) -> None:
+        self._cleanup_create_staging_dir()
+        self.new_project_staged = {}
+        self.create_error = ""
+        self.new_project_name = ""
         self.create_project_modal_open = False
+
+    def _cleanup_create_staging_dir(self) -> None:
+        import shutil
+        if self.new_project_staging_dir:
+            shutil.rmtree(self.new_project_staging_dir, ignore_errors=True)
+        self.new_project_staging_dir = ""
+
+    # =====================================================================
+    # CREATE PROJECT — per-file upload handling
+    # =====================================================================
+
+    def _stage_uploaded_files(
+        self,
+        field_id: str,
+        upload_files: list,
+        target: str,
+    ) -> None:
+        """Shared helper: move Reflex-uploaded files into the active staging
+        dir, validate each, and record entries in the matching staged dict.
+
+        ``target`` is either ``"create"`` or ``"settings"``.
+        """
+        import shutil
+
+        if target == "create":
+            staging_dir = self.new_project_staging_dir
+            staged = dict(self.new_project_staged)
+            mode_id = self.new_project_mode
+        else:
+            staging_dir = self.settings_staging_dir
+            staged = dict(self.settings_staged)
+            mode_id = self.project_mode
+
+        if not staging_dir:
+            return
+        field = project_modes.field_by_id(mode_id, field_id)
+        if field is None:
+            return
+
+        existing = list(staged.get(field_id, []))
+        staging_path = Path(staging_dir)
+        staging_path.mkdir(parents=True, exist_ok=True)
+
+        # Single-document fields (e.g. PDF, room_boundaries.csv) must never
+        # accumulate more than one file. A fresh drop replaces whatever was
+        # staged before — the old staged copy is unlinked so it doesn't leak.
+        if not field.multiple and upload_files:
+            for prior in existing:
+                p = prior.get("path") or ""
+                if p:
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            existing = []
+            # Honour only the LAST upload in the batch. rx.upload with
+            # multiple=False shouldn't deliver >1 file, but guard anyway.
+            upload_files = upload_files[-1:]
+            # In settings mode, a single-doc drop implies replacing the
+            # existing canonical file; mark every canonical entry in this
+            # field for removal so apply_settings doesn't leave duplicates.
+            if target == "settings":
+                paths = self._current_project_paths()
+                if paths is not None:
+                    dest_dir = getattr(paths, field.dest_attr, None)
+                    if dest_dir is not None and dest_dir.exists():
+                        pending = dict(self.settings_pending_removals)
+                        marks = list(pending.get(field_id, []))
+                        for ext_ in field.allowed_extensions:
+                            for p in dest_dir.glob(f"*{ext_}"):
+                                if p.name not in marks:
+                                    marks.append(p.name)
+                        if marks:
+                            pending[field_id] = marks
+                            self.settings_pending_removals = pending
+
+        for upload in upload_files:
+            try:
+                raw_name = Path(upload.name).name
+            except Exception:
+                raw_name = "upload.bin"
+            ext = Path(raw_name).suffix.lower()
+            if ext not in field.allowed_extensions:
+                existing.append({
+                    "path": "",
+                    "name": raw_name,
+                    "ok": False,
+                    "error": f"Unsupported extension {ext or '(none)'}",
+                })
+                continue
+
+            dest = staging_path / raw_name
+            # Avoid collisions if user uploads files with the same name twice.
+            counter = 1
+            while dest.exists():
+                stem, ext_ = Path(raw_name).stem, Path(raw_name).suffix
+                dest = staging_path / f"{stem}__{counter}{ext_}"
+                counter += 1
+            try:
+                dest.write_bytes(upload.data)
+            except Exception as e:
+                existing.append({
+                    "path": "",
+                    "name": raw_name,
+                    "ok": False,
+                    "error": f"Upload failed: {e}",
+                })
+                continue
+
+            ok, msg = field.validator(dest)
+            if not ok:
+                # Keep the file on disk so the user sees the failed row, but
+                # mark as invalid. Removed when they click the row's X.
+                pass
+            existing.append({
+                "path": str(dest),
+                "name": dest.name,
+                "ok": bool(ok),
+                "error": "" if ok else msg,
+            })
+
+        staged[field_id] = existing
+        if target == "create":
+            self.new_project_staged = staged
+        else:
+            self.settings_staged = staged
+
+    async def _read_and_stage(
+        self, files: list[rx.UploadFile], field_id: str, target: str,
+    ) -> None:
+        """Common path for create and settings uploads.
+
+        ``target`` is either ``"create"`` or ``"settings"``. Called from thin
+        per-field wrappers below — Reflex's event-handler validator requires
+        handler signatures to match the event payload exactly, so we can't
+        parameterise the field id directly on the upload event. The wrappers
+        bake the field id in and delegate here.
+        """
+        read_files = []
+        for f in files:
+            try:
+                data = await f.read()
+                read_files.append(_StagedUploadBytes(name=f.name, data=data))
+            except Exception as e:
+                logger.warning("upload read failed for %s: %s", getattr(f, "name", "?"), e)
+        self._stage_uploaded_files(field_id, read_files, target)
+
+    # --- Create flow: one handler per field_id ---------------------------
+    async def upload_create_pdf(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "pdf", "create")
+    async def upload_create_geometry(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "geometry", "create")
+    async def upload_create_hdr_results(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "hdr_results", "create")
+    async def upload_create_pic_results(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "pic_results", "create")
+    async def upload_create_oct(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "oct", "create")
+    async def upload_create_rdp(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "rdp", "create")
+    async def upload_create_room_data(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "room_data", "create")
+    async def upload_create_aoi_files(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "aoi_files", "create")
+
+    # --- Settings flow: one handler per field_id -------------------------
+    async def upload_settings_pdf(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "pdf", "settings")
+    async def upload_settings_geometry(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "geometry", "settings")
+    async def upload_settings_hdr_results(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "hdr_results", "settings")
+    async def upload_settings_pic_results(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "pic_results", "settings")
+    async def upload_settings_oct(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "oct", "settings")
+    async def upload_settings_rdp(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "rdp", "settings")
+    async def upload_settings_room_data(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "room_data", "settings")
+    async def upload_settings_aoi_files(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "aoi_files", "settings")
+
+    def remove_new_project_file(self, field_id: str, filename: str) -> None:
+        self._remove_staged_file(field_id, filename, target="create")
+
+    def _remove_staged_file(self, field_id: str, filename: str, target: str) -> None:
+        if target == "create":
+            staged = dict(self.new_project_staged)
+        else:
+            staged = dict(self.settings_staged)
+        entries = list(staged.get(field_id, []))
+        kept = []
+        for entry in entries:
+            if entry.get("name") == filename:
+                path = entry.get("path") or ""
+                if path:
+                    try:
+                        Path(path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                continue
+            kept.append(entry)
+        if kept:
+            staged[field_id] = kept
+        else:
+            staged.pop(field_id, None)
+        if target == "create":
+            self.new_project_staged = staged
+        else:
+            self.settings_staged = staged
+
+    def set_new_project_mode(self, value: str) -> None:
+        """Set the mode and purge any staged files that don't belong to it.
+
+        Cross-mode toggles should not carry stale uploads; a file staged for a
+        sunlight-sim field is not reachable from the daylight-sim field list.
+        """
+        if value not in project_modes.MODES:
+            return
+        old_field_ids = {f.id for f in project_modes.MODES[self.new_project_mode].fields}
+        new_field_ids = {f.id for f in project_modes.MODES[value].fields}
+        stale = old_field_ids - new_field_ids
+        if stale:
+            staged = dict(self.new_project_staged)
+            for fid in list(stale):
+                entries = staged.pop(fid, [])
+                for e in entries:
+                    p = e.get("path") or ""
+                    if p:
+                        try:
+                            Path(p).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+            self.new_project_staged = staged
+        self.new_project_mode = value
+
+    # =====================================================================
+    # CREATE PROJECT — computed vars
+    # =====================================================================
+
+    @rx.var
+    def current_mode_fields(self) -> list[dict]:
+        """UI-friendly serialisation of the fields for the current create mode."""
+        mode = project_modes.MODES.get(self.new_project_mode)
+        if mode is None:
+            return []
+        out = []
+        for f in mode.fields:
+            entries = self.new_project_staged.get(f.id, [])
+            out.append({
+                "id": f.id,
+                "label": f.label,
+                "description": f.description,
+                "accept_exts": ", ".join(f.allowed_extensions),
+                "multiple": f.multiple,
+                "required": f.required,
+                "one_of": f.one_of or "",
+                "files": entries,
+            })
+        return out
+
+    @rx.var
+    def settings_mode_fields(self) -> list[dict]:
+        """UI-friendly serialisation for the settings modal (current project mode)."""
+        mode = project_modes.MODES.get(self.project_mode)
+        if mode is None:
+            return []
+        paths = self._current_project_paths()
+        out = []
+        for f in mode.fields:
+            canonical_files: list[str] = []
+            if paths is not None:
+                dest = getattr(paths, f.dest_attr, None)
+                if dest is not None and dest.exists():
+                    for ext in f.allowed_extensions:
+                        canonical_files.extend(
+                            sorted(p.name for p in dest.glob(f"*{ext}"))
+                        )
+            out.append({
+                "id": f.id,
+                "label": f.label,
+                "description": f.description,
+                "accept_exts": ", ".join(f.allowed_extensions),
+                "multiple": f.multiple,
+                "required": f.required,
+                "one_of": f.one_of or "",
+                "canonical_files": canonical_files,
+                "pending_removals": list(self.settings_pending_removals.get(f.id, [])),
+                "files": self.settings_staged.get(f.id, []),
+            })
+        return out
+
+    # Per-field accessors so Reflex foreach can hit a typed list var directly,
+    # avoiding dict-key access on the dict-typed staged var (which Reflex 0.8
+    # exposes only awkwardly).
+    @rx.var
+    def staged_create_pdf(self) -> list[dict]:
+        return self.new_project_staged.get("pdf", [])
+    @rx.var
+    def staged_create_geometry(self) -> list[dict]:
+        return self.new_project_staged.get("geometry", [])
+    @rx.var
+    def staged_create_hdr_results(self) -> list[dict]:
+        return self.new_project_staged.get("hdr_results", [])
+    @rx.var
+    def staged_create_pic_results(self) -> list[dict]:
+        return self.new_project_staged.get("pic_results", [])
+    @rx.var
+    def staged_create_oct(self) -> list[dict]:
+        return self.new_project_staged.get("oct", [])
+    @rx.var
+    def staged_create_rdp(self) -> list[dict]:
+        return self.new_project_staged.get("rdp", [])
+    @rx.var
+    def staged_create_room_data(self) -> list[dict]:
+        return self.new_project_staged.get("room_data", [])
+    @rx.var
+    def staged_create_aoi_files(self) -> list[dict]:
+        return self.new_project_staged.get("aoi_files", [])
+
+    @rx.var
+    def staged_settings_pdf(self) -> list[dict]:
+        return self.settings_staged.get("pdf", [])
+    @rx.var
+    def staged_settings_geometry(self) -> list[dict]:
+        return self.settings_staged.get("geometry", [])
+    @rx.var
+    def staged_settings_hdr_results(self) -> list[dict]:
+        return self.settings_staged.get("hdr_results", [])
+    @rx.var
+    def staged_settings_pic_results(self) -> list[dict]:
+        return self.settings_staged.get("pic_results", [])
+    @rx.var
+    def staged_settings_oct(self) -> list[dict]:
+        return self.settings_staged.get("oct", [])
+    @rx.var
+    def staged_settings_rdp(self) -> list[dict]:
+        return self.settings_staged.get("rdp", [])
+    @rx.var
+    def staged_settings_room_data(self) -> list[dict]:
+        return self.settings_staged.get("room_data", [])
+    @rx.var
+    def staged_settings_aoi_files(self) -> list[dict]:
+        return self.settings_staged.get("aoi_files", [])
+
+    @rx.var
+    def project_mode_display(self) -> str:
+        """Human-readable workflow mode label for the header bar.
+        Empty when no project is loaded or mode is unknown."""
+        if not self.project:
+            return ""
+        mode = project_modes.MODES.get(self.project_mode)
+        return mode.display if mode is not None else ""
+
+    @rx.var
+    def settings_canonical_files(self) -> dict[str, list[str]]:
+        """Filenames currently in canonical destination dirs for the active project,
+        keyed by field id. Used by the settings modal to show existing files."""
+        out: dict[str, list[str]] = {}
+        if not self.project:
+            return out
+        paths = self._current_project_paths()
+        if paths is None:
+            return out
+        mode = project_modes.MODES.get(self.project_mode)
+        if mode is None:
+            return out
+        for f in mode.fields:
+            dest = getattr(paths, f.dest_attr, None)
+            if dest is None or not dest.exists():
+                out[f.id] = []
+                continue
+            names: list[str] = []
+            for ext in f.allowed_extensions:
+                names.extend(sorted(p.name for p in dest.glob(f"*{ext}")))
+            out[f.id] = names
+        return out
+
+    @rx.var
+    def create_form_is_valid(self) -> bool:
+        name = self.new_project_name.strip()
+        if not name:
+            return False
+        # Fast duplicate-name check without hitting disk every keystroke: rely
+        # on scan_projects having populated available_projects. The authoritative
+        # check still runs in create_project.
+        if name in self.available_projects:
+            return False
+        missing = project_modes.missing_required(self.new_project_mode, self.new_project_staged)
+        if missing:
+            return False
+        # Reject if any staged file failed its validator.
+        for entries in self.new_project_staged.values():
+            for e in entries:
+                if not e.get("ok"):
+                    return False
+        return True
+
+    @rx.var
+    def settings_form_is_valid(self) -> bool:
+        # All staged replacements must be valid.
+        for entries in self.settings_staged.values():
+            for e in entries:
+                if not e.get("ok"):
+                    return False
+        # Removal integrity: for each required field in the current mode,
+        # (canonical files - pending removals) + (staged new files) must be ≥1.
+        mode = project_modes.MODES.get(self.project_mode)
+        if mode is None:
+            return False
+        paths = self._current_project_paths()
+        if paths is None:
+            return False
+        violated = self._settings_required_field_violations(paths)
+        return not violated
+
+    def _current_project_paths(self):
+        if not self.project:
+            return None
+        try:
+            from archilume.config import get_project_paths
+            return get_project_paths(self.project)
+        except Exception:
+            return None
+
+    def _settings_required_field_violations(self, paths) -> list[str]:
+        """Return labels of required fields that would end up empty if the
+        current set of staged replacements and pending removals were applied.
+        """
+        mode = project_modes.MODES.get(self.project_mode)
+        if mode is None:
+            return []
+        violated: list[str] = []
+
+        def count_after_apply(field) -> int:
+            dest = getattr(paths, field.dest_attr, None)
+            count = 0
+            if dest is not None and dest.exists():
+                for ext in field.allowed_extensions:
+                    for p in dest.glob(f"*{ext}"):
+                        if p.name not in self.settings_pending_removals.get(field.id, []):
+                            count += 1
+            for e in self.settings_staged.get(field.id, []):
+                if e.get("ok"):
+                    count += 1
+            return count
+
+        for f in mode.fields:
+            if not f.required:
+                continue
+            if f.one_of:
+                continue
+            if count_after_apply(f) == 0:
+                violated.append(f.label)
+
+        for group_key, members in project_modes.mode_one_of_groups(self.project_mode).items():
+            if not any(count_after_apply(m) > 0 for m in members):
+                violated.append(" or ".join(m.label for m in members))
+        return violated
+
+    # =====================================================================
+    # PROJECT SETTINGS MODAL
+    # =====================================================================
+
+    def open_settings_modal(self) -> None:
+        import tempfile
+        if not self.project:
+            return
+        self._cleanup_settings_staging_dir()
+        self.settings_staging_dir = tempfile.mkdtemp(prefix="archilume-settings-")
+        self.settings_staged = {}
+        self.settings_pending_removals = {}
+        self.settings_error = ""
+        self.settings_modal_open = True
+
+    def close_settings_modal(self) -> None:
+        self._cleanup_settings_staging_dir()
+        self.settings_staged = {}
+        self.settings_pending_removals = {}
+        self.settings_error = ""
+        self.settings_modal_open = False
+
+    def _cleanup_settings_staging_dir(self) -> None:
+        import shutil
+        if self.settings_staging_dir:
+            shutil.rmtree(self.settings_staging_dir, ignore_errors=True)
+        self.settings_staging_dir = ""
+
+    # handle_settings_upload: replaced by upload_settings_<field_id> per-field
+    # handlers defined earlier next to upload_create_<field_id>.
+
+    def remove_settings_staged_file(self, field_id: str, filename: str) -> None:
+        """Remove a staged (not-yet-applied) file from the settings modal."""
+        self._remove_staged_file(field_id, filename, target="settings")
+
+    def toggle_canonical_removal(self, field_id: str, filename: str) -> None:
+        """Mark/unmark an existing canonical file for removal on apply."""
+        pending = dict(self.settings_pending_removals)
+        current = list(pending.get(field_id, []))
+        if filename in current:
+            current.remove(filename)
+        else:
+            current.append(filename)
+        if current:
+            pending[field_id] = current
+        else:
+            pending.pop(field_id, None)
+        self.settings_pending_removals = pending
 
     def open_extract_modal(self) -> None:
         self.scan_archives()
@@ -4020,7 +5058,7 @@ class EditorState(rx.State):
 
     def log_js_trace(self, payload: dict) -> None:
         """Sink for JS-side tracer messages — logs one line per event to the
-        unified trace file (``~/.archilume/logs/archilume_ui.log``) when
+        unified trace file (``~/.archilume/logs/archilume_app.log``) when
         ``debug_mode`` is enabled.
 
         Invoked via ``window.applyEvent('editor_state.log_js_trace', {...})``.

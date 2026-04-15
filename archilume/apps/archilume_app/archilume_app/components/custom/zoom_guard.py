@@ -15,7 +15,7 @@ from reflex.vars.base import Var
 # Fully-qualified Reflex event name prefix for EditorState.
 _STATE_PREFIX = (
     "reflex___state____state"
-    ".archilume_ui___state___editor_state____editor_state"
+    ".archilume_app___state___editor_state____editor_state"
 )
 
 

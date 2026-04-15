@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MESSAGE=$(cat | jq -r '.message // empty'); echo \"$MESSAGE\" | grep -qiE 'archilume.ui|archilume_ui|reflex|rx\\.|component|state|styling|frontend|ui' && echo 'REFLEX DOCS REMINDER: This prompt may involve Reflex UI work. Before planning or implementing, search .claude/skills/reflex-docs/reference/ for relevant patterns. Read llms.txt for the overview, then grep components/core dirs for specifics. Use WebFetch on reflex.dev if local docs are insufficient. Do not invent workarounds when docs exist.' || true"
+            "command": "MESSAGE=$(cat | jq -r '.message // empty'); echo \"$MESSAGE\" | grep -qiE 'archilume.app|archilume_app|reflex|rx\\.|component|state|styling|frontend|ui' && echo 'REFLEX DOCS REMINDER: This prompt may involve Reflex UI work. Before planning or implementing, search .claude/skills/reflex-docs/reference/ for relevant patterns. Read llms.txt for the overview, then grep components/core dirs for specifics. Use WebFetch on reflex.dev if local docs are insufficient. Do not invent workarounds when docs exist.' || true"
           }
         ]
       },
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "MESSAGE=$(cat | jq -r '.message // empty'); echo \"$MESSAGE\" | grep -qiE 'archilume.ui|archilume_ui|viewport|editor_state|overlay|floor.?plan|df_analysis|image_loader' && echo 'ARCHILUME_UI EXPLORATION HOOK: This prompt focuses on archilume_ui. Before attempting any fix or implementation, launch an Explore agent to trace the relevant data flow through the archilume_ui codebase (Python state → Reflex event handlers → frontend rendering). Report back the full chain with file:line references before making edits. This preserves main context and prevents wrong-approach spirals.' || true"
+            "command": "MESSAGE=$(cat | jq -r '.message // empty'); echo \"$MESSAGE\" | grep -qiE 'archilume.app|archilume_app|viewport|editor_state|overlay|floor.?plan|df_analysis|image_loader' && echo 'ARCHILUME_APP EXPLORATION HOOK: This prompt focuses on archilume_app. Before attempting any fix or implementation, launch an Explore agent to trace the relevant data flow through the archilume_app codebase (Python state → Reflex event handlers → frontend rendering). Report back the full chain with file:line references before making edits. This preserves main context and prevents wrong-approach spirals.' || true"
           }
         ]
       }
@@ -78,8 +78,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *archilume_ui* ]] && cd $(git rev-parse --show-toplevel)/archilume/apps/archilume_ui && python -c \"import archilume_ui.archilume_ui\" 2>&1 || true",
-            "statusMessage": "Verifying archilume_ui imports..."
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *archilume_app* ]] && cd $(git rev-parse --show-toplevel)/archilume/apps/archilume_app && python -c \"import archilume_app.archilume_app\" 2>&1 || true",
+            "statusMessage": "Verifying archilume_app imports..."
           }
         ]
       }

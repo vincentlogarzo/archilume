@@ -181,7 +181,7 @@ def font_preview_page() -> rx.Component:
                 color=_TEXT_PRI,
             ),
             rx.text(
-                "Compare typeface options for Archilume UI — heading & body pairs",
+                "Compare typeface options for Archilume app — heading & body pairs",
                 style={"font_size": "13px", "font_family": "system-ui, sans-serif"},
                 color=_TEXT_SEC,
             ),

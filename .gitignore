@@ -26,8 +26,8 @@ projects/*
 # exist in the working tree from pre-refactor runs.
 *.log
 *.log.1
-archilume_ui_debug.log
-archilume_ui_debug.log.*
+archilume_app_debug.log
+archilume_app_debug.log.*
 debug_trace.json
 
 # SSH configuration (contains private keys - keep these secret!)

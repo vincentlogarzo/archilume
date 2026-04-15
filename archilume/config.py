@@ -27,6 +27,9 @@ PROJECT_ROOT        = Path(__file__).parent.parent
 # Top-level projects directory — each simulation project lives here
 PROJECTS_DIR        = Path(os.getenv("ARCHILUME_PROJECTS_DIR", str(PROJECT_ROOT / "projects")))
 
+# Reflex app directory (contains rxconfig.py and the archilume_app/ source package)
+ARCHILUME_APP_DIR   = PROJECT_ROOT / "archilume" / "apps" / "archilume_app"
+
 # ============================================================================
 # GCLOUD CLI PATH
 # ============================================================================

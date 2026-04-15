@@ -46,8 +46,8 @@ RUN uv pip install --system \
         "svgpathtools>=1.7.2" "lxml>=6.0.2" "psutil>=7.0.0" \
         "pandas>=2.3.1" "plotly>=6.6.0"
 
-COPY archilume/apps/archilume_ui/ /app/archilume_ui_app/
-WORKDIR /app/archilume_ui_app
+COPY archilume/apps/archilume_app/ /app/archilume_app/
+WORKDIR /app/archilume_app
 RUN reflex export --no-zip 2>/dev/null || (reflex init && reflex export --no-zip)
 
 
@@ -65,10 +65,10 @@ RUN uv pip install --system \
         "pandas>=2.3.1" "plotly>=6.6.0" \
     && uv cache clean
 
-COPY archilume/apps/archilume_ui/ /app/archilume_ui_app/
-COPY --from=archilume-app-builder /app/archilume_ui_app/.web/build \
-                                  /app/archilume_ui_app/.web/build
-WORKDIR /app/archilume_ui_app
+COPY archilume/apps/archilume_app/ /app/archilume_app/
+COPY --from=archilume-app-builder /app/archilume_app/.web/build \
+                                  /app/archilume_app/.web/build
+WORKDIR /app/archilume_app
 
 EXPOSE 3000 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

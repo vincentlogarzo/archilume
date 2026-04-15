@@ -104,6 +104,25 @@ def header() -> rx.Component:
                    "align_self": "center"},
             color=COLORS["text_sec"],
         ),
+        # Workflow mode label — rendered only when a project is loaded AND its
+        # mode resolves to a known display string (post-migration).
+        rx.cond(
+            EditorState.project_mode_display != "",
+            rx.flex(
+                rx.text("|", style={"font_family": FONT_MONO, "font_size": "14px",
+                                    "margin": "0 6px", "color": COLORS["panel_bdr"],
+                                    "align_self": "center"}),
+                rx.text(
+                    EditorState.project_mode_display,
+                    style={"font_family": FONT_MONO, "font_size": "11px",
+                           "white_space": "nowrap", "align_self": "center"},
+                    color=COLORS["accent"],
+                ),
+                align="center",
+                style={"align_self": "center"},
+            ),
+            rx.fragment(),
+        ),
         # Separator before tabs
         rx.box(style={"width": "20px", "flex_shrink": "0"}),
         # Workflow tabs

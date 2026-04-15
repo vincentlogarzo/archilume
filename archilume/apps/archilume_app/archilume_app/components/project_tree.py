@@ -357,16 +357,25 @@ def project_tree() -> rx.Component:
         EditorState.project_tree_open,
         rx.box(
             _tree_header(),
+            # Tree list sits directly below the header at its natural height so
+            # the floor-plan section hugs the bottom of the list when the list
+            # is short. `flex: 0 1 auto` + `min_height: 0` lets the list shrink
+            # and scroll internally when the list grows taller than the panel.
             rx.box(
                 rx.foreach(EditorState.tree_nodes, _render_tree_node),
                 style={
                     "overflow_y": "auto",
-                    "flex": "1",
+                    "flex": "0 1 auto",
+                    "min_height": "0",
                     "scrollbar_width": "thin",
                     "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
                 },
             ),
-            floor_plan_section(),
+            # Floor plan section: fixed size, never shrinks.
+            rx.box(floor_plan_section(), style={"flex_shrink": "0"}),
+            # Absorb any leftover vertical space so the list+floor-plan stack
+            # stays top-packed when content is short.
+            rx.box(style={"flex": "1 1 auto"}),
             rx.box(
                 id="project-tree-resize-handle",
                 style={

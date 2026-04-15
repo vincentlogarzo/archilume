@@ -1,4 +1,4 @@
-"""Tests for archilume_ui.lib.df_analysis — DF% computation logic.
+"""Tests for archilume_app.lib.df_analysis — DF% computation logic.
 
 All tests use synthetic numpy arrays — no HDR file I/O needed.
 Regression strategy: when a DF% bug is found, add a test here.
@@ -7,7 +7,7 @@ Regression strategy: when a DF% bug is found, add a test here.
 import numpy as np
 import pytest
 
-from archilume_ui.lib.df_analysis import (
+from archilume_app.lib.df_analysis import (
     DF_THRESHOLDS,
     _polygon_mask,
     compute_room_df,

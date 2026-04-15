@@ -1,4 +1,4 @@
-"""Tests for archilume_ui.lib.geometry — pure geometry utilities.
+"""Tests for archilume_app.lib.geometry — pure geometry utilities.
 
 Regression strategy: each test documents a specific geometric invariant.
 When a geometry bug is found, add a test here that fails with the old code
@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from archilume_ui.lib.geometry import (
+from archilume_app.lib.geometry import (
     _find_edge_for_point,
     _min_edge_distance,
     _point_to_segment_dist,
@@ -696,7 +696,7 @@ class TestPolygonLabelPoint:
         assert point_in_polygon(lx, ly, poly)
         # Centroid lands roughly between the square and stem — NOT at the
         # fat-square centre (2, 2) that polylabel would choose.
-        from archilume_ui.lib.geometry import polygon_centroid
+        from archilume_app.lib.geometry import polygon_centroid
         cx, cy = polygon_centroid(poly)
         assert abs(lx - cx) < 1e-6
         assert abs(ly - cy) < 1e-6

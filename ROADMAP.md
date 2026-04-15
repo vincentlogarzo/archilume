@@ -19,6 +19,40 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Packaging:** Implement Phase 6 to package final results into a timestamped `.zip` deliverable.
 - **Standalone Contour & Falsecolor Generators:** Create standalone contour (`cnt`) and falsecolor generators that accept IESVE `.pic` files or Archilume-rendered `.hdr` files, using the same conversion steps as `daylight_workflow_iesve.py`. Integrate these as interactive layers within `room_boundaries_editor.py` so users only need rendered images to perform analysis — no workflow re-run required. Users should be able to switch between raw, contour, and falsecolor layers, adjust parameters (e.g. scale, step size, legend range) per layer, and see updates live in the editor.
 
+## 🟡 MEDIUM PRIORITY: CLI / Headless Execution
+
+- **[CLI] Convert Headline Workflow Examples to argparse CLI Style:** Refactor the headline workflow example scripts so user inputs (project name, paths, mode, hours, resolution, GPU toggle, etc.) are exposed as `argparse` command-line flags instead of hardcoded constants at the top of each file.
+
+  **Primary use case — GCP VM / Docker compute jobs:** The strongest motivation is quick spin-up and testing of the compute image on a GCP VM. Once we have a built `archilume-compute` image (see Docker Packaging section below), the workflow is:
+  1. SSH into VM.
+  2. `docker run -d --name arch -v /workspace:/workspace archilume-compute:latest sleep infinity` (one-time launch).
+  3. `docker exec arch python examples/workflow_sunlight_access.py --project 527DP --hours 9,12,15` for each test run, no code edit needed.
+
+  This means we can iterate on different projects/parameters on the VM without rebuilding the image, editing files inside the container, or maintaining a separate "test runner" script.
+
+  **Secondary use cases:** cron/batch automation, CI smoke tests, reproducible "run this exact command" sharing between team members.
+
+  **Where CLI does NOT add value (do not waste effort here):**
+  - Reflex UI and the planned FastAPI engine layer call workflow classes via `import` directly — CLI is irrelevant to them.
+  - Local dev where the developer is already editing example scripts in their IDE — editing constants at the top is fine.
+  - Claude/agent-driven runs — agents can write `python -c "from archilume.workflows import ...; ...run()"` just as easily as a CLI invocation, so CLI gives no agent-ergonomics benefit.
+
+  **Files to convert (priority order, only if/when actually needed for VM testing):**
+  1. `examples/workflow_sunlight_access.py`
+  2. `examples/workflow_daylight_iesve.py`
+  3. `examples/workflow_daylight_iesve_api.py`
+
+  The `launch_*.py` GUI scripts (`launch_archilume_app.py`, `launch_hdr_editor.py`, `launch_obj_editor.py`) are **out of scope** — they open interactive editors with no headless/container use case.
+
+  **Implementation rules:**
+  - Keep the workflow class APIs (`SunlightAccessWorkflow`, `IESVEDaylightWorkflow`) untouched. Example scripts become thin argparse wrappers around the existing class.
+  - Use `argparse.ArgumentParser` with `--help` text describing every flag.
+  - Provide sensible defaults so `python examples/workflow_sunlight_access.py --project 527DP` still works without specifying every flag.
+  - Validate paths via `pathlib.Path`; fail loudly with a clear message if a required input is missing.
+  - Print the resolved config back to stdout before running, so `docker logs arch` shows exactly what was executed.
+
+---
+
 ## 🟡 MEDIUM PRIORITY: Input Handling & Validation
 
 - **Path Support:** Add support for file paths with spaces (quote all f-strings).

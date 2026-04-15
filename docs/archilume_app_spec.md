@@ -1,6 +1,6 @@
-# Archilume UI — Technical Specification
+# Archilume App — Technical Specification
 **Version**: 1.0 — 2026-04-02
-**App**: `archilume/apps/archilume_ui/`
+**App**: `archilume/apps/archilume_app/`
 **Framework**: Reflex 0.8.28.post1
 **Purpose**: Web-based HDR Daylight Factor Editor — room polygon drawing, DF% analysis, PDF overlay, export
 
@@ -8,9 +8,9 @@
 
 ## 1. Overview
 
-`archilume_ui` is a Reflex single-page application that replaces the matplotlib `HdrAoiEditor`. It allows users to open an Archilume project, view tone-mapped HDR daylight simulation images, draw room boundary polygons (AOIs), compute Daylight Factor statistics per room, and export Excel reports with archive ZIPs.
+`archilume_app` is a Reflex single-page application that replaces the matplotlib `HdrAoiEditor`. It allows users to open an Archilume project, view tone-mapped HDR daylight simulation images, draw room boundary polygons (AOIs), compute Daylight Factor statistics per room, and export Excel reports with archive ZIPs.
 
-The app runs locally at `http://localhost:3000` via `reflex run` from `archilume/apps/archilume_ui/`.
+The app runs locally at `http://localhost:3000` via `reflex run` from `archilume/apps/archilume_app/`.
 
 ---
 
@@ -48,7 +48,7 @@ The app runs locally at `http://localhost:3000` via `reflex run` from `archilume
 
 | Region | File | Size |
 |--------|------|------|
-| Root composition | `archilume_ui/archilume_ui.py` | 73 lines |
+| Root composition | `archilume_app/archilume_app.py` | 73 lines |
 | Header | `components/header.py` | 63 lines |
 | Sidebar | `components/sidebar.py` | 92 lines |
 | Viewport | `components/viewport.py` | 590 lines |
@@ -539,7 +539,7 @@ Defined in `styles.py`. All components reference these constants.
 
 ```bash
 # From project root
-cd archilume/apps/archilume_ui
+cd archilume/apps/archilume_app
 
 # First run — install dependencies
 uv sync
@@ -556,7 +556,7 @@ On first load, `init_on_load` fires: scans `projects/` directory. If exactly one
 
 ## 15. Known Gaps vs. Matplotlib Editor
 
-The following features from `HdrAoiEditor` (matplotlib) are not yet implemented. See `docs/archilume_ui_gap_report.md` for full details and fix effort estimates.
+The following features from `HdrAoiEditor` (matplotlib) are not yet implemented. See `docs/archilume_app_gap_report.md` for full details and fix effort estimates.
 
 | Gap | Severity | Effort |
 |-----|----------|--------|
@@ -579,12 +579,12 @@ The following features from `HdrAoiEditor` (matplotlib) are not yet implemented.
 ## 16. File Tree
 
 ```
-archilume/apps/archilume_ui/
+archilume/apps/archilume_app/
 ├── rxconfig.py                    # App config, Tailwind colours, SitemapPlugin
 ├── requirements.txt               # reflex, pillow, numpy, openpyxl, pymupdf
-└── archilume_ui/
+└── archilume_app/
     ├── __init__.py
-    ├── archilume_ui.py            # Page composition, app definition, keyboard script
+    ├── archilume_app.py            # Page composition, app definition, keyboard script
     ├── styles.py                  # COLORS, FONT_MONO, FONT_HEAD, reusable style dicts
     ├── state/
     │   ├── __init__.py            # re-exports EditorState
@@ -609,6 +609,6 @@ archilume/apps/archilume_ui/
 
 ---
 
-*Specification generated from implemented code — `archilume_ui` v1.0, 2026-04-02.*
-*For feature gap details see `docs/archilume_ui_gap_report.md`.*
+*Specification generated from implemented code — `archilume_app` v1.0, 2026-04-02.*
+*For feature gap details see `docs/archilume_app_gap_report.md`.*
 *For matplotlib editor reference see `docs/matplotlib_editor_ui_spec.md`.*

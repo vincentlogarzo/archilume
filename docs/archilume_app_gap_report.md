@@ -1,6 +1,6 @@
-# Archilume UI (Reflex) — Comprehensive Review & Gap Report v2
+# Archilume App (Reflex) — Comprehensive Review & Gap Report v2
 
-> Cross-check of the Reflex `archilume_ui` implementation against the matplotlib `HdrAoiEditor` (`matplotlib_app.py`, ~9,600 lines). Revision 2 — reflects all fixes applied 2026-04-02.
+> Cross-check of the Reflex `archilume_app` implementation against the matplotlib `HdrAoiEditor` (`matplotlib_app.py`, ~9,600 lines). Revision 2 — reflects all fixes applied 2026-04-02.
 
 ---
 

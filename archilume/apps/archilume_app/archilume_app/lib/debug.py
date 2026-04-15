@@ -9,9 +9,9 @@ Provides:
 - ``LOG_FILE_PATH`` / ``LOG_DIR`` — canonical location of the unified log.
 
 Single trace file location (all backend logs + JS-bridged traces go here):
-    ~/.archilume/logs/archilume_ui.log
+    ~/.archilume/logs/archilume_app.log
 
-On rotation the previous session moves to ``archilume_ui.log.1``. The
+On rotation the previous session moves to ``archilume_app.log.1``. The
 ``debug_trace.json`` ring buffer lives next to the log when no active
 project directory has been registered, and under the project directory
 once one is loaded.
@@ -75,7 +75,7 @@ class _CorrelationFilter(logging.Filter):
 # Logger — writes to terminal AND to a rotating log file
 # ---------------------------------------------------------------------------
 
-logger = logging.getLogger("archilume_ui")
+logger = logging.getLogger("archilume_app")
 logger.addFilter(_CorrelationFilter())
 
 # Default to WARNING; toggle_debug_mode flips to DEBUG
@@ -90,7 +90,7 @@ logger.setLevel(_initial_level)
 # existing ``~/.archilume_gcp_config.json`` user-state convention and keeps
 # logs out of the working tree.
 LOG_DIR: Path = Path(os.environ.get("ARCHILUME_LOG_DIR", str(Path.home() / ".archilume" / "logs")))
-LOG_FILE_PATH: Path = LOG_DIR / "archilume_ui.log"
+LOG_FILE_PATH: Path = LOG_DIR / "archilume_app.log"
 
 try:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
