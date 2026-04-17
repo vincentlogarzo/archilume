@@ -1,11 +1,12 @@
 # Stages: base → archilume-app-builder → archilume-app
 #                base →                   archilume-engine
-#                mcr.microsoft.com/devcontainers/python:3.12 → archilume-dev
 #
-# Build:  docker build --target archilume-app    -t archilume-app .
-#         docker build --target archilume-engine -t archilume-engine .
-#         docker build --target archilume-dev    -t archilume-dev .
-# Push:   docker tag archilume-dev vlogarzo/archilume-dev:latest && docker push vlogarzo/archilume-dev:latest
+# Build:
+#   docker build --target archilume-app    -t archilume-app .
+#   docker build --target archilume-engine -t archilume-engine .
+# Push:
+#   docker tag archilume-app vlogarzo/archilume-app:latest && docker push vlogarzo/archilume-app:latest
+#   docker tag archilume-engine vlogarzo/archilume-engine:latest && docker push vlogarzo/archilume-engine:latest
 
 
 # ── base ──────────────────────────────────────────────────────────────────────
@@ -120,56 +121,3 @@ EXPOSE 8100
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8100/health || exit 1
 CMD ["python", "-m", "archilume.api.run"]
-
-
-# ── archilume-dev ─────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/devcontainers/python:3.12 AS archilume-dev
-
-LABEL org.opencontainers.image.title="Archilume Dev Environment"
-LABEL org.opencontainers.image.description="Python 3.12 + Radiance 6.1 + Accelerad for architectural daylight simulation"
-LABEL org.opencontainers.image.source="https://github.com/vincentlogarzo/archilume.git"
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UV_LINK_MODE=copy
-
-ENV PATH="${PATH}:/usr/local/radiance/bin:/usr/local/accelerad/bin" \
-    RAYPATH="/usr/local/accelerad/lib:/usr/local/radiance/lib" \
-    ACCELERAD_ROOT="/usr/local/accelerad"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libgomp1 libglib2.0-0 libtiff6 libtiff-tools \
-        xfonts-base libgeos-dev libproj-dev python3-dev build-essential \
-        libcairo2-dev pkg-config git cmake \
-        libx11-dev tcl-dev tk-dev python3-tk libxext6 libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 \
-           /usr/lib/x86_64-linux-gnu/libtiff.so.5
-
-COPY .devcontainer/Radiance_5085332d_Linux/radiance-6.1.5085332d6e-Linux.tar.gz /tmp/radiance.tar.gz
-RUN cd /tmp && mkdir radiance-extract \
-    && tar -xzf radiance.tar.gz -C radiance-extract \
-    && cp -r radiance-extract/*/usr/local/radiance /usr/local/ \
-    && chmod -R 755 /usr/local/radiance \
-    && rm -rf radiance.tar.gz radiance-extract
-
-COPY .devcontainer/accelerad_07_beta_linux/usr/local/accelerad /usr/local/accelerad
-RUN chmod +x /usr/local/accelerad/bin/*
-
-RUN curl -LsSf https://astral.sh/uv/install.sh | \
-    env HOME=/root sh -s -- --no-modify-path \
-    && mv /root/.local/bin/uv /usr/local/bin/uv \
-    && mv /root/.local/bin/uvx /usr/local/bin/uvx
-
-WORKDIR /workspace
-COPY pyproject.toml uv.lock /workspace/
-COPY archilume/ /workspace/archilume/
-RUN uv sync --frozen
-
-COPY . /workspace/
-ENV PATH="/workspace/.venv/bin:${PATH}"
-
-USER vscode
-CMD ["python", "-m", "archilume"]

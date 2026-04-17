@@ -1,0 +1,33 @@
+# Archilume — run the app + engine locally
+#
+# Setup:
+#   1. Install Docker Desktop
+#   2. Run: docker compose -f C:\Projects\archilume\docker-compose-team.yml up -d
+      
+#   3. Open: http://localhost:3000
+#
+# Stop:    docker compose -f <path-to-this-file>\docker-compose-team.yml down
+# Update:  docker compose -f <path-to-this-file>\docker-compose-team.yml pull && docker compose -f <path-to-this-file>\docker-compose-team.yml up -d
+
+services:
+  archilume-app:
+    image: vlogarzo/archilume-app:latest
+    ports:
+      - "3000:3000"
+      - "8000:8000"
+    volumes:
+      - ./projects:/app/projects
+    environment:
+      - API_URL=http://localhost:8000
+    depends_on:
+      archilume-engine:
+        condition: service_healthy
+    restart: unless-stopped
+
+  archilume-engine:
+    image: vlogarzo/archilume-engine:latest
+    ports:
+      - "8100:8100"
+    volumes:
+      - ./projects:/app/projects
+    restart: unless-stopped
