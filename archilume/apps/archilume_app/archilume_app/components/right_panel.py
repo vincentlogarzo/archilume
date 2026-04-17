@@ -48,7 +48,7 @@ def _room_name_card() -> rx.Component:
             rx.input(
                 value=EditorState.room_name_input,
                 on_change=EditorState.set_room_name,
-                placeholder="e.g. BED1",
+                placeholder="auto ROOM_NNN",
                 style={"font_family": FONT_MONO, "font_size": "11px"},
                 size="1",
             ),

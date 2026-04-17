@@ -275,9 +275,7 @@ def _legend_popout() -> rx.Component:
                 rx.el.img(
                     src=EditorState.current_legend_b64,
                     style={
-                        "transform": "rotate(-90deg) translateX(-100%)",
-                        "transform_origin": "top left",
-                        "height": "500px",
+                        "max_height": "500px",
                         "width": "auto",
                         "pointer_events": "none",
                         "border_radius": "4px",
@@ -291,7 +289,6 @@ def _legend_popout() -> rx.Component:
                     "position": "absolute",
                     "bottom": "62px",
                     "left": "12px",
-                    "height": "109px",
                     "overflow": "visible",
                     "z_index": "20",
                     "pointer_events": "none",
@@ -419,7 +416,11 @@ def _render_room(room: dict) -> rx.Component:
                 ),
                 rx.el.polygon(
                     points=room["vertices_str"],
-                    fill=rx.cond(room["selected"], "url(#hatch-circ-selected)", "url(#hatch-circ)"),
+                    fill=rx.cond(
+                        room["is_circ"],
+                        rx.cond(room["selected"], "url(#hatch-circ-selected)", "url(#hatch-circ)"),
+                        rx.cond(room["selected"], COLORS["room_fill_selected"], COLORS["room_fill_unselected"]),
+                    ),
                     stroke=rx.cond(room["selected"], COLORS["room_stroke_selected"], COLORS["room_stroke_unselected"]),
                     stroke_width=EditorState.child_room_stroke_width,
                     stroke_dasharray="6,3",
@@ -457,20 +458,62 @@ def _render_room_html(room: dict) -> rx.Component:
         rx.box(
             # Annotation bounding box with centred text stack
             rx.el.div(
-                # DF line 0 (area result)
+                # DF line 0 — stacked fraction when area data present,
+                # plain text fallback otherwise
                 rx.cond(
-                    room["has_df"] & (room["df_line_0"] != ""),
+                    room["has_df"] & (room["df_area_num"] != ""),
+                    # Fraction layout: numerator / bar / denominator + "m² (pct)"
                     rx.el.div(
-                        room["df_line_0"],
+                        # Left: stacked fraction
+                        rx.el.div(
+                            rx.el.div(room["df_area_num"], style={
+                                **_text_base, "line_height": "1.1",
+                            }),
+                            rx.el.div(style={
+                                "border_top": "1.5px solid",
+                                "border_color": room["df_line_0_color"],
+                                "width": "100%",
+                                "margin": "0.05em 0",
+                            }),
+                            rx.el.div(room["df_area_den"], style={
+                                **_text_base, "line_height": "1.1",
+                            }),
+                            style={
+                                "display": "flex",
+                                "flex_direction": "column",
+                                "align_items": "center",
+                            },
+                        ),
+                        # Right: "m²" unit
+                        rx.el.span("m\u00b2", style={**_text_base}),
+                        # Right: percentage
+                        rx.el.span(room["df_area_pct"], style={**_text_base}),
                         style={
-                            **_text_base,
+                            "display": "flex",
+                            "align_items": "center",
+                            "justify_content": "center",
+                            "gap": "0.2em",
                             "font_size": room["room_df_fs_pct"] + "cqw",
                             "color": room["df_line_0_color"],
                             "font_weight": room["df_line_0_weight"],
                             "WebkitTextStroke": room["df_line_0_text_stroke"],
                         },
                     ),
-                    rx.fragment(),
+                    # Fallback: plain text (no area_per_pixel_m2)
+                    rx.cond(
+                        room["has_df"] & (room["df_line_0"] != ""),
+                        rx.el.div(
+                            room["df_line_0"],
+                            style={
+                                **_text_base,
+                                "font_size": room["room_df_fs_pct"] + "cqw",
+                                "color": room["df_line_0_color"],
+                                "font_weight": room["df_line_0_weight"],
+                                "WebkitTextStroke": room["df_line_0_text_stroke"],
+                            },
+                        ),
+                        rx.fragment(),
+                    ),
                 ),
                 # DF line 1 (threshold)
                 rx.cond(
@@ -1156,7 +1199,7 @@ _CANVAS_JS = rx.script("""
             lastMoveTime = now;
             if (isModalMode()) return;
             var c = getSvgCoords(svg, e.clientX, e.clientY);
-            dispatch('editor_state.handle_mouse_move', {data: {x: c.x, y: c.y}});
+            dispatch('editor_state.handle_mouse_move', {data: {x: c.x, y: c.y, shiftKey: e.shiftKey}});
         });
 
         svg.addEventListener('mousedown', function(e) {
@@ -1207,6 +1250,7 @@ def _svg_canvas() -> rx.Component:
                 src=EditorState.overlay_image_b64,
                 id="overlay-img",
                 data_transform=EditorState.overlay_css_transform,
+                data_overlay_params=EditorState.overlay_params_json,
                 style={
                     "position": "absolute", "top": "0", "left": "0",
                     "width": "100%", "height": "auto",
@@ -1318,7 +1362,7 @@ def _svg_canvas() -> rx.Component:
                 rx.el.svg.polyline(
                     points=EditorState.draw_points_str,
                     fill="none",
-                    stroke=COLORS["accent"],
+                    stroke="#FF00FF",
                     stroke_width="1.5",
                 ),
                 rx.fragment(),
@@ -1332,29 +1376,48 @@ def _svg_canvas() -> rx.Component:
                     y1=EditorState.last_draw_vertex["y"].to(str),
                     x2=EditorState.preview_point["x"].to(str),
                     y2=EditorState.preview_point["y"].to(str),
-                    stroke=COLORS["accent"],
+                    stroke="#FF00FF",
                     stroke_width="1",
                     stroke_dasharray="5,3",
                 ),
                 rx.fragment(),
             ),
 
-            # Draw vertex dots
+            # Draw vertex squares (3×3 px, centred on vertex)
             rx.foreach(
                 EditorState.draw_vertices,
-                lambda v: rx.el.circle(
-                    cx=v["x"].to(str), cy=v["y"].to(str), r="4",
-                    fill=COLORS["accent"],
+                lambda v: rx.el.rect(
+                    x=(v["x"] - 1.5).to(str),
+                    y=(v["y"] - 1.5).to(str),
+                    width="3",
+                    height="3",
+                    fill="#FF00FF",
                 ),
             ),
 
-            # Snap ring
+            # Closing preview line (preview → first vertex, when ≥3 vertices)
+            rx.cond(
+                EditorState.can_close_polygon & EditorState.has_preview,
+                rx.el.line(
+                    x1=EditorState.preview_point["x"].to(str),
+                    y1=EditorState.preview_point["y"].to(str),
+                    x2=EditorState.first_draw_vertex["x"].to(str),
+                    y2=EditorState.first_draw_vertex["y"].to(str),
+                    stroke="#FF00FF",
+                    stroke_width="1",
+                    stroke_dasharray="3,3",
+                ),
+                rx.fragment(),
+            ),
+
+            # Snap indicator (9×9 px square, centred on snap point)
             rx.cond(
                 EditorState.has_snap,
-                rx.el.circle(
-                    cx=EditorState.snap_point["x"].to(str),
-                    cy=EditorState.snap_point["y"].to(str),
-                    r=EditorState.snap_ring_radius, fill="none",
+                rx.el.rect(
+                    x=EditorState.snap_rect_x,
+                    y=EditorState.snap_rect_y,
+                    width="9", height="9",
+                    fill="none",
                     stroke=COLORS["snap_highlight"], stroke_width="1",
                 ),
                 rx.fragment(),

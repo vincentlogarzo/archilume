@@ -172,6 +172,40 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
     // demonstrably runs (we see zoomguard traces) and applyEvent is in scope.
     // ---------------------------------------------------------------------------
     var _vpLastW = -1, _vpLastH = -1, _vpObserver = null;
+
+    // Overlay resize interpolation — recompute PDF underlay transform
+    // synchronously on viewport resize using fractional params from
+    // data-overlay-params, bypassing the Python round-trip lag.
+    function _recomputeOverlayTransform(vw) {
+        var img = document.getElementById('overlay-img');
+        if (!img) return;
+        var paramsStr = img.dataset.overlayParams;
+        if (!paramsStr) return;
+        var p;
+        try { p = JSON.parse(paramsStr); } catch(e) { return; }
+        if (vw <= 0 || p.iw <= 0) return;
+
+        var sx = p.scale_x, sy = p.scale_y;
+        var pdf_aspect = p.pdf_aspect;
+        var cx = vw * (1.0 - sx) / 2.0;
+        var cy = (vw * p.ih / p.iw - vw * pdf_aspect * sy) / 2.0;
+        var ox = cx + p.offset_x * vw;
+        var oy = cy + p.offset_y * (vw * p.ih / p.iw);
+        var rot = (p.rotation_90 % 4) * 90;
+
+        img.style.transform = 'translate(' + ox + 'px, ' + oy + 'px) scale(' + sx + ', ' + sy + ') rotate(' + rot + 'deg)';
+    }
+    // Expose globally so other scripts can trigger recomputation
+    window._recomputeOverlayTransform = _recomputeOverlayTransform;
+
+    // Window resize listener — re-queries the container each time so it
+    // survives React DOM node replacement (unlike ResizeObserver on a
+    // captured ref).  Covers browser resize and screen changes.
+    window.addEventListener('resize', function() {
+        var vc = document.getElementById('viewport-container');
+        if (vc && vc.clientWidth > 0) _recomputeOverlayTransform(vc.clientWidth);
+    });
+
     function _installViewportObserver() {
         var el = document.getElementById('viewport-container');
         if (!el) {
@@ -188,6 +222,8 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
             }
             if (w === _vpLastW && h === _vpLastH) return;
             _vpLastW = w; _vpLastH = h;
+            // Recompute overlay transform synchronously (no Python round-trip)
+            _recomputeOverlayTransform(w);
             try {
                 window.applyEvent('editor_state.set_viewport_size', { data: { w: w, h: h } });
                 _trace('viewport_resize_flush', { w: w, h: h });

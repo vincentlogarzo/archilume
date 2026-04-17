@@ -2,6 +2,7 @@
 
 import heapq
 import math
+import re
 from typing import Optional
 
 
@@ -329,6 +330,69 @@ def snap_to_vertex(
     return (sx, sy, snapped)
 
 
+def _segments_intersect(
+    ax1: float, ay1: float, ax2: float, ay2: float,
+    bx1: float, by1: float, bx2: float, by2: float,
+) -> bool:
+    """Check if segment (ax1,ay1)-(ax2,ay2) properly crosses (bx1,by1)-(bx2,by2)."""
+    def _cross(ox: float, oy: float, ax: float, ay: float, bx: float, by: float) -> float:
+        return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
+
+    d1 = _cross(bx1, by1, bx2, by2, ax1, ay1)
+    d2 = _cross(bx1, by1, bx2, by2, ax2, ay2)
+    d3 = _cross(ax1, ay1, ax2, ay2, bx1, by1)
+    d4 = _cross(ax1, ay1, ax2, ay2, bx2, by2)
+    return ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+           ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0))
+
+
+def polygons_overlap(poly_a: list[list[float]], poly_b: list[list[float]]) -> bool:
+    """Check if two closed polygons share interior area.
+
+    Tests vertex containment (both directions) and edge crossing.
+    """
+    if len(poly_a) < 3 or len(poly_b) < 3:
+        return False
+    for v in poly_a:
+        if point_in_polygon(v[0], v[1], poly_b):
+            return True
+    for v in poly_b:
+        if point_in_polygon(v[0], v[1], poly_a):
+            return True
+    na, nb = len(poly_a), len(poly_b)
+    for i in range(na):
+        ax1, ay1 = poly_a[i]
+        ax2, ay2 = poly_a[(i + 1) % na]
+        for j in range(nb):
+            bx1, by1 = poly_b[j]
+            bx2, by2 = poly_b[(j + 1) % nb]
+            if _segments_intersect(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2):
+                return True
+    return False
+
+
+def clamp_point_outside_polygon(
+    px: float, py: float, vertices: list[list[float]]
+) -> tuple[float, float, bool]:
+    """If (px, py) is inside the polygon, project it to the nearest boundary edge.
+
+    Returns (clamped_x, clamped_y, was_clamped).
+    """
+    if not point_in_polygon(px, py, vertices):
+        return (px, py, False)
+    best_x, best_y = px, py
+    best_d = float("inf")
+    n = len(vertices)
+    for i in range(n):
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[(i + 1) % n]
+        nx, ny, d = nearest_point_on_edge(px, py, x1, y1, x2, y2)
+        if d < best_d:
+            best_d = d
+            best_x, best_y = nx, ny
+    return (best_x, best_y, True)
+
+
 def ortho_constrain(
     x: float, y: float, ref_x: float, ref_y: float
 ) -> tuple[float, float]:
@@ -339,6 +403,61 @@ def ortho_constrain(
         return (x, ref_y)
     else:
         return (ref_x, y)
+
+
+def angular_snap_constrain(
+    x: float, y: float, ref_x: float, ref_y: float, increment_deg: float = 15.0,
+) -> tuple[float, float]:
+    """Constrain (x, y) to the nearest angular increment from (ref_x, ref_y).
+
+    Projects the point along the snapped angle at the original distance.
+    With the default 15° increment this gives snap angles at 0°, 15°, 30°,
+    45°, 60°, 75°, 90°, etc. — a superset of the standard 90° ortho.
+    """
+    dx = x - ref_x
+    dy = y - ref_y
+    dist = math.hypot(dx, dy)
+    if dist < 1e-9:
+        return (x, y)
+    angle_rad = math.atan2(dy, dx)
+    angle_deg = math.degrees(angle_rad)
+    snapped_deg = round(angle_deg / increment_deg) * increment_deg
+    snapped_rad = math.radians(snapped_deg)
+    return (ref_x + dist * math.cos(snapped_rad), ref_y + dist * math.sin(snapped_rad))
+
+
+def ortho_closure_corner(
+    last_x: float, last_y: float,
+    first_x: float, first_y: float,
+    prev_x: float, prev_y: float,
+    tolerance: float = 1.0,
+) -> tuple[float, float] | None:
+    """Compute an L-shaped corner vertex for ortho polygon closure.
+
+    When the last and first vertices don't share an axis (within *tolerance*),
+    an intermediate corner is needed so both closing edges are perpendicular.
+
+    The corner is chosen to alternate direction from the previous edge:
+    * If the last edge (prev → last) was mostly horizontal, the closure starts
+      vertical → corner at ``(last_x, first_y)``.
+    * If the last edge was mostly vertical, the closure starts horizontal →
+      corner at ``(first_x, last_y)``.
+
+    Returns ``None`` when the two vertices are already axis-aligned and no
+    intermediate vertex is required.
+    """
+    if abs(last_x - first_x) < tolerance or abs(last_y - first_y) < tolerance:
+        return None  # Already ortho-aligned — no corner needed
+
+    dx = abs(last_x - prev_x)
+    dy = abs(last_y - prev_y)
+
+    if dx >= dy:
+        # Last edge was horizontal → next should be vertical first
+        return (last_x, first_y)
+    else:
+        # Last edge was vertical → next should be horizontal first
+        return (first_x, last_y)
 
 
 def nearest_point_on_edge(
@@ -587,6 +706,23 @@ def polygon_bbox(vertices: list[list[float]]) -> tuple[float, float, float, floa
     xs = [v[0] for v in vertices]
     ys = [v[1] for v in vertices]
     return (min(xs), min(ys), max(xs), max(ys))
+
+
+def next_room_number(existing_names: list[str]) -> int:
+    """Find the next available ROOM_NNN number across all existing names.
+
+    Scans every name for ``ROOM_\\d+`` patterns (even when prefixed by a parent
+    name like ``L200002B_ROOM_003``) and returns one more than the highest number
+    found.
+    """
+    nums: list[int] = []
+    for name in existing_names:
+        for m in re.finditer(r"ROOM_(\d+)", name):
+            try:
+                nums.append(int(m.group(1)))
+            except ValueError:
+                pass
+    return max(nums, default=0) + 1
 
 
 def make_unique_name(name: str, existing_names: list[str]) -> str:

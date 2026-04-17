@@ -18,6 +18,7 @@ from archilume_app.lib.geometry import (
     inset_polygon,
     make_unique_name,
     nearest_point_on_edge,
+    next_room_number,
     ortho_constrain,
     point_in_polygon,
     polygon_area,
@@ -619,6 +620,40 @@ class TestMakeUniqueName:
     def test_many_conflicts(self):
         existing = ["R"] + [f"R_{i}" for i in range(2, 102)]
         assert make_unique_name("R", existing) == "R_102"
+
+
+# ===========================================================================
+# next_room_number
+# ===========================================================================
+
+class TestNextRoomNumber:
+    def test_no_existing_rooms(self):
+        assert next_room_number([]) == 1
+
+    def test_sequential_top_level(self):
+        assert next_room_number(["ROOM_001", "ROOM_002"]) == 3
+
+    def test_with_parent_prefixed(self):
+        assert next_room_number(["L200002B_ROOM_003", "ROOM_001"]) == 4
+
+    def test_with_gaps(self):
+        assert next_room_number(["ROOM_001", "ROOM_005"]) == 6
+
+    def test_non_room_names_ignored(self):
+        assert next_room_number(["L200002B", "CIRCULATION", "BED1"]) == 1
+
+    def test_mixed_names(self):
+        assert next_room_number(["ROOM_001", "L200002B", "L200002B_ROOM_002"]) == 3
+
+    def test_high_numbers(self):
+        assert next_room_number(["ROOM_099", "ROOM_100"]) == 101
+
+    def test_single_digit_no_padding(self):
+        assert next_room_number(["ROOM_1"]) == 2
+
+    def test_multiple_room_patterns_in_one_name(self):
+        # Edge case: a name containing multiple ROOM_ patterns
+        assert next_room_number(["ROOM_001_ROOM_005"]) == 6
 
 
 # ===========================================================================

@@ -23,6 +23,7 @@ def compute_room_df(
     image_width: int = 0,
     image_height: int = 0,
     area_per_pixel_m2: float = 0.0,
+    exclude_polygons: list[list[list[float]]] | None = None,
 ) -> Optional[dict]:
     """Compute DF% statistics for a room polygon on a DF image.
 
@@ -48,6 +49,14 @@ def compute_room_df(
 
     # Create polygon mask
     mask = _polygon_mask(vertices, w, h)
+
+    # Subtract child room polygons so parent stats exclude divided areas
+    if exclude_polygons:
+        for ex_verts in exclude_polygons:
+            if len(ex_verts) >= 3:
+                ex_mask = _polygon_mask(ex_verts, w, h)
+                mask = mask & ~ex_mask
+
     if not np.any(mask):
         return None
 
@@ -74,12 +83,19 @@ def compute_room_df(
         above = 0.0
         status = "none"
 
-    # Format lines matching matplotlib: "X.XX m² (YY%)" / "@ Z% DF"
+    # Format lines: area fraction + threshold + (room name added by caller)
     result_lines: list[str] = []
+    area_num = ""   # fraction numerator  (compliant area)
+    area_den = ""   # fraction denominator (total area)
+    area_pct = ""   # percentage suffix
     if threshold is not None:
         if area_per_pixel_m2 > 0:
             above_area_m2 = above_pixels * area_per_pixel_m2
-            result_lines.append(f"{above_area_m2:.2f} m\u00b2 ({above:.0f}%)")
+            total_area_m2 = total_pixels * area_per_pixel_m2
+            area_num = f"{above_area_m2:.2f}"
+            area_den = f"{total_area_m2:.2f}"
+            area_pct = f"({above:.0f}%)"
+            result_lines.append(f"{area_num} / {area_den} m\u00b2 {area_pct}")
         else:
             result_lines.append(f"{above:.0f}% above {threshold:g}% DF")
         result_lines.append(f"\u2265 {threshold:g}% DF")
@@ -91,6 +107,9 @@ def compute_room_df(
         "threshold": threshold,
         "pass_status": status,
         "result_lines": result_lines,
+        "area_num": area_num,
+        "area_den": area_den,
+        "area_pct": area_pct,
     }
 
 

@@ -265,6 +265,7 @@ class TestComputeRoomDfResultLines:
         r = compute_room_df(img, FULL_POLY_10, room_type="BED", area_per_pixel_m2=0.01)
         assert r is not None
         assert "m\u00b2" in r["result_lines"][0]
+        assert "/" in r["result_lines"][0]  # "X.XX / Y.YY m²" format
 
     def test_result_lines_percent_format_without_area(self):
         img = make_uniform_image(10, 10, 2.0)
@@ -278,6 +279,107 @@ class TestComputeRoomDfResultLines:
         r = compute_room_df(img, FULL_POLY_10, room_type="CIRC")
         assert r is not None
         assert r["result_lines"] == []
+
+
+# ===========================================================================
+# compute_room_df — exclude_polygons (parent/child deduction)
+# ===========================================================================
+
+# Right half of 20x20 image
+RIGHT_HALF_20: list[list[float]] = [[10.0, 0.0], [20.0, 0.0], [20.0, 20.0], [10.0, 20.0]]
+# Top-left quarter of 20x20 image
+TOP_LEFT_QUARTER_20: list[list[float]] = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+
+
+class TestExcludePolygons:
+    """Verify that exclude_polygons (child room mask subtraction) works."""
+
+    def test_exclude_reduces_total_pixels(self):
+        """Excluding a centre child from a full parent should change mean_df
+        when the excluded region has different DF values."""
+        img = np.zeros((20, 20), dtype=np.float32)
+        img[:, :] = 0.5  # Background at 0.5%
+        img[5:15, 5:15] = 3.0  # Centre region at 3.0%
+        r_without = compute_room_df(img, FULL_POLY_20, room_type="BED")
+        r_with = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                 exclude_polygons=[CENTRE_POLY])
+        assert r_without is not None and r_with is not None
+        # After excluding the high-DF centre, mean should drop
+        assert r_with["mean_df"] < r_without["mean_df"]
+
+    def test_exclude_reduces_compliant_area_m2(self):
+        """With area_per_pixel_m2, compliant area in result_lines should shrink."""
+        img = make_uniform_image(20, 20, 2.0)  # All above BED threshold
+        r_without = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                    area_per_pixel_m2=0.01)
+        r_with = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                 area_per_pixel_m2=0.01,
+                                 exclude_polygons=[CENTRE_POLY])
+        assert r_without is not None and r_with is not None
+        # Parse compliant area from "X.XX / Y.YY m² (ZZ%)"
+        area_without = float(r_without["result_lines"][0].split()[0])
+        area_with = float(r_with["result_lines"][0].split()[0])
+        assert area_with < area_without
+
+    def test_exclude_changes_percentage(self):
+        """Excluding a region with different DF should change pct_above."""
+        img = np.zeros((20, 20), dtype=np.float32)
+        img[5:15, 5:15] = 2.0  # Only centre is above LIVING threshold
+        r_without = compute_room_df(img, FULL_POLY_20, room_type="LIVING")
+        r_with = compute_room_df(img, FULL_POLY_20, room_type="LIVING",
+                                 exclude_polygons=[CENTRE_POLY])
+        assert r_without is not None and r_with is not None
+        # Excluding the only above-threshold region → pct_above should drop
+        assert r_with["pct_above"] < r_without["pct_above"]
+
+    def test_exclude_empty_list_no_effect(self):
+        """exclude_polygons=[] should produce identical results to None."""
+        img = make_uniform_image(20, 20, 1.5)
+        r_none = compute_room_df(img, FULL_POLY_20, room_type="BED")
+        r_empty = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                  exclude_polygons=[])
+        assert r_none is not None and r_empty is not None
+        assert abs(r_none["mean_df"] - r_empty["mean_df"]) < 1e-6
+        assert abs(r_none["pct_above"] - r_empty["pct_above"]) < 1e-6
+
+    def test_exclude_degenerate_polygon_ignored(self):
+        """A 2-vertex polygon in exclude list should be silently skipped."""
+        img = make_uniform_image(20, 20, 1.5)
+        r_normal = compute_room_df(img, FULL_POLY_20, room_type="BED")
+        r_degen = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                  exclude_polygons=[[[0.0, 0.0], [5.0, 5.0]]])
+        assert r_normal is not None and r_degen is not None
+        assert abs(r_normal["mean_df"] - r_degen["mean_df"]) < 1e-6
+
+    def test_exclude_covers_entire_parent_returns_none(self):
+        """Excluding the whole parent polygon removes all pixels → None."""
+        img = make_uniform_image(20, 20, 1.0)
+        result = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                 exclude_polygons=[FULL_POLY_20])
+        assert result is None
+
+    def test_multiple_excludes(self):
+        """Two child polygons excluded → smaller area than one."""
+        img = make_uniform_image(20, 20, 2.0)
+        r_one = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                area_per_pixel_m2=0.01,
+                                exclude_polygons=[CENTRE_POLY])
+        r_two = compute_room_df(img, FULL_POLY_20, room_type="BED",
+                                area_per_pixel_m2=0.01,
+                                exclude_polygons=[CENTRE_POLY, RIGHT_HALF_20])
+        assert r_one is not None and r_two is not None
+        area_one = float(r_one["result_lines"][0].split()[0])
+        area_two = float(r_two["result_lines"][0].split()[0])
+        assert area_two < area_one
+
+    def test_circ_parent_with_exclude(self):
+        """CIRC parent + exclusion → status=none, empty result_lines."""
+        img = make_uniform_image(20, 20, 2.0)
+        result = compute_room_df(img, FULL_POLY_20, room_type="CIRC",
+                                 exclude_polygons=[CENTRE_POLY])
+        assert result is not None
+        assert result["pass_status"] == "none"
+        assert result["result_lines"] == []
 
 
 # ===========================================================================

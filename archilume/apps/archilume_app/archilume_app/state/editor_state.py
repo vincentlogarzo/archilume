@@ -4,6 +4,7 @@ All state is in one class to avoid Reflex substate delegation issues.
 Organised into sections matching the original split-state design.
 """
 
+import json
 import logging
 import math
 import os
@@ -103,6 +104,10 @@ class EnrichedRoom(TypedDict):
     bbox_top_pct: str
     bbox_w_pct: str
     bbox_h_pct: str
+    # Fraction fields for stacked area annotation (numerator / denominator)
+    df_area_num: str      # compliant area, e.g. "0.00"
+    df_area_den: str      # total area, e.g. "1.71"
+    df_area_pct: str      # percentage suffix, e.g. "(0%)"
 
 
 class VertexDict(TypedDict):
@@ -225,6 +230,7 @@ class EditorState(rx.State):
     df_placement_mode: bool = False
     pan_mode: bool = False
     ortho_mode: bool = True
+    shift_held: bool = False
 
     # =====================================================================
     # §5 — Drawing buffer
@@ -326,7 +332,7 @@ class EditorState(rx.State):
     viewport_height: int = 0
 
     # -- Grid overlay
-    grid_visible: bool = True
+    grid_visible: bool = False
     grid_spacing_mm: int = 50  # default 50mm = 5cm, min 5mm
 
     # =====================================================================
@@ -756,6 +762,16 @@ class EditorState(rx.State):
         return "12"
 
     @rx.var
+    def snap_rect_x(self) -> str:
+        """Top-left x of the 9×9 snap indicator square."""
+        return str(self.snap_point.get("x", 0) - 4.5)
+
+    @rx.var
+    def snap_rect_y(self) -> str:
+        """Top-left y of the 9×9 snap indicator square."""
+        return str(self.snap_point.get("y", 0) - 4.5)
+
+    @rx.var
     def enriched_rooms(self) -> list[EnrichedRoom]:
         """Rooms for current HDR enriched with SVG rendering data."""
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
@@ -781,7 +797,8 @@ class EditorState(rx.State):
 
         result = []
         intermediates = []   # pass-1 data per room
-        per_room_fs = []     # max font size per visible room
+        per_room_fs = []     # max font size per visible parent room
+        per_room_fs_child = []  # max font size per visible child room
         for i, room in enumerate(self.rooms):
             if room.get("hdr_file") != hdr_name:
                 continue
@@ -799,7 +816,7 @@ class EditorState(rx.State):
             if len(verts) < 3:
                 continue
 
-            is_div = bool(room.get("parent")) and room.get("room_type") == "CIRC"
+            is_div = bool(room.get("parent"))
             verts_str = " ".join(f"{v[0]},{v[1]}" for v in verts)
 
             # Label position via centroid
@@ -810,6 +827,9 @@ class EditorState(rx.State):
             df_lines_raw = df_info.get("result_lines", [])
             df_status = df_info.get("pass_status", "none")
             has_df = len(df_lines_raw) > 0
+            _area_num = df_info.get("area_num", "")
+            _area_den = df_info.get("area_den", "")
+            _area_pct = df_info.get("area_pct", "")
 
             # DF colour from pct_above (numeric), matching matplotlib thresholds
             pct_above = df_info.get("pct_above")
@@ -853,7 +873,14 @@ class EditorState(rx.State):
             else:
                 stack_mult = LBL_RATIO
 
-            chars_0 = len(df_lines_raw[0]) if has_df else 0
+            # When fraction is rendered (stacked num/den), visual width is
+            # narrower than the flat text.  Estimate from the layout:
+            #   fraction_col + gap + "m²" + gap + pct
+            if _area_num:
+                _frac_w = max(len(_area_num), len(_area_den))
+                chars_0 = _frac_w + 1 + 2 + 1 + len(_area_pct)
+            else:
+                chars_0 = len(df_lines_raw[0]) if has_df else 0
             chars_1 = len(df_lines_raw[1]) if len(df_lines_raw) >= 2 else 0
             chars_name = len(room.get("name", ""))
             CHAR_W = 0.65  # DM Mono + special chars + bold safety
@@ -890,14 +917,20 @@ class EditorState(rx.State):
                 "line_0_stroke": line_0_stroke, "line_0_stroke_w": line_0_stroke_w,
                 "stack_mult": stack_mult, "max_fs": max_fs,
                 "width_mult": width_mult, "stack_mult_padded": stack_mult_padded,
+                "area_num": _area_num, "area_den": _area_den, "area_pct": _area_pct,
             })
-            # Include ALL non-circ rooms in min() — even tiny ones — so
-            # uniform_fs cannot exceed any rendered room's local capacity.
+            # Two-tier font sizing: parent rooms and child (div) rooms get
+            # independent uniform sizes so small children don't shrink
+            # parent annotations.
             if not is_circ:
-                per_room_fs.append(max_fs)
+                if is_div:
+                    per_room_fs_child.append(max_fs)
+                else:
+                    per_room_fs.append(max_fs)
 
-        # ---- Uniform font size: smallest across all visible rooms ----
-        uniform_fs = min(per_room_fs) if per_room_fs else 0.0
+        # ---- Uniform font sizes per tier ----
+        uniform_fs_parent = min(per_room_fs) if per_room_fs else 0.0
+        uniform_fs_child = min(per_room_fs_child) if per_room_fs_child else uniform_fs_parent
 
         # ---- Pass 2: build result dicts using uniform font size ----
         LBL_RATIO = 0.75
@@ -912,14 +945,13 @@ class EditorState(rx.State):
             has_df = info["has_df"]
             df_lines_raw = info["df_lines_raw"]
 
-            _df_fs_fit = uniform_fs
+            _tier_fs = uniform_fs_child if info["is_div"] else uniform_fs_parent
+            _df_fs_fit = _tier_fs
             _lbl_fs_fit = _df_fs_fit * LBL_RATIO
-            # Hide if uniform size exceeds this room's local capacity
-            # (defensive — uniform_fs = min(per_room_fs) so should always fit).
             show_labels = (
                 _df_fs_fit >= 1.0
                 and not info["is_circ"]
-                and uniform_fs <= info["max_fs"] + 1e-6
+                and _tier_fs <= info["max_fs"] + 1e-6
             )
 
             room_df_fs = str(round(_df_fs_fit, 2))
@@ -1023,6 +1055,9 @@ class EditorState(rx.State):
                 "bbox_top_pct": _bbox_top_pct,
                 "bbox_w_pct": _bbox_w_pct,
                 "bbox_h_pct": _bbox_h_pct,
+                "df_area_num": info.get("area_num", ""),
+                "df_area_den": info.get("area_den", ""),
+                "df_area_pct": info.get("area_pct", ""),
             })
         return result
 
@@ -1041,6 +1076,16 @@ class EditorState(rx.State):
         if self.draw_vertices:
             return self.draw_vertices[-1]
         return {"x": 0.0, "y": 0.0}
+
+    @rx.var
+    def first_draw_vertex(self) -> dict:
+        if self.draw_vertices:
+            return self.draw_vertices[0]
+        return {"x": 0.0, "y": 0.0}
+
+    @rx.var
+    def can_close_polygon(self) -> bool:
+        return len(self.draw_vertices) >= 3
 
     @rx.var
     def has_snap(self) -> bool:
@@ -1128,6 +1173,32 @@ class EditorState(rx.State):
         oy = cy + t.get("offset_y", 0) * (vw * ih / iw)
         rot = (t.get("rotation_90", 0) % 4) * 90
         return f"translate({ox}px, {oy}px) scale({sx}, {sy}) rotate({rot}deg)"
+
+    @rx.var
+    def overlay_params_json(self) -> str:
+        """JSON-encoded fractional transform params for JS-side resize interpolation.
+
+        JS reads these from a data attribute to recompute pixel transforms
+        synchronously on viewport resize, avoiding the Python round-trip lag.
+        """
+        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps
+        t = self._get_current_overlay_transform()
+        iw = self.image_width
+        ih = self.image_height or 1
+        if self.overlay_img_width > 0:
+            pdf_aspect = self.overlay_img_height / self.overlay_img_width
+        else:
+            pdf_aspect = ih / max(iw, 1)
+        return json.dumps({
+            "offset_x": t.get("offset_x", 0),
+            "offset_y": t.get("offset_y", 0),
+            "scale_x": t.get("scale_x", 1.0),
+            "scale_y": t.get("scale_y", 1.0),
+            "rotation_90": t.get("rotation_90", 0),
+            "iw": iw,
+            "ih": ih,
+            "pdf_aspect": pdf_aspect,
+        })
 
     @rx.var
     def progress_pct_str(self) -> str:
@@ -1261,6 +1332,9 @@ class EditorState(rx.State):
         was_on = self.draw_mode
         self._clear_modes()
         self.draw_mode = not was_on
+        if self.draw_mode:
+            self.room_name_input = ""  # Force ROOM_NNN auto-naming for drawn rooms
+            self.selected_parent = ""  # Draw mode creates parent rooms; clear stale parent
         self.status_message = "Draw mode ON — click to place vertices, S to save" if self.draw_mode else "Ready"
         self.status_colour = "accent" if self.draw_mode else "accent2"
 
@@ -1623,11 +1697,22 @@ class EditorState(rx.State):
             idx = 0
         self.selected_parent = parents[idx]
 
+    def _collect_children(self, indices: set[int]) -> set[int]:
+        """Expand a set of room indices to include children of any parent rooms."""
+        expanded = set(indices)
+        for i in list(expanded):
+            if 0 <= i < len(self.rooms) and not self.rooms[i].get("parent"):
+                parent_name = self.rooms[i].get("name", "")
+                if parent_name:
+                    for j, r in enumerate(self.rooms):
+                        if r.get("parent") == parent_name:
+                            expanded.add(j)
+        return expanded
+
     @debug_handler
     def delete_room(self) -> None:
         if self.multi_selected_idxs:
-            to_delete = set(self.multi_selected_idxs)
-            # Build compound undo entry with rooms in ascending index order for correct re-insertion
+            to_delete = self._collect_children(set(self.multi_selected_idxs))
             undo_rooms = [
                 {"idx": i, "data": dict(self.rooms[i])}
                 for i in sorted(to_delete)
@@ -1643,14 +1728,24 @@ class EditorState(rx.State):
             self.multi_selected_idxs = []
             self.selected_room_idx = -1
         elif 0 <= self.selected_room_idx < len(self.rooms):
-            room_data = dict(self.rooms[self.selected_room_idx])
+            to_delete = self._collect_children({self.selected_room_idx})
+            undo_rooms = [
+                {"idx": i, "data": dict(self.rooms[i])}
+                for i in sorted(to_delete)
+                if 0 <= i < len(self.rooms)
+            ]
+            room_name = self.rooms[self.selected_room_idx].get("name", "?")
+            child_count = len(to_delete) - 1
+            desc = f"Delete room {room_name}"
+            if child_count > 0:
+                desc += f" + {child_count} child room(s)"
             self._push_undo({
                 "action": "room_delete",
-                "desc": f"Delete room {room_data.get('name', '?')}",
-                "before": {"rooms": [{"idx": self.selected_room_idx, "data": room_data}]},
+                "desc": desc,
+                "before": {"rooms": undo_rooms},
                 "after": {},
             })
-            self.rooms = [r for i, r in enumerate(self.rooms) if i != self.selected_room_idx]
+            self.rooms = [r for i, r in enumerate(self.rooms) if i not in to_delete]
             self.selected_room_idx = -1
         self.status_message = "Room deleted"
         self._auto_save()
@@ -1668,6 +1763,7 @@ class EditorState(rx.State):
         button = int(data.get("button", 0))
         shift = bool(data.get("shiftKey", False))
         ctrl = bool(data.get("ctrlKey", False))
+        self.shift_held = shift
         viewport_x = float(data.get("viewport_x", x))
         viewport_y = float(data.get("viewport_y", y))
 
@@ -1739,6 +1835,7 @@ class EditorState(rx.State):
         y = float(data.get("y", 0))
         self.mouse_x = x
         self.mouse_y = y
+        self.shift_held = bool(data.get("shiftKey", False))
 
         # Overlay drag is handled entirely by the JS capture-phase listener in
         # viewport.py (stopImmediatePropagation prevents on_mouse_move firing).
@@ -1970,16 +2067,59 @@ class EditorState(rx.State):
     # =====================================================================
 
     def _drawing_add_vertex(self, x: float, y: float) -> None:
-        from ..lib.geometry import ortho_constrain, point_in_polygon, snap_to_vertex
+        from ..lib.geometry import (
+            angular_snap_constrain,
+            clamp_point_outside_polygon,
+            ortho_closure_corner,
+            point_in_polygon,
+            snap_to_vertex,
+        )
+
+        # Close-polygon: snap to first vertex when ≥3 vertices placed
+        if len(self.draw_vertices) >= 3:
+            first = self.draw_vertices[0]
+            if math.hypot(x - first["x"], y - first["y"]) < 15.0:
+                # Insert intermediate ortho corner so all closing edges are 90°
+                if self.ortho_mode:
+                    last = self.draw_vertices[-1]
+                    prev = self.draw_vertices[-2]
+                    corner = ortho_closure_corner(
+                        last["x"], last["y"], first["x"], first["y"], prev["x"], prev["y"],
+                    )
+                    if corner is not None:
+                        self.draw_vertices = self.draw_vertices + [{"x": corner[0], "y": corner[1]}]
+                self._save_new_room()
+                return
+
+        # Snap to existing room vertices
         all_verts = self._get_all_vertices_for_hdr()
         sx, sy, snapped = snap_to_vertex(x, y, all_verts, threshold=10.0)
         if snapped:
             x, y = sx, sy
-        if self.ortho_mode and self.draw_vertices:
+
+        # Angular / ortho constraint (draw mode: 15° snap unless Shift held)
+        if self.ortho_mode and self.draw_vertices and not self.shift_held:
             last = self.draw_vertices[-1]
-            x, y = ortho_constrain(x, y, last["x"], last["y"])
-        if not self.draw_vertices and not self.selected_parent:
-            self._auto_detect_parent(x, y)
+            x, y = angular_snap_constrain(x, y, last["x"], last["y"])
+
+        # Parent-room overlap prevention (only when drawing a new parent room)
+        if not self.selected_parent:
+            parent_polys = self._get_parent_room_polygons_for_hdr()
+            if not self.draw_vertices:
+                # First vertex: reject if inside existing parent room
+                for poly in parent_polys:
+                    if point_in_polygon(x, y, poly):
+                        self.status_message = (
+                            "Cannot draw inside an existing room — "
+                            "use DD (room divider) to subdivide"
+                        )
+                        self.status_colour = "warning"
+                        return
+            else:
+                # Subsequent vertices: clamp to boundary if inside a parent
+                for poly in parent_polys:
+                    x, y, _ = clamp_point_outside_polygon(x, y, poly)
+
         self.draw_vertices = self.draw_vertices + [{"x": x, "y": y}]
         self.snap_point = {}
 
@@ -1988,7 +2128,26 @@ class EditorState(rx.State):
             self.draw_vertices = self.draw_vertices[:-1]
 
     def _update_draw_preview(self, x: float, y: float) -> None:
-        from ..lib.geometry import ortho_constrain, snap_to_vertex
+        from ..lib.geometry import angular_snap_constrain, clamp_point_outside_polygon, ortho_closure_corner, snap_to_vertex
+
+        # Close-polygon snap: prioritise first vertex when ≥3 placed
+        if len(self.draw_vertices) >= 3:
+            first = self.draw_vertices[0]
+            if math.hypot(x - first["x"], y - first["y"]) < 15.0:
+                self.snap_point = {"x": first["x"], "y": first["y"]}
+                if self.ortho_mode:
+                    last = self.draw_vertices[-1]
+                    prev = self.draw_vertices[-2]
+                    corner = ortho_closure_corner(
+                        last["x"], last["y"], first["x"], first["y"], prev["x"], prev["y"],
+                    )
+                    if corner is not None:
+                        self.preview_point = {"x": corner[0], "y": corner[1]}
+                        return
+                self.preview_point = {"x": first["x"], "y": first["y"]}
+                return
+
+        # Normal snap to existing room vertices
         all_verts = self._get_all_vertices_for_hdr()
         sx, sy, snapped = snap_to_vertex(x, y, all_verts, threshold=10.0)
         if snapped:
@@ -1996,9 +2155,18 @@ class EditorState(rx.State):
             x, y = sx, sy
         else:
             self.snap_point = {}
-        if self.ortho_mode and self.draw_vertices:
+
+        # Angular / ortho constraint (draw mode: 15° snap unless Shift held)
+        if self.ortho_mode and self.draw_vertices and not self.shift_held:
             last = self.draw_vertices[-1]
-            x, y = ortho_constrain(x, y, last["x"], last["y"])
+            x, y = angular_snap_constrain(x, y, last["x"], last["y"])
+
+        # Clamp preview outside parent rooms (when drawing a new parent)
+        if not self.selected_parent and self.draw_vertices:
+            parent_polys = self._get_parent_room_polygons_for_hdr()
+            for poly in parent_polys:
+                x, y, _ = clamp_point_outside_polygon(x, y, poly)
+
         self.preview_point = {"x": x, "y": y}
 
     @debug_handler
@@ -2040,21 +2208,31 @@ class EditorState(rx.State):
                 )
 
     def _save_new_room(self) -> None:
-        from ..lib.geometry import make_unique_name, point_in_polygon
+        from ..lib.geometry import make_unique_name, next_room_number, point_in_polygon, polygons_overlap
         vertices = [[v["x"], v["y"]] for v in self.draw_vertices]
         name = self.room_name_input.strip()
         if not name:
-            name = f"ROOM_{len(self.rooms) + 1:03d}"
-        if self.selected_parent:
-            full_name = f"{self.selected_parent}_{name}"
-        else:
-            full_name = name
+            existing_names_list = [r.get("name", "") for r in self.rooms]
+            next_num = next_room_number(existing_names_list)
+            name = f"ROOM_{next_num:03d}"
         existing_names = [r.get("name", "") for r in self.rooms]
-        full_name = make_unique_name(full_name, existing_names)
+        full_name = make_unique_name(name, existing_names)
 
         hdr_name = ""
         if self.hdr_files and 0 <= self.current_hdr_idx < len(self.hdr_files):
             hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+
+        # Overlap validation: new parent room must not overlap existing parents
+        if not self.selected_parent:
+            parent_polys = self._get_parent_room_polygons_for_hdr()
+            for poly in parent_polys:
+                if polygons_overlap(vertices, poly):
+                    self.status_message = (
+                        "Room overlaps an existing room — "
+                        "adjust vertices or use DD to subdivide"
+                    )
+                    self.status_colour = "warning"
+                    return
 
         # Containment validation
         if self.selected_parent:
@@ -2122,6 +2300,19 @@ class EditorState(rx.State):
             if room.get("hdr_file") == hdr_name:
                 verts.extend(room.get("vertices", []))
         return verts
+
+    def _get_parent_room_polygons_for_hdr(self) -> list[list[list[float]]]:
+        """Get vertex lists of all parent rooms (no parent) for current HDR."""
+        if not self.hdr_files:
+            return []
+        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        result: list[list[list[float]]] = []
+        for room in self.rooms:
+            if room.get("hdr_file") == hdr_name and not room.get("parent"):
+                verts = room.get("vertices", [])
+                if len(verts) >= 3:
+                    result.append(verts)
+        return result
 
     # =====================================================================
     # EDIT MODE
@@ -2675,6 +2866,19 @@ class EditorState(rx.State):
                 wx = (px - img_w / 2) * (vh / img_w) + vp_x
                 wy = (img_h / 2 - py) * (vv / img_h) + vp_y
                 child_poly_world.append([wx, wy])
+
+        # Re-project child world coords to HDR-native pixel space so stored
+        # vertices are consistent with parent rooms (which use vp[4]/vp[5]).
+        # child_poly_px may be in display-pixel space when viewing a non-HDR
+        # variant; this ensures the DF mask subtraction always aligns.
+        if child_poly_world and vp_params and len(vp_params) >= 6:
+            _native_w, _native_h = vp_params[4], vp_params[5]
+            if _native_w > 0 and _native_h > 0:
+                child_poly_px = [
+                    [(wx - vp_x) / (vh / _native_w) + _native_w / 2,
+                     _native_h / 2 - (wy - vp_y) / (vv / _native_h)]
+                    for wx, wy in child_poly_world
+                ]
 
         # Parent chain: child references original room name (or its parent if nested)
         original_name = room.get("name", "ROOM")
@@ -3714,15 +3918,42 @@ class EditorState(rx.State):
             if _iw > 0 and _ih > 0:
                 area_per_pixel_m2 = (vh / _iw) * (vv / _ih)
 
+        # Helper: reproject world_vertices to HDR-native pixel space so all
+        # masks are in the same coordinate system as df_image.  Falls back to
+        # stored vertices when world_vertices or view params are unavailable.
+        def _hdr_native_verts(room: dict) -> list[list[float]]:
+            wv = room.get("world_vertices", [])
+            if vp_params and len(wv) >= 3 and _iw > 0 and _ih > 0:
+                _vp_x_l, _vp_y_l, _vh_l, _vv_l = vp_params[:4]
+                return [
+                    [( wx - _vp_x_l) / (_vh_l / _iw) + _iw / 2,
+                     _ih / 2 - (wy - _vp_y_l) / (_vv_l / _ih)]
+                    for wx, wy in wv
+                ]
+            return room.get("vertices", [])
+
+        # Build parent -> child vertex map so parent DF excludes divided areas
+        child_verts_by_parent: dict[str, list[list[list[float]]]] = {}
+        for room in self.rooms:
+            if room.get("hdr_file") != hdr_name:
+                continue
+            parent_name = room.get("parent")
+            if parent_name:
+                child_verts_by_parent.setdefault(parent_name, []).append(
+                    _hdr_native_verts(room)
+                )
+
         results = {}
         for i, room in enumerate(self.rooms):
             if room.get("hdr_file") != hdr_name:
                 continue
+            room_name = room.get("name", "")
             result = compute_room_df(
                 df_image,
-                room.get("vertices", []),
+                _hdr_native_verts(room),
                 room.get("room_type", "NONE") or "NONE",
                 area_per_pixel_m2=area_per_pixel_m2,
+                exclude_polygons=child_verts_by_parent.get(room_name),
             )
             if result:
                 results[str(i)] = result
