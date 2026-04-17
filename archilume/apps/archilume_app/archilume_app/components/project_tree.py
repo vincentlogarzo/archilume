@@ -4,7 +4,7 @@ import reflex as rx
 
 from ..state import EditorState
 from ..styles import COLORS, FONT_MONO, PROJECT_TREE_WIDTH
-from .left_panel_sections import floor_plan_section
+from .left_panel_sections import floor_plan_section, visualisation_section
 
 _ROW_H = "26px"
 _FONT = {"font_family": FONT_MONO, "font_size": "11px"}
@@ -264,9 +264,10 @@ def _tree_header() -> rx.Component:
         rx.text(
             "Room Browser",
             style={**_FONT, "font_size": "11px", "text_transform": "uppercase",
-                   "letter_spacing": "0.08em", "overflow": "hidden",
+                   "letter_spacing": "0.08em", "font_weight": "700",
+                   "overflow": "hidden",
                    "text_overflow": "ellipsis", "white_space": "nowrap"},
-            color=COLORS["text_dim"],
+            color=COLORS["text_pri"],
         ),
         rx.spacer(),
         rx.tooltip(
@@ -373,6 +374,8 @@ def project_tree() -> rx.Component:
             ),
             # Floor plan section: fixed size, never shrinks.
             rx.box(floor_plan_section(), style={"flex_shrink": "0"}),
+            # Visualisation (falsecolour + contour) settings.
+            rx.box(visualisation_section(), style={"flex_shrink": "0"}),
             # Absorb any leftover vertical space so the list+floor-plan stack
             # stays top-packed when content is short.
             rx.box(style={"flex": "1 1 auto"}),

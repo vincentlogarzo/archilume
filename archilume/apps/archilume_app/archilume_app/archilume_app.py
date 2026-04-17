@@ -33,6 +33,38 @@ _FONTS_PREVIEW_URL = (
 # Prevent browser pinch-zoom and page scroll-zoom; canvas handles its own wheel events.
 # Also blocks keydown propagation when an input/textarea/select is focused so that
 # window_event_listener does not fire shortcuts while the user is typing.
+_NUMERIC_GUARD_SCRIPT = rx.script("""
+(function() {
+    // Guards any <input data-numeric-guard="int"|"decimal"> against:
+    //   - non-digit keystrokes (allows nav keys, one '.' for decimal)
+    //   - Ctrl/Cmd-modified keys (paste shortcut, etc.)
+    //   - paste events (even right-click paste)
+    var NAV = ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Tab','Home','End','Enter'];
+    document.addEventListener('keydown', function(e) {
+        var el = e.target;
+        if (!el || !el.dataset) return;
+        var kind = el.dataset.numericGuard;
+        if (!kind) return;
+        if (NAV.indexOf(e.key) !== -1) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) { e.preventDefault(); return; }
+        var digit = /^[0-9]$/.test(e.key);
+        var ok = kind === 'int'
+            ? digit
+            : (digit || (e.key === '.' && el.value.indexOf('.') === -1));
+        if (!ok) e.preventDefault();
+    }, true);
+    document.addEventListener('paste', function(e) {
+        var el = e.target;
+        if (el && el.dataset && el.dataset.numericGuard) e.preventDefault();
+    }, true);
+    document.addEventListener('drop', function(e) {
+        var el = e.target;
+        if (el && el.dataset && el.dataset.numericGuard) e.preventDefault();
+    }, true);
+})();
+""")
+
+
 _ZOOM_GUARD_SCRIPT = rx.script("""
 (function() {
     // Block Ctrl+wheel (pinch) everywhere — no pinch zoom anywhere in the app
@@ -257,6 +289,7 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
 def index() -> rx.Component:
     return rx.box(
         _ZOOM_GUARD_SCRIPT,
+        _NUMERIC_GUARD_SCRIPT,
         rx.cond(EditorState.debug_mode, _DEBUG_SCRIPT),
         rx.window_event_listener(on_key_down=EditorState.handle_key_event),
         sidebar(),
@@ -269,7 +302,9 @@ def index() -> rx.Component:
                     direction="column",
                     style={"flex": "1", "overflow": "hidden"},
                 ),
-                style={"flex": "1", "overflow": "hidden"},
+                style={"flex": "1", "overflow": "hidden",
+                       "border_top": "1px solid"},
+                border_color=COLORS["panel_bdr"],
             ),
             direction="column",
             style={

@@ -25,7 +25,7 @@ def _tab_btn(tab_id: str, label: str, icon_tag: str) -> rx.Component:
             "padding": "8px 14px",
             "border_radius": "8px 8px 0 0",
             "color": rx.cond(is_active, COLORS["text_pri"], COLORS["text_dim"]),
-            "background": rx.cond(is_active, COLORS["panel_bg"], "transparent"),
+            "background": rx.cond(is_active, COLORS["viewport"], "transparent"),
             "border": rx.cond(
                 is_active,
                 "1px solid " + COLORS["panel_bdr"],
@@ -33,7 +33,7 @@ def _tab_btn(tab_id: str, label: str, icon_tag: str) -> rx.Component:
             ),
             "border_bottom": rx.cond(
                 is_active,
-                "1px solid " + COLORS["panel_bg"],
+                "1px solid " + COLORS["viewport"],
                 "1px solid transparent",
             ),
             "margin_bottom": "-1px",
@@ -41,9 +41,10 @@ def _tab_btn(tab_id: str, label: str, icon_tag: str) -> rx.Component:
             "cursor": "pointer",
             "transition": "all 0.15s ease",
             "position": "relative",
+            "bottom": rx.cond(is_active, "-1px", "0"),
             "z_index": rx.cond(is_active, "2", "1"),
             "_hover": {"color": COLORS["text_pri"],
-                       "background": rx.cond(is_active, COLORS["panel_bg"], COLORS["deep"])},
+                       "background": rx.cond(is_active, COLORS["viewport"], COLORS["deep"])},
         },
     )
 
@@ -85,7 +86,7 @@ def header() -> rx.Component:
             rx.el.rect(x="15", y="23.5", width="3", height="2.5", rx="0.4", fill="#f59e0b", opacity="0.6"),
             rx.el.rect(x="10", y="27", width="4", height="5", rx="0.5", fill=COLORS["header"]),
             custom_attrs={"viewBox": "0 0 32 32"},
-            style={"width": "24px", "height": "24px", "flex_shrink": "0",
+            style={"width": "40px", "height": "40px", "flex_shrink": "0",
                    "align_self": "center"},
         ),
         rx.text(
@@ -162,5 +163,4 @@ def header() -> rx.Component:
         align="end",
         style={"height": "42px", "padding": "0 12px", "gap": "6px"},
         background=COLORS["header"],
-        border_bottom="1px solid", border_color=COLORS["panel_bdr"],
     )

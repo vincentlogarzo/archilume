@@ -35,6 +35,25 @@ from ..lib import project_modes
 _df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
 
 
+def _snap_scale_top(value: str) -> "float | None":
+    """Parse, clamp to [0, 10], and snap to nearest 0.5. Returns None if non-numeric."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    v = max(0.0, min(10.0, v))
+    return round(round(v * 2) / 2, 1)
+
+
+def _snap_scale_divisions(value: str) -> "int | None":
+    """Parse, round to nearest integer, clamp to [0, 10]. Returns None if non-numeric."""
+    try:
+        v = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(10, v))
+
+
 class _StagedUploadBytes:
     """Tiny container used by project-create/settings upload handlers to pass
     already-read upload bytes into the synchronous staging helper."""
@@ -211,6 +230,16 @@ class EditorState(rx.State):
     # -- View params per HDR: maps hdr_name -> [vp_x, vp_y, vh, vv, img_w, img_h]
     hdr_view_params: dict[str, list[float]] = {}
 
+    # -- Falsecolour / contour visualisation settings (per-project, persisted in
+    #    aoi_session.json). User-tunable; trigger regeneration on change.
+    falsecolour_scale: float = 4.0
+    falsecolour_n_levels: int = 10
+    contour_scale: float = 2.0
+    contour_n_levels: int = 4
+    last_generated: dict = {}  # {"falsecolour": {scale,n_levels}, "contour": {...}}
+    is_regenerating: bool = False
+    regen_progress: str = ""
+
     # =====================================================================
     # §3 — Rooms
     # =====================================================================
@@ -346,6 +375,7 @@ class EditorState(rx.State):
     # =====================================================================
     project_tree_open: bool = True
     floor_plan_section_open: bool = True
+    visualisation_section_open: bool = False
     collapsed_hdrs: list[str] = []
     shortcuts_modal_open: bool = False
     open_project_modal_open: bool = False
@@ -378,12 +408,6 @@ class EditorState(rx.State):
             self.status_message = "Debug mode OFF"
         self.status_colour = "accent2"
 
-    def flush_debug_trace(self) -> None:
-        """Write current trace buffer to debug_trace.json in the project dir."""
-        trace.flush()
-        if self.debug_mode:
-            logger.debug(f"Trace flushed ({len(trace.entries)} entries)")
-
     # =====================================================================
     # COMPUTED VARS
     # =====================================================================
@@ -399,16 +423,6 @@ class EditorState(rx.State):
         if not self.hdr_files:
             return ""
         return f"{self.current_hdr_idx + 1} / {len(self.hdr_files)}"
-
-    @rx.var
-    def current_variant_label(self) -> str:
-        if not self.image_variants:
-            return "—"
-        idx = min(self.current_variant_idx, len(self.image_variants) - 1)
-        p = self.image_variants[idx]
-        if p.lower().endswith((".hdr", ".pic")):
-            return "HDR"
-        return "TIFF"
 
     @rx.var
     def resolved_room_name(self) -> str:
@@ -587,13 +601,6 @@ class EditorState(rx.State):
         return "0 0 1000 800"
 
     @rx.var
-    def image_aspect_ratio(self) -> str:
-        """CSS aspect-ratio value, e.g. '1280 / 441'."""
-        if self.image_width > 0 and self.image_height > 0:
-            return f"{self.image_width} / {self.image_height}"
-        return "1000 / 800"
-
-    @rx.var
     def grid_spacing_px(self) -> float:
         """Grid spacing in image-pixel units, derived from VIEW params and grid_spacing_mm."""
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
@@ -662,18 +669,6 @@ class EditorState(rx.State):
         return str(round(max(2.0, min(30.0, fs)), 1))
 
     @rx.var
-    def df_area_font_size(self) -> str:
-        """DF area result font size (base 8.5), scaled by annotation_scale and inversely by zoom."""
-        fs = 8.5 * self.annotation_scale / max(self.zoom_level, 0.01)
-        return str(round(max(2.0, min(40.0, fs)), 1))
-
-    @rx.var
-    def label_stroke_width(self) -> str:
-        """Stroke outline width for room name and threshold text."""
-        fs = 6.5 * self.annotation_scale / max(self.zoom_level, 0.01)
-        return str(round(max(2.0, min(30.0, fs)) * 0.12, 2))
-
-    @rx.var
     def df_stamp_font_size(self) -> str:
         """DF stamp label font size, scaled by annotation_scale and inversely by zoom."""
         fs = 2.5 * self.annotation_scale / max(self.zoom_level, 0.01)
@@ -703,11 +698,6 @@ class EditorState(rx.State):
     def df_stamp_bg_half_f(self) -> float:
         """Half the background rect height — used for vertically centering text."""
         return round(self._df_fs_val(), 2)
-
-    @rx.var
-    def df_stamp_icon_size(self) -> float:
-        """Lucide crosshair icon size in image-pixel units — matches box height."""
-        return round(max(2.0, min(16.0, self._df_fs_val() * 2.0)), 2)
 
     @rx.var
     def df_stamp_icon_half(self) -> float:
@@ -750,16 +740,6 @@ class EditorState(rx.State):
         lw = base / max(self.zoom_level, 0.01)
         stroke_w = max(base * 0.5, min(base * 2.5, lw))
         return str(round(stroke_w * 1.2, 2))
-
-    @rx.var
-    def snap_ring_radius(self) -> str:
-        """Snap highlight ring radius. 3x vertex radius in divider mode; fixed 12 otherwise."""
-        if self.divider_mode:
-            base = 1.5
-            lw = base / max(self.zoom_level, 0.01)
-            stroke_w = max(base * 0.5, min(base * 4.0, lw))
-            return str(round(stroke_w * 1.2 * 3.0, 2))
-        return "12"
 
     @rx.var
     def snap_rect_x(self) -> str:
@@ -1218,14 +1198,6 @@ class EditorState(rx.State):
         return str(round(1.0 - self.overlay_alpha, 2))
 
     @rx.var
-    def image_width_str(self) -> str:
-        return str(self.image_width) if self.image_width > 0 else "1280"
-
-    @rx.var
-    def image_height_str(self) -> str:
-        return str(self.image_height) if self.image_height > 0 else "800"
-
-    @rx.var
     def overlay_svg_transform(self) -> str:
         """SVG-syntax transform for the overlay image (no CSS units)."""
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
@@ -1259,25 +1231,9 @@ class EditorState(rx.State):
         return str(round(self._get_current_overlay_transform().get("offset_y", 0) * ih))
 
     @rx.var
-    def overlay_scale_x_str(self) -> str:
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
-        return str(self._get_current_overlay_transform().get("scale_x", 1.0))
-
-    @rx.var
-    def overlay_scale_y_str(self) -> str:
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
-        return str(self._get_current_overlay_transform().get("scale_y", 1.0))
-
-    @rx.var
     def overlay_scale_str(self) -> str:
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         return str(self._get_current_overlay_transform().get("scale_x", 1.0))
-
-    @rx.var
-    def overlay_page_label(self) -> str:
-        if self.overlay_page_count <= 0:
-            return "Change Floor Plan Page"
-        return f"Floor Plan — Page {self.overlay_page_idx + 1} / {self.overlay_page_count}"
 
     @rx.var
     def overlay_rotation_deg_str(self) -> str:
@@ -1285,11 +1241,6 @@ class EditorState(rx.State):
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         rot90 = self._get_current_overlay_transform().get("rotation_90", 0)
         return str((rot90 % 4) * 90)
-
-    @rx.var
-    def overlay_transparency_pct(self) -> str:
-        """Current transparency percentage (0–100) as a string for the input field."""
-        return str(round((1.0 - self.overlay_alpha) * 100))
 
     @rx.var
     def selected_room_vertices(self) -> list[VertexPoint]:
@@ -3535,6 +3486,176 @@ class EditorState(rx.State):
         except ValueError:
             pass
 
+    # =====================================================================
+    # FALSECOLOUR / CONTOUR VISUALISATION SETTINGS
+    # =====================================================================
+
+    def _sync_vis_input(self, input_id: str, display: "float | int") -> rx.event.EventSpec:
+        """Return a client-side script that forces the DOM input's value to match
+        the snapped state. Needed because rx.el.input uses default_value= (honoured
+        only on mount); server-side state updates don't propagate to the DOM
+        otherwise, so the user sees their raw typed value persist."""
+        return rx.call_script(
+            f"var el=document.getElementById('{input_id}');"
+            f"if(el) el.value='{display}';"
+        )
+
+    def set_falsecolour_scale(self, value: str):
+        snapped = _snap_scale_top(value)
+        if snapped is not None:
+            self.falsecolour_scale = snapped
+            self._auto_save()
+        return self._sync_vis_input("vis-fc-scale", self.falsecolour_scale)
+
+    def set_falsecolour_n_levels(self, value: str):
+        snapped = _snap_scale_divisions(value)
+        if snapped is not None:
+            self.falsecolour_n_levels = snapped
+            self._auto_save()
+        return self._sync_vis_input("vis-fc-div", self.falsecolour_n_levels)
+
+    def set_contour_scale(self, value: str):
+        snapped = _snap_scale_top(value)
+        if snapped is not None:
+            self.contour_scale = snapped
+            self._auto_save()
+        return self._sync_vis_input("vis-ct-scale", self.contour_scale)
+
+    def set_contour_n_levels(self, value: str):
+        snapped = _snap_scale_divisions(value)
+        if snapped is not None:
+            self.contour_n_levels = snapped
+            self._auto_save()
+        return self._sync_vis_input("vis-ct-div", self.contour_n_levels)
+
+    def _current_image_dir(self) -> "Path | None":
+        if not self.hdr_files:
+            return None
+        return Path(self.hdr_files[0]["hdr_path"]).parent
+
+    def regenerate_visualisation_force(self):
+        """UI entry point for the explicit "Regenerate" button.
+
+        1. Defensively re-snap all four state values (idempotent if the blur
+           handlers already ran, but catches the edge case where the user clicks
+           Regenerate mid-type without losing input focus first).
+        2. Force every input's DOM value to match the snapped state, so the UI
+           visibly confirms the correction before any Radiance work runs.
+        3. Chain to the background event with force=True so all PNGs are rebuilt
+           regardless of the last_generated cache.
+        """
+        # Re-snap — each helper is None-safe and returns the snapped value or None.
+        for attr, snapper in (
+            ("falsecolour_scale",    _snap_scale_top),
+            ("falsecolour_n_levels", _snap_scale_divisions),
+            ("contour_scale",        _snap_scale_top),
+            ("contour_n_levels",     _snap_scale_divisions),
+        ):
+            snapped = snapper(str(getattr(self, attr)))
+            if snapped is not None:
+                setattr(self, attr, snapped)
+        self._auto_save()
+
+        sync_js = (
+            "var set=function(id,v){var el=document.getElementById(id); if(el) el.value=v;};"
+            f"set('vis-fc-scale','{self.falsecolour_scale}');"
+            f"set('vis-fc-div','{self.falsecolour_n_levels}');"
+            f"set('vis-ct-scale','{self.contour_scale}');"
+            f"set('vis-ct-div','{self.contour_n_levels}');"
+        )
+        return [rx.call_script(sync_js), EditorState.regenerate_visualisation_bg(True)]
+
+    @rx.event(background=True)
+    async def regenerate_visualisation_bg(self, force: bool = False):
+        """Regenerate stale falsecolour + contour PNGs for the current project.
+
+        Runs Radiance commands in a background thread so the UI stays responsive.
+        If ``force`` is True, ignores cache and regenerates every HDR for both
+        streams (used by the explicit "Regenerate" button).
+        """
+        import asyncio
+        from ..lib import visualisation_manager as vm
+        from ..lib.image_loader import clear_cache, scan_hdr_files
+
+        if not vm.radiance_available():
+            async with self:
+                self.status_message = "Radiance CLI not found — skipping visualisation generation"
+                self.status_colour = "accent2"
+            return
+
+        # Snapshot inputs under the state lock.
+        async with self:
+            if self.is_regenerating:
+                return  # already running
+            image_dir = self._current_image_dir()
+            if image_dir is None:
+                return
+            hdr_files = list(self.hdr_files)
+            fc_settings = {"scale": self.falsecolour_scale, "n_levels": self.falsecolour_n_levels}
+            ct_settings = {"scale": self.contour_scale,    "n_levels": self.contour_n_levels}
+            last_gen = dict(self.last_generated or {})
+            self.is_regenerating = True
+            self.regen_progress = ""
+
+        # Determine work per stream (snapshot copies — no state access here).
+        if force:
+            fc_stale = [Path(h["hdr_path"]) for h in hdr_files]
+            ct_stale = [Path(h["hdr_path"]) for h in hdr_files]
+            fc_force_legend = True
+            ct_force_legend = True
+        else:
+            fc_stale = vm.detect_stale("falsecolour", hdr_files, image_dir, fc_settings, last_gen)
+            ct_stale = vm.detect_stale("contour",    hdr_files, image_dir, ct_settings, last_gen)
+            fc_force_legend = vm.settings_changed("falsecolour", fc_settings, last_gen)
+            ct_force_legend = vm.settings_changed("contour",    ct_settings, last_gen)
+
+        if not fc_stale and not ct_stale:
+            async with self:
+                self.is_regenerating = False
+                self.regen_progress = ""
+                # Ensure last_generated reflects current settings even when nothing changed.
+                self.last_generated = {"falsecolour": fc_settings, "contour": ct_settings}
+                self._auto_save()
+            return
+
+        if fc_force_legend:
+            vm.invalidate_legend("falsecolour", image_dir)
+        if ct_force_legend:
+            vm.invalidate_legend("contour", image_dir)
+
+        # Process each stream sequentially. Falsecolour first so the user sees
+        # the recoloured plate before the contour overlay catches up.
+        for stream, stale, settings in (
+            ("falsecolour", fc_stale, fc_settings),
+            ("contour",    ct_stale, ct_settings),
+        ):
+            total = len(stale)
+            for i, hdr in enumerate(stale, 1):
+                async with self:
+                    self.regen_progress = f"Regenerating {stream} {i}/{total}: {hdr.stem}"
+                try:
+                    await asyncio.to_thread(
+                        vm.regenerate_one, stream, hdr, image_dir, settings,
+                    )
+                except Exception as e:
+                    logger.exception("regenerate_one failed for %s/%s", stream, hdr.stem)
+                    async with self:
+                        self.regen_progress = f"Error on {hdr.stem}: {e}"
+
+        # Refresh the variant list + clear the image cache so new PNGs surface.
+        clear_cache()
+        new_hdr_files = scan_hdr_files(image_dir)
+        async with self:
+            self.hdr_files = new_hdr_files
+            self.last_generated = {"falsecolour": fc_settings, "contour": ct_settings}
+            self.is_regenerating = False
+            self.regen_progress = ""
+            self.status_message = "Visualisation regenerated"
+            self.status_colour = "accent"
+            self._rebuild_variants()
+            self.load_current_image()
+            self._auto_save()
+
     def set_overlay_transparency_fraction(self, value: str) -> None:
         """Set transparency as a fraction 0–1 (0 = opaque, 1 = fully transparent)."""
         try:
@@ -4152,6 +4273,7 @@ class EditorState(rx.State):
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
         self.overlay_img_width = data.get("overlay_img_width", 0)
         self.overlay_img_height = data.get("overlay_img_height", 0)
+        self._restore_visualisation_settings(data)
         self._rebuild_variants()
         if _needs_migration:
             self._migrate_legacy_overlay_transforms()
@@ -4163,6 +4285,15 @@ class EditorState(rx.State):
             data.get("transform_version", "?"), self.overlay_visible,
         )
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
+
+    def _restore_visualisation_settings(self, data: dict) -> None:
+        fc = data.get("falsecolour_settings") or {}
+        ct = data.get("contour_settings") or {}
+        self.falsecolour_scale    = float(fc.get("scale", 4.0))
+        self.falsecolour_n_levels = int(fc.get("n_levels", 10))
+        self.contour_scale        = float(ct.get("scale", 2.0))
+        self.contour_n_levels     = int(ct.get("n_levels", 4))
+        self.last_generated       = data.get("last_generated") or {}
 
     def load_session(self) -> None:
         if not self.session_path:
@@ -4208,6 +4339,7 @@ class EditorState(rx.State):
         # compute the correct centring term before rasterization completes.
         self.overlay_img_width = data.get("overlay_img_width", 0)
         self.overlay_img_height = data.get("overlay_img_height", 0)
+        self._restore_visualisation_settings(data)
         self._rebuild_variants()
         # Migrate legacy pixel offsets AFTER _rebuild_variants sets image_width.
         if _needs_migration:
@@ -4249,6 +4381,9 @@ class EditorState(rx.State):
             overlay_page_idx=self.overlay_page_idx, transform_version=tv,
             overlay_img_width=self.overlay_img_width,
             overlay_img_height=self.overlay_img_height,
+            falsecolour_settings={"scale": self.falsecolour_scale, "n_levels": self.falsecolour_n_levels},
+            contour_settings={"scale": self.contour_scale, "n_levels": self.contour_n_levels},
+            last_generated=dict(self.last_generated),
         )
         save_session(Path(self.session_path), data)
 
@@ -4419,6 +4554,10 @@ class EditorState(rx.State):
             self._rasterize_current_page()
             yield
         self._recompute_df()
+
+        # Phase 5: detect & regenerate any missing/stale falsecolour or contour
+        # PNGs in the background. UI is fully interactive at this point.
+        yield EditorState.regenerate_visualisation_bg(False)
 
     def set_new_project_name(self, value: str) -> None:
         self.new_project_name = value
@@ -4721,6 +4860,9 @@ class EditorState(rx.State):
     def toggle_floor_plan_section(self) -> None:
         self.floor_plan_section_open = not self.floor_plan_section_open
 
+    def toggle_visualisation_section(self) -> None:
+        self.visualisation_section_open = not self.visualisation_section_open
+
 
 
 
@@ -5006,27 +5148,6 @@ class EditorState(rx.State):
     # =====================================================================
     # CREATE PROJECT — computed vars
     # =====================================================================
-
-    @rx.var
-    def current_mode_fields(self) -> list[dict]:
-        """UI-friendly serialisation of the fields for the current create mode."""
-        mode = project_modes.MODES.get(self.new_project_mode)
-        if mode is None:
-            return []
-        out = []
-        for f in mode.fields:
-            entries = self.new_project_staged.get(f.id, [])
-            out.append({
-                "id": f.id,
-                "label": f.label,
-                "description": f.description,
-                "accept_exts": ", ".join(f.allowed_extensions),
-                "multiple": f.multiple,
-                "required": f.required,
-                "one_of": f.one_of or "",
-                "files": entries,
-            })
-        return out
 
     @rx.var
     def settings_mode_fields(self) -> list[dict]:

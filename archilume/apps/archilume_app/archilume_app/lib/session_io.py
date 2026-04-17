@@ -55,6 +55,10 @@ def _prepare_for_json(obj: Any) -> Any:
     return obj
 
 
+DEFAULT_FALSECOLOUR_SETTINGS = {"scale": 4.0, "n_levels": 10}
+DEFAULT_CONTOUR_SETTINGS     = {"scale": 2.0, "n_levels": 4}
+
+
 def build_session_dict(
     rooms: list[dict],
     df_stamps: dict,
@@ -71,6 +75,9 @@ def build_session_dict(
     transform_version: int = 4,
     overlay_img_width: int = 0,
     overlay_img_height: int = 0,
+    falsecolour_settings: Optional[dict] = None,
+    contour_settings: Optional[dict] = None,
+    last_generated: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Build a session dict ready for saving."""
     return {
@@ -89,4 +96,7 @@ def build_session_dict(
         "overlay_page_idx": overlay_page_idx,
         "overlay_img_width": overlay_img_width,
         "overlay_img_height": overlay_img_height,
+        "falsecolour_settings": falsecolour_settings or dict(DEFAULT_FALSECOLOUR_SETTINGS),
+        "contour_settings":     contour_settings     or dict(DEFAULT_CONTOUR_SETTINGS),
+        "last_generated":       last_generated       or {},
     }

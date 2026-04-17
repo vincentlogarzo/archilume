@@ -11,7 +11,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 # Archilume imports
 from archilume import utils, config
 from archilume.utils import PhaseTimer
-from archilume.post.hdr2png_falsecolour import hdr2png_falsecolour
+from archilume.post.hdr_visualisation import hdr2png_falsecolor, hdr2png_contour
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -175,7 +175,8 @@ class DaylightRenderer:
 
         # Step 2: Post-process each rendered HDR (legends generated once inside)
         for hdr_path in rendered_hdrs:
-            hdr2png_falsecolour(hdr_path, self.image_dir)
+            hdr2png_falsecolor(hdr_path, self.image_dir)
+            hdr2png_contour(hdr_path, self.image_dir)
 
         print(f"\nDaylight pipeline complete. {len(rendered_hdrs)} view(s) rendered to {self.image_dir}")
 

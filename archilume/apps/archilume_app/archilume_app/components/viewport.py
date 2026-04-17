@@ -100,9 +100,8 @@ def _top_toolbar() -> rx.Component:
         ),
         rx.button(
             rx.icon(tag="move", size=14),
-            rx.text("Pan", style={"font_family": FONT_MONO, "font_size": "11px",
+            rx.text("Pan (G)", style={"font_family": FONT_MONO, "font_size": "11px",
                                     "margin_left": "4px"}),
-            rx.text("G", style=KBD_BADGE),
             variant="outline", size="1",
             on_click=EditorState.toggle_pan_mode,
             style={
@@ -119,10 +118,6 @@ def _top_toolbar() -> rx.Component:
         border_bottom="1px solid", border_color=COLORS["panel_bdr"],
     )
 
-
-# ---------------------------------------------------------------------------
-# §6.2.2 Floating tool palette
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # §6.2.3 Overlay alignment panel
