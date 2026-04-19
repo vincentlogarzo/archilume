@@ -569,7 +569,7 @@ def _render_edit_handle(vert: dict) -> rx.Component:
     return rx.el.circle(
         cx=vert["x"].to(str),
         cy=vert["y"].to(str),
-        r="5",
+        r=EditorState.edit_vertex_radius,
         fill=COLORS["edit_vertex"],
         stroke="white",
         stroke_width="1",
@@ -1267,7 +1267,7 @@ def _svg_canvas() -> rx.Component:
                     "display": "block",
                     "position": "relative",
                     "width": "100%",
-                    "height": "auto",
+                    "height": "100%",
                     "image_rendering": "pixelated",
                     "z_index": "1",
                     "opacity": rx.cond(
@@ -1587,8 +1587,10 @@ def _svg_canvas() -> rx.Component:
         id="editor-canvas",
         data_transform=EditorState.canvas_css_transform,
         style={
-            "position": "relative", "width": "100%",
-            "margin": "auto 0",
+            "position": "relative",
+            "width": EditorState.canvas_width_css,
+            "height": EditorState.canvas_height_css,
+            "flex_shrink": "0",
             "transform_origin": "0 0",
             "z_index": "1",
         },

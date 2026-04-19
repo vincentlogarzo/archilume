@@ -92,7 +92,7 @@ class TestBuildSessionDict:
             "rooms", "df_stamps", "overlay_transforms", "transform_version",
             "current_hdr_idx", "current_variant_idx", "selected_parent",
             "annotation_scale", "overlay_dpi", "overlay_visible",
-            "overlay_alpha", "overlay_pdf_path", "overlay_page_idx",
+            "overlay_alpha", "overlay_page_idx",
             "overlay_img_width", "overlay_img_height",
         }
         assert expected_keys == set(d.keys())
@@ -106,7 +106,6 @@ class TestBuildSessionDict:
         assert d["overlay_dpi"] == 150
         assert d["overlay_visible"] is False
         assert d["overlay_alpha"] == 0.6
-        assert d["overlay_pdf_path"] == ""
         assert d["overlay_page_idx"] == 0
         assert d["transform_version"] == 4
 
@@ -177,19 +176,6 @@ class TestSaveLoadRoundTrip:
         loaded = load_session(path)
         assert loaded is not None
         assert loaded["df_stamps"]["img.hdr"] == []
-
-    def test_round_trip_path_value(self, tmp_path: Path):
-        path = tmp_path / "session.json"
-        data = build_session_dict(
-            rooms=[],
-            df_stamps={},
-            overlay_transforms={},
-            overlay_pdf_path=str(tmp_path / "plan.pdf"),
-        )
-        save_session(path, data)
-        loaded = load_session(path)
-        assert loaded is not None
-        assert "plan.pdf" in loaded["overlay_pdf_path"]
 
     def test_file_is_valid_json(self, tmp_path: Path):
         path = tmp_path / "session.json"

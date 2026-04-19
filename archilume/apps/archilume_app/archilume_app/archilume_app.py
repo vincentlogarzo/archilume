@@ -6,6 +6,7 @@ from .components.header import header
 from .components.modals import (
     accelerad_modal,
     create_project_modal,
+    external_browser_modal,
     extract_archive_modal,
     open_project_modal,
     project_settings_modal,
@@ -208,21 +209,27 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
     // Overlay resize interpolation — recompute PDF underlay transform
     // synchronously on viewport resize using fractional params from
     // data-overlay-params, bypassing the Python round-trip lag.
-    function _recomputeOverlayTransform(vw) {
+    // Mirrors overlay_css_transform in editor_state.py: canvas is sized
+    // to iw*S × ih*S with S = min(vw/iw, vh/ih); offsets are fractions of
+    // canvas dimensions.
+    function _recomputeOverlayTransform(vw, vh) {
         var img = document.getElementById('overlay-img');
         if (!img) return;
         var paramsStr = img.dataset.overlayParams;
         if (!paramsStr) return;
         var p;
         try { p = JSON.parse(paramsStr); } catch(e) { return; }
-        if (vw <= 0 || p.iw <= 0) return;
+        if (vw <= 0 || vh <= 0 || p.iw <= 0 || p.ih <= 0) return;
 
+        var s  = Math.min(vw / p.iw, vh / p.ih);
+        var cw = p.iw * s;
+        var ch = p.ih * s;
         var sx = p.scale_x, sy = p.scale_y;
         var pdf_aspect = p.pdf_aspect;
-        var cx = vw * (1.0 - sx) / 2.0;
-        var cy = (vw * p.ih / p.iw - vw * pdf_aspect * sy) / 2.0;
-        var ox = cx + p.offset_x * vw;
-        var oy = cy + p.offset_y * (vw * p.ih / p.iw);
+        var cx = cw * (1.0 - sx) / 2.0;
+        var cy = (ch - cw * pdf_aspect * sy) / 2.0;
+        var ox = cx + p.offset_x * cw;
+        var oy = cy + p.offset_y * ch;
         var rot = (p.rotation_90 % 4) * 90;
 
         img.style.transform = 'translate(' + ox + 'px, ' + oy + 'px) scale(' + sx + ', ' + sy + ') rotate(' + rot + 'deg)';
@@ -235,7 +242,9 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
     // captured ref).  Covers browser resize and screen changes.
     window.addEventListener('resize', function() {
         var vc = document.getElementById('viewport-container');
-        if (vc && vc.clientWidth > 0) _recomputeOverlayTransform(vc.clientWidth);
+        if (vc && vc.clientWidth > 0 && vc.clientHeight > 0) {
+            _recomputeOverlayTransform(vc.clientWidth, vc.clientHeight);
+        }
     });
 
     function _installViewportObserver() {
@@ -255,7 +264,7 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
             if (w === _vpLastW && h === _vpLastH) return;
             _vpLastW = w; _vpLastH = h;
             // Recompute overlay transform synchronously (no Python round-trip)
-            _recomputeOverlayTransform(w);
+            _recomputeOverlayTransform(w, h);
             try {
                 window.applyEvent('editor_state.set_viewport_size', { data: { w: w, h: h } });
                 _trace('viewport_resize_flush', { w: w, h: h });
@@ -314,6 +323,7 @@ def index() -> rx.Component:
         ),
         shortcuts_modal(),
         open_project_modal(),
+        external_browser_modal(),
         create_project_modal(),
         project_settings_modal(),
         extract_archive_modal(),

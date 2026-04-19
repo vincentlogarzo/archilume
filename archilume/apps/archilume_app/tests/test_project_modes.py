@@ -1,5 +1,10 @@
-"""Tests for archilume_app.lib.project_modes — required-field graph for each
-of the four workflow modes.
+"""Tests for archilume_app.lib.project_modes — the two-mode taxonomy.
+
+The current model exposes only two workflow modes (``sunlight`` and
+``daylight``). Every field inside a mode is optional: a project can be
+created with just a name + mode, and inputs are added later via the
+Project Settings modal or by dropping files directly into the project
+directories.
 """
 
 from __future__ import annotations
@@ -14,14 +19,14 @@ from archilume_app.lib import project_modes as pm
 # ---------------------------------------------------------------------------
 
 class TestModeRegistry:
-    def test_four_modes_present(self):
-        assert set(pm.MODES.keys()) == {
-            "sunlight-sim", "sunlight-markup",
-            "daylight-sim", "daylight-markup",
-        }
+    def test_two_modes_present(self):
+        assert set(pm.MODES.keys()) == {"sunlight", "daylight"}
 
     def test_default_mode_is_registered(self):
         assert pm.DEFAULT_MODE in pm.MODES
+
+    def test_default_mode_is_sunlight(self):
+        assert pm.DEFAULT_MODE == "sunlight"
 
     @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
     def test_all_modes_have_pdf(self, mode_id: str):
@@ -29,94 +34,52 @@ class TestModeRegistry:
         assert "pdf" in ids, f"{mode_id} missing pdf"
 
 
-class TestRequiredFieldShape:
-    """Verify the table from the plan: each mode declares the right field set."""
+class TestFieldShape:
+    """Each mode exposes all plausible inputs as optional slots."""
 
-    def test_sunlight_sim_required(self):
-        ids = [f.id for f in pm.MODES["sunlight-sim"].fields]
-        assert ids == ["pdf", "geometry", "room_data"]
+    def test_sunlight_fields(self):
+        ids = [f.id for f in pm.MODES["sunlight"].fields]
+        assert ids == ["pdf", "geometry", "hdr_results", "room_data", "aoi_files"]
 
-    def test_sunlight_markup_required(self):
-        ids = [f.id for f in pm.MODES["sunlight-markup"].fields]
-        assert ids == ["pdf", "hdr_results", "room_data", "aoi_files"]
+    def test_daylight_fields(self):
+        ids = [f.id for f in pm.MODES["daylight"].fields]
+        assert ids == ["pdf", "oct", "rdp", "pic_results", "aoi_files", "room_data"]
 
-    def test_daylight_sim_required(self):
-        ids = [f.id for f in pm.MODES["daylight-sim"].fields]
-        assert ids == ["pdf", "oct", "rdp", "aoi_files"]
+    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
+    def test_no_field_is_required(self, mode_id: str):
+        """Fields are always optional — the user decides what to supply."""
+        for f in pm.MODES[mode_id].fields:
+            assert f.required is False, f"{mode_id}.{f.id} is marked required"
 
-    def test_daylight_markup_required(self):
-        ids = [f.id for f in pm.MODES["daylight-markup"].fields]
-        assert ids == ["pdf", "pic_results", "aoi_files", "room_data"]
+    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
+    def test_no_one_of_groups(self, mode_id: str):
+        """With everything optional there is no need for mutual substitution."""
+        for f in pm.MODES[mode_id].fields:
+            assert f.one_of is None, f"{mode_id}.{f.id} still has one_of={f.one_of}"
 
 
 # ---------------------------------------------------------------------------
-# missing_required logic
+# missing_required / one-of logic
 # ---------------------------------------------------------------------------
 
 class TestMissingRequired:
+    """With nothing marked required, the helper always returns an empty list."""
+
     def _ok(self, name: str = "any.bin") -> dict:
         return {"path": "/tmp/x", "name": name, "ok": True, "error": ""}
 
-    def _bad(self, name: str = "bad.bin") -> dict:
-        return {"path": "/tmp/x", "name": name, "ok": False, "error": "fail"}
+    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
+    def test_empty_staging_reports_nothing_missing(self, mode_id: str):
+        assert pm.missing_required(mode_id, {}) == []
 
-    def test_empty_staging_reports_all_required(self):
-        missing = pm.missing_required("sunlight-sim", {})
-        assert "PDF floor plan" in missing
-        assert any("Geometry" in m for m in missing)
-        assert any("room_boundaries" in m for m in missing)
-
-    def test_satisfied_field_not_reported(self):
+    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
+    def test_partial_staging_reports_nothing_missing(self, mode_id: str):
         staged = {"pdf": [self._ok("plan.pdf")]}
-        missing = pm.missing_required("sunlight-sim", staged)
-        assert "PDF floor plan" not in missing
-        # Still missing geometry + room_data
-        assert any("Geometry" in m for m in missing)
+        assert pm.missing_required(mode_id, staged) == []
 
-    def test_invalid_file_does_not_satisfy(self):
-        staged = {"pdf": [self._bad("plan.pdf")]}
-        missing = pm.missing_required("sunlight-sim", staged)
-        assert "PDF floor plan" in missing
-
-    def test_one_of_group_satisfied_by_room_data(self):
-        """sunlight-markup accepts EITHER room csv OR aoi files."""
-        staged = {
-            "pdf":         [self._ok("plan.pdf")],
-            "hdr_results": [self._ok("img.hdr")],
-            "room_data":   [self._ok("rooms.csv")],
-            # No aoi_files staged — but room_data satisfies the one_of group
-        }
-        missing = pm.missing_required("sunlight-markup", staged)
-        assert missing == []
-
-    def test_one_of_group_satisfied_by_aoi(self):
-        staged = {
-            "pdf":         [self._ok("plan.pdf")],
-            "hdr_results": [self._ok("img.hdr")],
-            "aoi_files":   [self._ok("a.aoi")],
-            # No room_data — but aoi_files satisfies the one_of group
-        }
-        missing = pm.missing_required("sunlight-markup", staged)
-        assert missing == []
-
-    def test_one_of_group_unsatisfied(self):
-        staged = {
-            "pdf":         [self._ok("plan.pdf")],
-            "hdr_results": [self._ok("img.hdr")],
-            # Neither room_data nor aoi_files staged
-        }
-        missing = pm.missing_required("sunlight-markup", staged)
-        assert any("room_boundaries" in m or ".aoi" in m for m in missing)
-
-    def test_daylight_sim_complete(self):
-        staged = {
-            "pdf":       [self._ok("plan.pdf")],
-            "oct":       [self._ok("scene.oct")],
-            "rdp":       [self._ok("standard.rdp")],
-            "aoi_files": [self._ok("a.aoi")],
-        }
-        missing = pm.missing_required("daylight-sim", staged)
-        assert missing == []
+    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
+    def test_no_one_of_groups_reported(self, mode_id: str):
+        assert pm.mode_one_of_groups(mode_id) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -125,13 +88,31 @@ class TestMissingRequired:
 
 class TestFieldLookup:
     def test_field_by_id_present(self):
-        f = pm.field_by_id("sunlight-sim", "pdf")
+        f = pm.field_by_id("sunlight", "pdf")
         assert f is not None
         assert f.dest_attr == "plans_dir"
 
-    def test_field_by_id_absent(self):
-        # daylight-sim has no hdr_results field
-        assert pm.field_by_id("daylight-sim", "hdr_results") is None
+    def test_field_by_id_geometry_only_sunlight(self):
+        assert pm.field_by_id("sunlight", "geometry") is not None
+        assert pm.field_by_id("daylight", "geometry") is None
+
+    def test_field_by_id_oct_only_daylight(self):
+        assert pm.field_by_id("daylight", "oct") is not None
+        assert pm.field_by_id("sunlight", "oct") is None
+
+    def test_field_by_id_hdr_only_sunlight(self):
+        assert pm.field_by_id("sunlight", "hdr_results") is not None
+        assert pm.field_by_id("daylight", "hdr_results") is None
+
+    def test_field_by_id_pic_only_daylight(self):
+        assert pm.field_by_id("daylight", "pic_results") is not None
+        assert pm.field_by_id("sunlight", "pic_results") is None
 
     def test_field_by_id_unknown_mode(self):
         assert pm.field_by_id("not-a-mode", "pdf") is None
+
+    def test_aoi_files_dest_is_aoi_inputs(self):
+        for mode_id in pm.MODE_IDS:
+            f = pm.field_by_id(mode_id, "aoi_files")
+            assert f is not None
+            assert f.dest_attr == "aoi_inputs_dir"

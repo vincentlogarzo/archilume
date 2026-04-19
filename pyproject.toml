@@ -5,28 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "cairosvg>=2.8.2",
-    "fastapi>=0.135.3",
-    "uvicorn>=0.34.0",
-    "ifcopenshell>=0.8.3.post1",
-    "lxml>=6.0.2",
     "numpy>=2.3.2",
-    "opencv-python>=4.11.0.86",
-    "openpyxl>=3.1.5",
-    "pandas>=2.3.1",
     "pillow>=11.3.0",
-    "plotly>=6.6.0",
-    "psutil>=7.0.0",
+    "pandas>=2.3.1",
     "pymupdf>=1.24.0",
-    "pyradiance>=1.2.0",
-    "pyvista>=0.46.4",
-    "reflex>=0.8.28.post1",
     "scikit-image>=0.25.2",
-    "selenium>=4.41.0",
-    "svg2png>=1.2",
-    "svglib>=1.6.0",
-    "svgpathtools>=1.7.2",
-    "vtk>=9.6.0",
+    "psutil>=7.0.0",
+    "openpyxl>=3.1.5",
 ]
 
 [build-system]
@@ -38,8 +23,32 @@ include = ["archilume*"]
 exclude = ["inputs*", "outputs*", "intermediates*"]
 
 [dependency-groups]
+app = [
+    "reflex>=0.8.28.post1",
+]
+engine = [
+    "fastapi>=0.135.3",
+    "uvicorn>=0.34.0",
+    "ifcopenshell>=0.8.3.post1",
+    "pyradiance>=1.2.0",
+    "matplotlib>=3.8.0",
+    "opencv-python-headless>=4.11.0.86",
+    "lxml>=6.0.2",
+]
+desktop = [
+    "pyvista>=0.46.4",
+    "vtk>=9.6.0",
+    "selenium>=4.41.0",
+    "cairosvg>=2.8.2",
+    "svglib>=1.6.0",
+    "svgpathtools>=1.7.2",
+    "svg2png>=1.2",
+    "plotly>=6.6.0",
+]
 dev = [
     "coverage>=7.10.3",
     "pytest>=8.4.1",
 ]
 
+[tool.uv]
+default-groups = ["app", "engine", "desktop", "dev"]

@@ -5,7 +5,7 @@ from reflex.plugins import SitemapPlugin
 
 config = rx.Config(
     app_name="archilume_app",
-    api_url=os.environ.get("API_URL", "http://localhost:8000"),
+    api_url=os.environ.get("REFLEX_API_URL", os.environ.get("API_URL", "http://localhost:8000")),
     plugins=[SitemapPlugin()],
     tailwind={
         "theme": {

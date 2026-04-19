@@ -1,0 +1,80 @@
+# Archilume — frontend + backend + engine.
+# Launch via docker/launch-archilume.ps1 (recommended). Direct invocation from
+# repo root:
+#   docker compose -f docker/docker-compose-archilume.yml -p archilume up -d
+# Then open http://localhost:3000.
+#
+# The default projects bind mount (../projects) resolves relative to this file,
+# landing at the repo-root projects/ dir for dev use. In the shipped zip, the
+# launcher sets ARCHILUME_PROJECTS_DIR explicitly to the sibling projects/
+# folder, so this default never fires there.
+
+name: archilume
+
+services:
+  archilume-frontend:
+    image: vlogarzo/archilume-frontend:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      archilume-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/caddy
+      - /config
+      - /data
+    # Note: no-new-privileges intentionally omitted — Caddy's alpine image
+    # sets CAP_NET_BIND_SERVICE as a file capability on the binary, which
+    # the kernel refuses to exec under no-new-privileges. Port 3000 is
+    # unprivileged so the cap isn't used, but cap_drop:ALL empties the
+    # bounding set and still blocks exec. NET_BIND_SERVICE is re-added so
+    # the file cap can activate; everything else stays dropped.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+  archilume-backend:
+    image: vlogarzo/archilume-backend:latest
+    expose:
+      - "8000"
+    volumes:
+      - ${ARCHILUME_PROJECTS_DIR:-../projects}:/app/projects:rw
+    environment:
+      - ARCHILUME_ENGINE_URL=http://archilume-engine:8100
+      - ARCHILUME_HOST_PROJECTS_DIR=${ARCHILUME_HOST_PROJECTS_DIR:-/app/projects}
+    # No depends_on archilume-engine — backend boots immediately and the
+    # engine finishes starting in the background. UI is fully usable for
+    # editor work (rooms/AOIs/export) without the engine; the simulation
+    # manager should poll ARCHILUME_ENGINE_URL for readiness before
+    # dispatching Radiance workloads.
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  archilume-engine:
+    image: vlogarzo/archilume-engine:latest
+    expose:
+      - "8100"
+    volumes:
+      - ${ARCHILUME_PROJECTS_DIR:-../projects}:/app/projects:rw
+    environment:
+      - ARCHILUME_HOST_PROJECTS_DIR=${ARCHILUME_HOST_PROJECTS_DIR:-/app/projects}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 4g

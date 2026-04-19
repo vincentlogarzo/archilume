@@ -1,0 +1,28 @@
+:3000 {
+    encode zstd gzip
+
+    # Frontend liveness — served locally by Caddy.
+    handle /ping-frontend {
+        respond 200
+    }
+
+    # Reflex backend routes — websocket, uploads, health.
+    # Must come before the static handler because try_files would otherwise
+    # rewrite /_event to /index.html before reverse_proxy sees it.
+    handle /_event* {
+        reverse_proxy archilume-backend:8000
+    }
+    handle /_upload* {
+        reverse_proxy archilume-backend:8000
+    }
+    handle /ping {
+        reverse_proxy archilume-backend:8000
+    }
+
+    # Everything else — exported Reflex static build.
+    handle {
+        root * /srv
+        try_files {path} {path}/ /index.html
+        file_server
+    }
+}

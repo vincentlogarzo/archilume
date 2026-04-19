@@ -1,24 +1,24 @@
 {
   "name": "Archilume Development Container",
 
-  // Build from our Dockerfile instead of pulling a pre-built image directly.
-  // context: ".." means the build context is the repo root (so COPY pyproject.toml works).
-  // dockerfile: path to the Dockerfile, relative to the devcontainer.json location.
+  // Build from docker/Dockerfile's archilume-dev target. Context is the repo
+  // root so COPY paths (pyproject.toml, .devcontainer/Radiance_*) resolve.
   //
-  // OPTION: To use a pre-built image from a registry instead (faster for team onboarding),
-  // replace the "build" block with:
-  //   "image": "ghcr.io/<your-org>/archilume-dev:latest"
-  // and remove the "build" block entirely.
+  // To swap to a pre-built image (faster team onboarding), replace the "build"
+  // block with:  "image": "ghcr.io/<your-org>/archilume-dev:latest"
   "build": {
-    "dockerfile": "../Dockerfile",
+    "dockerfile": "../docker/Dockerfile",
     "context": "..",
     "target": "archilume-dev"
   },
 
-  // postCreateCommand runs AFTER the container is created, every time.
-  // Since our Dockerfile already installs everything, we don't need setup.sh.
-  // This is now just a lightweight verification step.
-  "postCreateCommand": "sudo chown -R vscode:vscode /workspaces/archilume && uv sync --frozen && python --version && oconv 2>&1 | head -1 || echo 'Radiance ready'",
+  "remoteUser": "vscode",
+
+  // Runs after container creation. Dockerfile already baked deps into
+  // /opt/venv, so this only: (1) fixes bind-mount ownership (UIDs unknown at
+  // build time), (2) installs the project itself editably now that the
+  // workspace is mounted (--no-install-project was used in the image build).
+  "postCreateCommand": "sudo chown -R vscode:root /workspaces/archilume && uv sync --frozen",
 
   "customizations": {
     "vscode": {
@@ -38,7 +38,7 @@
         "PKief.material-icon-theme"
       ],
       "settings": {
-        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
         "python.formatting.provider": "black",
         "workbench.iconTheme": "material-icon-theme",
         "editor.formatOnSave": true,
@@ -51,10 +51,9 @@
     }
   },
 
+  // PATH/RAYPATH are set in the Dockerfile ENV. Only overrides/host-supplied
+  // values go here.
   "remoteEnv": {
-    "PATH": "${containerEnv:PATH}:/usr/local/radiance/bin:${containerEnv:HOME}/.local/bin:${containerEnv:HOME}/google-cloud-sdk/bin",
-    "RAYPATH": "/usr/local/accelerad/lib:/usr/local/radiance/lib",
-    "UV_LINK_MODE": "copy",
     "CLAUDE_API_KEY": "${localEnv:CLAUDE_API_KEY}",
     "TZ": "${localEnv:TZ}",
     // X11 display forwarding — routes GUI windows from the container back to

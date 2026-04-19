@@ -65,37 +65,6 @@ python examples/launch_archilume_app.py --ensure   # reuse if running, launch if
 python examples/launch_archilume_app.py             # force fresh restart
 ```
 
-## Playwright
-
-- "Browser already in use" → `browser_close` (ignore failure) → `sleep 2` → `browser_navigate` again. If still fails: user runs **Reload Window** (`Ctrl+Shift+P`).
-- `browser_evaluate`: always arrow functions `() => { ... }`. No top-level `var`/`const`/`let`.
-- Reflex SVG fill: use `getComputedStyle(el).fill`, not `getAttribute('fill')`.
-- Always `browser_close` at end of any Playwright session.
-- Screenshots → `C:/Users/VincentLogarzo/AppData/Local/Temp/playwright-mcp`. Never write to repo.
-- Test project: **`527DP-gcloud-lowRes-GregW`**.
-
-## Code Review Graph
-
-Structural knowledge graph of the codebase available via MCP (`code-review-graph`).
-
-**Usage rules (token-efficient):**
-
-1. First call: `build_or_update_graph_tool` — builds or incrementally updates the graph.
-2. For context: `get_review_context_tool` — token-optimised structural summary.
-3. For impact: `get_impact_radius_tool` — blast radius of changed files.
-4. For queries: `query_graph_tool` — callers, callees, tests, imports for a target.
-5. For search: `semantic_search_nodes_tool` — find code entities by name or meaning.
-6. Prefer `detail_level="minimal"` unless more detail is needed.
-7. Follow `next_tool_suggestions` in each response for the optimal next step.
-8. Target: ≤5 tool calls per task, ≤800 total tokens of graph context.
-
-**When to use:** Code review, understanding call chains, assessing change impact,
-architecture questions, onboarding to unfamiliar modules. Skip for simple
-single-file edits where the change is self-contained.
-
-**Local storage:** `.code-review-graph/` (gitignored). Built/updated automatically
-via `build_or_update_graph_tool` — no manual CLI step needed.
-
 ## Reflex UI
 
 Before writing any Reflex UI code: **invoke the `frontend-design` skill**, then search `.claude/skills/reflex-docs/reference/` for relevant patterns. Follow documented patterns — do not invent workarounds when docs exist.
@@ -118,10 +87,6 @@ Design standards for this project are in `.claude/skills/reflex-docs/design-stan
 ## Tech Stack
 
 - This is a **Reflex** (Python web framework) application. Before using any `rx.el.*` component, verify it exists in the project's installed Reflex version by checking imports or docs. Do not assume React-like sub-components (e.g., `rx.el.tspan`) exist.
-
-## Testing & Verification
-
-- Do **NOT** use Playwright for visual verification during iterative debugging loops. Instead, describe what you changed and let the user verify visually. Only use Playwright for automated testing when explicitly asked.
 
 ## Session Management
 

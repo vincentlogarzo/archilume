@@ -1,21 +1,20 @@
-"""Project mode registry — single source of truth for the four workflow modes.
+"""Project mode registry — single source of truth for the two workflow modes.
 
 Consumed by both the Create New Project modal and the Project Settings modal so
-field requirements, accept filters, validators, and canonical destinations live
-in exactly one place.
+field labels, accept filters, validators, and canonical destinations live in
+exactly one place.
 
 Modes
 -----
-* ``sunlight-sim``     — Archilume runs sunlight simulation from geometry.
-* ``sunlight-markup``  — Markup on already-rendered sunlight ``.hdr`` results.
-* ``daylight-sim``     — Archilume runs daylight simulation on an IESVE octree.
-* ``daylight-markup``  — Markup on already-rendered IESVE ``.pic`` results.
+* ``sunlight``   — Sunlight workflow. Accepts geometry (for simulation) and/or
+                   pre-rendered HDR results for markup.
+* ``daylight``   — Daylight workflow (IESVE). Accepts octree+rdp (for
+                   simulation) and/or pre-rendered ``.pic`` results for markup.
 
-Each mode declares a list of :class:`FieldSpec` instances. A field is "satisfied"
-when it has at least one uploaded file that passed its validator. Fields sharing
-a ``one_of`` group only require one group member to be satisfied (e.g. the
-sunlight-markup room-definition group accepts either a room csv *or* a set of
-.aoi files).
+Every field is optional at create time — only the project name and mode are
+required. Users drop in whatever inputs they have; the UI adapts at runtime
+based on what is actually on disk. Fields can still be added, replaced, or
+removed later via the Project Settings modal.
 """
 
 from __future__ import annotations
@@ -58,7 +57,9 @@ class FieldSpec:
         Callable ``(Path) -> (ok, error_message)`` for per-file validation.
     required:
         If True, the field must have ≥1 valid file (unless it belongs to a
-        ``one_of`` group that is satisfied by another member).
+        ``one_of`` group that is satisfied by another member). Defaults to
+        False — the two current modes leave every field optional so users
+        can populate a project incrementally.
     one_of:
         Optional group key; within a mode, at least one member of the group
         must be satisfied. Members with the same ``one_of`` key are mutually
@@ -77,7 +78,7 @@ class FieldSpec:
     dest_attr: str
     validator: Validator
     allowed_extensions: Tuple[str, ...]
-    required: bool = True
+    required: bool = False
     one_of: Optional[str] = None
 
 
@@ -154,13 +155,12 @@ RDP = FieldSpec(
 ROOM_DATA_SUNLIGHT = FieldSpec(
     id="room_data",
     label="room_boundaries.csv",
-    description="Room definitions (csv) — required unless AOI files supplied",
+    description="Room definitions (csv). Optional — AOI files may be used instead.",
     accept={"text/csv": [".csv"]},
     multiple=False,
     dest_attr="aoi_inputs_dir",
     validator=V.validate_room_data,
     allowed_extensions=(".csv",),
-    one_of="rooms",
 )
 
 ROOM_DATA_IESVE = FieldSpec(
@@ -177,22 +177,10 @@ ROOM_DATA_IESVE = FieldSpec(
     allowed_extensions=(".xlsx", ".csv"),
 )
 
-AOI_SUNLIGHT = FieldSpec(
+AOI_FILES = FieldSpec(
     id="aoi_files",
     label=".aoi files",
-    description="Pre-built AOI files — required unless a room csv is supplied",
-    accept={"application/octet-stream": [".aoi"]},
-    multiple=True,
-    dest_attr="aoi_inputs_dir",
-    validator=V.validate_aoi,
-    allowed_extensions=(".aoi",),
-    one_of="rooms",
-)
-
-AOI_REQUIRED = FieldSpec(
-    id="aoi_files",
-    label=".aoi files",
-    description="AOI files defining rooms",
+    description="Pre-built AOI files defining rooms.",
     accept={"application/octet-stream": [".aoi"]},
     multiple=True,
     dest_attr="aoi_inputs_dir",
@@ -214,35 +202,29 @@ class ModeSpec:
 
 
 MODES: Dict[str, ModeSpec] = {
-    "sunlight-sim": ModeSpec(
-        id="sunlight-sim",
-        display="Sunlight — Simulation",
-        summary="Archilume renders sunlight HDRs from user-supplied geometry.",
-        fields=(PDF, GEOMETRY, ROOM_DATA_SUNLIGHT),
+    "sunlight": ModeSpec(
+        id="sunlight",
+        display="Sunlight",
+        summary=(
+            "Sunlight workflow — supply geometry to simulate, or drop in "
+            "pre-rendered HDR results to mark up."
+        ),
+        fields=(PDF, GEOMETRY, HDR_RESULTS, ROOM_DATA_SUNLIGHT, AOI_FILES),
     ),
-    "sunlight-markup": ModeSpec(
-        id="sunlight-markup",
-        display="Sunlight — Markup",
-        summary="Markup / analysis on pre-rendered archilume sunlight HDRs.",
-        fields=(PDF, HDR_RESULTS, ROOM_DATA_SUNLIGHT, AOI_SUNLIGHT),
-    ),
-    "daylight-sim": ModeSpec(
-        id="daylight-sim",
-        display="Daylight — Simulation (IESVE)",
-        summary="Archilume runs daylight simulation on an externally-supplied IESVE octree.",
-        fields=(PDF, OCT, RDP, AOI_REQUIRED),
-    ),
-    "daylight-markup": ModeSpec(
-        id="daylight-markup",
-        display="Daylight — Markup (IESVE)",
-        summary="Markup / analysis on pre-rendered IESVE daylight .pic files.",
-        fields=(PDF, PIC_RESULTS, AOI_REQUIRED, ROOM_DATA_IESVE),
+    "daylight": ModeSpec(
+        id="daylight",
+        display="Daylight (IESVE)",
+        summary=(
+            "Daylight workflow — supply IESVE octree + render params to "
+            "simulate, or drop in pre-rendered .pic results to mark up."
+        ),
+        fields=(PDF, OCT, RDP, PIC_RESULTS, AOI_FILES, ROOM_DATA_IESVE),
     ),
 }
 
 
 MODE_IDS: Tuple[str, ...] = tuple(MODES.keys())
-DEFAULT_MODE: str = "sunlight-markup"
+DEFAULT_MODE: str = "sunlight"
 
 
 def get_mode(mode_id: str) -> ModeSpec:

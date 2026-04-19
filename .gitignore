@@ -3,9 +3,6 @@ __pycache__/
 .venv/
 
 # AI tool settings — .claude/ is tracked so settings travel with the repo
-.playwright-tmp/
-.playwright-mcp/
-.code-review-graph/
 .states/
 .env
 .env.local
@@ -33,3 +30,10 @@ debug_trace.json
 # SSH configuration (contains private keys - keep these secret!)
 .ssh/
 !.ssh/config.template
+
+# Local hint file written by docker/launch-archilume.ps1 when Docker Desktop
+# lives outside the default install path. Personal to the host, not shipped.
+docker/.docker-path.txt
+
+# Build artifacts from docker/build-zip.ps1 — recreated on demand.
+docker/dist/

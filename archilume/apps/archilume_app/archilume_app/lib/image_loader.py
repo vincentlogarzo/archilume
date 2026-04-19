@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pymupdf as fitz
 from PIL import Image
 
 _image_cache: OrderedDict[str, str] = OrderedDict()
@@ -296,6 +297,9 @@ def get_image_dimensions(path: Path) -> tuple[int, int]:
         return (0, 0)
 
 
+_scan_hdr_files_cache: dict[str, tuple[float, list[dict]]] = {}  # dir -> (mtime, result)
+
+
 def scan_hdr_files(image_dir: Path) -> list[dict]:
     """Scan directory for HDR/PIC files and their associated TIFF/PNG variants.
 
@@ -303,10 +307,21 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
 
     Uses a single ``os.scandir()`` pass instead of multiple ``glob()`` calls
     to minimise filesystem round-trips (critical for Docker bind-mounts on
-    Windows where each syscall adds ~5-50 ms latency).
+    Windows where each syscall adds ~5-50 ms latency). Results are cached by
+    directory mtime so repeated project opens skip the scan entirely until a
+    file is added, removed, or renamed inside *image_dir*.
     """
     if not image_dir.exists():
         return []
+
+    key = str(image_dir)
+    try:
+        dir_mtime = image_dir.stat().st_mtime
+    except OSError:
+        dir_mtime = 0.0
+    cached = _scan_hdr_files_cache.get(key)
+    if cached is not None and cached[0] == dir_mtime:
+        return cached[1]
 
     # Single directory scan — collect all files in one syscall
     all_files: dict[str, Path] = {}
@@ -334,6 +349,7 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
         p for n, p in all_files.items()
         if n.lower().endswith((".tif", ".tiff", ".png"))
         and "_aoi_overlay" not in n
+        and "_aoi_annotated" not in n
         and not n.endswith("_legend.png")
     ]
 
@@ -353,6 +369,7 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
             "legend_map": legend_map,
         })
 
+    _scan_hdr_files_cache[key] = (dir_mtime, result)
     return result
 
 
@@ -367,11 +384,6 @@ def rasterize_pdf_page(
     DPI, and a hash of the resolved PDF path) so subsequent calls for the same
     page/DPI are instant.
     """
-    try:
-        import fitz
-    except ImportError:
-        return None, 0, 0
-
     if not pdf_path.exists():
         return None, 0, 0
 
@@ -429,7 +441,6 @@ def rasterize_pdf_page(
 def get_pdf_page_count(pdf_path: Path) -> int:
     """Return number of pages in a PDF."""
     try:
-        import fitz
         doc = fitz.open(str(pdf_path))
         count = len(doc)
         doc.close()

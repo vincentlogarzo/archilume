@@ -69,12 +69,24 @@ def open_project_modal() -> rx.Component:
                 rx.dialog.title("Open Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin": "0"}),
                 rx.spacer(),
                 rx.tooltip(
-                    rx.icon_button(
-                        rx.icon(tag="folder", style={"width": "14px", "height": "14px"}),
-                        variant="ghost", size="1",
-                        on_click=EditorState.open_projects_folder,
+                    rx.upload(
+                        rx.button(
+                            rx.icon(tag="folder-open", size=14),
+                            "Browse…",
+                            size="1", variant="outline",
+                            style={"font_family": FONT_MONO},
+                        ),
+                        id="open-project-archive",
+                        accept={"application/zip": [".zip"]},
+                        multiple=False,
+                        on_drop=EditorState.upload_open_project_archive(
+                            rx.upload_files(upload_id="open-project-archive")
+                        ),
+                        border="none",
+                        padding="0",
+                        style={"display": "inline-block", "min_height": "0", "height": "auto"},
                     ),
-                    content="Open projects folder in Explorer", side="left",
+                    content="Upload a .zip of a project folder", side="left",
                 ),
                 align="center", style={"margin_bottom": "14px"},
             ),
@@ -100,6 +112,152 @@ def open_project_modal() -> rx.Component:
 
 
 # ---------------------------------------------------------------------------
+# External Folder Browser — server-side fallback when the native OS file
+# dialog is unavailable (e.g. the backend runs headless in Docker).
+# ---------------------------------------------------------------------------
+
+
+def _browser_folder_row(entry) -> rx.Component:
+    nav_zone = rx.flex(
+        rx.cond(
+            entry["is_project"],
+            rx.icon(tag="folder-check", size=14, style={"color": COLORS["success"]}),
+            rx.icon(tag="folder", size=14, style={"color": COLORS["text_sec"]}),
+        ),
+        rx.text(
+            entry["name"],
+            style={"font_family": FONT_MONO, "font_size": "12px",
+                   "color": COLORS["text_pri"]},
+        ),
+        align="center", gap="8px",
+        style={"flex": "1", "cursor": "pointer", "min_width": "0"},
+        on_click=EditorState.external_browser_navigate(entry["path"]),
+    )
+    return rx.flex(
+        nav_zone,
+        rx.cond(
+            entry["is_project"],
+            rx.button(
+                "Select",
+                size="1",
+                variant="solid",
+                on_click=EditorState.external_browser_select(entry["path"]),
+                style={"font_family": FONT_MONO},
+            ),
+            rx.fragment(),
+        ),
+        align="center", gap="8px",
+        style={"padding": "6px 10px", "border_radius": "4px"},
+        _hover={"background": COLORS["hover"]},
+    )
+
+
+def _browser_file_row(entry) -> rx.Component:
+    return rx.flex(
+        rx.flex(
+            rx.icon(tag="file", size=14, style={"color": COLORS["text_sec"]}),
+            rx.text(
+                entry["name"],
+                style={"font_family": FONT_MONO, "font_size": "12px",
+                       "color": COLORS["text_pri"]},
+            ),
+            align="center", gap="8px",
+            style={"flex": "1", "cursor": "pointer", "min_width": "0"},
+            on_click=EditorState.external_browser_select(entry["path"]),
+        ),
+        rx.button(
+            "Select",
+            size="1",
+            variant="solid",
+            on_click=EditorState.external_browser_select(entry["path"]),
+            style={"font_family": FONT_MONO},
+        ),
+        align="center", gap="8px",
+        style={"padding": "6px 10px", "border_radius": "4px"},
+        _hover={"background": COLORS["hover"]},
+    )
+
+
+def _browser_entry_row(entry) -> rx.Component:
+    # Folder rows navigate on click and expose Select when they are an
+    # archilume project (Open-Project flow only). File rows — used by the
+    # settings Browse fallback — are selection-only.
+    return rx.cond(
+        entry["kind"] == "dir",
+        _browser_folder_row(entry),
+        _browser_file_row(entry),
+    )
+
+
+def external_browser_modal() -> rx.Component:
+    is_file_mode = EditorState.external_browser_mode == "settings_file"
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title(
+                rx.cond(is_file_mode, "Select File", "Select Project Folder"),
+                style={"font_family": FONT_MONO, "font_size": "18px", "margin": "0 0 4px 0"},
+            ),
+            rx.dialog.description(
+                rx.cond(
+                    is_file_mode,
+                    "Browse the server filesystem and pick a file of the allowed type.",
+                    "Browse the server filesystem. Folders containing project.toml can be selected.",
+                ),
+                style={"font_family": FONT_MONO, "font_size": "11px",
+                       "color": COLORS["text_sec"], "margin_bottom": "10px"},
+            ),
+            rx.flex(
+                rx.tooltip(
+                    rx.icon_button(
+                        rx.icon(tag="arrow-up", size=14),
+                        size="1", variant="outline",
+                        on_click=EditorState.external_browser_go_up,
+                    ),
+                    content="Parent folder", side="bottom",
+                ),
+                rx.text(
+                    EditorState.external_browser_path,
+                    style={"font_family": FONT_MONO, "font_size": "11px",
+                           "color": COLORS["text_pri"], "overflow": "hidden",
+                           "text_overflow": "ellipsis", "white_space": "nowrap"},
+                ),
+                align="center", gap="8px",
+                style={"margin_bottom": "8px", "min_width": "0"},
+            ),
+            rx.box(
+                rx.foreach(EditorState.external_browser_entries, _browser_entry_row),
+                style={
+                    "border": "1px solid", "border_color": COLORS["panel_bdr"],
+                    "border_radius": "6px", "overflow_y": "auto",
+                    "max_height": "320px", "min_height": "120px",
+                    "padding": "4px",
+                },
+                background=COLORS["deep"],
+            ),
+            rx.cond(
+                EditorState.external_browser_error != "",
+                rx.text(
+                    EditorState.external_browser_error,
+                    style={"font_family": FONT_MONO, "font_size": "11px",
+                           "color": COLORS["danger"], "margin_top": "8px"},
+                ),
+                rx.fragment(),
+            ),
+            rx.flex(
+                rx.dialog.close(
+                    rx.button("Cancel", variant="outline", size="1",
+                              style={"font_family": FONT_MONO}),
+                ),
+                justify="end", gap="8px", style={"margin_top": "12px"},
+            ),
+            style={"min_width": "480px", "max_width": "640px"},
+        ),
+        open=EditorState.external_browser_open,
+        on_open_change=EditorState.close_external_browser,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Create New Project — mode-aware, validated, drag-and-drop
 # ---------------------------------------------------------------------------
 
@@ -108,10 +266,8 @@ def open_project_modal() -> rx.Component:
 # Display labels are paired here so the dropdown reads as natural English while
 # the underlying state still carries the canonical id.
 _MODE_OPTIONS: list[tuple[str, str]] = [
-    ("sunlight-sim",     "Sunlight — Simulation"),
-    ("sunlight-markup",  "Sunlight — Markup"),
-    ("daylight-sim",     "Daylight — Simulation (IESVE)"),
-    ("daylight-markup",  "Daylight — Markup (IESVE)"),
+    ("sunlight", "Sunlight"),
+    ("daylight", "Daylight (IESVE)"),
 ]
 
 
@@ -148,20 +304,29 @@ def _file_row(entry, on_remove) -> rx.Component:
     )
 
 
-def _drop_zone(upload_id: str, exts_label: str) -> rx.Component:
-    """Inner drop-zone visual rendered as the rx.upload child."""
+def _drop_zone(upload_id: str, exts_label: str, show_click_hint: bool = True) -> rx.Component:
+    """Inner drop-zone visual rendered as the rx.upload child.
+
+    ``show_click_hint`` controls whether the primary text invites a click.
+    Settings fields pair this with a dedicated "Browse…" button and pass
+    ``False`` so the drop zone reads as drag-and-drop only.
+    """
+    primary = (
+        f"Drop {exts_label} here, or click to browse"
+        if show_click_hint else f"Drop {exts_label} here to upload"
+    )
     return rx.box(
         rx.text(
-            f"Drop {exts_label} here, or click to browse",
-            style={"font_family": FONT_MONO, "font_size": "11px", "color": COLORS["text_sec"]},
+            primary,
+            style={"font_family": FONT_MONO, "font_size": "11px", "color": COLORS["text_sec"], "line_height": "1.2"},
         ),
         rx.text(
             "(local + cloud-mounted folders both work)",
-            style={"font_family": FONT_MONO, "font_size": "9px", "color": COLORS["text_dim"]},
+            style={"font_family": FONT_MONO, "font_size": "9px", "color": COLORS["text_dim"], "line_height": "1.2"},
         ),
         style={
             "border": "1px dashed", "border_radius": "6px",
-            "padding": "10px", "text_align": "center",
+            "padding": "4px 10px", "text_align": "center",
             "cursor": "pointer",
         },
         border_color=COLORS["panel_bdr"],
@@ -205,6 +370,8 @@ def _create_upload_field(
             accept=accept,
             multiple=multiple,
             on_drop=upload_handler(rx.upload_files(upload_id=upload_id)),
+            border="none",
+            padding="0",
             style={"width": "100%"},
         ),
         rx.foreach(
@@ -262,7 +429,13 @@ def _settings_upload_field(
     exts_label: str,
     upload_handler,
 ) -> rx.Component:
-    """Settings-modal upload field — shows existing canonical files + drop zone for replacements/additions."""
+    """Settings-modal upload field — shows existing canonical files + drop zone for replacements/additions.
+
+    Pairs the drop zone with a "Browse…" button that opens a native OS file
+    dialog at the field's canonical destination directory (so the user lands
+    next to the existing file). Falls back to an in-app server-side browser
+    when tkinter is unavailable (headless Docker backend).
+    """
     upload_id = f"settings-{field_id}"
     canonical_files = EditorState.settings_canonical_files.get(field_id, [])
     return rx.box(
@@ -272,6 +445,14 @@ def _settings_upload_field(
                 "text_transform": "uppercase", "color": COLORS["text_dim"],
             }),
             rx.spacer(),
+            rx.button(
+                rx.icon(tag="folder-open", size=12),
+                rx.text("Browse\u2026", style={"font_family": FONT_MONO, "font_size": "10px"}),
+                size="1",
+                variant="outline",
+                on_click=EditorState.pick_settings_field_file(field_id),
+                style={"gap": "4px"},
+            ),
             align="center", style={"margin_bottom": "4px"},
         ),
         # Existing canonical files
@@ -279,13 +460,15 @@ def _settings_upload_field(
             canonical_files,
             lambda fname: _settings_canonical_row(field_id, fname),
         ),
-        # Drop zone for replacements / additions
+        # Drop zone for drag-and-drop (click-to-browse handled by the button above)
         rx.upload(
-            _drop_zone(upload_id, f"new {exts_label}"),
+            _drop_zone(upload_id, f"new {exts_label}", show_click_hint=False),
             id=upload_id,
             accept=accept,
             multiple=multiple,
             on_drop=upload_handler(rx.upload_files(upload_id=upload_id)),
+            border="none",
+            padding="0",
             style={"width": "100%", "margin_top": "4px"},
         ),
         # Staged (not-yet-applied) replacements / additions
@@ -321,48 +504,44 @@ _ACCEPT_AOI       = {"application/octet-stream": [".aoi"]}
 
 
 def _create_fields_for_mode(mode_id: str) -> rx.Component:
-    """Render the create-modal field stack for a given mode id."""
+    """Render the create-modal field stack for a given mode id.
+
+    Every field is optional — users drop in whatever inputs they have and the
+    editor adapts based on what is on disk after the project is created.
+    """
     S = EditorState  # local alias to keep lines readable
-    if mode_id == "sunlight-sim":
+    if mode_id == "sunlight":
         return rx.fragment(
             _create_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
                                  S.staged_create_pdf, ".pdf", S.upload_create_pdf),
-            _create_upload_field("geometry", "Geometry (.obj + .mtl)", _ACCEPT_GEOMETRY, True,
+            _create_upload_field("geometry", "Geometry (.obj + .mtl) — for simulation",
+                                 _ACCEPT_GEOMETRY, True,
                                  S.staged_create_geometry, ".obj / .mtl", S.upload_create_geometry),
-            _create_upload_field("room_data", "room_boundaries.csv", _ACCEPT_CSV, False,
-                                 S.staged_create_room_data, ".csv", S.upload_create_room_data),
-        )
-    if mode_id == "sunlight-markup":
-        return rx.fragment(
-            _create_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
-                                 S.staged_create_pdf, ".pdf", S.upload_create_pdf),
-            _create_upload_field("hdr_results", "HDR results", _ACCEPT_HDR, True,
+            _create_upload_field("hdr_results", "HDR results — for markup",
+                                 _ACCEPT_HDR, True,
                                  S.staged_create_hdr_results, ".hdr", S.upload_create_hdr_results),
-            _create_upload_field("room_data", "room_boundaries.csv (or AOI files below)",
+            _create_upload_field("room_data", "room_boundaries.csv",
                                  _ACCEPT_CSV, False,
                                  S.staged_create_room_data, ".csv", S.upload_create_room_data),
-            _create_upload_field("aoi_files", ".aoi files (or room_boundaries.csv above)",
+            _create_upload_field("aoi_files", ".aoi files",
                                  _ACCEPT_AOI, True,
                                  S.staged_create_aoi_files, ".aoi", S.upload_create_aoi_files),
         )
-    if mode_id == "daylight-sim":
+    if mode_id == "daylight":
         return rx.fragment(
             _create_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
                                  S.staged_create_pdf, ".pdf", S.upload_create_pdf),
-            _create_upload_field("oct", "Octree (.oct)", _ACCEPT_OCT, False,
+            _create_upload_field("oct", "Octree (.oct) — for simulation",
+                                 _ACCEPT_OCT, False,
                                  S.staged_create_oct, ".oct", S.upload_create_oct),
-            _create_upload_field("rdp", "Render params (.rdp)", _ACCEPT_RDP, False,
+            _create_upload_field("rdp", "Render params (.rdp) — for simulation",
+                                 _ACCEPT_RDP, False,
                                  S.staged_create_rdp, ".rdp", S.upload_create_rdp),
-            _create_upload_field("aoi_files", ".aoi files", _ACCEPT_AOI, True,
-                                 S.staged_create_aoi_files, ".aoi", S.upload_create_aoi_files),
-        )
-    if mode_id == "daylight-markup":
-        return rx.fragment(
-            _create_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
-                                 S.staged_create_pdf, ".pdf", S.upload_create_pdf),
-            _create_upload_field("pic_results", "PIC results", _ACCEPT_PIC, True,
+            _create_upload_field("pic_results", "PIC results — for markup",
+                                 _ACCEPT_PIC, True,
                                  S.staged_create_pic_results, ".pic / .hdr", S.upload_create_pic_results),
-            _create_upload_field("aoi_files", ".aoi files", _ACCEPT_AOI, True,
+            _create_upload_field("aoi_files", ".aoi files",
+                                 _ACCEPT_AOI, True,
                                  S.staged_create_aoi_files, ".aoi", S.upload_create_aoi_files),
             _create_upload_field("room_data", "IESVE room data (.xlsx / .csv)",
                                  _ACCEPT_ROOM_IESVE, False,
@@ -374,27 +553,24 @@ def _create_fields_for_mode(mode_id: str) -> rx.Component:
 def _settings_fields_for_mode(mode_id: str) -> rx.Component:
     """Render the settings-modal field stack for a given mode id."""
     S = EditorState
-    if mode_id == "sunlight-sim":
+    if mode_id == "sunlight":
         return rx.fragment(
             _settings_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
                                    S.staged_settings_pdf, ".pdf", S.upload_settings_pdf),
-            _settings_upload_field("geometry", "Geometry (.obj + .mtl)", _ACCEPT_GEOMETRY, True,
+            _settings_upload_field("geometry", "Geometry (.obj + .mtl)",
+                                   _ACCEPT_GEOMETRY, True,
                                    S.staged_settings_geometry, ".obj / .mtl", S.upload_settings_geometry),
-            _settings_upload_field("room_data", "room_boundaries.csv", _ACCEPT_CSV, False,
-                                   S.staged_settings_room_data, ".csv", S.upload_settings_room_data),
-        )
-    if mode_id == "sunlight-markup":
-        return rx.fragment(
-            _settings_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
-                                   S.staged_settings_pdf, ".pdf", S.upload_settings_pdf),
-            _settings_upload_field("hdr_results", "HDR results", _ACCEPT_HDR, True,
+            _settings_upload_field("hdr_results", "HDR results",
+                                   _ACCEPT_HDR, True,
                                    S.staged_settings_hdr_results, ".hdr", S.upload_settings_hdr_results),
-            _settings_upload_field("room_data", "room_boundaries.csv", _ACCEPT_CSV, False,
+            _settings_upload_field("room_data", "room_boundaries.csv",
+                                   _ACCEPT_CSV, False,
                                    S.staged_settings_room_data, ".csv", S.upload_settings_room_data),
-            _settings_upload_field("aoi_files", ".aoi files", _ACCEPT_AOI, True,
+            _settings_upload_field("aoi_files", ".aoi files",
+                                   _ACCEPT_AOI, True,
                                    S.staged_settings_aoi_files, ".aoi", S.upload_settings_aoi_files),
         )
-    if mode_id == "daylight-sim":
+    if mode_id == "daylight":
         return rx.fragment(
             _settings_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
                                    S.staged_settings_pdf, ".pdf", S.upload_settings_pdf),
@@ -402,14 +578,8 @@ def _settings_fields_for_mode(mode_id: str) -> rx.Component:
                                    S.staged_settings_oct, ".oct", S.upload_settings_oct),
             _settings_upload_field("rdp", "Render params (.rdp)", _ACCEPT_RDP, False,
                                    S.staged_settings_rdp, ".rdp", S.upload_settings_rdp),
-            _settings_upload_field("aoi_files", ".aoi files", _ACCEPT_AOI, True,
-                                   S.staged_settings_aoi_files, ".aoi", S.upload_settings_aoi_files),
-        )
-    if mode_id == "daylight-markup":
-        return rx.fragment(
-            _settings_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
-                                   S.staged_settings_pdf, ".pdf", S.upload_settings_pdf),
-            _settings_upload_field("pic_results", "PIC results", _ACCEPT_PIC, True,
+            _settings_upload_field("pic_results", "PIC results",
+                                   _ACCEPT_PIC, True,
                                    S.staged_settings_pic_results, ".pic / .hdr", S.upload_settings_pic_results),
             _settings_upload_field("aoi_files", ".aoi files", _ACCEPT_AOI, True,
                                    S.staged_settings_aoi_files, ".aoi", S.upload_settings_aoi_files),
@@ -451,7 +621,7 @@ def create_project_modal() -> rx.Component:
                 }),
                 rx.select(
                     [mode_id for mode_id, _ in _MODE_OPTIONS],
-                    default_value="sunlight-markup",
+                    default_value="sunlight",
                     value=EditorState.new_project_mode,
                     on_change=EditorState.set_new_project_mode,
                     size="2",
@@ -461,14 +631,10 @@ def create_project_modal() -> rx.Component:
             ),
 
             # Mode-conditional fields
-            rx.cond(EditorState.new_project_mode == "sunlight-sim",
-                    _create_fields_for_mode("sunlight-sim"), rx.fragment()),
-            rx.cond(EditorState.new_project_mode == "sunlight-markup",
-                    _create_fields_for_mode("sunlight-markup"), rx.fragment()),
-            rx.cond(EditorState.new_project_mode == "daylight-sim",
-                    _create_fields_for_mode("daylight-sim"), rx.fragment()),
-            rx.cond(EditorState.new_project_mode == "daylight-markup",
-                    _create_fields_for_mode("daylight-markup"), rx.fragment()),
+            rx.cond(EditorState.new_project_mode == "sunlight",
+                    _create_fields_for_mode("sunlight"), rx.fragment()),
+            rx.cond(EditorState.new_project_mode == "daylight",
+                    _create_fields_for_mode("daylight"), rx.fragment()),
 
             # Whole-form error summary
             rx.cond(
@@ -523,14 +689,10 @@ def project_settings_modal() -> rx.Component:
             ),
 
             # Mode-conditional fields based on the current project's mode (immutable)
-            rx.cond(EditorState.project_mode == "sunlight-sim",
-                    _settings_fields_for_mode("sunlight-sim"), rx.fragment()),
-            rx.cond(EditorState.project_mode == "sunlight-markup",
-                    _settings_fields_for_mode("sunlight-markup"), rx.fragment()),
-            rx.cond(EditorState.project_mode == "daylight-sim",
-                    _settings_fields_for_mode("daylight-sim"), rx.fragment()),
-            rx.cond(EditorState.project_mode == "daylight-markup",
-                    _settings_fields_for_mode("daylight-markup"), rx.fragment()),
+            rx.cond(EditorState.project_mode == "sunlight",
+                    _settings_fields_for_mode("sunlight"), rx.fragment()),
+            rx.cond(EditorState.project_mode == "daylight",
+                    _settings_fields_for_mode("daylight"), rx.fragment()),
 
             rx.cond(
                 EditorState.settings_error != "",

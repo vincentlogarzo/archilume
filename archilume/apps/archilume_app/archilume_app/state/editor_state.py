@@ -12,8 +12,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Optional, TypedDict
 
+import pandas as pd
 import reflex as rx
 
 from ..lib.debug import (
@@ -194,7 +195,7 @@ class EditorState(rx.State):
 
     # -- Create project form
     new_project_name: str = ""
-    new_project_mode: str = "sunlight-markup"
+    new_project_mode: str = "sunlight"
     create_error: str = ""
     # Per-file staging for Create New Project. field_id -> list of entries where
     # each entry has keys: path (str), name (str), ok (bool), error (str).
@@ -374,13 +375,27 @@ class EditorState(rx.State):
     # §13 — UI chrome
     # =====================================================================
     project_tree_open: bool = True
+    room_browser_section_open: bool = True
     floor_plan_section_open: bool = True
-    visualisation_section_open: bool = False
+    visualisation_section_open: bool = True
     collapsed_hdrs: list[str] = []
     shortcuts_modal_open: bool = False
     open_project_modal_open: bool = False
     create_project_modal_open: bool = False
     extract_modal_open: bool = False
+    # Server-side folder browser — fallback for the "Browse…" button in
+    # Open Project and for per-field Browse in Project Settings when the
+    # backend cannot spawn a native OS file dialog (headless Docker, no X11).
+    external_browser_open: bool = False
+    external_browser_path: str = ""
+    external_browser_entries: list[dict[str, Any]] = []
+    external_browser_error: str = ""
+    # "project"      → pick a folder that contains project.toml (Open Project)
+    # "settings_file"→ pick a file matching allowed extensions (Settings Browse)
+    external_browser_mode: str = "project"
+    external_browser_target_field: str = ""
+    external_browser_allowed_extensions: list[str] = []
+    external_browser_multiple: bool = False
     status_message: str = "Ready"
     status_colour: str = "accent2"
     _last_d_press: float = 0.0
@@ -742,6 +757,14 @@ class EditorState(rx.State):
         return str(round(stroke_w * 1.2, 2))
 
     @rx.var
+    def edit_vertex_radius(self) -> str:
+        """Radius for edit-mode vertex handles — diameter = 3x boundary stroke width."""
+        base = 1.5
+        lw = base / max(self.zoom_level, 0.01)
+        stroke_w = max(base * 0.5, min(base * 2.5, lw))
+        return str(round(stroke_w * 1.5, 2))
+
+    @rx.var
     def snap_rect_x(self) -> str:
         """Top-left x of the 9×9 snap indicator square."""
         return str(self.snap_point.get("x", 0) - 4.5)
@@ -885,7 +908,10 @@ class EditorState(rx.State):
 
             fs_from_h = avail_h / stack_mult_padded if stack_mult_padded > 0 else 999
             fs_from_w = avail_w / width_mult if width_mult > 0 else 999
-            max_fs = min(fs_from_h, fs_from_w) * scale
+            # Empirically calibrated: CHAR_W/STROKE_PAD slightly over-estimate visual
+            # footprint, so auto-fit under-sizes by ~10%.
+            FIT_FACTOR = 1.1
+            max_fs = min(fs_from_h, fs_from_w) * scale * FIT_FACTOR
 
             # Stash intermediate data for pass 2
             intermediates.append({
@@ -1132,25 +1158,54 @@ class EditorState(rx.State):
         return f"translate({self.pan_x}px, {self.pan_y}px) scale({self.zoom_level})"
 
     @rx.var
+    def canvas_fit_scale(self) -> float:
+        """Screen px per image px at zoom=1, fit-to-contain inside viewport.
+
+        S = min(vw/iw, vh/ih). Canvas is sized iw*S × ih*S so any image
+        aspect — landscape, portrait, square — fully fits the viewport.
+        For landscape images where vw/iw <= vh/ih, S collapses to vw/iw
+        (the previous width-locked behaviour).
+        """
+        if self.image_width <= 0 or self.image_height <= 0:
+            return 1.0
+        vw = self.viewport_width if self.viewport_width > 0 else self.image_width
+        vh = self.viewport_height if self.viewport_height > 0 else self.image_height
+        return min(vw / self.image_width, vh / self.image_height)
+
+    @rx.var
+    def canvas_width_css(self) -> str:
+        if self.image_width <= 0 or self.image_height <= 0:
+            return "100%"
+        return f"{self.image_width * self.canvas_fit_scale}px"
+
+    @rx.var
+    def canvas_height_css(self) -> str:
+        if self.image_width <= 0 or self.image_height <= 0:
+            return "auto"
+        return f"{self.image_height * self.canvas_fit_scale}px"
+
+    @rx.var
     def overlay_css_transform(self) -> str:
         _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
         if self.viewport_width <= 0 or self.image_width <= 0:
             return "translate(0px, 0px) scale(1, 1) rotate(0deg)"
         t = self._get_current_overlay_transform()
-        vw = self.viewport_width
         iw = self.image_width
         ih = self.image_height or 1
+        s = self.canvas_fit_scale
+        cw = iw * s   # canvas width in CSS px (= vw for landscape)
+        ch = ih * s   # canvas height in CSS px
         sx = t.get("scale_x", 1.0)
         sy = t.get("scale_y", 1.0)
         # Centring term: with transform-origin top-left, scaled PDF top-left stays at (0,0).
         # Translate the scaled PDF so its centre coincides with HDR centre, then apply
-        # the user-controlled offset (offset_x/y are fractions of HDR image dimensions,
+        # the user-controlled offset (offset_x/y are fractions of canvas dimensions,
         # measured as displacement of PDF centre from HDR centre).
         pdf_aspect = (self.overlay_img_height / self.overlay_img_width) if self.overlay_img_width > 0 else (ih / iw)
-        cx = vw * (1.0 - sx) / 2.0
-        cy = (vw * ih / iw - vw * pdf_aspect * sy) / 2.0
-        ox = cx + t.get("offset_x", 0) * vw
-        oy = cy + t.get("offset_y", 0) * (vw * ih / iw)
+        cx = cw * (1.0 - sx) / 2.0
+        cy = (ch - cw * pdf_aspect * sy) / 2.0
+        ox = cx + t.get("offset_x", 0) * cw
+        oy = cy + t.get("offset_y", 0) * ch
         rot = (t.get("rotation_90", 0) % 4) * 90
         return f"translate({ox}px, {oy}px) scale({sx}, {sy}) rotate({rot}deg)"
 
@@ -1416,7 +1471,7 @@ class EditorState(rx.State):
             self.current_variant_idx = 0
             return
         hdr_info = self.hdr_files[self.current_hdr_idx]
-        variants = [hdr_info["hdr_path"]] + hdr_info.get("tiff_paths", [])
+        variants = list(hdr_info.get("tiff_paths", []))
         self.image_variants = variants
         if self.current_variant_idx >= len(variants):
             self.current_variant_idx = 0
@@ -1901,7 +1956,9 @@ class EditorState(rx.State):
             yield from self.reset_zoom()
             return
 
-        image_scale = vw / self.image_width  # screen px per image px at zoom=1
+        # Fit-to-contain image scale — min(vw/iw, vh/ih) — aspect-agnostic.
+        # For landscape images this collapses to vw/iw (the previous value).
+        image_scale = min(vw / self.image_width, vh / self.image_height)
 
         # Zoom: maximise room in viewport.  Use vw and vh directly — the
         # viewport is the clip boundary at any zoom, not the zoom-1 canvas.
@@ -1910,13 +1967,17 @@ class EditorState(rx.State):
         self.zoom_level = min(zx, zy, 200.0)
         self.zoom_level = max(self.zoom_level, 1.0)
 
-        # Centre room bbox midpoint in viewport, accounting for CSS margin:auto
+        # Centre room bbox midpoint in viewport, accounting for the fact that
+        # the canvas is explicitly sized to iw*S × ih*S and centred in the
+        # viewport flex container on both axes.
         cx = (min_x + max_x) / 2
         cy = (min_y + max_y) / 2
         pxscale = image_scale * self.zoom_level
-        canvas_h_at_1 = vw * self.image_height / self.image_width
-        canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
-        self.pan_x = vw / 2 - cx * pxscale
+        canvas_w_at_1 = self.image_width * image_scale
+        canvas_h_at_1 = self.image_height * image_scale
+        canvas_offset_left = (vw - canvas_w_at_1) / 2
+        canvas_offset_top = (vh - canvas_h_at_1) / 2
+        self.pan_x = vw / 2 - canvas_offset_left - cx * pxscale
         self.pan_y = vh / 2 - canvas_offset_top - cy * pxscale
 
         yield rx.call_script(
@@ -1969,7 +2030,8 @@ class EditorState(rx.State):
             yield from self.reset_zoom()
             return
 
-        image_scale = vw / iw
+        # Fit-to-contain image scale — aspect-agnostic.
+        image_scale = min(vw / iw, vh / ih)
         zx = vw / (bw * image_scale)
         zy = vh / (bh * image_scale)
         self.zoom_level = min(zx, zy, 200.0)
@@ -1978,9 +2040,11 @@ class EditorState(rx.State):
         mid_x = (min_x + max_x) / 2
         mid_y = (min_y + max_y) / 2
         pxscale = image_scale * self.zoom_level
-        canvas_h_at_1 = vw * ih / iw
-        canvas_offset_top = max(0.0, (vh - canvas_h_at_1) / 2)
-        self.pan_x = vw / 2 - mid_x * pxscale
+        canvas_w_at_1 = iw * image_scale
+        canvas_h_at_1 = ih * image_scale
+        canvas_offset_left = (vw - canvas_w_at_1) / 2
+        canvas_offset_top = (vh - canvas_h_at_1) / 2
+        self.pan_x = vw / 2 - canvas_offset_left - mid_x * pxscale
         self.pan_y = vh / 2 - canvas_offset_top - mid_y * pxscale
 
         yield rx.call_script(
@@ -3115,7 +3179,6 @@ class EditorState(rx.State):
         # misnamed as .csv; we accept either and sniff the format.
         def _try_load_room_data(path: Path) -> dict[str, float]:
             try:
-                import pandas as pd
                 try:
                     df = pd.read_excel(path)
                 except Exception:
@@ -3500,28 +3563,28 @@ class EditorState(rx.State):
             f"if(el) el.value='{display}';"
         )
 
-    def set_falsecolour_scale(self, value: str):
+    def set_falsecolour_scale(self, value: float):
         snapped = _snap_scale_top(value)
         if snapped is not None:
             self.falsecolour_scale = snapped
             self._auto_save()
         return self._sync_vis_input("vis-fc-scale", self.falsecolour_scale)
 
-    def set_falsecolour_n_levels(self, value: str):
+    def set_falsecolour_n_levels(self, value: float):
         snapped = _snap_scale_divisions(value)
         if snapped is not None:
             self.falsecolour_n_levels = snapped
             self._auto_save()
         return self._sync_vis_input("vis-fc-div", self.falsecolour_n_levels)
 
-    def set_contour_scale(self, value: str):
+    def set_contour_scale(self, value: float):
         snapped = _snap_scale_top(value)
         if snapped is not None:
             self.contour_scale = snapped
             self._auto_save()
         return self._sync_vis_input("vis-ct-scale", self.contour_scale)
 
-    def set_contour_n_levels(self, value: str):
+    def set_contour_n_levels(self, value: float):
         snapped = _snap_scale_divisions(value)
         if snapped is not None:
             self.contour_n_levels = snapped
@@ -3578,6 +3641,19 @@ class EditorState(rx.State):
         from ..lib.image_loader import clear_cache, scan_hdr_files
 
         if not vm.radiance_available():
+            # Emit a visible log so the skip shows up in container stdout —
+            # the transient status message alone is easy to miss, and silent
+            # skips break the export overlay phase (which needs the PNGs).
+            try:
+                from archilume import config as _ar_config
+                _rad_bin = _ar_config.RADIANCE_BIN_PATH
+            except Exception:
+                _rad_bin = "<unknown>"
+            logger.warning(
+                "Radiance CLI not found at %s — falsecolour/contour PNGs "
+                "cannot be regenerated. Annotated overlay export will skip "
+                "any missing base PNGs.", _rad_bin,
+            )
             async with self:
                 self.status_message = "Radiance CLI not found — skipping visualisation generation"
                 self.status_colour = "accent2"
@@ -3813,10 +3889,14 @@ class EditorState(rx.State):
         if self.viewport_width <= 0:
             logger.debug("[nudge] ABORT: viewport_width <= 0")
             return
-        vw = self.viewport_width
+        s = self.canvas_fit_scale
+        cw = self.image_width * s
+        ch = self.image_height * s
+        if cw <= 0 or ch <= 0:
+            return
         t = dict(self._get_current_overlay_transform())
-        t["offset_x"] = t.get("offset_x", 0.0) + dx / vw
-        t["offset_y"] = t.get("offset_y", 0.0) + dy / vw
+        t["offset_x"] = t.get("offset_x", 0.0) + dx / cw
+        t["offset_y"] = t.get("offset_y", 0.0) + dy / ch
         self._set_current_overlay_transform(t)
 
     def sync_overlay_transform(self, data: dict) -> None:
@@ -3828,19 +3908,23 @@ class EditorState(rx.State):
         """
         if self.viewport_width <= 0 or self.image_width <= 0:
             return
-        vw = self.viewport_width
         iw = self.image_width
         ih = self.image_height or 1
+        s = self.canvas_fit_scale
+        cw = iw * s
+        ch = ih * s
+        if cw <= 0 or ch <= 0:
+            return
         t = dict(self._get_current_overlay_transform())
         sx = data.get("scale_x", t.get("scale_x", 1.0))
         sy = data.get("scale_y", t.get("scale_y", 1.0))
         pdf_aspect = (self.overlay_img_height / self.overlay_img_width) if self.overlay_img_width > 0 else (ih / iw)
-        cx = vw * (1.0 - sx) / 2.0
-        cy = (vw * ih / iw - vw * pdf_aspect * sy) / 2.0
+        cx = cw * (1.0 - sx) / 2.0
+        cy = (ch - cw * pdf_aspect * sy) / 2.0
         if "offset_x" in data:
-            t["offset_x"] = (data["offset_x"] - cx) / vw
+            t["offset_x"] = (data["offset_x"] - cx) / cw
         if "offset_y" in data:
-            t["offset_y"] = (data["offset_y"] - cy) / (vw * ih / iw)
+            t["offset_y"] = (data["offset_y"] - cy) / ch
         t["scale_x"] = sx
         t["scale_y"] = sy
         self._set_current_overlay_transform(t)
@@ -4089,35 +4173,95 @@ class EditorState(rx.State):
     # EXPORT / ARCHIVE
     # =====================================================================
 
-    def run_export(self) -> None:
-        self.progress_visible = True
-        self.progress_pct = 0
-        self.progress_msg = "Starting export..."
+    @rx.event(background=True)
+    async def run_export(self):
+        """Export DF results + archive inputs/outputs on a background thread.
+
+        Mirrors :meth:`regenerate_visualisation_bg` — worker thread runs the
+        blocking export while this coroutine polls a shared progress dict and
+        flushes ``progress_pct`` / ``progress_msg`` back to the UI.
+        """
+        import asyncio
+
+        async with self:
+            if not self.project:
+                self.status_message = "No project loaded"
+                self.status_colour = "danger"
+                return
+            project_name = self.project
+            rooms = list(self.rooms)
+            hdr_files = list(self.hdr_files)
+            view_params = dict(self.hdr_view_params)
+            self.progress_visible = True
+            self.progress_pct = 0
+            self.progress_msg = "Starting export..."
+
         try:
             from archilume.config import get_project_paths
         except ImportError:
-            self.progress_visible = False
-            self.status_message = "Export failed: archilume not available"
+            async with self:
+                self.progress_visible = False
+                self.status_message = "Export failed: archilume not available"
+                self.status_colour = "danger"
             return
-        if not self.project:
-            self.progress_visible = False
-            self.status_message = "No project loaded"
-            return
-        paths = get_project_paths(self.project)
+
         from ..lib.export_pipeline import export_report
-        zip_path = export_report(
-            rooms=list(self.rooms), hdr_files=list(self.hdr_files),
-            image_dir=paths.image_dir, output_dir=paths.outputs_dir,
-            wpd_dir=paths.wpd_dir, archive_dir=paths.archive_dir,
-            project_name=self.project, df_thresholds={"BED": 0.5, "LIVING": 1.0, "NON-RESI": 2.0},
-        )
-        self.progress_visible = False
-        if zip_path:
-            self.status_message = f"Export complete: {zip_path.name}"
-            self.status_colour = "accent"
-        else:
-            self.status_message = "Export failed"
-            self.status_colour = "danger"
+        paths = get_project_paths(project_name)
+
+        progress: dict = {"pct": 0, "msg": "Starting export..."}
+
+        def _on_progress(pct: int, msg: str) -> None:
+            progress["pct"] = pct
+            progress["msg"] = msg
+
+        worker = asyncio.create_task(asyncio.to_thread(
+            export_report,
+            rooms=rooms,
+            hdr_files=hdr_files,
+            hdr_view_params=view_params,
+            image_dir=paths.image_dir,
+            wpd_dir=paths.wpd_dir,
+            archive_dir=paths.archive_dir,
+            outputs_dir=paths.outputs_dir,
+            inputs_dir=paths.inputs_dir,
+            project_name=project_name,
+            iesve_mode=False,
+            on_progress=_on_progress,
+        ))
+
+        last_pct, last_msg = -1, ""
+        while not worker.done():
+            await asyncio.sleep(0.15)
+            pct, msg = progress["pct"], progress["msg"]
+            if pct != last_pct or msg != last_msg:
+                last_pct, last_msg = pct, msg
+                async with self:
+                    self.progress_pct = pct
+                    self.progress_msg = msg
+
+        try:
+            zip_path = await worker
+        except Exception as exc:
+            logger.exception("Export failed")
+            async with self:
+                self.progress_visible = False
+                self.status_message = f"Export failed: {exc}"
+                self.status_colour = "danger"
+            return
+
+        async with self:
+            self.progress_pct = 100
+            self.progress_msg = "Export complete."
+            if zip_path:
+                self.status_message = f"Export complete: {zip_path.name}"
+                self.status_colour = "accent"
+            else:
+                self.status_message = "Export failed"
+                self.status_colour = "danger"
+
+        await asyncio.sleep(1.2)
+        async with self:
+            self.progress_visible = False
 
     def scan_archives(self) -> None:
         if not self.project:
@@ -4141,7 +4285,9 @@ class EditorState(rx.State):
             from archilume.config import get_project_paths
             paths = get_project_paths(self.project)
             from ..lib.export_pipeline import extract_archive
-            if extract_archive(paths.archive_dir / self.selected_archive, paths.aoi_inputs_dir):
+            # Archives contain `inputs/...` + `outputs/...` relative to the
+            # project root, so extract there to restore both trees in place.
+            if extract_archive(paths.archive_dir / self.selected_archive, paths.project_dir):
                 self.status_message = f"Extracted: {self.selected_archive}"
                 self.status_colour = "accent"
             else:
@@ -4267,9 +4413,6 @@ class EditorState(rx.State):
         self.overlay_dpi = data.get("overlay_dpi", 150)
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
-        pdf_path = data.get("overlay_pdf_path", "")
-        if pdf_path and Path(pdf_path).exists():
-            self.overlay_pdf_path = pdf_path
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
         self.overlay_img_width = data.get("overlay_img_width", 0)
         self.overlay_img_height = data.get("overlay_img_height", 0)
@@ -4330,10 +4473,6 @@ class EditorState(rx.State):
         self.overlay_dpi = data.get("overlay_dpi", 150)
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
-        pdf_path = data.get("overlay_pdf_path", "")
-        if pdf_path and Path(pdf_path).exists():
-            self.overlay_pdf_path = pdf_path
-        # else: keep the path already resolved by _init_project_paths
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
         # Restore cached PDF intrinsic dimensions so overlay_css_transform can
         # compute the correct centring term before rasterization completes.
@@ -4377,7 +4516,7 @@ class EditorState(rx.State):
             current_hdr_idx=self.current_hdr_idx, current_variant_idx=self.current_variant_idx,
             selected_parent=self.selected_parent, annotation_scale=self.annotation_scale,
             overlay_dpi=self.overlay_dpi, overlay_visible=self.overlay_visible,
-            overlay_alpha=self.overlay_alpha, overlay_pdf_path=self.overlay_pdf_path,
+            overlay_alpha=self.overlay_alpha,
             overlay_page_idx=self.overlay_page_idx, transform_version=tv,
             overlay_img_width=self.overlay_img_width,
             overlay_img_height=self.overlay_img_height,
@@ -4486,7 +4625,16 @@ class EditorState(rx.State):
     # PROJECT MANAGEMENT
     # =====================================================================
 
-    def scan_projects(self) -> None:
+    # Backend-only scan caches. Scans over a Docker bind-mount (Windows host →
+    # Linux container via 9p/virtiofs) are 5–50 ms per syscall; without caching
+    # every interaction that opens the modal or progresses project load would
+    # walk ``projects/`` again.
+    _scan_projects_last: float = 0.0
+    _scan_projects_ttl: float = 5.0
+
+    def scan_projects(self, force: bool = False) -> None:
+        if not force and (time.time() - self._scan_projects_last) < self._scan_projects_ttl:
+            return
         try:
             from archilume.config import PROJECTS_DIR
             if PROJECTS_DIR.exists():
@@ -4501,22 +4649,32 @@ class EditorState(rx.State):
                     ])
             else:
                 self.available_projects = []
+            self._scan_projects_last = time.time()
         except ImportError:
             self.available_projects = []
 
-    def open_project(self, name: str) -> None:
+    def open_project(self, name: str):
+        """Open a project and schedule visualisation regeneration.
+
+        Returns ``EditorState.regenerate_visualisation_bg(False)`` so Reflex
+        fires the background regen after this handler flushes state. Without
+        that return, user-driven opens (modal click, import, link) never
+        trigger falsecolour/contour PNG regeneration — the automatic path
+        only runs via ``_open_project_progressive`` in ``init_on_load``.
+        """
         if not name:
-            return
+            return None
         self.save_session()
         self.project = name
         self._init_project_paths()
         self._rebuild_variants()
         self.load_session()
+        self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
         self.load_current_image()
-        self.scan_projects()
         self.open_project_modal_open = False
         self.status_message = f"Opened: {name}"
         self.status_colour = "accent"
+        return EditorState.regenerate_visualisation_bg(False)
 
     def _open_project_progressive(self, name: str):
         """Open a project with progressive UI updates via yield.
@@ -4539,11 +4697,11 @@ class EditorState(rx.State):
 
         # Phase 2: session restore (JSON parse, no heavy compute)
         self._load_session_core()
+        self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
         yield
 
         # Phase 3: load main image — app feels "ready" after this
         self.load_current_image()
-        self.scan_projects()
         self.open_project_modal_open = False
         self.is_project_loading = False
         self.status_message = f"Opened: {name}"
@@ -4780,6 +4938,13 @@ class EditorState(rx.State):
     def _init_project_paths(self) -> None:
         if not self.project:
             return
+        self.overlay_pdf_path = ""
+        self.overlay_image_b64 = ""
+        self.overlay_visible = False
+        self.overlay_page_idx = 0
+        self.overlay_page_count = 0
+        self.overlay_img_width = 0
+        self.overlay_img_height = 0
         try:
             from archilume.config import get_project_paths
             from ..lib import project_migration
@@ -4791,12 +4956,14 @@ class EditorState(rx.State):
                 self.status_message = f"Migrated project mode → {migrated}"
                 self.status_colour = "accent2"
             paths = get_project_paths(self.project)
-            # Editor scans pic_dir for IESVE daylight markup (user-supplied .pic
-            # files land there). Everything else reads from outputs/image/.
-            image_dir = (
-                paths.pic_dir if self.project_mode == "daylight-markup"
-                else paths.image_dir
-            )
+            # For daylight projects, prefer the user-supplied .pic directory when
+            # it actually contains images (markup flow). Fall back to
+            # outputs/image/ for sunlight and for daylight-sim projects that
+            # haven't rendered yet. A project.toml override below wins over both.
+            image_dir = paths.image_dir
+            if self.project_mode == "daylight" and paths.pic_dir.exists():
+                if any(paths.pic_dir.glob("*.pic")) or any(paths.pic_dir.glob("*.hdr")):
+                    image_dir = paths.pic_dir
             toml_path = paths.project_dir / "project.toml"
             if toml_path.exists():
                 try:
@@ -4842,7 +5009,7 @@ class EditorState(rx.State):
             pass
 
     def init_on_load(self):
-        self.scan_projects()
+        self.scan_projects(force=True)
         yield
         initial = os.environ.get("ARCHILUME_INITIAL_PROJECT", "").strip()
         if initial and initial in self.available_projects:
@@ -4863,6 +5030,9 @@ class EditorState(rx.State):
     def toggle_visualisation_section(self) -> None:
         self.visualisation_section_open = not self.visualisation_section_open
 
+    def toggle_room_browser_section(self) -> None:
+        self.room_browser_section_open = not self.room_browser_section_open
+
 
 
 
@@ -4873,23 +5043,299 @@ class EditorState(rx.State):
         self.shortcuts_modal_open = False
 
     def open_open_project_modal(self) -> None:
-        self.scan_projects()
+        self.scan_projects(force=True)
         self.open_project_modal_open = True
 
-    def open_projects_folder(self) -> None:
-        import subprocess
-        import sys
+    async def upload_open_project_archive(self, files: list[rx.UploadFile]):
+        """Browser-side Browse for Open Project: user uploads a ``.zip`` of a
+        project folder, the backend extracts it into ``PROJECTS_DIR`` and
+        opens it.
+
+        The zip is expected to contain either ``project.toml`` at the root or
+        a single top-level directory that contains ``project.toml`` (the
+        common "zip a folder" shape). The extracted project is named after
+        its top-level directory (or the zip stem when the toml is at the
+        root), with a ``-N`` suffix appended if the name already exists.
+        """
+        import shutil
+        import tempfile
+        import zipfile
+
+        if not files:
+            return None
+        upload = files[0]
+        try:
+            raw_name = Path(upload.name).name
+        except Exception:
+            raw_name = "upload.zip"
+        if Path(raw_name).suffix.lower() != ".zip":
+            return rx.toast.error("Browse expects a .zip archive of a project folder")
+
         try:
             from archilume.config import PROJECTS_DIR
-            path = str(PROJECTS_DIR)
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", path])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
+        except ImportError:
+            return rx.toast.error("Projects directory not configured")
+        projects_dir = Path(PROJECTS_DIR).resolve()
+        projects_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            data = await upload.read()
+        except Exception as exc:
+            return rx.toast.error(f"Failed to read upload: {exc}")
+
+        tmp_root = Path(tempfile.mkdtemp(prefix="archilume-open-"))
+        zip_path = tmp_root / raw_name
+        extract_dir = tmp_root / "extracted"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            zip_path.write_bytes(data)
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+            except zipfile.BadZipFile:
+                return rx.toast.error("Not a valid zip archive")
+
+            # Find project.toml — either at the extract root or one level deep
+            # in a single top-level folder (the common "zip a folder" shape).
+            if (extract_dir / "project.toml").exists():
+                source_dir = extract_dir
+                default_name = Path(raw_name).stem
             else:
-                subprocess.Popen(["xdg-open", path])
-        except Exception:
-            pass
+                top_entries = [p for p in extract_dir.iterdir() if p.is_dir()]
+                source_dir = next(
+                    (p for p in top_entries if (p / "project.toml").exists()),
+                    None,
+                )
+                if source_dir is None:
+                    return rx.toast.error(
+                        "Archive does not contain a project.toml at its root"
+                    )
+                default_name = source_dir.name
+
+            base = default_name or "project"
+            name = base
+            suffix = 1
+            while (projects_dir / name).exists():
+                name = f"{base}-{suffix}"
+                suffix += 1
+            dest = projects_dir / name
+            try:
+                shutil.copytree(source_dir, dest)
+            except OSError as exc:
+                return rx.toast.error(f"Failed to import project: {exc}")
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+        self.open_project_modal_open = False
+        self.scan_projects(force=True)
+        return [
+            self.open_project(name),
+            rx.toast.success(f"Imported project '{name}'"),
+        ]
+
+    def pick_and_add_external_project(self):
+        """Pick a project folder and link it into PROJECTS_DIR.
+
+        Tries the native OS folder dialog first. When that is unavailable
+        (headless Docker backend, no display) falls back to an in-browser
+        server-side folder browser modal that navigates the container
+        filesystem. Either way the selection is validated (must contain
+        ``project.toml``) and, if outside PROJECTS_DIR, linked in via a
+        directory junction (Windows) or symlink (POSIX).
+        """
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except (ImportError, ModuleNotFoundError):
+            return self.open_external_browser()
+
+        try:
+            from archilume.config import HOST_PROJECTS_DIR
+        except ImportError:
+            return rx.toast.error("Projects directory not configured")
+
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            picked = filedialog.askdirectory(
+                title="Select archilume project folder",
+                initialdir=HOST_PROJECTS_DIR,
+            )
+            root.destroy()
+        except tk.TclError:
+            return self.open_external_browser()
+
+        if not picked:
+            return None
+
+        return self._link_external_project(Path(picked).resolve())
+
+    def _link_external_project(self, picked_path: Path):
+        """Validate ``picked_path`` and link it into PROJECTS_DIR, then open.
+
+        Shared by the native tkinter picker and the server-side browser
+        fallback. Returns a toast event on failure, or ``None`` on success
+        after opening the project.
+        """
+        try:
+            from archilume.config import PROJECTS_DIR
+        except ImportError:
+            return rx.toast.error("Projects directory not configured")
+
+        if not picked_path.is_dir():
+            return rx.toast.error("Not a folder")
+        if not (picked_path / "project.toml").exists():
+            return rx.toast.error("Not a valid archilume project — missing project.toml")
+
+        projects_dir = Path(PROJECTS_DIR).resolve()
+        try:
+            picked_path.relative_to(projects_dir)
+            name = picked_path.name
+        except ValueError:
+            projects_dir.mkdir(parents=True, exist_ok=True)
+            base = picked_path.name
+            name = base
+            suffix = 1
+            while (projects_dir / name).exists():
+                name = f"{base}-{suffix}"
+                suffix += 1
+            link_path = projects_dir / name
+            try:
+                if sys.platform == "win32":
+                    result = subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(link_path), str(picked_path)],
+                        capture_output=True, text=True,
+                    )
+                    if result.returncode != 0:
+                        return rx.toast.error(
+                            f"Failed to link project: {result.stderr.strip() or result.stdout.strip()}"
+                        )
+                else:
+                    os.symlink(picked_path, link_path, target_is_directory=True)
+            except OSError as exc:
+                return rx.toast.error(f"Failed to link project: {exc}")
+
+        self.scan_projects(force=True)
+        return self.open_project(name)
+
+    # --- server-side folder browser (fallback for headless backends) -------
+
+    def _scan_browser_dir(self, path: Path) -> list[dict[str, Any]]:
+        """List directory entries of ``path`` for the server-side browser.
+
+        In ``project`` mode returns sub-directories only, flagging those that
+        contain ``project.toml``. In ``settings_file`` mode also returns files
+        whose suffix is in ``external_browser_allowed_extensions``.
+        """
+        entries: list[dict[str, Any]] = []
+        file_mode = self.external_browser_mode == "settings_file"
+        allowed = {ext.lower() for ext in self.external_browser_allowed_extensions}
+        try:
+            with os.scandir(path) as it:
+                for e in it:
+                    try:
+                        child = Path(e.path)
+                        if e.is_dir(follow_symlinks=False):
+                            is_project = (child / "project.toml").exists()
+                            entries.append({
+                                "name": e.name,
+                                "path": str(child),
+                                "kind": "dir",
+                                "is_project": is_project,
+                            })
+                        elif file_mode and e.is_file(follow_symlinks=False):
+                            if Path(e.name).suffix.lower() in allowed:
+                                entries.append({
+                                    "name": e.name,
+                                    "path": str(child),
+                                    "kind": "file",
+                                    "is_project": False,
+                                })
+                    except (PermissionError, OSError):
+                        continue
+        except (PermissionError, OSError) as exc:
+            self.external_browser_error = f"Cannot read directory: {exc}"
+            return []
+        self.external_browser_error = ""
+        # Directories first, projects above plain dirs, then files; alpha within groups.
+        def _key(x: dict[str, Any]) -> tuple:
+            kind_rank = 0 if x["kind"] == "dir" else 1
+            proj_rank = 0 if x.get("is_project") else 1
+            return (kind_rank, proj_rank, x["name"].lower())
+        entries.sort(key=_key)
+        return entries
+
+    def open_external_browser(self) -> None:
+        try:
+            from archilume.config import HOST_PROJECTS_DIR
+        except ImportError:
+            self.external_browser_error = "Projects directory not configured"
+            HOST_PROJECTS_DIR = str(Path.cwd())
+        start = Path(HOST_PROJECTS_DIR)
+        if not start.exists() or not start.is_dir():
+            start = Path("/") if sys.platform != "win32" else Path(start.anchor or "C:\\")
+        self.open_project_modal_open = False
+        # Reset file-mode metadata so a leftover settings Browse doesn't
+        # leak file listings into the Open-Project dialog.
+        self.external_browser_mode = "project"
+        self.external_browser_target_field = ""
+        self.external_browser_allowed_extensions = []
+        self.external_browser_multiple = False
+        self.external_browser_path = str(start)
+        self.external_browser_entries = self._scan_browser_dir(start)
+        self.external_browser_open = True
+
+    def close_external_browser(self) -> None:
+        self.external_browser_open = False
+
+    def external_browser_navigate(self, path: str) -> None:
+        target = Path(path)
+        if not target.is_dir():
+            self.external_browser_error = "Not a directory"
+            return
+        self.external_browser_path = str(target)
+        self.external_browser_entries = self._scan_browser_dir(target)
+
+    def external_browser_go_up(self) -> None:
+        current = Path(self.external_browser_path) if self.external_browser_path else Path("/")
+        parent = current.parent
+        if parent == current:
+            return
+        self.external_browser_path = str(parent)
+        self.external_browser_entries = self._scan_browser_dir(parent)
+
+    def external_browser_select(self, path: str):
+        if self.external_browser_mode == "settings_file":
+            return self._select_settings_browser_file(Path(path).resolve())
+        result = self._link_external_project(Path(path).resolve())
+        if result is None:
+            self.external_browser_open = False
+        return result
+
+    def _select_settings_browser_file(self, picked: Path):
+        """Stage a file picked from the server-side browser into the active
+        settings field, then close the browser. The settings modal remains
+        open underneath, showing the staged file in its ✓/✗ row list."""
+        field_id = self.external_browser_target_field
+        if not field_id:
+            self.external_browser_error = "No target field set"
+            return None
+        if not picked.is_file():
+            self.external_browser_error = "Not a file"
+            return None
+        try:
+            data = picked.read_bytes()
+        except OSError as exc:
+            self.external_browser_error = f"Cannot read file: {exc}"
+            return None
+        self._stage_uploaded_files(
+            field_id,
+            [_StagedUploadBytes(name=picked.name, data=data)],
+            target="settings",
+        )
+        self.external_browser_open = False
+        return None
 
     def close_open_project_modal(self) -> None:
         self.open_project_modal_open = False
@@ -5090,6 +5536,102 @@ class EditorState(rx.State):
         await self._read_and_stage(files, "room_data", "settings")
     async def upload_settings_aoi_files(self, files: list[rx.UploadFile]) -> None:
         await self._read_and_stage(files, "aoi_files", "settings")
+
+    # --- Settings "Browse…" button -----------------------------------------
+    # Opens a native OS file picker at the field's canonical destination dir
+    # so the user lands where the existing file already lives. Falls back to
+    # the server-side in-browser file picker when tkinter is unavailable
+    # (e.g. headless Docker backend).
+    def pick_settings_field_file(self, field_id: str):
+        field = project_modes.field_by_id(self.project_mode, field_id)
+        if field is None:
+            return rx.toast.error(f"Unknown field: {field_id}")
+        paths = self._current_project_paths()
+        initial_dir: Optional[Path] = None
+        if paths is not None:
+            candidate = getattr(paths, field.dest_attr, None)
+            if candidate is not None and candidate.exists():
+                initial_dir = candidate
+        if initial_dir is None:
+            try:
+                from archilume.config import PROJECTS_DIR
+                initial_dir = Path(PROJECTS_DIR)
+            except ImportError:
+                initial_dir = Path.cwd()
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except (ImportError, ModuleNotFoundError):
+            return self.open_settings_file_browser(field_id, initial_dir)
+
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            filetypes = [
+                (f"{ext.lstrip('.').upper()} files", f"*{ext}")
+                for ext in field.allowed_extensions
+            ]
+            filetypes.append(("All files", "*.*"))
+            if field.multiple:
+                picked = filedialog.askopenfilenames(
+                    title=f"Select {field.label}",
+                    filetypes=filetypes,
+                    initialdir=str(initial_dir),
+                )
+                picked_paths = [Path(p) for p in (picked or ())]
+            else:
+                picked = filedialog.askopenfilename(
+                    title=f"Select {field.label}",
+                    filetypes=filetypes,
+                    initialdir=str(initial_dir),
+                )
+                picked_paths = [Path(picked)] if picked else []
+            root.destroy()
+        except tk.TclError:
+            return self.open_settings_file_browser(field_id, initial_dir)
+
+        if not picked_paths:
+            return None
+
+        staged: list[_StagedUploadBytes] = []
+        for p in picked_paths:
+            try:
+                staged.append(_StagedUploadBytes(name=p.name, data=p.read_bytes()))
+            except OSError as exc:
+                logger.warning("settings pick read failed for %s: %s", p, exc)
+        if staged:
+            self._stage_uploaded_files(field_id, staged, target="settings")
+        return None
+
+    def open_settings_file_browser(self, field_id: str, initial_dir: Optional[Path] = None):
+        """Fallback server-side file picker for the settings Browse button.
+        Starts at the field's canonical destination dir so the user lands
+        next to the existing file."""
+        field = project_modes.field_by_id(self.project_mode, field_id)
+        if field is None:
+            return rx.toast.error(f"Unknown field: {field_id}")
+        if initial_dir is None:
+            paths = self._current_project_paths()
+            if paths is not None:
+                candidate = getattr(paths, field.dest_attr, None)
+                if candidate is not None and candidate.exists():
+                    initial_dir = candidate
+        if initial_dir is None or not initial_dir.exists():
+            try:
+                from archilume.config import PROJECTS_DIR
+                initial_dir = Path(PROJECTS_DIR)
+            except ImportError:
+                initial_dir = Path.cwd()
+        self.external_browser_mode = "settings_file"
+        self.external_browser_target_field = field_id
+        self.external_browser_allowed_extensions = list(field.allowed_extensions)
+        self.external_browser_multiple = field.multiple
+        self.external_browser_path = str(initial_dir)
+        self.external_browser_entries = self._scan_browser_dir(initial_dir)
+        self.external_browser_open = True
+        return None
 
     def remove_new_project_file(self, field_id: str, filename: str) -> None:
         self._remove_staged_file(field_id, filename, target="create")

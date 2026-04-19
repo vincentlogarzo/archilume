@@ -30,7 +30,8 @@ def _section_header(title: str, is_open: rx.Var[bool], on_toggle) -> rx.Componen
         on_click=on_toggle,
         align="center",
         style={
-            "padding": "6px 8px",
+            "padding": "0 8px",
+            "height": "36px",
             "cursor": "pointer",
             "border_top": "1px solid",
             "border_color": COLORS["panel_bdr"],

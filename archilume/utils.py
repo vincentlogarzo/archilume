@@ -8,12 +8,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
-import psutil
-from PIL import Image
 import numpy as np
 import pandas as pd
-import tkinter as tk
+import psutil
 import pymupdf as fitz
+from PIL import Image
 from archilume import config
 
 

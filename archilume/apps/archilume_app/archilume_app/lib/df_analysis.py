@@ -1,10 +1,10 @@
 """Daylight Factor (DF%) analysis — compute per-room stats from HDR images."""
 
-import math
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from skimage.draw import polygon as sk_polygon
 
 # DF% thresholds by room type
 DF_THRESHOLDS = {
@@ -116,48 +116,12 @@ def compute_room_df(
 def _polygon_mask(
     vertices: list[list[float]], width: int, height: int
 ) -> np.ndarray:
-    """Create a boolean mask for pixels inside a polygon.
-
-    Uses skimage scanline rasterisation (fast). Falls back to matplotlib
-    path containment if skimage is unavailable.
-    """
-    try:
-        from skimage.draw import polygon as sk_polygon
-
-        ys = [v[1] for v in vertices]
-        xs = [v[0] for v in vertices]
-        rr, cc = sk_polygon(ys, xs, shape=(height, width))
-        mask = np.zeros((height, width), dtype=bool)
-        mask[rr, cc] = True
-        return mask
-    except ImportError:
-        pass
-
-    try:
-        from matplotlib.path import Path as MplPath
-
-        path = MplPath(vertices)
-        yy, xx = np.mgrid[:height, :width]
-        points = np.column_stack([xx.ravel(), yy.ravel()])
-        mask = path.contains_points(points).reshape(height, width)
-        return mask
-    except ImportError:
-        pass
-
-    # Last-resort: bounding-box pixel scan
-    from .geometry import point_in_polygon
-
-    mask = np.zeros((height, width), dtype=bool)
-    xs = [v[0] for v in vertices]
+    """Create a boolean mask for pixels inside a polygon via skimage scanline rasterisation."""
     ys = [v[1] for v in vertices]
-    min_x = max(0, int(math.floor(min(xs))))
-    max_x = min(width - 1, int(math.ceil(max(xs))))
-    min_y = max(0, int(math.floor(min(ys))))
-    max_y = min(height - 1, int(math.ceil(max(ys))))
-    for y in range(min_y, max_y + 1):
-        for x in range(min_x, max_x + 1):
-            if point_in_polygon(float(x), float(y), vertices):
-                mask[y, x] = True
+    xs = [v[0] for v in vertices]
+    rr, cc = sk_polygon(ys, xs, shape=(height, width))
+    mask = np.zeros((height, width), dtype=bool)
+    mask[rr, cc] = True
     return mask
 
 

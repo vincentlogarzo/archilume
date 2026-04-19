@@ -61,9 +61,6 @@ desktop.ini
 .coverage
 htmlcov/
 
-# Code review graph local DB — dev tool, not needed in image
-.code-review-graph/
-
 # Local environment files — NEVER bake secrets into images
 .env
 *.env
@@ -74,6 +71,11 @@ htmlcov/
 
 # Project data — persisted on the host via bind mount, not baked into image
 projects/
+
+# Distribution artefacts produced by docker/build-zip.ps1 are tracked in git
+# (versioned release payload) but not useful inside any image. Exclude from
+# image build context so they don't bloat uploads to the daemon.
+docker/dist/
 
 # Large data files unlikely to be needed in the base image
 *.oct

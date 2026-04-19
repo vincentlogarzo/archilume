@@ -3,7 +3,7 @@
 import reflex as rx
 
 from ..state import EditorState
-from ..styles import COLORS, FONT_MONO, PROJECT_TREE_WIDTH
+from ..styles import COLORS, FONT_MONO, PANEL_CARD_TITLE, PROJECT_TREE_WIDTH
 from .left_panel_sections import floor_plan_section, visualisation_section
 
 _ROW_H = "26px"
@@ -261,20 +261,35 @@ def _render_tree_node(node: dict) -> rx.Component:
 
 def _tree_header() -> rx.Component:
     return rx.flex(
-        rx.text(
-            "Room Browser",
-            style={**_FONT, "font_size": "11px", "text_transform": "uppercase",
-                   "letter_spacing": "0.08em", "font_weight": "700",
-                   "overflow": "hidden",
-                   "text_overflow": "ellipsis", "white_space": "nowrap"},
-            color=COLORS["text_pri"],
+        rx.flex(
+            rx.icon(
+                tag=rx.cond(EditorState.room_browser_section_open, "chevron-down", "chevron-right"),
+                size=12,
+                style={"color": COLORS["text_pri"], "flex_shrink": "0"},
+            ),
+            rx.text(
+                "Room Browser",
+                style={
+                    **PANEL_CARD_TITLE,
+                    "padding": "0",
+                    "margin_left": "4px",
+                    "font_weight": "700",
+                    "overflow": "hidden",
+                    "text_overflow": "ellipsis",
+                    "white_space": "nowrap",
+                },
+                color=COLORS["text_pri"],
+            ),
+            on_click=EditorState.toggle_room_browser_section,
+            align="center",
+            style={"cursor": "pointer", "flex_shrink": "1", "min_width": "0"},
         ),
         rx.spacer(),
         rx.tooltip(
             rx.icon_button(
                 rx.icon(tag="layers", size=12),
                 variant="ghost", size="1",
-                on_click=EditorState.toggle_image_variant,
+                on_click=EditorState.toggle_image_variant.stop_propagation,
                 style={"color": COLORS["text_dim"], "flex_shrink": "0"},
             ),
             content="Toggle Image Layers [T]", side="bottom",
@@ -284,7 +299,7 @@ def _tree_header() -> rx.Component:
             rx.button(
                 rx.cond(EditorState.all_rooms_selected, "Unselect All", "Select All"),
                 variant="ghost", size="1",
-                on_click=EditorState.select_all_rooms,
+                on_click=EditorState.select_all_rooms.stop_propagation,
                 style={**_FONT, "font_size": "9px", "white_space": "nowrap",
                        "color": COLORS["text_dim"], "padding": "0 4px", "flex_shrink": "0"},
             ),
@@ -295,7 +310,7 @@ def _tree_header() -> rx.Component:
             rx.icon_button(
                 rx.icon(tag="chevrons-down-up", size=12),
                 variant="ghost", size="1",
-                on_click=EditorState.collapse_all_hdrs,
+                on_click=EditorState.collapse_all_hdrs.stop_propagation,
                 style={"color": COLORS["text_dim"], "flex_shrink": "0"},
             ),
             content="Collapse All", side="bottom",
@@ -304,15 +319,23 @@ def _tree_header() -> rx.Component:
             rx.icon_button(
                 rx.icon(tag="chevrons-up-down", size=12),
                 variant="ghost", size="1",
-                on_click=EditorState.expand_all_hdrs,
+                on_click=EditorState.expand_all_hdrs.stop_propagation,
                 style={"color": COLORS["text_dim"], "flex_shrink": "0"},
             ),
             content="Expand All", side="bottom",
         ),
         align="center",
-        style={"padding": "0 6px", "flex_shrink": "0", "gap": "6px",
-               "height": "36px"},
-        border_bottom="1px solid", border_color=COLORS["panel_bdr"],
+        style={
+            "padding": "0 6px 0 8px",
+            "flex_shrink": "0",
+            "gap": "6px",
+            "height": "36px",
+            "background": COLORS["deep"],
+            "border_top": "1px solid",
+            "border_bottom": "1px solid",
+            "border_color": COLORS["panel_bdr"],
+            "_hover": {"background": COLORS["hover"]},
+        },
     )
 
 
@@ -324,12 +347,25 @@ _RESIZE_SCRIPT = rx.script("""
         if (!dragging || !activePanel) return;
         const newW = Math.min(600, Math.max(160, startW + (e.clientX - startX)));
         activePanel.style.width = newW + 'px';
+        var vc = document.getElementById('viewport-container');
+        if (vc && window._recomputeOverlayTransform) {
+            var w = vc.clientWidth, h = vc.clientHeight;
+            if (w > 0 && h > 0) window._recomputeOverlayTransform(w, h);
+        }
     });
     window.addEventListener('mouseup', function() {
         if (!dragging) return;
         dragging = false; activePanel = null;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
+        var vc = document.getElementById('viewport-container');
+        if (vc && vc.clientWidth > 0 && window.applyEvent) {
+            try {
+                window.applyEvent('editor_state.set_viewport_size', {
+                    data: { w: Math.round(vc.clientWidth), h: Math.round(vc.clientHeight) }
+                });
+            } catch (e) {}
+        }
     });
     function attachHandle(handle, panel) {
         handle.addEventListener('mousedown', function(e) {
@@ -362,15 +398,19 @@ def project_tree() -> rx.Component:
             # the floor-plan section hugs the bottom of the list when the list
             # is short. `flex: 0 1 auto` + `min_height: 0` lets the list shrink
             # and scroll internally when the list grows taller than the panel.
-            rx.box(
-                rx.foreach(EditorState.tree_nodes, _render_tree_node),
-                style={
-                    "overflow_y": "auto",
-                    "flex": "0 1 auto",
-                    "min_height": "0",
-                    "scrollbar_width": "thin",
-                    "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
-                },
+            rx.cond(
+                EditorState.room_browser_section_open,
+                rx.box(
+                    rx.foreach(EditorState.tree_nodes, _render_tree_node),
+                    style={
+                        "overflow_y": "auto",
+                        "flex": "0 1 auto",
+                        "min_height": "0",
+                        "scrollbar_width": "thin",
+                        "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
+                    },
+                ),
+                rx.fragment(),
             ),
             # Floor plan section: fixed size, never shrinks.
             rx.box(floor_plan_section(), style={"flex_shrink": "0"}),

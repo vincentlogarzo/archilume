@@ -125,7 +125,7 @@ def header() -> rx.Component:
             rx.fragment(),
         ),
         # Separator before tabs
-        rx.box(style={"width": "20px", "flex_shrink": "0"}),
+        rx.box(style={"width": "80px", "flex_shrink": "0"}),
         # Workflow tabs
         *[_tab_btn(tid, label, icon) for tid, label, icon in _TAB_ITEMS],
         # Right side

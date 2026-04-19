@@ -1,30 +1,32 @@
 """One-shot migration of legacy project.toml files to the new mode taxonomy.
 
-The archilume_app create-project flow used to write one of three mode strings
-that are no longer valid:
+Two historical mode generations are recognised and collapsed into the current
+two-mode taxonomy:
+
+* First-generation modes (free-text workflow tags)::
 
     archilume   — generic HDR mode, synonym for ``hdr``
     hdr         — archilume-rendered or pre-rendered sunlight HDRs
     iesve       — IESVE-derived daylight with .pic images
 
-The new taxonomy (see ``project_modes.py``) replaces these with four explicit
-workflow modes:
+* Second-generation modes (four-way sim/markup split)::
 
     sunlight-sim       sunlight-markup
     daylight-sim       daylight-markup
 
-Inference rules (applied only to projects carrying a legacy mode string):
+The current taxonomy (see ``project_modes.py``) keeps only the physical
+workflow choice::
 
-* ``iesve``:
-    - has ``.oct`` in ``outputs/octree/`` AND ``.rdp`` in ``inputs/``  → daylight-sim
-    - otherwise                                                        → daylight-markup
+    sunlight       daylight
 
-* ``hdr`` / ``archilume``:
-    - has ``.oct`` in ``outputs/octree/`` AND ``.rdp`` in ``inputs/``  → sunlight-sim
-    - otherwise                                                        → sunlight-markup
+Inference rules:
 
-Both paths favour the markup branch when the simulation-specific files are
-absent because markup is non-destructive — it just reads existing results.
+* ``iesve`` / ``daylight-sim`` / ``daylight-markup``  → ``daylight``
+* ``archilume`` / ``hdr`` / ``sunlight-sim`` / ``sunlight-markup``
+                                                       → ``sunlight``
+
+The sim/markup flavour is no longer encoded in the mode — the editor picks
+the appropriate image directory at runtime based on what is on disk.
 
 The migration is idempotent: if ``mode`` is already in the new taxonomy, the
 function is a no-op. A dead ``image_dir = ""`` key in ``[paths]`` is dropped
@@ -45,8 +47,16 @@ except ModuleNotFoundError:  # pragma: no cover — fallback for 3.10
     import tomli as tomllib  # type: ignore
 
 
-LEGACY_MODES = frozenset({"archilume", "hdr", "iesve"})
-NEW_MODES = frozenset({"sunlight-sim", "sunlight-markup", "daylight-sim", "daylight-markup"})
+LEGACY_MODES = frozenset({
+    # First-gen
+    "archilume", "hdr", "iesve",
+    # Second-gen (4-way sim/markup split)
+    "sunlight-sim", "sunlight-markup",
+    "daylight-sim", "daylight-markup",
+})
+NEW_MODES = frozenset({"sunlight", "daylight"})
+
+_DAYLIGHT_LEGACY = frozenset({"iesve", "daylight-sim", "daylight-markup"})
 
 
 def needs_migration(mode: str) -> bool:
@@ -54,18 +64,17 @@ def needs_migration(mode: str) -> bool:
 
 
 def infer_new_mode(legacy_mode: str, paths) -> str:
-    """Map a legacy mode + on-disk state to a new mode id.
+    """Map a legacy mode id to the current two-mode taxonomy.
 
-    ``paths`` is the :class:`archilume.config.ProjectPaths` for the project.
+    ``paths`` is accepted for backward compatibility with the previous
+    signature but is no longer consulted — the sim/markup flavour is
+    resolved at editor load time from on-disk state.
     """
-    has_oct = paths.octree_dir.exists() and any(paths.octree_dir.glob("*.oct"))
-    has_rdp = paths.inputs_dir.exists() and any(paths.inputs_dir.glob("*.rdp"))
-    simulation = has_oct and has_rdp
-
-    if legacy_mode == "iesve":
-        return "daylight-sim" if simulation else "daylight-markup"
-    # hdr / archilume
-    return "sunlight-sim" if simulation else "sunlight-markup"
+    del paths  # retained for API stability
+    if legacy_mode in _DAYLIGHT_LEGACY:
+        return "daylight"
+    # archilume / hdr / sunlight-sim / sunlight-markup
+    return "sunlight"
 
 
 def migrate_project_toml(project_name: str) -> Optional[str]:

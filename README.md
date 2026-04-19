@@ -9,7 +9,40 @@ A Python framework for Radiance-based architectural daylight and sunlight simula
 
 ## Quick Start
 
-### Option A — Dev Container (Recommended)
+### Option A — Desktop App (No Code Required)
+
+For end users who want to run Archilume without installing Python or Radiance. Everything runs in Docker containers on your machine.
+
+**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows 10/11, macOS, or Linux. (On Linux, Docker Engine + Docker Compose v2 also works if you prefer a non-desktop install.)
+
+First, get the distribution payload:
+
+1. Ask for `archilume.zip` (built from [docker/build-zip.ps1](docker/build-zip.ps1)).
+2. Unzip it anywhere — any drive, any folder, spaces in the path are fine.
+
+Then launch it for your platform:
+
+| Windows | macOS / Linux |
+| --- | --- |
+| Double-click **`launch-archilume.cmd`**. | Start Docker Desktop (or ensure the Docker daemon is running), then from the unzipped folder run `docker compose -f docker-compose-archilume.yml -p archilume up -d`. |
+| A PowerShell window opens, starts Docker Desktop if needed, brings up the frontend + backend + engine containers, and opens your browser on <http://localhost:3000> once healthy. | First launch pulls images from Docker Hub; later launches reuse the local copies. Open <http://localhost:3000> in your browser once the containers are healthy. |
+| The window stays open so you can read progress and error messages. Do **not** run `launch-archilume.ps1` directly — "Run with PowerShell" closes the window instantly on any error. | — |
+
+#### Common to all platforms
+
+Your project data lives in the `projects/` folder next to the compose file. Anything saved from the app is written back there on your host.
+
+To stop Archilume, shut the containers down from Docker Desktop, or run from the unzipped folder:
+
+```bash
+docker compose -f docker-compose-archilume.yml -p archilume down
+```
+
+To refresh to the latest published images, run `docker compose -f docker-compose-archilume.yml -p archilume pull` before the next launch.
+
+See [docker/README.md](docker/README.md) for the end-user troubleshooting guide shipped inside the zip.
+
+### Option B — Dev Container (Recommended for Developers)
 
 The dev container bundles Python 3.12, Radiance, and Accelerad so there is nothing to install manually.
 
@@ -20,27 +53,6 @@ git clone https://github.com/vincentlogarzo/archilume.git
 ```
 
 Open the folder in VS Code and click **"Reopen in Container"** when prompted (or `Ctrl+Shift+P` → `Dev Containers: Reopen in Container`). Once the container finishes building, the environment is ready.
-
-### Option B — Native Windows
-
-1. Install **[Python 3.12+](https://www.python.org/downloads/)**.
-2. Install **[Radiance](https://www.radiance-online.org/)** (and optionally [Accelerad](https://nljones.github.io/Accelerad/) for GPU rendering).
-3. Clone and install dependencies:
-
-   ```powershell
-   git clone https://github.com/vincentlogarzo/archilume.git
-   cd archilume
-   pip install uv
-   uv sync
-   ```
-
-4. Verify Radiance is on your `PATH`:
-
-   ```powershell
-   rpict -version
-   ```
-
-   If Radiance is installed elsewhere, set `RADIANCE_ROOT` to its install directory (the folder containing `bin/`). Optionally set `ACCELERAD_ROOT` for GPU tools.
 
 ---
 

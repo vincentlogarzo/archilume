@@ -3,7 +3,7 @@
 import reflex as rx
 
 from ..state import EditorState
-from ..styles import COLORS, FONT_MONO, SIDEBAR_DIVIDER
+from ..styles import COLORS, SIDEBAR_DIVIDER
 
 
 def _sidebar_btn(
@@ -50,25 +50,6 @@ def _divider() -> rx.Component:
     )
 
 
-def _annotation_slider() -> rx.Component:
-    return rx.box(
-        rx.text(
-            "Aa",
-            style={"font_family": FONT_MONO, "font_size": "18px",
-                   "text_align": "center", "margin_bottom": "4px"},
-            color=COLORS["text_dim"],
-        ),
-        rx.slider(
-            default_value=[1.0], min=0.5, max=2.0, step=0.05,
-            orientation="vertical",
-            on_value_commit=EditorState.set_annotation_scale,
-            style={"height": "80px"},
-        ),
-        style={"display": "flex", "flex_direction": "column",
-               "align_items": "center", "padding": "4px 0"},
-    )
-
-
 def sidebar() -> rx.Component:
     return rx.box(
         rx.flex(
@@ -94,8 +75,6 @@ def sidebar() -> rx.Component:
             _sidebar_btn("corner-down-right", "Ortho [O]",
                          on_click=EditorState.toggle_ortho,
                          is_active=EditorState.ortho_mode),
-            _divider(),
-            _annotation_slider(),
             _divider(),
             rx.spacer(),
             # Color mode toggle at the bottom

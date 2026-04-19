@@ -27,6 +27,13 @@ PROJECT_ROOT        = Path(__file__).parent.parent
 # Top-level projects directory — each simulation project lives here
 PROJECTS_DIR        = Path(os.getenv("ARCHILUME_PROJECTS_DIR", str(PROJECT_ROOT / "projects")))
 
+# Display-only host path for the "Copy projects path" button. Never used for
+# filesystem I/O. Kept as a plain string so Windows paths like
+# "C:\Projects\archilume\projects" are not mangled by pathlib on Linux.
+# Defaults to PROJECTS_DIR (correct for native dev). In Docker, the launcher
+# script sets ARCHILUME_HOST_PROJECTS_DIR to the host-side absolute path.
+HOST_PROJECTS_DIR   = os.getenv("ARCHILUME_HOST_PROJECTS_DIR", str(PROJECTS_DIR))
+
 # Reflex app directory (contains rxconfig.py and the archilume_app/ source package)
 ARCHILUME_APP_DIR   = PROJECT_ROOT / "archilume" / "apps" / "archilume_app"
 

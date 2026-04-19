@@ -1,211 +1,132 @@
 # Archilume Dev Container
 
-This directory contains the development container configuration for Archilume.
+Linux development environment for Archilume. Intended to run on a cloud Linux VM (e.g. GCP) via VS Code Remote-SSH, giving you Radiance + Python 3.12 + all project deps without polluting the host.
 
 ## What's Included
 
-- **Python 3.12** development environment
-- **Radiance 6.1** (build 5085332d) - Lighting simulation tools
-- **Accelerad** - GPU-accelerated Radiance (requires NVIDIA GPU for acceleration)
-- **OpenGL libraries** - Required for Open3D visualization
-- **Git & GitHub CLI** - Version control tools
-- **uv** - Fast Python package installer
-- **VSCode Extensions** - Python, Pylance, Black formatter
+- **Python 3.12** via `python:3.12-slim` base
+- **Radiance 6.1** (build 5085332d) — native Linux binaries at `/usr/local/radiance`
+- **uv** — package manager
+- **All dep groups** — `app`, `engine`, `desktop`, `dev` installed into `/opt/venv`
+- **Google Cloud SDK** — `gcloud`, `gsutil`, `bq` for `GCPVMManager` workflows
+- **Build toolchain** — `gcc`, `cmake`, `pkg-config`, plus OpenGL/X11 libs for `pyvista`, `vtk`, `cairosvg`
+
+**Not included:** Accelerad (local-only — runs on Windows/macOS hosts with a GPU, not inside this Linux container).
+
+## Build Source
+
+The container builds from [`../docker/Dockerfile`](../docker/Dockerfile), target `archilume-dev`. It reuses the same `base-slim` and `radiance-extract` stages as the distribution engine image, so Python and Radiance versions can't drift between dev and production.
 
 ## Environment Variables
 
-The following environment variables are automatically configured:
+Baked into the image (`ENV` in the Dockerfile):
 
-- `PATH` - Includes `/usr/local/radiance/bin` for Radiance tools and `~/.cargo/bin` for uv
-- `RAYPATH` - Set to `/usr/local/radiance/lib` for Radiance libraries
-- `UV_LINK_MODE=copy` - Suppresses UV hardlink warnings in containers
+- `PATH` — `/opt/venv/bin:/usr/local/radiance/bin:/opt/google-cloud-sdk/bin:…`
+- `RAYPATH` — `/usr/local/radiance/lib`
+- `RADIANCE_ROOT` — `/usr/local/radiance`
+- `UV_LINK_MODE=copy` — suppresses uv hardlink warnings
+- `UV_PROJECT_ENVIRONMENT=/opt/venv` — uv syncs into the baked venv, not `.venv`
+
+Supplied at runtime by [`devcontainer.json`](devcontainer.json) `remoteEnv`:
+
+- `DISPLAY` (for X11 forwarding via VcXsrv)
+- `CLAUDE_API_KEY`, `TZ` from host
 
 ## How to Use
 
-### Opening in DevContainer (VS Code with Remote SSH)
-
-This project is designed to work seamlessly with VS Code connecting to a cloud Linux VM via SSH:
+### Opening in DevContainer (VS Code with Remote-SSH)
 
 1. **Connect to your Linux VM via SSH in VS Code:**
-   - Install the "Remote - SSH" extension in VS Code
-   - Press `F1` → "Remote-SSH: Connect to Host"
-   - Enter your VM's SSH connection string (e.g., `user@your-vm-ip`)
+   - Install the "Remote - SSH" extension
+   - `F1` → "Remote-SSH: Connect to Host" → enter `user@your-vm-ip`
 
-2. **Open this project in a DevContainer:**
-   - Once connected, open this project folder
-   - VS Code will detect `.devcontainer/devcontainer.json`
-   - Click "Reopen in Container" when prompted (or press `F1` → "Dev Containers: Reopen in Container")
+2. **Open the project in a DevContainer:**
+   - Once connected, open the Archilume folder
+   - VS Code detects `.devcontainer/devcontainer.json`
+   - Click "Reopen in Container" (or `F1` → "Dev Containers: Reopen in Container")
 
-3. **Wait for automatic setup (first time: ~5-10 minutes):**
-   The devcontainer will automatically:
-   - Install all system dependencies (OpenGL, OpenMP, etc.)
-   - Extract and install Radiance 6.1 from bundled tarball
-   - Install uv package manager
-   - Sync all Python dependencies from pyproject.toml
-   - Configure environment variables (PATH, RAYPATH)
+3. **First build: ~5–10 min.** The Dockerfile handles everything: system libs, Radiance extraction, all Python deps, GCloud SDK. `postCreateCommand` just fixes bind-mount ownership and runs a final `uv sync` to install the project editably.
 
-4. **Verify installation:**
+4. **Verify:**
+
    ```bash
+   python --version          # 3.12.x
    uv --version
-   python --version
-   oconv 2>&1 | head -1
-   uv run examples/sunlight_access_workflow.py
+   oconv 2>&1 | head -1      # Radiance works
+   gcloud --version          # GCP SDK present
+   pytest --version          # dev group installed
    ```
 
-### Benefits of DevContainer on Cloud VM
+### Rebuilding
 
-- ✅ **Consistent Environment**: Same setup across all developers
-- ✅ **Isolated Dependencies**: No conflicts with system packages
-- ✅ **Pre-configured Tools**: Radiance, uv, Python 3.12 ready to go
-- ✅ **Easy Scaling**: Use powerful cloud VMs for rendering
-- ✅ **VS Code Integration**: Full IDE features with remote development
+After changing `.devcontainer/devcontainer.json` or `docker/Dockerfile`:
 
-### Rebuilding the Container
+1. `Ctrl+Shift+P` → "Dev Containers: Rebuild Container"
+2. Wait for rebuild (layer cache keeps this fast unless apt/uv layers changed)
 
-If you modify `.devcontainer/` files:
+### Python Interpreter
 
-1. Open Command Palette (Ctrl+Shift+P / Cmd+Shift+P)
-2. Type "Rebuild Container" and select **"Dev Containers: Rebuild Container"**
-3. Wait for the rebuild to complete
+VS Code is pre-configured to use `/opt/venv/bin/python`. The venv is built by the image; the project is installed editably at container start by `postCreateCommand`.
 
-### Manual Setup
+## Radiance Tools Available
 
-If you need to run the setup script manually:
-
-```bash
-bash .devcontainer/setup.sh
-source ~/.bashrc
-```
-
-## Radiance & Accelerad Tools Available
-
-After setup, these Radiance/Accelerad commands are available:
-
-- `oconv` - Convert scenes to octree format
-- `rpict` - Render pictures from octrees (CPU-based)
-- `rcontrib` - Accelerad GPU-accelerated rendering
-- `gensky` - Generate sky conditions
-- `obj2rad` - Convert OBJ files to Radiance format
-- `pcomb` - Combine/process HDR images
-- `ra_tiff` - Convert Radiance HDR to TIFF
-
-### GPU Acceleration Notes
-
-Accelerad is installed but **GPU acceleration requires**:
-1. NVIDIA GPU on the host machine
-2. NVIDIA Docker runtime configured
-3. Docker GPU passthrough enabled
-4. CUDA toolkit installed
-
-Without GPU access, Accelerad commands will fall back to CPU rendering. See [Accelerad GitHub](https://github.com/nljones/Accelerad) for more details.
+- `oconv` — Scene → octree
+- `rpict` — Render from octree (CPU)
+- `rtpict` — Ray-tracing renderer (daylight workflows)
+- `rcontrib` — Contribution rendering
+- `gensky` — Sky generation
+- `obj2rad` — OBJ → Radiance
+- `pcomb` — HDR compositing
+- `ra_tiff` — HDR → TIFF
 
 ## Troubleshooting
 
 ### Radiance commands not found
 
-If Radiance commands aren't available, ensure environment variables are loaded:
+Env vars are set in the image. If they somehow aren't active:
 
 ```bash
-source ~/.bashrc
-# Or manually export:
-export PATH=$PATH:/usr/local/radiance/bin
+export PATH=/usr/local/radiance/bin:$PATH
 export RAYPATH=/usr/local/radiance/lib
 ```
 
 ### UV link mode warnings
 
-The devcontainer automatically sets `UV_LINK_MODE=copy` to suppress hardlink warnings. If you still see them, run:
+The image sets `UV_LINK_MODE=copy`. If you still see them:
 
 ```bash
 export UV_LINK_MODE=copy
 ```
 
-### Python dependencies not installed
+### Python deps missing after rebuild
 
-Run the sync command:
-
-```bash
-uv sync --link-mode=copy
-```
-
-### uv command not found
-
-If `uv` isn't available after setup:
+The image bakes deps into `/opt/venv`. If something's missing after a pull:
 
 ```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.bashrc
-
-# Or add to PATH manually
-export PATH="$HOME/.cargo/bin:$PATH"
+uv sync --frozen
 ```
 
-### Accelerad GPU not working
+### Accelerad / GPU rendering
 
-To enable GPU acceleration in the devcontainer:
+Not available in this container. Run Accelerad locally on a Windows/macOS host with GPU access, or use the legacy CPU path in Radiance (`rpict`, `rtpict`).
 
-1. Install NVIDIA Docker runtime on your host:
-   ```bash
-   # Ubuntu/Debian
-   distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-   curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-   curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-   sudo apt-get update && sudo apt-get install -y nvidia-docker2
-   sudo systemctl restart docker
-   ```
+### "Reopen in Container" fails with unknown target
 
-2. Update `.devcontainer/devcontainer.json` to add:
-   ```json
-   "runArgs": ["--gpus", "all"]
-   ```
-
-3. Rebuild the container
-
-Without GPU, Accelerad will still work in CPU fallback mode.
-
-## Using uv Package Manager
-
-Inside the devcontainer, use `uv` for all package management:
-
-```bash
-# Install a package
-uv pip install <package-name>
-
-# Install multiple packages
-uv pip install package1 package2
-
-# Install from requirements file
-uv pip install -r requirements.txt
-
-# Sync all dependencies from pyproject.toml
-uv sync
-
-# List installed packages
-uv pip list
-
-# Show package details
-uv pip show <package-name>
-
-# Uninstall a package
-uv pip uninstall <package-name>
-
-# Freeze current packages
-uv pip freeze > requirements.txt
-```
-
-**Why uv?**
-- ⚡ 10-100x faster than pip
-- 🔒 Better dependency resolution
-- 💾 Efficient caching
-- 🎯 Compatible with pip workflows
+Ensure `docker/Dockerfile` is on disk and git up to date — the `archilume-dev` target must exist. If the build references `../Dockerfile` (old path), pull latest and rebuild.
 
 ## Architecture
 
-- **devcontainer.json** - Container configuration and VSCode settings
-- **setup.sh** - Automated installation script
-- **README.md** - This file
+- [`devcontainer.json`](devcontainer.json) — VS Code build + runtime config
+- [`../docker/Dockerfile`](../docker/Dockerfile) — `archilume-dev` target (single source of truth)
+- [`README.md`](README.md) — this file
+- `Radiance_5085332d_Linux/` — bundled Radiance tarball, extracted into the image
 
-## License
+## Using uv
 
-This devcontainer configuration is part of the Archilume project (MIT License).
+```bash
+uv sync                 # install all default dep groups
+uv add <package>        # add a new runtime dep
+uv add --group dev <p>  # add a dev-only dep
+uv run pytest           # run command inside the project venv
+uv pip list             # show installed packages
+```

@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Tuple
 
+import pandas as pd
+
 ValidationResult = Tuple[bool, str]
 
 
@@ -69,10 +71,6 @@ def validate_room_data(path: Path) -> ValidationResult:
     one row.
     """
     suffix = path.suffix.lower()
-    try:
-        import pandas as pd
-    except ImportError:
-        return False, "pandas not available"
 
     if suffix == ".xlsx":
         try:
