@@ -82,6 +82,16 @@
             "statusMessage": "Verifying archilume_app imports..."
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $(git rev-parse --show-toplevel)/.claude/hooks/feature_loop.sh",
+            "statusMessage": "Running /feature tests + requesting audit..."
+          }
+        ]
       }
     ]
   },
