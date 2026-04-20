@@ -15,7 +15,17 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Include gpu rendering option into the daylight workflow.** `examples/workflow_sunlight_access.py` implement the current accelerad_rpict.ps1 into the workflow, and update custom parameter inputs by user in all functions that construct radiance commands. These should all be extracted or potentially utilise pyradiance.
 - **Modular Post-Processing:** Break `Tiff2Animation` into `Wpd2Tiff` and `Tiff2Animation` for clearer function separation.
 - **Advanced Reporting:** Replace Excel output with a `wpd2report` module generating PDF/HTML with NSW ADG metrics.
-- **Auto-Cleanup:** Move `smart_cleanup` into each workflow's `InputsValidator`. Must happen *after* file naming encodes the scenario grid (resolution, rendering params, etc.) so the cache can distinguish previously completed runs. For the IESVE daylight workflow specifically, the only input the user should need to flag is whether the source `.oct` file has changed — parameter/resolution changes should be inferred automatically from the output file names.
+- **Smart Re-Run Cache (replaces the removed `smart_cleanup`):** Today every workflow run calls `clear_outputs_folder(paths)` and starts from a blank outputs directory. The future goal is a cache that lets users re-run simulations cheaply by reusing prior work — specifically `.amb` ambient files and (where valid) rendered HDRs.
+
+  **Mechanism:** Encode the full parameter grid (resolution, rendering mode/quality, Radiance `-ab/-ad/-as` params, timestep, sky scenario, etc.) as a deterministic suffix on every output filename. `execute_new_radiance_commands` then inspects the planned output path before dispatching:
+  - If the target file already exists with a matching suffix → skip the command (cache hit).
+  - If a matching `.amb` exists for the current parameter set → reuse it (`-af <path>` in the Radiance call).
+  - Otherwise → run fresh and write with the new suffix so future runs can reuse.
+
+  **Scope notes:**
+  - Must live *after* the file-naming change so the suffix uniquely identifies each scenario.
+  - For the IESVE daylight workflow, the only change flag the user should have to set is whether the source `.oct` file itself has changed; every other parameter change is inferred from output filenames.
+  - Move the cache-key logic into each workflow's `InputsValidator` so it happens before any commands are dispatched.
 - **Packaging:** Implement Phase 6 to package final results into a timestamped `.zip` deliverable.
 - **Standalone Contour & Falsecolor Generators:** Create standalone contour (`cnt`) and falsecolor generators that accept IESVE `.pic` files or Archilume-rendered `.hdr` files, using the same conversion steps as `daylight_workflow_iesve.py`. Integrate these as interactive layers within `room_boundaries_editor.py` so users only need rendered images to perform analysis — no workflow re-run required. Users should be able to switch between raw, contour, and falsecolor layers, adjust parameters (e.g. scale, step size, legend range) per layer, and see updates live in the editor.
 

@@ -5,7 +5,7 @@ from archilume.utils import (
     get_center_of_bounding_box,
     get_bounding_box_from_point_coordinates,
 )
-from archilume import config
+from archilume import config, utils
 
 # Standard library imports
 import logging
@@ -85,22 +85,26 @@ class ViewGenerator:
     """
 
     # required inputs
-    room_boundaries_csv_path: Path
     ffl_offset: float
 
     # Required - directories where view and AOI files will be written
     view_file_dir: Path
     aoi_dir: Path
 
-    # Fixed - not user configurable but accessible from instance
+    # Room-boundary source - provide exactly one of these
+    room_boundaries_csv_path: Path | None = None
+    aoi_inputs_dir: Path | None = None
+
+    # Fixed - not user configurable but accessible from instance.
+    # All geometry fields are populated in __post_init__ via _compute_view_geometry().
     processed_room_boundaries_csv_path: Path        = field(init=False)
-    room_boundaries_df: pd.DataFrame | None         = field(init=False, default=None)
-    bounding_box_coordinates: Any                   = field(init=False, default=None)
-    x_coord_center: float | None                    = field(init=False, default=None)
-    y_coord_center: float | None                    = field(init=False, default=None)
-    z_coord_center: float | None                    = field(init=False, default=None)
-    view_horizontal: float | None                   = field(init=False, default=None)
-    view_vertical: float | None                     = field(init=False, default=None)
+    room_boundaries_df: pd.DataFrame                = field(init=False)
+    bounding_box_coordinates: Any                   = field(init=False)
+    x_coord_center: float                           = field(init=False)
+    y_coord_center: float                           = field(init=False)
+    z_coord_center: float                           = field(init=False)
+    view_horizontal: float                          = field(init=False)
+    view_vertical: float                            = field(init=False)
     view_paths_per_level_df: pd.DataFrame | None    = field(init=False, default=None)
 
     def __post_init__(self):
@@ -120,9 +124,17 @@ class ViewGenerator:
             completes execution to allow the instance to be created.
         """
 
-        # Check if CSV file exists
-        if not self.room_boundaries_csv_path.exists():
+        # Exactly one of (CSV, aoi dir) must be provided
+        if (self.room_boundaries_csv_path is None) == (self.aoi_inputs_dir is None):
+            print("\nError: provide exactly one of room_boundaries_csv_path or aoi_inputs_dir")
+            sys.exit(1)
+
+        if self.room_boundaries_csv_path is not None and not self.room_boundaries_csv_path.exists():
             print(f"\nError: Room boundaries CSV not found at {self.room_boundaries_csv_path}")
+            sys.exit(1)
+
+        if self.aoi_inputs_dir is not None and not self.aoi_inputs_dir.exists():
+            print(f"\nError: AOI inputs directory not found at {self.aoi_inputs_dir}")
             sys.exit(1)
 
         # Default ffl_offset to 0.01m if zero or negative
@@ -133,9 +145,56 @@ class ViewGenerator:
         os.makedirs(self.aoi_dir, exist_ok=True)
         os.makedirs(self.view_file_dir, exist_ok=True)
 
-        # Run csv parser to restructure the room boundaries data for use
-        self.__parse_room_boundaries_csv()
-        
+        # Build the processed long-format DataFrame from whichever source was given
+        if self.aoi_inputs_dir is not None:
+            self.__parse_aoi_inputs_dir()
+        else:
+            self.__parse_room_boundaries_csv()
+
+        # Compute building geometry (bbox, centre, view dimensions) eagerly so
+        # downstream consumers see non-Optional values.
+        self._compute_view_geometry()
+
+    def _compute_view_geometry(self) -> None:
+        """Load processed CSV and derive bounding box, centre, and view dimensions.
+
+        Raises:
+            ValueError: if the processed CSV is empty, missing coordinate columns,
+                contains no valid points, or geometry helpers return None.
+        """
+        df = pd.read_csv(self.processed_room_boundaries_csv_path)
+        if df.empty:
+            raise ValueError(
+                f"Processed room boundaries CSV is empty: {self.processed_room_boundaries_csv_path}"
+            )
+
+        missing = [c for c in REQUIRED_COORDINATE_COLUMNS if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"Processed CSV missing required coordinate columns {missing}: "
+                f"{self.processed_room_boundaries_csv_path}"
+            )
+
+        points_df = df[REQUIRED_COORDINATE_COLUMNS].dropna()
+        if points_df.empty:
+            raise ValueError(
+                f"No valid coordinate points in {self.processed_room_boundaries_csv_path}"
+            )
+
+        bbox = get_bounding_box_from_point_coordinates(points_df)
+        center = get_center_of_bounding_box(bbox) if bbox is not None else None
+        dimensions = calculate_dimensions_from_points(bbox) if bbox is not None else None
+        if bbox is None or center is None or dimensions is None:
+            raise ValueError(
+                f"Failed to compute building geometry from {self.processed_room_boundaries_csv_path}"
+            )
+
+        self.room_boundaries_df = df
+        self.bounding_box_coordinates = bbox
+        self.x_coord_center, self.y_coord_center, self.z_coord_center = [round(c, 3) for c in center]
+        self.view_horizontal, self.view_vertical = [round(d, 3) for d in dimensions]
+        print(f"Centre coordinates: ({self.x_coord_center}, {self.y_coord_center}, {self.z_coord_center})")
+
     @property
     def view_files(self) -> list[Path]:
         """Return sorted list of generated .vp view files."""
@@ -150,20 +209,14 @@ class ViewGenerator:
         with camera positioning optimized for architectural visualization.
 
         Processing Workflow:
-            1. Loads processed room boundary data from CSV file
-            2. Validates required coordinate columns exist and contain valid data
-            3. Calculates building-wide 3D bounding box from all room coordinates
-            4. Determines building center point for camera positioning
-            5. Calculates view dimensions for proper framing
-            6. Maps floor levels to view file paths using floor level information
-            7. Generates individual view parameter files for each floor level
-            8. Populates each file with complete Radiance view parameters
+            1. Maps floor levels to view file paths using floor level information
+            2. Generates individual view parameter files for each floor level
+            3. Populates each file with complete Radiance view parameters
 
-        Geometric Calculations:
-            - Bounding box: Encompasses all room boundary points across all floors
-            - Center point: 3D centroid of the bounding box for camera positioning
-            - View dimensions: Used for horizontal/vertical view angle parameters
-            - Camera heights: Floor level + ffl_offset for each level
+        Geometric inputs (bbox, centre, view dimensions) are computed eagerly
+        in __post_init__ via _compute_view_geometry().
+
+        Camera heights: Floor level + ffl_offset for each level.
 
         Generated View Files:
             - Location: outputs/views_grids/ directory
@@ -182,56 +235,12 @@ class ViewGenerator:
                  validation fails, data is missing, or file creation errors occur
 
         Instance Attributes Set:
-            - room_boundaries_df: Processed coordinate data
-            - bounding_box_coordinates: 3D building bounds
-            - x_coord_center, y_coord_center, z_coord_center: Building center
-            - view_horizontal, view_vertical: Calculated view dimensions  
             - view_paths_per_level_df: Floor level to view file mapping
-
-        Error Handling:
-            - Validates processed CSV file is available and not empty
-            - Checks for required coordinate columns
-            - Handles geometry calculation failures gracefully
-            - Creates output directories as needed
-            - Logs errors but continues processing when possible
-            - Returns False on critical failures that prevent completion
-
-        Prerequisites:
-            - CSV file must be successfully parsed during __post_init__
-            - Processed room boundary data must be available
-            - No dependency on create_aoi_files() - operates independently
 
         Side Effects:
             - Creates view files in view_file_dir
-            - Sets multiple instance attributes for building geometry
             - Prints diagnostic information during processing
         """
-
-        self.room_boundaries_df = pd.read_csv(self.processed_room_boundaries_csv_path)
-        if self.room_boundaries_df.empty:
-            return False
-
-        try:
-            if not all(col in self.room_boundaries_df.columns for col in REQUIRED_COORDINATE_COLUMNS):
-                return False
-            points_df = self.room_boundaries_df[REQUIRED_COORDINATE_COLUMNS].dropna()
-            if points_df.empty:
-                return False
-
-            self.bounding_box_coordinates = get_bounding_box_from_point_coordinates(points_df)
-            center_coords = get_center_of_bounding_box(self.bounding_box_coordinates)
-            dimensions = calculate_dimensions_from_points(self.bounding_box_coordinates)
-            
-            if self.bounding_box_coordinates is None or center_coords is None or dimensions is None:
-                return False
-
-            self.x_coord_center, self.y_coord_center, self.z_coord_center = [round(c, 3) for c in center_coords]
-            self.view_horizontal, self.view_vertical = [round(d, 3) for d in dimensions]
-            
-            print(f"Centre coordinates: ({self.x_coord_center}, {self.y_coord_center}, {self.z_coord_center})")
-            
-        except Exception:
-            return False
 
         self.view_paths_per_level_df = self.__create_floor_level_info(
             self.room_boundaries_df, self.view_file_dir, self.ffl_offset
@@ -307,12 +316,12 @@ class ViewGenerator:
 
         return True  # Indicate success
 
-    def create_aoi_files(self, coordinate_map_path: Path | None = None) -> bool:
+    def create_aoi_files(self, coordinate_map: "utils.PixelToWorldMap | None" = None) -> bool:
         """Generate AOI files for each room with boundary points and metadata.
 
         Args:
-            coordinate_map_path: Optional coordinate map file. If provided, adds pixel
-                               coordinates via nearest neighbor lookup.
+            coordinate_map: Optional in-memory PixelToWorldMap. If provided, adds
+                pixel coordinates to each boundary point.
 
         Returns:
             bool: True if successful, False if processed CSV not found.
@@ -338,47 +347,18 @@ class ViewGenerator:
             logging.error(f"Error reading the CSV: {e}")
             return
 
-        # Load coordinate map parameters if provided
+        # Build per-pixel projection params from the in-memory coordinate map
         coord_map_params = None
-        if coordinate_map_path is not None and Path(coordinate_map_path).exists():
-            try:
-                logging.info(f"Loading coordinate map from: {coordinate_map_path}")
-                with open(coordinate_map_path, 'r') as f:
-                    lines = f.readlines()
-
-                vp_x = vp_y = vh = vv = img_width = img_height = None
-                for line in lines:
-                    line = line.strip()
-                    m = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', line)
-                    if m:
-                        vp_x, vp_y = float(m.group(1)), float(m.group(2))
-                    m = re.search(r'-vh\s+([\d.-]+)', line)
-                    if m:
-                        vh = float(m.group(1))
-                    m = re.search(r'-vv\s+([\d.-]+)', line)
-                    if m:
-                        vv = float(m.group(1))
-                    if 'Image dimensions in pixels' in line:
-                        m = re.search(r'width=(\d+)', line)
-                        if m:
-                            img_width = int(m.group(1))
-                        m = re.search(r'height=(\d+)', line)
-                        if m:
-                            img_height = int(m.group(1))
-
-                if all(v is not None for v in [vp_x, vp_y, vh, vv, img_width, img_height]):
-                    coord_map_params = {
-                        'vp_x': vp_x, 'vp_y': vp_y,
-                        'wu_per_px_x': vh / img_width,
-                        'wu_per_px_y': vv / img_height,
-                        'width': img_width, 'height': img_height,
-                    }
-                    logging.info(f"Loaded coordinate map parameters: {coord_map_params}")
-                else:
-                    logging.error("Could not parse all required parameters from coordinate map")
-            except Exception as e:
-                logging.error(f"Error loading coordinate map: {e}")
-                coord_map_params = None
+        if coordinate_map is not None:
+            coord_map_params = {
+                'vp_x': coordinate_map.vp_x,
+                'vp_y': coordinate_map.vp_y,
+                'wu_per_px_x': coordinate_map.world_units_per_pixel_x,
+                'wu_per_px_y': coordinate_map.world_units_per_pixel_y,
+                'width': coordinate_map.image_width,
+                'height': coordinate_map.image_height,
+            }
+            logging.info(f"Loaded coordinate map parameters: {coord_map_params}")
 
         # Group the DataFrame by the 'apartment_no' and 'room' columns
         grouped = df.groupby(["apartment_no", "room"])
@@ -477,6 +457,114 @@ class ViewGenerator:
         print(f"Generated {len(results)} AOI files")
 
         return True  # Indicate success
+
+    def __parse_aoi_inputs_dir(self) -> None:
+        """Build the processed long-format DataFrame from a directory of .aoi files.
+
+        Produces the same columns downstream code expects (apartment_no, room,
+        x_coords, y_coords, z_coords in metres) and writes the processed CSV
+        to aoi_dir under a stable name, so create_plan_view_files() and
+        create_aoi_files() can consume it unchanged.
+
+        Expected .aoi header (as written by scripts/convert_room_boundaries_csv_to_aoi.py):
+            AOI Points File: {apt} {room}
+            PARENT: {apt}
+            CHILD: {room}
+            FFL z height(m): {z_m}
+            CENTRAL x,y: {cx} {cy}
+            NO. PERIMETER POINTS {n}: x,y positions
+            {x} {y}
+            ...
+
+        Legacy modern .aoi without PARENT/CHILD lines falls back to splitting
+        the "AOI Points File:" line on the first space.
+        """
+        logging.info(f"Loading .aoi files from: {self.aoi_inputs_dir}")
+        aoi_files = sorted(self.aoi_inputs_dir.glob("*.aoi"))
+        if not aoi_files:
+            logging.error(f"No .aoi files found in {self.aoi_inputs_dir}")
+            self.room_boundaries_df = pd.DataFrame(columns=REQUIRED_COORDINATE_COLUMNS)
+            return
+
+        rows: list[dict[str, Any]] = []
+        for path in aoi_files:
+            parent, child, ffl_z, vertices = self.__read_aoi_file(path)
+            for idx, (x, y) in enumerate(vertices):
+                rows.append({
+                    "apartment_no": parent,
+                    "room": child,
+                    "vertex_idx": idx,
+                    "x_coords": x,
+                    "y_coords": y,
+                    "z_coords": ffl_z,
+                })
+
+        df = (
+            pd.DataFrame(rows, columns=["apartment_no", "room", "vertex_idx", "x_coords", "y_coords", "z_coords"])
+            .sort_values(by=["z_coords", "apartment_no", "room", "vertex_idx"])
+            .reset_index(drop=True)
+        )
+
+        self.processed_room_boundaries_csv_path = Path(self.aoi_dir / "aoi_inputs_processed.csv")
+        df.to_csv(self.processed_room_boundaries_csv_path, index=False)
+        self.room_boundaries_df = df
+
+        logging.info(
+            f"Parsed {len(aoi_files)} .aoi files ({len(df)} vertices). "
+            f"Processed CSV saved to: {self.processed_room_boundaries_csv_path}"
+        )
+
+    @staticmethod
+    def __read_aoi_file(path: Path) -> tuple[str, str, float, list[tuple[float, float]]]:
+        """Parse one .aoi file. Returns (parent, child, ffl_z_m, [(x_m, y_m), ...])."""
+        text = path.read_text(encoding="utf-8").splitlines()
+
+        parent: str | None = None
+        child: str | None = None
+        ffl_z: float | None = None
+        vertex_start: int | None = None
+        header_fallback_line: str | None = None
+
+        for i, line in enumerate(text):
+            stripped = line.strip()
+            if stripped.startswith("PARENT:"):
+                parent = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("CHILD:"):
+                child = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("AOI Points File:"):
+                header_fallback_line = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("FFL z height(m):"):
+                ffl_z = float(stripped.split(":", 1)[1].strip())
+            elif stripped.startswith("NO. PERIMETER POINTS"):
+                vertex_start = i + 1
+                break
+
+        if (parent is None or child is None) and header_fallback_line is not None:
+            apt, _, rest = header_fallback_line.partition(" ")
+            parent = parent or apt
+            child = child or rest
+
+        if parent is None or child is None:
+            raise ValueError(f"{path.name}: could not resolve PARENT/CHILD")
+        if ffl_z is None:
+            raise ValueError(f"{path.name}: missing FFL z height(m)")
+        if vertex_start is None:
+            raise ValueError(f"{path.name}: missing NO. PERIMETER POINTS header")
+
+        vertices: list[tuple[float, float]] = []
+        for line in text[vertex_start:]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            tokens = stripped.split()
+            if len(tokens) < 2:
+                continue
+            vertices.append((float(tokens[0]), float(tokens[1])))
+
+        if not vertices:
+            raise ValueError(f"{path.name}: no vertex rows found")
+
+        return parent, child, ffl_z, vertices
 
     def __parse_room_boundaries_csv(self) -> None:
         """

@@ -205,7 +205,7 @@ class Hdr2Wpd:
     """
 
     # Input parameters
-    pixel_to_world_map: Path
+    pixel_to_world_map: utils.PixelToWorldMap
     aoi_dir: Path
     wpd_dir: Path
     image_dir: Path
@@ -217,7 +217,6 @@ class Hdr2Wpd:
 
         self.wpd_dir.mkdir(parents=True, exist_ok=True)
 
-        # Calculate area per pixel and pixel increments from the pixel_to_world_map file
         self.area_per_pixel, self.pixel_increment_x, self.pixel_increment_y = self._calculate_area_per_pixel()
 
     def sunlight_sequence_wpd_extraction(self) -> None:
@@ -648,7 +647,7 @@ class Hdr2Wpd:
         pixel_y_mm = round(self.pixel_increment_y * 1_000)
         meta_text = (f"{pixel_x_mm} mm x {pixel_y_mm} mm grid | "
                      f"Area per pixel: {self.area_per_pixel} m2 ({area_per_pixel_mm2:.2f} mm2) | "
-                     f"Source: {self.pixel_to_world_map}")
+                     f"Source HDR: {self.pixel_to_world_map.hdr_path}")
 
         output_excel = self.wpd_dir / "daylight_factor_results.xlsx"
         with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
@@ -664,61 +663,18 @@ class Hdr2Wpd:
         print(f"\n{summary_df.to_string(index=False)}")
 
     def _calculate_area_per_pixel(self) -> tuple[float, float, float]:
-        """Calculate the area represented by a single pixel from the pixel_to_world_map file.
-
-        Reads the header metadata from the pixel_to_world_map file to extract:
-        - Image dimensions in pixels (width, height)
-        - World dimensions in meters (width, height)
-
-        Then calculates:
-        - pixel_width = world_width / image_width
-        - pixel_height = world_height / image_height
-        - area_per_pixel = pixel_width × pixel_height
-
-        Returns:
-            Tuple of (area_per_pixel, pixel_increment_x, pixel_increment_y) in m² and mm²
-        """
-        with open(self.pixel_to_world_map, 'r') as f:
-            lines = f.readlines()
-
-            # Parse image dimensions from line 2
-            # Format: # Image dimensions in pixels: width=2048, height=1778
-            image_dims_line = lines[1].strip()
-            image_width = int(image_dims_line.split('width=')[1].split(',')[0])
-            image_height = int(image_dims_line.split('height=')[1])
-
-            # Parse world dimensions from line 3
-            # Format: # World dimensions in meters: width=29.480000, height=25.590000
-            world_dims_line = lines[2].strip()
-            world_width = float(world_dims_line.split('width=')[1].split(',')[0])
-            world_height = float(world_dims_line.split('height=')[1])
-
-        # Calculate pixel spacing in each direction
-        pixel_width_meters = world_width / image_width
-        pixel_height_meters = world_height / image_height
-
-        # Calculate area per pixel
-        area_per_pixel = pixel_width_meters * pixel_height_meters
-
-        # Round to 6 decimal places to preserve sub-mm² precision (e.g. 0.000196 not 0.0002)
-        area_per_pixel_rounded = round(area_per_pixel, 6)
-
-        # Convert to mm (1 m = 1,000 mm) and mm² (1 m² = 1,000,000 mm²)
-        pixel_width_mm = round(pixel_width_meters * 1_000)
-        pixel_height_mm = round(pixel_height_meters * 1_000)
-        area_per_pixel_mm2 = area_per_pixel * 1_000_000
+        """Derive area-per-pixel + per-axis pixel increments from the in-memory map."""
+        m = self.pixel_to_world_map
+        pixel_width_meters = m.world_units_per_pixel_x
+        pixel_height_meters = m.world_units_per_pixel_y
+        area_per_pixel_rounded = round(m.area_per_pixel_m2, 6)
 
         print(f"\nPixel-to-World Mapping:")
-        print(f"  Image dimensions: {image_width} x {image_height} pixels")
-        print(f"  World dimensions: {world_width} x {world_height} meters")
-        print(f"  Pixel increment X: {pixel_width_meters:.6f} m ({pixel_width_mm} mm)")
-        print(f"  Pixel increment Y: {pixel_height_meters:.6f} m ({pixel_height_mm} mm)")
-        print(f"  Area per pixel (unrounded): {area_per_pixel:.10f} m²")
-        print(f"  Area per pixel (rounded): {area_per_pixel_rounded} m² ({area_per_pixel_mm2:.2f} mm²)")
-        print(f"  Verification: {image_width} × {image_height} = {image_width * image_height} pixels")
-        print(f"  Total world area: {world_width * world_height:.4f} m²")
-        print(f"  Calculated area: {area_per_pixel_rounded * image_width * image_height:.4f} m²")
-        print(f"  Source file: {self.pixel_to_world_map}\n")
+        print(f"  Image dimensions: {m.image_width} x {m.image_height} pixels")
+        print(f"  World dimensions: {m.world_width_m} x {m.world_height_m} meters")
+        print(f"  Pixel increment: {pixel_width_meters:.6f} x {pixel_height_meters:.6f} m")
+        print(f"  Area per pixel: {area_per_pixel_rounded} m² ({area_per_pixel_rounded * 1_000_000:.2f} mm²)")
+        print(f"  Source HDR: {m.hdr_path}\n")
 
         return area_per_pixel_rounded, pixel_width_meters, pixel_height_meters
 
@@ -1086,7 +1042,7 @@ class Hdr2Wpd:
                 pixel_increment_x_mm = round(self.pixel_increment_x * 1_000)
                 pixel_increment_y_mm = round(self.pixel_increment_y * 1_000)
                 ws_raw['B1'] = (f"{pixel_increment_x_mm} mm × {pixel_increment_y_mm} mm grid with an area per pixel of {self.area_per_pixel} m² ({area_per_pixel_mm2:.2f} mm²) | "
-                               f"Source: {self.pixel_to_world_map}")
+                               f"Source HDR: {self.pixel_to_world_map.hdr_path}")
 
                 combined_results['hdr_file'] = combined_results['hdr_file'].str.split('_SS_').str[1]
 

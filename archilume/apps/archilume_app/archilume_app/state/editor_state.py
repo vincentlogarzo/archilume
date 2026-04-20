@@ -74,6 +74,29 @@ class HdrFileInfo(TypedDict):
     legend_map: dict[str, str]
 
 
+class FrameDict(TypedDict):
+    hdr_path: str
+    png_path: str
+    sky_name: str
+    hdr_stem: str
+    frame_label: str
+
+
+class ViewGroupDict(TypedDict):
+    view_name: str       # display label, trimmed of common octree prefix
+    view_prefix: str     # full prefix used to match HDR stems (includes octree_base)
+    frames: list[FrameDict]
+
+
+def _stem_to_view_map(view_groups: list) -> dict[str, str]:
+    """Flatten view_groups → {hdr_stem: view_name}. Empty for daylight."""
+    return {
+        frame["hdr_stem"]: vg["view_name"]
+        for vg in view_groups
+        for frame in vg["frames"]
+    }
+
+
 class RoomDict(TypedDict):
     name: str
     parent: str
@@ -158,6 +181,7 @@ class TreeNode(TypedDict):
     node_type: str
     # display
     label: str
+    tooltip: str         # full name shown on hover; empty = no tooltip
     room_type: str
     indent: str          # CSS width e.g. "16px"
     selected: bool
@@ -220,6 +244,13 @@ class EditorState(rx.State):
     image_variants: list[str] = []
     current_variant_idx: int = 0
 
+    # Sunlight-only: views grouped across timesteps. Empty for daylight mode.
+    view_groups: list[ViewGroupDict] = []
+    current_view_idx: int = 0
+    current_frame_idx: int = 0
+    frame_autoplay: bool = False
+    frame_playback_fps: int = 5
+
     # -- Image display
     current_image_b64: str = ""
     current_legend_b64: str = ""
@@ -235,6 +266,7 @@ class EditorState(rx.State):
     #    aoi_session.json). User-tunable; trigger regeneration on change.
     falsecolour_scale: float = 4.0
     falsecolour_n_levels: int = 10
+    falsecolour_palette: str = "spec"
     contour_scale: float = 2.0
     contour_n_levels: int = 4
     last_generated: dict = {}  # {"falsecolour": {scale,n_levels}, "contour": {...}}
@@ -467,11 +499,20 @@ class EditorState(rx.State):
     def tree_nodes(self) -> list[TreeNode]:
         """Flat list of typed tree nodes for the Room Browser.
 
-        Structure per HDR:
+        Daylight structure (one HDR per view):
           [hdr row]
-            [parent room row]   (rooms with no parent, or unique parent values)
-              [child room row]  (rooms whose parent == parent room name)
+            [parent room row]
+              [child room row]
+
+        Sunlight structure (timeseries — one header per view, rooms shared
+        across all frames of the view):
+          [view row]
+            [parent room row]
+              [child room row]
         """
+        if self.project_mode == "sunlight" and self.view_groups:
+            return self._sunlight_tree_nodes()
+
         nodes: list[TreeNode] = []
         current_hdr_name = (
             self.hdr_files[self.current_hdr_idx]["name"]
@@ -491,6 +532,7 @@ class EditorState(rx.State):
             nodes.append({
                 "node_type": "hdr",
                 "label": hdr_name,
+                "tooltip": "",
                 "room_type": "",
                 "indent": "0px",
                 "selected": False,
@@ -531,6 +573,7 @@ class EditorState(rx.State):
                 nodes.append({
                     "node_type": "parent_room",
                     "label": room_name,
+                    "tooltip": "",
                     "room_type": room.get("room_type", "") or "NONE",
                     "indent": "16px",
                     "selected": is_selected,
@@ -554,6 +597,7 @@ class EditorState(rx.State):
                     nodes.append({
                         "node_type": "child_room",
                         "label": child_label,
+                        "tooltip": "",
                         "room_type": child.get("room_type", "") or "NONE",
                         "indent": "32px",
                         "selected": child_selected,
@@ -583,6 +627,7 @@ class EditorState(rx.State):
                     nodes.append({
                         "node_type": "child_room",
                         "label": child_label,
+                        "tooltip": "",
                         "room_type": child.get("room_type", "") or "NONE",
                         "indent": "16px",
                         "selected": child_selected,
@@ -597,6 +642,165 @@ class EditorState(rx.State):
                     })
 
         return nodes
+
+    def _sunlight_tree_nodes(self) -> list[TreeNode]:
+        """Sunlight variant of tree_nodes: one header per view (level). Rooms
+        are keyed to ``view_name`` so they share across all timestep frames.
+        ``hdr_idx`` on view rows is the view_groups index (consumed by
+        ``navigate_to_view``)."""
+        nodes: list[TreeNode] = []
+        current_view_name = ""
+        if 0 <= self.current_view_idx < len(self.view_groups):
+            current_view_name = self.view_groups[self.current_view_idx]["view_name"]
+
+        for view_idx in range(len(self.view_groups) - 1, -1, -1):
+            vg = self.view_groups[view_idx]
+            view_name = vg["view_name"]
+            view_prefix = vg.get("view_prefix", view_name)
+            is_current = view_name == current_view_name
+            collapsed = view_name in self.collapsed_hdrs
+
+            view_rooms = [(i, r) for i, r in enumerate(self.rooms) if r.get("hdr_file") == view_name]
+
+            nodes.append({
+                "node_type": "hdr",
+                "label": view_name,
+                "tooltip": view_prefix,
+                "room_type": "",
+                "indent": "0px",
+                "selected": False,
+                "is_current_hdr": is_current,
+                "collapsed": collapsed,
+                "has_children": len(view_rooms) > 0,
+                "connector": "none",
+                "parent_continues": "0",
+                "hdr_name": view_name,
+                "room_idx": -1,
+                "hdr_idx": view_idx,
+            })
+
+            if collapsed:
+                continue
+
+            top_level = [(i, r) for i, r in view_rooms if not r.get("parent")]
+            child_map: dict[str, list[tuple[int, dict]]] = {}
+            for i, r in view_rooms:
+                p = r.get("parent") or ""
+                if p:
+                    child_map.setdefault(p, []).append((i, r))
+
+            for top_pos, (room_idx, room) in enumerate(top_level):
+                room_name = room.get("name", "")
+                children = child_map.get(room_name, [])
+                is_selected = (
+                    room_idx == self.selected_room_idx
+                    or room_idx in self.multi_selected_idxs
+                )
+                is_last_top = (top_pos == len(top_level) - 1)
+                parent_connector = "L" if is_last_top else "T"
+                nodes.append({
+                    "node_type": "parent_room",
+                    "label": room_name,
+                    "tooltip": "",
+                    "room_type": room.get("room_type", "") or "NONE",
+                    "indent": "16px",
+                    "selected": is_selected,
+                    "is_current_hdr": is_current,
+                    "collapsed": False,
+                    "has_children": len(children) > 0,
+                    "connector": parent_connector,
+                    "parent_continues": "0",
+                    "hdr_name": view_name,
+                    "room_idx": room_idx,
+                    "hdr_idx": view_idx,
+                })
+                for child_pos, (child_idx, child) in enumerate(children):
+                    child_selected = (
+                        child_idx == self.selected_room_idx
+                        or child_idx in self.multi_selected_idxs
+                    )
+                    child_name = child.get("name", "")
+                    child_label = child_name.removeprefix(room_name).strip("_ ") or child_name
+                    is_last_child = (child_pos == len(children) - 1)
+                    nodes.append({
+                        "node_type": "child_room",
+                        "label": child_label,
+                        "tooltip": "",
+                        "room_type": child.get("room_type", "") or "NONE",
+                        "indent": "32px",
+                        "selected": child_selected,
+                        "is_current_hdr": is_current,
+                        "collapsed": False,
+                        "has_children": False,
+                        "connector": "L" if is_last_child else "T",
+                        "parent_continues": ("1" if not is_last_top else "0"),
+                        "hdr_name": view_name,
+                        "room_idx": child_idx,
+                        "hdr_idx": view_idx,
+                    })
+
+            top_level_names = {r.get("name", "") for _, r in top_level}
+            orphan_groups = [(p, c) for p, c in child_map.items() if p not in top_level_names]
+            for group_pos, (parent_name, children) in enumerate(orphan_groups):
+                is_last_group = (group_pos == len(orphan_groups) - 1)
+                for child_pos, (child_idx, child) in enumerate(children):
+                    child_selected = (
+                        child_idx == self.selected_room_idx
+                        or child_idx in self.multi_selected_idxs
+                    )
+                    child_name = child.get("name", "")
+                    child_label = child_name.removeprefix(parent_name).strip("_ ") or child_name
+                    is_last_child = (child_pos == len(children) - 1 and is_last_group)
+                    nodes.append({
+                        "node_type": "child_room",
+                        "label": child_label,
+                        "tooltip": "",
+                        "room_type": child.get("room_type", "") or "NONE",
+                        "indent": "16px",
+                        "selected": child_selected,
+                        "is_current_hdr": is_current,
+                        "collapsed": False,
+                        "has_children": False,
+                        "connector": "L" if is_last_child else "T",
+                        "parent_continues": "0",
+                        "hdr_name": view_name,
+                        "room_idx": child_idx,
+                        "hdr_idx": view_idx,
+                    })
+
+        return nodes
+
+    @rx.var
+    def current_view_frame_count(self) -> int:
+        if not self.view_groups:
+            return 0
+        if not (0 <= self.current_view_idx < len(self.view_groups)):
+            return 0
+        return len(self.view_groups[self.current_view_idx]["frames"])
+
+    @rx.var
+    def current_frame_label(self) -> str:
+        if not self.view_groups:
+            return ""
+        if not (0 <= self.current_view_idx < len(self.view_groups)):
+            return ""
+        frames = self.view_groups[self.current_view_idx]["frames"]
+        if not frames:
+            return ""
+        idx = max(0, min(self.current_frame_idx, len(frames) - 1))
+        return frames[idx]["frame_label"]
+
+    @rx.var
+    def current_view_name(self) -> str:
+        if not self.view_groups:
+            return ""
+        if not (0 <= self.current_view_idx < len(self.view_groups)):
+            return ""
+        return self.view_groups[self.current_view_idx]["view_name"]
+
+    @rx.var
+    def is_sunlight_mode(self) -> bool:
+        return self.project_mode == "sunlight" and bool(self.view_groups)
 
     def set_viewport_size(self, data: dict) -> None:
         """Called by ResizeObserver JS when the viewport container resizes."""
@@ -780,6 +984,7 @@ class EditorState(rx.State):
         if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
             return []
         hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
+        room_key = self._current_level_key() or hdr_name
         img_w = self.image_width
         img_h = self.image_height
 
@@ -803,7 +1008,7 @@ class EditorState(rx.State):
         per_room_fs = []     # max font size per visible parent room
         per_room_fs_child = []  # max font size per visible child room
         for i, room in enumerate(self.rooms):
-            if room.get("hdr_file") != hdr_name:
+            if room.get("hdr_file") != room_key:
                 continue
             if not room.get("visible", True):
                 continue
@@ -1186,7 +1391,7 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_css_transform(self) -> str:
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps for Reflex tracking
         if self.viewport_width <= 0 or self.image_width <= 0:
             return "translate(0px, 0px) scale(1, 1) rotate(0deg)"
         t = self._get_current_overlay_transform()
@@ -1216,7 +1421,7 @@ class EditorState(rx.State):
         JS reads these from a data attribute to recompute pixel transforms
         synchronously on viewport resize, avoiding the Python round-trip lag.
         """
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps
         t = self._get_current_overlay_transform()
         iw = self.image_width
         ih = self.image_height or 1
@@ -1255,7 +1460,7 @@ class EditorState(rx.State):
     @rx.var
     def overlay_svg_transform(self) -> str:
         """SVG-syntax transform for the overlay image (no CSS units)."""
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps for Reflex tracking
         t = self._get_current_overlay_transform()
         iw = self.image_width or 1
         ih = self.image_height or 1
@@ -1271,7 +1476,7 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_offset_x_str(self) -> str:
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps for Reflex tracking
         iw = self.image_width
         if iw <= 0:
             return "0"
@@ -1279,7 +1484,7 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_offset_y_str(self) -> str:
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps for Reflex tracking
         ih = self.image_height
         if ih <= 0:
             return "0"
@@ -1287,13 +1492,13 @@ class EditorState(rx.State):
 
     @rx.var
     def overlay_scale_str(self) -> str:
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps for Reflex tracking
         return str(self._get_current_overlay_transform().get("scale_x", 1.0))
 
     @rx.var
     def overlay_rotation_deg_str(self) -> str:
         """Current rotation in degrees (0/90/180/270) as a string for the input field."""
-        _ = self.overlay_transforms, self.current_hdr_idx  # declare deps for Reflex tracking
+        _ = self.overlay_transforms, self.current_view_idx, self.current_hdr_idx  # declare deps for Reflex tracking
         rot90 = self._get_current_overlay_transform().get("rotation_90", 0)
         return str((rot90 % 4) * 90)
 
@@ -1477,13 +1682,32 @@ class EditorState(rx.State):
             self.current_variant_idx = 0
 
     def load_current_image(self) -> None:
+        from ..lib.image_loader import (
+            get_image_dimensions,
+            load_frame_png_as_base64,
+            load_image_as_base64,
+        )
+        # Sunlight: read the {stem}.png sibling written by the renderer.
+        if (self.project_mode == "sunlight" and self.hdr_files
+                and 0 <= self.current_hdr_idx < len(self.hdr_files)
+                and self.current_variant_idx == 0):
+            hdr_path = Path(self.hdr_files[self.current_hdr_idx]["hdr_path"])
+            b64 = load_frame_png_as_base64(hdr_path)
+            if b64:
+                self.current_image_b64 = b64
+                png_path = hdr_path.parent / f"{hdr_path.stem}.png"
+                w, h = get_image_dimensions(png_path)
+                self.image_width = w
+                self.image_height = h
+                self._update_legend()
+                return
+
         if not self.image_variants:
             self.current_image_b64 = ""
             self.current_legend_b64 = ""
             return
         idx = min(self.current_variant_idx, len(self.image_variants) - 1)
         path = Path(self.image_variants[idx])
-        from ..lib.image_loader import get_image_dimensions, load_image_as_base64
         b64 = load_image_as_base64(path)
         if b64:
             self.current_image_b64 = b64
@@ -1538,8 +1762,15 @@ class EditorState(rx.State):
             self.room_name_input = room.get("name", "")
             self.room_type_input = room.get("room_type", "NONE") or "NONE"
             self.selected_parent = room.get("parent", "") or ""
-            # Navigate to the HDR this room belongs to
+            # Navigate to the HDR/view this room belongs to
             hdr_name = room.get("hdr_file", "")
+            if self.project_mode == "sunlight" and self.view_groups:
+                for vi, vg in enumerate(self.view_groups):
+                    if vg["view_name"] == hdr_name and vi != self.current_view_idx:
+                        self._goto_frame(vi, 0)
+                        self.collapsed_hdrs = [v["view_name"] for v in self.view_groups if v["view_name"] != hdr_name]
+                        break
+                return
             for i, h in enumerate(self.hdr_files):
                 if h["name"] == hdr_name and i != self.current_hdr_idx:
                     self.current_hdr_idx = i
@@ -1580,7 +1811,10 @@ class EditorState(rx.State):
 
 
     def collapse_all_hdrs(self) -> None:
-        self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
+        if self.project_mode == "sunlight" and self.view_groups:
+            self.collapsed_hdrs = [v["view_name"] for v in self.view_groups]
+        else:
+            self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
 
     def expand_all_hdrs(self) -> None:
         self.collapsed_hdrs = []
@@ -1591,7 +1825,144 @@ class EditorState(rx.State):
         else:
             self.collapsed_hdrs = self.collapsed_hdrs + [hdr_name]
 
+    # =====================================================================
+    # SUNLIGHT VIEW NAVIGATION (timeseries frame cycling)
+    # =====================================================================
+
+    def _current_room_hdr_key(self) -> str:
+        """Return the value to store in ``room['hdr_file']`` for the current
+        selection. Sunlight rooms key to the *view name* so one room set
+        applies across every timestep frame; daylight rooms stay keyed to the
+        per-HDR stem (one HDR per view)."""
+        if self.project_mode == "sunlight" and self.view_groups:
+            vi = max(0, min(self.current_view_idx, len(self.view_groups) - 1))
+            return self.view_groups[vi]["view_name"]
+        if self.hdr_files and 0 <= self.current_hdr_idx < len(self.hdr_files):
+            return self.hdr_files[self.current_hdr_idx]["name"]
+        return ""
+
+    def _resolve_room_hdr_key(self, hdr_stem: str) -> str:
+        """Map an HDR stem (e.g. seeded from an AOI lookup) to the key used on
+        rooms. In sunlight mode, collapse the per-frame stem to its view name
+        so the room applies to every timestep frame of that view."""
+        if self.project_mode == "sunlight" and self.view_groups:
+            for vg in self.view_groups:
+                for frame in vg["frames"]:
+                    if frame["hdr_stem"] == hdr_stem:
+                        return vg["view_name"]
+        return hdr_stem
+
+    def _migrate_sunlight_room_keys(self) -> None:
+        """Rewrite existing rooms so ``hdr_file`` holds the view name (level),
+        not a per-frame HDR stem. Idempotent — rooms already keyed to view
+        names are left alone."""
+        if not self.view_groups:
+            return
+        stem_to_view = _stem_to_view_map(self.view_groups)
+        view_names = {vg["view_name"] for vg in self.view_groups}
+        changed = False
+        new_rooms: list[RoomDict] = []
+        for room in self.rooms:
+            key = room.get("hdr_file", "")
+            if key in view_names or not key:
+                new_rooms.append(room)
+                continue
+            mapped = stem_to_view.get(key)
+            if mapped and mapped != key:
+                updated = dict(room)
+                updated["hdr_file"] = mapped
+                new_rooms.append(updated)  # type: ignore[arg-type]
+                changed = True
+            else:
+                new_rooms.append(room)
+        if changed:
+            self.rooms = new_rooms
+
+    def _goto_frame(self, view_idx: int, frame_idx: int) -> None:
+        """Resolve (view_idx, frame_idx) into ``current_hdr_idx`` and refresh
+        the displayed image. Invalidates DF caches the same way
+        ``navigate_to_hdr`` does."""
+        if not self.view_groups:
+            return
+        view_idx = max(0, min(view_idx, len(self.view_groups) - 1))
+        frames = self.view_groups[view_idx]["frames"]
+        if not frames:
+            return
+        frame_idx = max(0, min(frame_idx, len(frames) - 1))
+        target_stem = frames[frame_idx]["hdr_stem"]
+        for i, h in enumerate(self.hdr_files):
+            if h["name"] == target_stem:
+                self.current_hdr_idx = i
+                break
+        self.current_view_idx = view_idx
+        self.current_frame_idx = frame_idx
+        self._rebuild_variants()
+        self.load_current_image()
+        _df_cache["image"] = None
+        _df_cache["hdr_path"] = ""
+        if self.df_placement_mode:
+            self._load_df_image_cache()
+
+    def navigate_to_view(self, view_idx: int) -> None:
+        """Click handler for a sunlight view (level) header."""
+        if not self.view_groups:
+            return
+        if not (0 <= view_idx < len(self.view_groups)):
+            return
+        # Toggle collapse to mirror existing navigate_to_hdr behaviour
+        view_name = self.view_groups[view_idx]["view_name"]
+        self.toggle_hdr_collapse(view_name)
+        self._goto_frame(view_idx, 0)
+        # Auto-play multi-frame views; stay paused on single-frame views
+        frame_count = len(self.view_groups[view_idx]["frames"])
+        self.frame_autoplay = frame_count > 1
+
+    def set_frame_idx(self, idx: int) -> None:
+        """Scrub-slider handler. ``idx`` may arrive as str from the slider."""
+        try:
+            i = int(idx)
+        except (TypeError, ValueError):
+            return
+        self._goto_frame(self.current_view_idx, i)
+
+    def step_frame(self, delta: int) -> None:
+        """Arrow-key handler — step one frame forward/back, wrapping."""
+        if not self.view_groups:
+            return
+        frames = self.view_groups[self.current_view_idx]["frames"]
+        if not frames:
+            return
+        new_idx = (self.current_frame_idx + delta) % len(frames)
+        self._goto_frame(self.current_view_idx, new_idx)
+
+    def advance_frame(self) -> None:
+        """Autoplay tick — advance one frame with wrap-around."""
+        if not self.frame_autoplay:
+            return
+        self.step_frame(1)
+
+    def toggle_frame_autoplay(self) -> None:
+        if not self.view_groups:
+            return
+        frames = self.view_groups[self.current_view_idx]["frames"]
+        if len(frames) <= 1:
+            self.frame_autoplay = False
+            return
+        self.frame_autoplay = not self.frame_autoplay
+
+    def set_frame_fps(self, fps: int) -> None:
+        try:
+            v = int(fps)
+        except (TypeError, ValueError):
+            return
+        self.frame_playback_fps = max(1, min(30, v))
+
     def navigate_to_hdr(self, hdr_idx: int) -> None:
+        # Sunlight: tree rows carry the view_groups index in ``hdr_idx`` —
+        # route to the view-level navigator so frame state stays coherent.
+        if self.project_mode == "sunlight" and self.view_groups:
+            self.navigate_to_view(hdr_idx)
+            return
         if 0 <= hdr_idx < len(self.hdr_files):
             old_hdr_idx = self.current_hdr_idx
             old_variant_idx = self.current_variant_idx
@@ -1615,10 +1986,15 @@ class EditorState(rx.State):
                 })
 
     def select_all_rooms(self) -> None:
-        if not self.hdr_files:
-            return
-        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        hdr_idxs = [i for i, r in enumerate(self.rooms) if r.get("hdr_file") == hdr_name]
+        if self.project_mode == "sunlight" and self.view_groups:
+            if not (0 <= self.current_view_idx < len(self.view_groups)):
+                return
+            key = self.view_groups[self.current_view_idx]["view_name"]
+        else:
+            if not self.hdr_files:
+                return
+            key = self.hdr_files[self.current_hdr_idx]["name"]
+        hdr_idxs = [i for i, r in enumerate(self.rooms) if r.get("hdr_file") == key]
         if set(hdr_idxs) == set(self.multi_selected_idxs):
             self.multi_selected_idxs = []
             self.selected_room_idx = -1
@@ -2263,7 +2639,7 @@ class EditorState(rx.State):
             "name": full_name,
             "parent": self.selected_parent or None,
             "vertices": vertices,
-            "hdr_file": hdr_name,
+            "hdr_file": self._current_room_hdr_key() or hdr_name,
             "room_type": self.room_type_input or "NONE",
             "visible": True,
         }
@@ -2663,14 +3039,14 @@ class EditorState(rx.State):
         if not self._overlay_undo_stack:
             # Restore session start baseline
             if self._overlay_session_start:
-                hdr_name = self._overlay_session_start.get("hdr_name", "")
+                key = self._overlay_session_start.get("level_key", "")
                 transform = self._overlay_session_start.get("transform")
-                if hdr_name:
+                if key:
                     t = dict(self.overlay_transforms)
                     if transform is None:
-                        t.pop(hdr_name, None)
+                        t.pop(key, None)
                     else:
-                        t[hdr_name] = transform
+                        t[key] = transform
                     self.overlay_transforms = t
                     self._auto_save()
                 self.status_message = "Overlay restored to session start"
@@ -2680,14 +3056,14 @@ class EditorState(rx.State):
         entry = self._overlay_undo_stack[-1]
         self._overlay_undo_stack = self._overlay_undo_stack[:-1]
         before = entry.get("before", {})
-        hdr_name = before.get("hdr_name", "")
+        key = before.get("level_key", "")
         transform = before.get("transform")
-        if hdr_name:
+        if key:
             t = dict(self.overlay_transforms)
             if transform is None:
-                t.pop(hdr_name, None)
+                t.pop(key, None)
             else:
-                t[hdr_name] = transform
+                t[key] = transform
             self.overlay_transforms = t
         # Handle overlay props restore
         if "dpi" in before:
@@ -2906,7 +3282,7 @@ class EditorState(rx.State):
             "name": child_name,
             "parent": division_parent,
             "vertices": child_poly_px,
-            "hdr_file": hdr_name,
+            "hdr_file": self._current_room_hdr_key() or hdr_name,
             "room_type": "CIRC",
             "visible": True,
         }
@@ -3102,13 +3478,34 @@ class EditorState(rx.State):
         ]
 
     def _seed_rooms_from_modern_aoi(self, aoi_dir: Path) -> int:
-        """Seed ``self.rooms`` from modern ``.aoi`` files that already contain
-        pixel coordinates alongside world coordinates (produced by
-        ``ViewGenerator.create_aoi_files``). Parity with
-        ``matplotlib_app._load_from_aoi_files``.
+        """Seed ``self.rooms`` from modern ``.aoi`` files.
+
+        Handles two header variants:
+
+        * Phase-5 *processed* files — line[1] begins ``ASSOCIATED VIEW FILE:``
+          and data rows carry both world and pixel columns (produced by
+          ``ViewGenerator.create_aoi_files(coordinate_map)``).
+        * Input files from the OBJ/AOI editor or
+          ``scripts/convert_room_boundaries_csv_to_aoi.py`` — line[1] begins
+          ``PARENT:`` / line[2] ``CHILD:`` and data rows carry world-only
+          coordinates. These are projected to pixels client-side using each
+          HDR's view params, mirroring the IESVE seeder.
+
+        Parity with ``matplotlib_app._load_from_aoi_files``.
         """
         import re
         seeded = 0
+
+        # Built once: ffl_mm -> (hdr_entry, vp) — used by the world-only
+        # input-format branch to map an .aoi FFL to its matching HDR so the
+        # stored pixel verts line up with the HDR the room will render over.
+        ffl_mm_to_entry: dict[int, tuple[dict, list[float]]] = {}
+        for entry in self.hdr_files:
+            m = re.search(r"plan_ffl_(\d+)", entry["name"])
+            vp = self.hdr_view_params.get(entry["name"]) if self.hdr_view_params else None
+            if m and vp and len(vp) >= 6:
+                ffl_mm_to_entry.setdefault(int(m.group(1)), (entry, vp))
+
         for aoi_path in sorted(aoi_dir.glob("*.aoi")):
             if aoi_path.stem == "aoi_session":
                 continue
@@ -3123,6 +3520,47 @@ class EditorState(rx.State):
                 # Not a modern-format file (likely IESVE "AoI Points File :") — skip.
                 continue
             name = m_name.group(1).strip()
+
+            if lines[1].startswith("PARENT:"):
+                parent = lines[1].split(":", 1)[1].strip()
+                child = (
+                    lines[2].split(":", 1)[1].strip()
+                    if lines[2].startswith("CHILD:")
+                    else name
+                )
+                m_ffl_z = re.search(r"FFL z height\(m\):\s*([\d.]+)", lines[3])
+                if not m_ffl_z:
+                    continue
+                ffl = float(m_ffl_z.group(1))
+                cached = ffl_mm_to_entry.get(int(round(ffl * 1000)))
+                if cached is None:
+                    continue
+                entry, vp = cached
+                world_verts: list[list[float]] = []
+                for line in lines[6:]:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            world_verts.append([float(parts[0]), float(parts[1])])
+                        except ValueError:
+                            continue
+                if len(world_verts) < 3:
+                    continue
+                pixel_verts = self._project_world_to_pixels(
+                    world_verts, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5],
+                )
+                self.rooms.append({
+                    "name": child,
+                    "parent": parent,
+                    "vertices": pixel_verts,
+                    "world_vertices": world_verts,
+                    "ffl": ffl,
+                    "hdr_file": self._resolve_room_hdr_key(entry["name"]),
+                    "visible": True,
+                })
+                seeded += 1
+                continue
+
             m_view = re.search(r"plan_ffl_(\d+)", lines[1])
             if not m_view:
                 continue
@@ -3138,7 +3576,7 @@ class EditorState(rx.State):
             m_ffl_z = re.search(r"FFL z height\(m\):\s*([\d.]+)", lines[2])
             ffl = float(m_ffl_z.group(1)) if m_ffl_z else 0.0
             pixel_verts: list[list[float]] = []
-            world_verts: list[list[float]] = []
+            world_verts = []
             for line in lines[5:]:
                 parts = line.split()
                 if len(parts) >= 4:
@@ -3155,7 +3593,7 @@ class EditorState(rx.State):
                 "vertices": pixel_verts,
                 "world_vertices": world_verts,
                 "ffl": ffl,
-                "hdr_file": hdr_name,
+                "hdr_file": self._resolve_room_hdr_key(hdr_name),
                 "visible": True,
             })
             seeded += 1
@@ -3241,7 +3679,7 @@ class EditorState(rx.State):
                 "vertices": pixel_verts,
                 "world_vertices": world_verts,
                 "ffl": ffl,
-                "hdr_file": entry["name"],
+                "hdr_file": self._resolve_room_hdr_key(entry["name"]),
                 "visible": True,
             })
             seeded += 1
@@ -3370,7 +3808,7 @@ class EditorState(rx.State):
             "name": match_zone,
             "parent": "",
             "room_type": "NONE",
-            "hdr_file": hdr_name,
+            "hdr_file": self._current_room_hdr_key() or hdr_name,
             "vertices": pixel_verts,
             "world_vertices": match_verts,
             "visible": True,
@@ -3458,12 +3896,24 @@ class EditorState(rx.State):
         try:
             from archilume.config import get_project_paths
             import tomllib
-            toml_path = get_project_paths(self.project).project_dir / "project.toml"
+            project_paths = get_project_paths(self.project)
+            toml_path = project_paths.project_dir / "project.toml"
             data: dict = {}
             if toml_path.exists():
                 with open(toml_path, "rb") as f:
                     data = tomllib.load(f)
-            data.setdefault("project", {})["pdf_path"] = path
+            # Store relative to inputs_dir (matches matplotlib_app schema); fall back
+            # to absolute only when PDF lives outside the project.
+            pdf_p = Path(path)
+            try:
+                rel = pdf_p.resolve().relative_to(project_paths.inputs_dir.resolve())
+                stored = str(rel).replace("\\", "/")
+            except ValueError:
+                stored = str(pdf_p)
+            data.setdefault("paths", {})["pdf_path"] = stored
+            # Migrate: drop legacy [project].pdf_path if present
+            if isinstance(data.get("project"), dict):
+                data["project"].pop("pdf_path", None)
             # Write TOML manually (no tomli_w dependency)
             lines = []
             for section, values in data.items():
@@ -3493,11 +3943,9 @@ class EditorState(rx.State):
         self.align_points = []
         if entering:
             # Snapshot current overlay state as the committed baseline
-            hdr_name = ""
-            if self.hdr_files and 0 <= self.current_hdr_idx < len(self.hdr_files):
-                hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-            transform = dict(self.overlay_transforms.get(hdr_name, {})) if hdr_name and hdr_name in self.overlay_transforms else None
-            self._overlay_session_start = {"hdr_name": hdr_name, "transform": transform}
+            key = self._current_level_key()
+            transform = dict(self.overlay_transforms.get(key, {})) if key and key in self.overlay_transforms else None
+            self._overlay_session_start = {"level_key": key, "transform": transform}
             self._overlay_undo_stack = []
         else:
             # Exiting: commit final position, clear overlay undo stack
@@ -3577,6 +4025,12 @@ class EditorState(rx.State):
             self._auto_save()
         return self._sync_vis_input("vis-fc-div", self.falsecolour_n_levels)
 
+    def set_falsecolour_palette(self, value: str) -> None:
+        if value not in ("spec", "def", "pm3d", "hot", "eco", "tbo"):
+            return
+        self.falsecolour_palette = value
+        self._auto_save()
+
     def set_contour_scale(self, value: float):
         snapped = _snap_scale_top(value)
         if snapped is not None:
@@ -3635,10 +4089,19 @@ class EditorState(rx.State):
         Runs Radiance commands in a background thread so the UI stays responsive.
         If ``force`` is True, ignores cache and regenerates every HDR for both
         streams (used by the explicit "Regenerate" button).
+
+        Sunlight projects skip this step entirely — the SunlightAccessWorkflow
+        emits a ``{stem}.png`` sibling next to every HDR at render time, so
+        there is nothing for the app to regenerate.
         """
         import asyncio
         from ..lib import visualisation_manager as vm
         from ..lib.image_loader import clear_cache, scan_hdr_files
+
+        async with self:
+            mode = self.project_mode
+        if mode == "sunlight":
+            return
 
         if not vm.radiance_available():
             # Emit a visible log so the skip shows up in container stdout —
@@ -3667,7 +4130,11 @@ class EditorState(rx.State):
             if image_dir is None:
                 return
             hdr_files = list(self.hdr_files)
-            fc_settings = {"scale": self.falsecolour_scale, "n_levels": self.falsecolour_n_levels}
+            fc_settings = {
+                "scale": self.falsecolour_scale,
+                "n_levels": self.falsecolour_n_levels,
+                "palette": self.falsecolour_palette,
+            }
             ct_settings = {"scale": self.contour_scale,    "n_levels": self.contour_n_levels}
             last_gen = dict(self.last_generated or {})
             self.is_regenerating = True
@@ -3826,31 +4293,20 @@ class EditorState(rx.State):
         return {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
 
     def reset_level_alignment(self) -> None:
-        """Clear this level's stored transform so it inherits from the nearest
-        level below. Level 0 has nothing below, so it gets a centred default.
-        """
-        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+        """Reset this level's underlay transform to the centred default."""
+        key = self._current_level_key()
+        if not key:
             return
-        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        if self.current_hdr_idx == 0:
-            # Bottom level — no level below to inherit from, so centre it.
-            self._set_current_overlay_transform(self._centred_default_transform())
-            return
-        if hdr_name in self.overlay_transforms:
-            t = dict(self.overlay_transforms)
-            del t[hdr_name]
-            self.overlay_transforms = t
-            logger.debug("[overlay-clear] hdr=%s — now inherits from below", hdr_name)
-            self._auto_save()
+        logger.debug("[overlay-clear] level=%s — reset to centred default", key)
+        self._set_current_overlay_transform(self._centred_default_transform())
 
     def _ensure_default_transform(self) -> None:
-        """For the first HDR, store a centred default transform if none exists yet."""
-        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+        """Store a centred default transform for the current level if none exists yet."""
+        key = self._current_level_key()
+        if not key:
             return
-        if self.current_hdr_idx == 0:
-            hdr_name = self.hdr_files[0]["name"]
-            if hdr_name not in self.overlay_transforms:
-                self._set_current_overlay_transform(self._centred_default_transform())
+        if key not in self.overlay_transforms:
+            self._set_current_overlay_transform(self._centred_default_transform())
 
     def _arrow_accel(self, direction: str) -> int:
         """Return the nudge step in CSS pixels for one arrow-key press.
@@ -3929,28 +4385,35 @@ class EditorState(rx.State):
         t["scale_y"] = sy
         self._set_current_overlay_transform(t)
 
+    def _current_level_key(self) -> str:
+        """Transform storage key for the currently-displayed HDR — the level label.
+
+        Sunlight: view_groups[current_view_idx]["view_name"] (e.g. ``ffl_103180``)
+        so all timestep frames of a level share one transform slot.
+        Daylight (view_groups empty): hdr_files[current_hdr_idx]["name"] — each
+        HDR is effectively its own view.
+        """
+        if self.view_groups and 0 <= self.current_view_idx < len(self.view_groups):
+            return self.view_groups[self.current_view_idx]["view_name"]
+        if self.hdr_files and 0 <= self.current_hdr_idx < len(self.hdr_files):
+            return self.hdr_files[self.current_hdr_idx]["name"]
+        return ""
+
     def _get_current_overlay_transform(self) -> dict:
-        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
-            return self._centred_default_transform()
-        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
-        if hdr_name in self.overlay_transforms:
-            return self.overlay_transforms[hdr_name]
-        # Inherit from the nearest previous HDR that has a stored transform.
-        for idx in range(self.current_hdr_idx - 1, -1, -1):
-            prev_name = self.hdr_files[idx]["name"]
-            if prev_name in self.overlay_transforms:
-                return dict(self.overlay_transforms[prev_name])
+        key = self._current_level_key()
+        if key and key in self.overlay_transforms:
+            return self.overlay_transforms[key]
         return self._centred_default_transform()
 
     def _set_current_overlay_transform(self, transform: dict) -> None:
-        if not self.hdr_files or self.current_hdr_idx >= len(self.hdr_files):
+        key = self._current_level_key()
+        if not key:
             return
-        hdr_name = self.hdr_files[self.current_hdr_idx]["name"]
         stored = dict(transform)
         stored["is_manual"] = True
         logger.debug(
-            "[overlay-set] hdr=%s ox=%.6f oy=%.6f sx=%.4f sy=%.4f rot=%s vw=%d iw=%d ih=%d pw=%d ph=%d",
-            hdr_name, stored.get("offset_x", 0), stored.get("offset_y", 0),
+            "[overlay-set] level=%s ox=%.6f oy=%.6f sx=%.4f sy=%.4f rot=%s vw=%d iw=%d ih=%d pw=%d ph=%d",
+            key, stored.get("offset_x", 0), stored.get("offset_y", 0),
             stored.get("scale_x", 1), stored.get("scale_y", 1),
             stored.get("rotation_90", 0),
             self.viewport_width, self.image_width, self.image_height,
@@ -3958,15 +4421,15 @@ class EditorState(rx.State):
         )
         # Push to overlay-scoped undo stack if in adjust-plan mode
         if self.overlay_align_mode:
-            old_transform = dict(self.overlay_transforms[hdr_name]) if hdr_name in self.overlay_transforms else None
+            old_transform = dict(self.overlay_transforms[key]) if key in self.overlay_transforms else None
             self._push_overlay_undo({
                 "action": "overlay_transform",
                 "desc": "Overlay transform change",
-                "before": {"hdr_name": hdr_name, "transform": old_transform},
-                "after": {"hdr_name": hdr_name, "transform": dict(stored)},
+                "before": {"level_key": key, "transform": old_transform},
+                "after": {"level_key": key, "transform": dict(stored)},
             })
         t = dict(self.overlay_transforms)
-        t[hdr_name] = stored
+        t[key] = stored
         self.overlay_transforms = t
         self._auto_save()
 
@@ -4391,8 +4854,13 @@ class EditorState(rx.State):
                 logger.warning("[session] Failed to parse %s — auto-save blocked until next successful load", session_file)
                 self._session_load_ok = False
                 return
-            # No session file yet — seed rooms from any .aoi files present so
-            # first-open of a project created from staged AOI inputs isn't empty.
+            # No session file yet — clear any stale cross-project state first
+            # (self.rooms etc. are not reset by open_project), then seed rooms
+            # from any .aoi files present so first-open of a project created
+            # from staged AOI inputs isn't empty.
+            self.rooms = []
+            self.df_stamps = {}
+            self.overlay_transforms = {}
             self._session_load_ok = True
             seeded = self._maybe_seed_from_aoi_files()
             if seeded > 0:
@@ -4403,7 +4871,9 @@ class EditorState(rx.State):
         self.rooms = data.get("rooms", [])
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
-        _needs_migration = data.get("transform_version", 0) < 3 and bool(self.overlay_transforms)
+        _tv = data.get("transform_version", 0)
+        _needs_legacy_migration = _tv < 3 and bool(self.overlay_transforms)
+        _needs_level_migration = _tv < 5 and bool(self.overlay_transforms)
         hdr_idx = data.get("current_hdr_idx", 0)
         if 0 <= hdr_idx < len(self.hdr_files):
             self.current_hdr_idx = hdr_idx
@@ -4418,8 +4888,10 @@ class EditorState(rx.State):
         self.overlay_img_height = data.get("overlay_img_height", 0)
         self._restore_visualisation_settings(data)
         self._rebuild_variants()
-        if _needs_migration:
+        if _needs_legacy_migration:
             self._migrate_legacy_overlay_transforms()
+        if _needs_level_migration:
+            self._migrate_overlay_keys_to_level()
         self._session_load_ok = True
         logger.info(
             "[session-load] transforms=%s pw=%d ph=%d tv=%s vis=%s",
@@ -4434,6 +4906,8 @@ class EditorState(rx.State):
         ct = data.get("contour_settings") or {}
         self.falsecolour_scale    = float(fc.get("scale", 4.0))
         self.falsecolour_n_levels = int(fc.get("n_levels", 10))
+        pal = str(fc.get("palette", "spec"))
+        self.falsecolour_palette  = pal if pal in ("spec", "def", "pm3d", "hot", "eco", "tbo") else "spec"
         self.contour_scale        = float(ct.get("scale", 2.0))
         self.contour_n_levels     = int(ct.get("n_levels", 4))
         self.last_generated       = data.get("last_generated") or {}
@@ -4451,8 +4925,13 @@ class EditorState(rx.State):
                 logger.warning("[session] Failed to parse %s — auto-save blocked until next successful load", session_file)
                 self._session_load_ok = False
                 return
-            # New project, no session file yet — seed rooms from any .aoi files
-            # present, then persist so subsequent opens take the normal path.
+            # New project, no session file yet — clear any stale cross-project
+            # state first (self.rooms etc. are not reset by open_project), then
+            # seed rooms from any .aoi files present, and persist so subsequent
+            # opens take the normal path.
+            self.rooms = []
+            self.df_stamps = {}
+            self.overlay_transforms = {}
             self._session_load_ok = True
             seeded = self._maybe_seed_from_aoi_files()
             if seeded > 0:
@@ -4463,7 +4942,9 @@ class EditorState(rx.State):
         self.rooms = data.get("rooms", [])
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
-        _needs_migration = data.get("transform_version", 0) < 3 and bool(self.overlay_transforms)
+        _tv = data.get("transform_version", 0)
+        _needs_legacy_migration = _tv < 3 and bool(self.overlay_transforms)
+        _needs_level_migration = _tv < 5 and bool(self.overlay_transforms)
         hdr_idx = data.get("current_hdr_idx", 0)
         if 0 <= hdr_idx < len(self.hdr_files):
             self.current_hdr_idx = hdr_idx
@@ -4481,8 +4962,10 @@ class EditorState(rx.State):
         self._restore_visualisation_settings(data)
         self._rebuild_variants()
         # Migrate legacy pixel offsets AFTER _rebuild_variants sets image_width.
-        if _needs_migration:
+        if _needs_legacy_migration:
             self._migrate_legacy_overlay_transforms()
+        if _needs_level_migration:
+            self._migrate_overlay_keys_to_level()
         self._session_load_ok = True
         logger.info(
             "[session-load] transforms=%s pw=%d ph=%d tv=%s vis=%s",
@@ -4499,15 +4982,15 @@ class EditorState(rx.State):
         if not self.session_path:
             return
         from ..lib.session_io import build_session_dict, save_session
-        # Write tv=4 when all transforms are v4 (manual or migrated).
+        # Write tv=5 (level-keyed, v4 numerics) when all transforms are safe.
         # Only keep tv=1 if genuinely un-migrated legacy transforms remain,
         # so next load re-attempts migration with correct viewport dimensions.
         if not self._legacy_overlay_pending:
-            tv = 4
+            tv = 5
         elif self.overlay_transforms and all(
             t.get("is_manual") for t in self.overlay_transforms.values()
         ):
-            tv = 4  # all transforms set by user — safe even if migration was pending
+            tv = 5  # all transforms set by user — safe even if migration was pending
         else:
             tv = 1
         data = build_session_dict(
@@ -4520,7 +5003,11 @@ class EditorState(rx.State):
             overlay_page_idx=self.overlay_page_idx, transform_version=tv,
             overlay_img_width=self.overlay_img_width,
             overlay_img_height=self.overlay_img_height,
-            falsecolour_settings={"scale": self.falsecolour_scale, "n_levels": self.falsecolour_n_levels},
+            falsecolour_settings={
+                "scale": self.falsecolour_scale,
+                "n_levels": self.falsecolour_n_levels,
+                "palette": self.falsecolour_palette,
+            },
             contour_settings={"scale": self.contour_scale, "n_levels": self.contour_n_levels},
             last_generated=dict(self.last_generated),
         )
@@ -4570,6 +5057,44 @@ class EditorState(rx.State):
         self.save_session()
         if self.debug_mode:
             trace.flush()
+
+    def _migrate_overlay_keys_to_level(self) -> None:
+        """Collapse per-HDR-stem overlay_transforms into per-level entries.
+
+        Before v5, keys were HDR filename stems (e.g. ``SS_0621_1500``), which in
+        sunlight mode produced one slot per timestep frame — 125 independent
+        underlay placements per level. v5 keys by level name (view_groups[*]
+        .view_name), so all frames of a level share one slot.
+
+        For each level, prefer the stem whose transform has ``is_manual=True``
+        (the user's last edit); fall back to the first stem with any transform.
+        Daylight sessions (view_groups empty) are untouched — hdr stems already
+        act as per-view keys there.
+        """
+        if not self.overlay_transforms or not self.view_groups:
+            return
+        stem_to_view = _stem_to_view_map(self.view_groups)
+        view_names = {vg["view_name"] for vg in self.view_groups}
+        by_level: dict[str, list[dict]] = {}
+        passthrough: dict[str, dict] = {}
+        for old_key, t in self.overlay_transforms.items():
+            if old_key in view_names:
+                # Already a level key (idempotent re-run).
+                passthrough[old_key] = t
+                continue
+            level = stem_to_view.get(old_key)
+            if level is None:
+                # Orphaned stem — not in any current view. Preserve it so we
+                # don't silently drop user edits when view_groups change.
+                passthrough[old_key] = t
+                continue
+            by_level.setdefault(level, []).append(t)
+        migrated = dict(passthrough)
+        for level, entries in by_level.items():
+            chosen = next((t for t in entries if t.get("is_manual")), entries[0])
+            migrated[level] = chosen
+        self.overlay_transforms = migrated
+        logger.info("[session-load] migrated overlay_transforms to per-level keys (v5): %d entries", len(migrated))
 
     def _migrate_legacy_overlay_transforms(self) -> None:
         """Convert legacy offsets to centre-relative image-fraction offsets (v4).
@@ -4993,7 +5518,7 @@ class EditorState(rx.State):
                     pass
             self.session_path = str(paths.aoi_inputs_dir / "aoi_session.json")
             trace.set_project_path(paths.project_dir)
-            from ..lib.image_loader import scan_hdr_files, read_hdr_view_params
+            from ..lib.image_loader import scan_hdr_files, read_hdr_view_params, scan_sunlight_view_groups
             self.hdr_files = scan_hdr_files(image_dir)
             # Read VIEW parameters from each HDR for accurate reprojection
             vp_map: dict[str, list[float]] = {}
@@ -5002,6 +5527,38 @@ class EditorState(rx.State):
                 if params is not None:
                     vp_map[hdr_info["name"]] = list(params)
             self.hdr_view_params = vp_map
+
+            # Sunlight: group HDRs into per-view timeseries; migrate room
+            # hdr_file keys from per-frame stems to the view label so rooms
+            # apply across every timestep of that view.
+            self.view_groups = []
+            self.current_view_idx = 0
+            self.current_frame_idx = 0
+            if self.project_mode == "sunlight":
+                sky_stems: list[str] = []
+                if paths.sky_dir.exists():
+                    sky_stems = [p.stem for p in paths.sky_dir.glob("*.sky")]
+                self.view_groups = scan_sunlight_view_groups(image_dir, sky_stems)
+                if self.view_groups:
+                    missing_pngs = [
+                        Path(frame["hdr_path"])
+                        for group in self.view_groups
+                        for frame in group["frames"]
+                        if not Path(frame["png_path"]).exists()
+                    ]
+                    if missing_pngs:
+                        from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+                        print(
+                            f"[archilume-app] {len(missing_pngs)} sunlight frames missing "
+                            f".png siblings — regenerating from HDR..."
+                        )
+                        convert_hdrs_to_pngs(missing_pngs)
+                    self._migrate_sunlight_room_keys()
+                    first_frame = self.view_groups[0]["frames"][0]
+                    for i, h in enumerate(self.hdr_files):
+                        if h["name"] == first_frame["hdr_stem"]:
+                            self.current_hdr_idx = i
+                            break
             if self.overlay_pdf_path:
                 from ..lib.image_loader import get_pdf_page_count
                 self.overlay_page_count = get_pdf_page_count(Path(self.overlay_pdf_path))
@@ -6100,6 +6657,18 @@ class EditorState(rx.State):
         elif k == "t":
             logger.debug(f"  handle_key 't' → toggle_image_variant (idx={self.current_variant_idx})")
             self.toggle_image_variant()
+        elif k == "c":
+            logger.debug(
+                f"  handle_key 'c' → cycle_room_type (selected={self.selected_room_idx} "
+                f"multi={len(self.multi_selected_idxs)})"
+            )
+            if self.selected_room_idx >= 0 or self.multi_selected_idxs:
+                idx = (
+                    self.selected_room_idx
+                    if self.selected_room_idx >= 0
+                    else self.multi_selected_idxs[0]
+                )
+                self.cycle_room_type(idx)
         elif k == "r":
             logger.debug("  handle_key 'r' → reset_zoom")
             yield from self.reset_zoom()

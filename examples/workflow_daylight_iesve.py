@@ -26,25 +26,21 @@ Workflow Overview:
 
 from pathlib import Path
 
-from archilume import config, smart_cleanup
+from archilume import config, clear_outputs_folder
 from archilume.workflows import IESVEDaylightWorkflow
 
 def run_daylight_analysis():
     project = "527DP-gcloud-lowRes-GregW"
     paths = config.get_project_paths(project)
 
-    smart_cleanup(
-        paths,
-        resolution_changed          = True,
-        rendering_quality_changed   = True,
-    )
+    clear_outputs_folder(paths)
 
     workflow = IESVEDaylightWorkflow()
     workflow.run(
         octree_path                 = paths.inputs_dir / "527DP.oct",
         rendering_params            = paths.inputs_dir / "high_GregW.rdp",
         iesve_room_data             = paths.inputs_dir / "aoi" / "iesve_room_data.csv",
-        paths                       = paths,
+        project                     = project,
         image_resolution            = 1280,
         ffl_offset                  = 1.54,
         use_ambient_file            = True,

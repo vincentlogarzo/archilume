@@ -122,14 +122,14 @@ def floor_plan_section() -> rx.Component:
 
 
 _COL_HEADER_STYLE = {
-    "font_family": FONT_MONO, "font_size": "9px",
-    "color": COLORS["text_dim"], "text_transform": "uppercase",
-    "letter_spacing": "0.06em",
+    "font_family": FONT_MONO, "font_size": "10px",
+    "color": COLORS["text_pri"], "text_transform": "uppercase",
+    "letter_spacing": "0.06em", "font_weight": "700",
 }
 _ROW_LABEL_STYLE = {
     "font_family": FONT_MONO, "font_size": "10px",
-    "color": COLORS["text_pri"], "text_transform": "uppercase",
-    "letter_spacing": "0.05em", "font_weight": "700",
+    "color": COLORS["text_dim"], "text_transform": "uppercase",
+    "letter_spacing": "0.05em", "font_weight": "400",
 }
 _CELL_INPUT_STYLE = {
     "font_family": FONT_MONO, "font_size": "11px",
@@ -138,7 +138,7 @@ _CELL_INPUT_STYLE = {
     "color": COLORS["text_pri"],
     "border": f"1px solid {COLORS['panel_bdr']}",
     "border_radius": "3px",
-    "width": "64px",
+    "width": "48px",
     "text_align": "left",
     "justify_self": "end",
 }
@@ -191,14 +191,25 @@ def _visualisation_body() -> rx.Component:
     }
 
     return rx.box(
-        # Pivoted 3×3 grid: Type / Scale top / Divisions
+        # Pivoted 4-col grid: Type / Palette / Scale top / Divisions
         rx.box(
             # Row 1 — column headers
             _vis_col_header("Type"),
+            _vis_col_header("Palette"),
             _vis_col_header("Scale top"),
-            _vis_col_header("Divisions"),
+            _vis_col_header("Steps"),
             # Row 2 — Falsecolour
-            rx.text("Falsecolour", style=_ROW_LABEL_STYLE),
+            rx.text("False-colour", style=_ROW_LABEL_STYLE),
+            rx.tooltip(
+                rx.select(
+                    ["spec", "def", "pm3d", "hot", "eco", "tbo"],
+                    value=EditorState.falsecolour_palette,
+                    on_change=EditorState.set_falsecolour_palette,
+                    size="1",
+                    style={"font_family": FONT_MONO, "font_size": "11px"},
+                ),
+                content="Radiance falsecolor -pal palette. Default 'spec'.",
+            ),
             _vis_num_cell(
                 EditorState.falsecolour_scale,
                 EditorState.set_falsecolour_scale,
@@ -211,8 +222,9 @@ def _visualisation_body() -> rx.Component:
                 is_int=True, tip=_DIVISIONS_HINT,
                 input_id="vis-fc-div",
             ),
-            # Row 3 — Contour lines
+            # Row 3 — Contour lines (no palette — uses Radiance default)
             rx.text("Contour lines", style=_ROW_LABEL_STYLE),
+            rx.box(),  # palette column spacer
             _vis_num_cell(
                 EditorState.contour_scale,
                 EditorState.set_contour_scale,
@@ -227,7 +239,7 @@ def _visualisation_body() -> rx.Component:
             ),
             style={
                 "display": "grid",
-                "grid_template_columns": "1fr auto auto",
+                "grid_template_columns": "1fr auto auto auto",
                 "column_gap": "10px",
                 "row_gap": "6px",
                 "align_items": "center",
@@ -271,13 +283,20 @@ def _visualisation_body() -> rx.Component:
 
 
 def visualisation_section() -> rx.Component:
-    return rx.box(
-        _section_header(
-            "Visualisation",
-            EditorState.visualisation_section_open,
-            EditorState.toggle_visualisation_section,
+    # Falsecolour + contour are DF-analysis visualisations specific to
+    # daylight projects. Sunlight timeseries HDRs use tone-mapped PNG
+    # siblings, so the panel is hidden in sunlight mode.
+    return rx.cond(
+        EditorState.is_sunlight_mode,
+        rx.fragment(),
+        rx.box(
+            _section_header(
+                "Visualisation",
+                EditorState.visualisation_section_open,
+                EditorState.toggle_visualisation_section,
+            ),
+            rx.cond(EditorState.visualisation_section_open, _visualisation_body(), rx.fragment()),
         ),
-        rx.cond(EditorState.visualisation_section_open, _visualisation_body(), rx.fragment()),
     )
 
 

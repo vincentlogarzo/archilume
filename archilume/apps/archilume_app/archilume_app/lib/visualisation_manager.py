@@ -28,10 +28,16 @@ _STREAM_LEGEND = {
 def settings_changed(stream: Stream, current: dict, last_generated: dict) -> bool:
     """Return True if `current` differs from the last_generated record for `stream`."""
     last = (last_generated or {}).get(stream) or {}
-    return (
-        float(current.get("scale", 0))      != float(last.get("scale", -1)) or
-        int(current.get("n_levels", 0))     != int(last.get("n_levels", -1))
-    )
+    if (
+        float(current.get("scale", 0))  != float(last.get("scale", -1)) or
+        int(current.get("n_levels", 0)) != int(last.get("n_levels", -1))
+    ):
+        return True
+    # Palette only applies to the falsecolour stream; contour ignores it.
+    if stream == "falsecolour":
+        if str(current.get("palette", "")) != str(last.get("palette", "")):
+            return True
+    return False
 
 
 def detect_stale(
@@ -83,9 +89,11 @@ def regenerate_one(
     scale_top       = float(settings.get("scale", 4.0))
     scale_divisions = int(settings.get("n_levels", 20))
     if stream == "falsecolour":
+        palette = str(settings.get("palette", "spec"))
         hdr2png_falsecolor(
             hdr_path, image_dir,
             scale_top=scale_top, scale_divisions=scale_divisions, workers=workers,
+            palette=palette,
         )
     else:
         hdr2png_contour(

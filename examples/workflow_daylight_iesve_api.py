@@ -55,8 +55,6 @@ def run_daylight_analysis():
         "ffl_offset":                       1.54,
         "use_ambient_file":                 True,
         "n_cpus":                           32,
-        "cleanup_resolution_changed":       True,
-        "cleanup_rendering_quality_changed": True,
     })
 
     if resp.status_code == 429:

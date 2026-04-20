@@ -31,6 +31,10 @@ SCALE_TOP_STEP      = 0.5
 SCALE_DIVISIONS_MIN = 0
 SCALE_DIVISIONS_MAX = 10
 
+# Palette names accepted by the Radiance `falsecolor -pal` flag.
+FALSECOLOR_PALETTES = ("spec", "def", "pm3d", "hot", "eco", "tbo")
+DEFAULT_FALSECOLOR_PALETTE = "spec"
+
 
 def _coerce_vis_params(
     scale_top: float, scale_divisions: int, *, context: str,
@@ -86,6 +90,7 @@ def hdr2png_falsecolor(
     scale_top:       float = 4.0,
     scale_divisions: int   = 10,
     workers:         int   = 1,
+    palette:         str   = DEFAULT_FALSECOLOR_PALETTE,
 ) -> None:
     """Generate the falsecolour PNG (and legend) for a single HDR.
 
@@ -95,7 +100,14 @@ def hdr2png_falsecolor(
         scale_top:        Maximum DF value on the palette (default 4 % DF).
         scale_divisions:  Number of falsecolour levels (default 10).
         workers:          Parallel workers for Radiance commands.
+        palette:          Radiance ``falsecolor -pal`` name. One of
+                          :data:`FALSECOLOR_PALETTES`.
     """
+    if palette not in FALSECOLOR_PALETTES:
+        raise ValueError(
+            f"invalid falsecolor palette {palette!r}; "
+            f"expected one of {FALSECOLOR_PALETTES}"
+        )
     scale_top, scale_divisions = _coerce_vis_params(
         scale_top, scale_divisions, context="falsecolor",
     )
@@ -107,7 +119,7 @@ def hdr2png_falsecolor(
 
     cmd = (
         f'pcomb -s 0.01 {src} | falsecolor -s {scale_top} -n {scale_divisions} '
-        f'-pal spec -l "DF %" -lw 0 | ra_tiff - {ft}'
+        f'-pal {palette} -l "DF %" -lw 0 | ra_tiff - {ft}'
     )
     print(f"[hdr_vis] Running falsecolour for: {stem}")
     utils.execute_new_radiance_commands(cmd, number_of_workers=workers)
@@ -115,7 +127,7 @@ def hdr2png_falsecolor(
     _log_intermediate("false_tiff", false_tiff)
     _tiff_to_png(false_tiff)
 
-    _generate_falsecolor_legend(image_dir, scale_top, scale_divisions, workers)
+    _generate_falsecolor_legend(image_dir, scale_top, scale_divisions, workers, palette)
 
 
 def hdr2png_contour(
@@ -230,6 +242,7 @@ def _generate_falsecolor_legend(
     scale_top:       float,
     scale_divisions: int,
     workers:         int,
+    palette:         str = DEFAULT_FALSECOLOR_PALETTE,
 ) -> None:
     """Generate the standalone falsecolour legend PNG if missing."""
     legend_png  = image_dir / "df_false_legend.png"
@@ -240,7 +253,7 @@ def _generate_falsecolor_legend(
     lt = legend_tiff.as_posix()
     cmd = (
         f'pcomb -e "ro=1;go=1;bo=1" -x 1 -y 1 | '
-        f'falsecolor -s {scale_top} -n {scale_divisions} -pal spec -l "DF %" '
+        f'falsecolor -s {scale_top} -n {scale_divisions} -pal {palette} -l "DF %" '
         f'-lw 400 -lh 1600 | ra_tiff - {lt}'
     )
     utils.execute_new_radiance_commands(cmd, number_of_workers=workers)

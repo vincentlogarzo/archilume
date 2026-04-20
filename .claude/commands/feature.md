@@ -119,7 +119,7 @@ Next step: review the diff, then commit the implementation yourself.
 
 ## Constraints
 
-- Always use `uv run pytest` (never bare `pytest`).
+- Always use `uv run pytest` (never bare `pytest`). Include `--confcutdir=archilume/apps/archilume_app/tests` so pytest does not climb into the currently-broken `archilume/apps/__init__.py`.
 - Imports at module top.
 - SI units only.
 - No files in the repo root — `.claude/features/` and `archilume/apps/archilume_app/tests/` only.

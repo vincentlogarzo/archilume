@@ -23,7 +23,6 @@ def _run_sunlight(req: SunlightJobRequest) -> None:
     paths = config.get_project_paths(req.project)
     paths.create_dirs()
 
-    room_csv = _resolve_input(paths.aoi_inputs_dir, req.room_boundaries_csv)
     obj_paths = [_resolve_input(paths.inputs_dir, p) for p in req.obj_paths]
 
     workflow = SunlightAccessWorkflow()
@@ -33,15 +32,12 @@ def _run_sunlight(req: SunlightJobRequest) -> None:
         day=req.day,
         start_hour=req.start_hour,
         end_hour=req.end_hour,
-        timestep=req.timestep,
-        ffl_offset=req.ffl_offset,
-        grid_resolution=req.grid_resolution,
-        rendering_mode=req.rendering_mode,
-        rendering_quality=req.rendering_quality,
-        room_boundaries_csv=room_csv,
+        timestep_min=req.timestep_min,
+        ffl_offset_mm=req.ffl_offset_mm,
+        grid_resolution_mm=req.grid_resolution_mm,
+        aoi_inputs_dir=paths.aoi_inputs_dir,
         obj_paths=obj_paths,
-        animation_format=req.animation_format,
-        paths=paths,
+        project=req.project,
     )
 
 
@@ -50,9 +46,8 @@ def submit_sunlight(req: SunlightJobRequest):
     paths = config.get_project_paths(req.project)
     errors = []
 
-    room_csv = _resolve_input(paths.aoi_inputs_dir, req.room_boundaries_csv)
-    if not room_csv.exists():
-        errors.append(f"room_boundaries_csv: not found at {room_csv}")
+    if not paths.aoi_inputs_dir.exists():
+        errors.append(f"aoi_inputs_dir: not found at {paths.aoi_inputs_dir}")
 
     for i, obj_rel in enumerate(req.obj_paths):
         obj = _resolve_input(paths.inputs_dir, obj_rel)

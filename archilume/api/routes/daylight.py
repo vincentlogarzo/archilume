@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from starlette.responses import JSONResponse
 
-from archilume import config, smart_cleanup
+from archilume import config, clear_outputs_folder
 from archilume.workflows import IESVEDaylightWorkflow
 from archilume.api.jobs import job_manager
 from archilume.api.models import DaylightJobRequest, JobSubmittedResponse
@@ -27,11 +27,7 @@ def _run_daylight(req: DaylightJobRequest) -> None:
     rendering_params = _resolve(paths.inputs_dir, req.rendering_params)
     iesve_room_data = _resolve(paths.inputs_dir, req.iesve_room_data)
 
-    smart_cleanup(
-        paths,
-        resolution_changed=req.cleanup_resolution_changed,
-        rendering_quality_changed=req.cleanup_rendering_quality_changed,
-    )
+    clear_outputs_folder(paths)
 
     workflow = IESVEDaylightWorkflow()
     workflow.run(
@@ -42,7 +38,7 @@ def _run_daylight(req: DaylightJobRequest) -> None:
         ffl_offset=req.ffl_offset,
         use_ambient_file=req.use_ambient_file,
         n_cpus=req.n_cpus,
-        paths=paths,
+        project=req.project,
     )
 
 

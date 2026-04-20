@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 import numpy as np
@@ -14,6 +15,35 @@ import psutil
 import pymupdf as fitz
 from PIL import Image
 from archilume import config
+
+
+@dataclass(frozen=True)
+class PixelToWorldMap:
+    """In-memory pixel<->world mapping derived from a Radiance HDR header.
+
+    Captures everything downstream code (Hdr2Wpd, ViewGenerator) used to read
+    out of the legacy `pixel_to_world_coordinate_map.txt` file. Built once per
+    HDR via `compute_pixel_to_world_map(hdr_path)`.
+    """
+    hdr_path: Path
+    image_width: int
+    image_height: int
+    world_width_m: float
+    world_height_m: float
+    vp_x: float
+    vp_y: float
+
+    @property
+    def world_units_per_pixel_x(self) -> float:
+        return self.world_width_m / self.image_width
+
+    @property
+    def world_units_per_pixel_y(self) -> float:
+        return self.world_height_m / self.image_height
+
+    @property
+    def area_per_pixel_m2(self) -> float:
+        return self.world_units_per_pixel_x * self.world_units_per_pixel_y
 
 
 
@@ -967,168 +997,59 @@ def get_hdr_resolution(hdr_file_path: Union[Path, str]) -> tuple[int, int]:
     except Exception as e:
         raise ValueError(f"Could not determine image dimensions from HDR file: {e}")
 
-def create_pixel_to_world_coord_map(image_dir: Path) -> Path:
-    """
-    Create pixel-to-world coordinate mapping from HDR file in the specified directory.
+def compute_pixel_to_world_map(hdr_path_or_dir: Path) -> PixelToWorldMap:
+    """Compute the pixel<->world mapping from a Radiance HDR header.
 
-    Automatically locates the first '*_combined.hdr' file in the image directory,
-    extracts viewpoint and view angle information from HDR file metadata, then
-    calculates the mapping between pixel coordinates and real-world coordinates.
-    The mapping file is saved to the output directory for use in spatial analysis.
-
-    Args:
-        image_dir (Path): Directory containing HDR files
-        output_dir (Path, optional): Directory to save the mapping file.
-                                     If None, defaults to image_dir.parent/aoi/
-
-    Returns:
-        Path: Path to the coordinate mapping file that was created
-
-    Raises:
-        RuntimeError: If processing fails for any reason
-        FileNotFoundError: If HDR file doesn't exist
-        ValueError: If VIEW parameters or image dimensions cannot be extracted
-
-    Note:
-        This function searches for files matching the pattern '*_combined.hdr'
-        which are typically generated during the solar analysis pipeline.
-        The mapping file format is: # pixel_x pixel_y world_x world_y (commented header)
-        followed by whitespace-delimited numeric data rows
-
-    Example:
-        >>> image_dir = Path("outputs/images")
-        >>> hdr_path = create_pixel_to_world_coord_map(image_dir)
-        >>> if hdr_path:
-        ...     print(f"Mapping created from: {hdr_path}")
+    Accepts either a direct HDR path or a directory (in which case the first
+    `*.hdr` / `*.pic` is used). Pure compute — no files are written.
     """
     try:
-        # Step 1: Locate and validate hdr file
+        if hdr_path_or_dir.is_dir():
+            hdr_file_path = (
+                next(hdr_path_or_dir.glob('*.hdr'), None)
+                or next(hdr_path_or_dir.glob('*.pic'), None)
+            )
+            if hdr_file_path is None:
+                raise FileNotFoundError(f"No HDR files found in {hdr_path_or_dir}")
+        else:
+            hdr_file_path = hdr_path_or_dir
 
-        hdr_file_path = next(image_dir.glob('*.hdr'), None) or next(image_dir.glob('*.pic'), None)
-
-        if hdr_file_path is None:
-            raise FileNotFoundError(f"No HDR files found in {image_dir}")
-
-        # Double-check that the file actually exists on disk
         if not hdr_file_path.exists():
             raise FileNotFoundError(f"HDR file not found: {hdr_file_path}")
 
-        # Fast cache: if mapping file exists and is newer than the HDR, reuse it
-        output_file = hdr_file_path.parent.parent / "aoi" / "pixel_to_world_coordinate_map.txt"
-        if output_file.exists() and output_file.stat().st_mtime >= hdr_file_path.stat().st_mtime:
-            print(f"Pixel-to-world coordinate mapping unchanged, reusing: {output_file}")
-            return output_file
-
-        print(f"Creating pixel-to-world mapping from: {hdr_file_path.name}")
-
-        # Step 2: Extract image dimensions
-
         width, height = get_hdr_resolution(hdr_file_path)
 
-        # ===================================================================
-        # STEP 3: EXTRACT VIEW PARAMETERS FROM HDR FILE
-        # ===================================================================
-        # The HDR file contains a VIEW line with camera information, e.g.:
-        # VIEW= -vtl v -vp 50.0 30.0 1.5 -vd 0 1 0 -vu 0 0 1 -vh 45 -vv 45
-        # This tells us:
-        #   -vtl: orthographic view type (v = perspective)
-        #   -vp: viewpoint position (x, y, z coordinates of camera)
-        #   -vd: view direction (where camera is looking)
-        #   -vu: view up vector (which way is "up")
-        #   -vh: horizontal view angle in degrees (field of view width)
-        #   -vv: vertical view angle in degrees (field of view height)
-
-        print(f"Reading HDR file header: {hdr_file_path}")
-
-        # Find the VIEW line in the HDR header
         with open(hdr_file_path, 'r', encoding='utf-8', errors='ignore') as f:
             view_line = next((line.strip() for line in f if line.startswith('VIEW=')), None)
 
         if not view_line:
             raise ValueError("No VIEW line found in HDR file header")
 
-        print(f"VIEW line:              {view_line}")
-
-        # ===================================================================
-        # STEP 4: PARSE VIEWPOINT AND VIEW ANGLE VALUES
-        # ===================================================================
-        # Now we extract specific values from the VIEW line using regex patterns
-
-        # Extract -vp (viewpoint): The 3D position of the camera
-        # Regex pattern: "-vp" followed by 3 numbers (can be negative, decimals)
-        # Example: "-vp 50.0 30.0 1.5" means camera at position (50, 30, 1.5) meters
-
         vp_match = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', view_line)
         if not vp_match:
             raise ValueError("Could not extract -vp values from VIEW line")
+        vp_x, vp_y, _vp_z = map(float, vp_match.groups())
 
-        vp_x, vp_y, vp_z = map(float, vp_match.groups())
-        print(f"Viewpoint (vp):         x={vp_x}, y={vp_y}, z={vp_z}")
-
-        # Extract -vh (horizontal view angle) and -vv (vertical view angle)
-        # These define the camera's field of view in degrees
-        # Example: -vh 45 means the camera sees 45° horizontally
+        # FIXME: assumes orthographic (-vtl) view — vh/vv are world dims directly.
         vh = float(re.search(r'-vh\s+([\d.-]+)', view_line).group(1))
         vv = float(re.search(r'-vv\s+([\d.-]+)', view_line).group(1))
-        print(f"View size (vh, vv):     {vh}m x {vv}m")
 
-        #FIXME: future iteration should determine if -vtl or -vtv is used in the view line. This will determeine how the real world dimensions are calculated. 
-
-        # ===================================================================
-        # STEP 5: CALCULATE WORLD DIMENSIONS AND PIXEL SCALE
-        # ===================================================================
-        # For orthographic views (-vtl), vh and vv are direct real-world dimensions
-        # Example: -vh 50.0 -vv 30.0 means the image shows a 50m x 30m area
-        # Calculate how many meters (or world units) each pixel represents
-        # If image is 800 pixels wide and covers 50 meters, then each pixel = 50/800 = 0.0625m
-        # vh = horizontal view dimension (X-axis width)
-        # vv = vertical view dimension (Y-axis height)
-        world_units_per_pixel_x = vh / width
-        world_units_per_pixel_y = vv / height
-
-        print(f"World dimensions:       {vh:.3f} x {vv:.3f} units")
-        print(f"World units per pixel:  x={world_units_per_pixel_x:.6f}, y={world_units_per_pixel_y:.6f}")
-
-        # ===================================================================
-        # STEP 6: GENERATE AND SAVE THE PIXEL-TO-WORLD MAPPING FILE
-        # ===================================================================
-        # Now we create a text file that maps every pixel to its world coordinate
-        # This file will be used later for spatial analysis (e.g., AOI stamping)
-
-
-        # output_file was already set in the early cache check above
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write header-only mapping file (all downstream consumers only read
-        # these 4 header lines — per-pixel data is a trivial formula).
-        with open(output_file, 'w') as f:
-            f.write(f"# VIEW: {view_line}\n")
-            f.write(f"# Image dimensions in pixels: width={width}, height={height}\n")
-            f.write(f"# World dimensions in meters: width={vh:.6f}, height={vv:.6f}\n")
-            f.write(f"# pixel_x pixel_y world_x world_y\n")
-
-        print(f"Pixel-to-world coordinate mapping saved to: {output_file}")
-
-        # Display some example mappings to verify correctness
-        print("Key coordinate mappings:")
-        key_points = [
-            (0, 0, "top-left"),
-            (width-1, 0, "top-right"),
-            (0, height-1, "bottom-left"),
-            (width-1, height-1, "bottom-right"),
-            (width//2, height//2, "center")
-        ]
-        for px, py, label in key_points:
-            world_x = vp_x + (px - width/2) * world_units_per_pixel_x
-            world_y = vp_y + (height/2 - py) * world_units_per_pixel_y
-            print(f"  {label:<12} pixel({px:>4}, {py:>4})  ->  world({world_x:.3f}, {world_y:.3f})")
-
-        print(f"Coordinate mapping generated for: {hdr_file_path.name}")
-        return output_file
+        coord_map = PixelToWorldMap(
+            hdr_path=hdr_file_path,
+            image_width=width,
+            image_height=height,
+            world_width_m=vh,
+            world_height_m=vv,
+            vp_x=vp_x,
+            vp_y=vp_y,
+        )
+        print(f"Pixel-to-world: {width}x{height}px -> {vh:.3f}x{vv:.3f}m "
+              f"(per-pixel {coord_map.world_units_per_pixel_x:.6f}x{coord_map.world_units_per_pixel_y:.6f}m)")
+        return coord_map
 
     except Exception as e:
-        print(f"Error creating pixel-to-world mapping: {e}")
-        raise RuntimeError("Failed to create pixel-to-world coordinate map") from e
+        print(f"Error computing pixel-to-world mapping: {e}")
+        raise RuntimeError("Failed to compute pixel-to-world coordinate map") from e
 
 
 def print_timing_report(
@@ -1534,258 +1455,6 @@ def clear_outputs_folder(paths: "config.ProjectPaths", retain_amb_files: bool = 
 
     clear_directory(outputs_dir, skip_octree=retain_octree)
     print(f"\nOutputs folder cleanup complete. Directory structure preserved.")
-
-
-def smart_cleanup(
-    paths: "config.ProjectPaths",
-    timestep_changed: bool = False,
-    resolution_changed: bool = False,
-    rendering_mode_changed: bool = False,
-    rendering_quality_changed: bool = False
-) -> None:
-    """
-    Smart cleanup for re-runs based on what parameter changed.
-
-    IMPORTANT: ALWAYS DELETED (regardless of flags):
-        - All files in wpd/ directory (post-processed working plane data)
-        - All .gif and .apng files in image/ directory (animations)
-        - Reason: These are derived from renders and must ALWAYS be regenerated
-        - This happens even when ALL flags are FALSE
-
-    Set flags to TRUE for parameters that changed since last run:
-
-    Args:
-        timestep_changed (bool): Set to TRUE if timestep changed.
-            - Deletes: All .sky files, all .oct files, and image files (except .amb)
-            - Retains: .amb files (overcast indirect lighting calculations)
-            - Reason: New timesteps = new sky files = new octrees needed
-            - Ambient files can be reused (scene geometry unchanged)
-
-        resolution_changed (bool): Set to TRUE if image_resolution changed.
-            - Deletes: .hdr and .tiff files from image/ directory
-            - Retains: .amb files, octree files, sky files, view files
-            - Reason: Ambient files are 64x64 regardless of final resolution
-            - Only final renders need regeneration
-
-        rendering_mode_changed (bool): Set to TRUE if switched between 'cpu' and 'gpu'.
-            - Deletes: Everything in image/ directory (including .amb files)
-            - Retains: octree/, sky/, view/ directories
-            - Reason: CPU and GPU may produce different ambient calculations
-            - Better to regenerate for consistency
-
-        rendering_quality_changed (bool): Set to TRUE if quality preset changed.
-            - Deletes: Everything in image/ directory (including .amb files)
-            - Retains: octree/, sky/, view/ directories
-            - Reason: Quality changes affect -ad, -as, -ab parameters
-            - Ambient files should match quality settings
-
-    Examples:
-        >>> # Only resolution changed from 1024 to 2048
-        >>> smart_cleanup(resolution_changed=True)
-
-        >>> # Changed timestep AND resolution
-        >>> smart_cleanup(timestep_changed=True, resolution_changed=True)
-
-        >>> # Switched from CPU to GPU rendering
-        >>> smart_cleanup(rendering_mode_changed=True)
-
-    Notes:
-        - If multiple flags are TRUE, they are combined intelligently:
-            * rendering_mode_changed or rendering_quality_changed ALWAYS deletes .amb files
-            * timestep_changed deletes sky files and octrees
-            * All flags respect the .amb deletion rule when quality/mode changed
-        - If no flags are TRUE, only post-processed files are deleted (animations, wpd)
-        - Priority order for scenarios: timestep > mode/quality > resolution
-        - .amb files are ALWAYS deleted when rendering_mode_changed or rendering_quality_changed is TRUE
-    """
-
-    outputs_dir = paths.outputs_dir
-    image_dir = paths.image_dir
-    octree_dir = paths.octree_dir
-    wpd_dir = paths.wpd_dir
-
-    if not outputs_dir.exists():
-        print(f"Outputs directory does not exist: {outputs_dir}")
-        return
-
-    files_removed = []
-    files_retained = []
-
-    # ALWAYS clean post-processed outputs (derived from renders, always need regeneration)
-    # This happens REGARDLESS of parameter flags
-    print("\n" + "="*80)
-    print("SMART CLEANUP - Cleaning Post-Processed Outputs")
-    print("="*80)
-    print("Post-processed files (animations, wpd) are ALWAYS deleted")
-    print("-" * 80)
-
-    # Delete wpd directory contents (skip .gitkeep)
-    if wpd_dir.exists():
-        for wpd_file in wpd_dir.iterdir():
-            if wpd_file.is_file() and wpd_file.name not in {".gitkeep", ".gitignore"}:
-                wpd_file.unlink()
-                files_removed.append(f"wpd/{wpd_file.name}")
-
-    # Delete animation files (.gif, .apng) from image directory
-    if image_dir.exists():
-        for anim_file in image_dir.glob("*.gif"):
-            anim_file.unlink()
-            files_removed.append(f"image/{anim_file.name}")
-        for anim_file in image_dir.glob("*.apng"):
-            anim_file.unlink()
-            files_removed.append(f"image/{anim_file.name}")
-
-    print(f"Removed {len([f for f in files_removed if 'wpd/' in f or f.endswith(('.gif', '.apng'))])} post-processed files")
-    print("="*80 + "\n")
-
-    # If nothing changed, stop here (only post-processed files were deleted)
-    if not any([timestep_changed, resolution_changed, rendering_mode_changed, rendering_quality_changed]):
-        print("="*80)
-        print("PARAMETER CHANGE DETECTION")
-        print("="*80)
-        print("No rendering parameter changes detected.")
-        print("Render outputs (.hdr, .tiff, .amb, octrees) will be reused.")
-        print("="*80 + "\n")
-        return
-
-    print("="*80)
-    print("PARAMETER CHANGE DETECTION")
-    print("="*80)
-    print(f"Timestep changed:          {timestep_changed}")
-    print(f"Resolution changed:        {resolution_changed}")
-    print(f"Rendering mode changed:    {rendering_mode_changed}")
-    print(f"Rendering quality changed: {rendering_quality_changed}")
-    print("="*80 + "\n")
-
-    # Determine if .amb files should be deleted
-    # .amb files must be regenerated when rendering mode or quality changes
-    delete_amb_files = rendering_mode_changed or rendering_quality_changed
-
-    # SCENARIO 1: Timestep changed
-    # Delete sky files, octrees, and image outputs
-    if timestep_changed:
-        print("SCENARIO 1: Timestep changed")
-        print("-" * 80)
-        if delete_amb_files:
-            print(f"Action: Delete {paths.sky_dir.name}/, {paths.rad_dir.name}/, {paths.octree_dir.name}/, and ALL {paths.image_dir.name}/ files (including .amb)")
-            print("Reason: New timesteps + quality/mode change requires full regeneration\n")
-        else:
-            print(f"Action: Delete {paths.sky_dir.name}/, {paths.rad_dir.name}/, {paths.octree_dir.name}/, and {paths.image_dir.name}/ files, RETAIN .amb files")
-            print("Reason: New timesteps require new sky files and octrees")
-            print("        Ambient files can be reused (scene geometry unchanged)\n")
-
-        # Delete sky files (new timesteps need new sky files)
-        sky_dir = paths.sky_dir
-        if sky_dir.exists():
-            for sky_file in sky_dir.glob("*.sky"):
-                sky_file.unlink()
-                files_removed.append(f"sky/{sky_file.name}")
-
-        # Delete rad and materials files (upstream of octrees, must regenerate)
-        rad_dir = paths.rad_dir
-        if rad_dir.exists():
-            for rad_file in rad_dir.iterdir():
-                if rad_file.is_file() and rad_file.name not in {".gitkeep", ".gitignore"}:
-                    rad_file.unlink()
-                    files_removed.append(f"rad/{rad_file.name}")
-
-        # Delete octree files
-        if octree_dir.exists():
-            for oct_file in octree_dir.glob("*.oct"):
-                oct_file.unlink()
-                files_removed.append(f"octree/{oct_file.name}")
-
-        # Delete image outputs (conditionally delete .amb based on quality/mode change)
-        if image_dir.exists():
-            for img_file in image_dir.iterdir():
-                if img_file.is_file() and img_file.name not in {".gitkeep", ".gitignore"}:
-                    # Delete .amb files if quality/mode changed, otherwise retain them
-                    if img_file.suffix == ".amb" and not delete_amb_files:
-                        files_retained.append(f"image/{img_file.name}")
-                    else:
-                        img_file.unlink()
-                        files_removed.append(f"image/{img_file.name}")
-
-    # SCENARIO 2: Rendering mode or quality changed (without timestep change)
-    # Delete everything in image/ directory (including .amb)
-    elif rendering_mode_changed or rendering_quality_changed:
-        if rendering_mode_changed:
-            print("SCENARIO 2: Rendering mode changed (cpu ↔ gpu)")
-        else:
-            print("SCENARIO 2: Rendering quality changed")
-        print("-" * 80)
-        print("Action: Delete ALL files in image/ directory")
-        print("Reason: CPU/GPU or quality changes affect ambient calculations")
-        print("        Best to regenerate for consistency\n")
-
-        # Delete all image files including .amb (skip .gitkeep)
-        if image_dir.exists():
-            for img_file in image_dir.iterdir():
-                if img_file.is_file() and img_file.name not in {".gitkeep", ".gitignore"}:
-                    img_file.unlink()
-                    files_removed.append(f"image/{img_file.name}")
-
-        # Retain octrees
-        if octree_dir.exists():
-            for oct_file in octree_dir.glob("*.oct"):
-                files_retained.append(f"octree/{oct_file.name}")
-
-    # SCENARIO 3: Resolution changed (without timestep change)
-    # Delete .hdr and .tiff, conditionally delete .amb based on quality/mode
-    elif resolution_changed:
-        print("SCENARIO 3: Resolution changed")
-        print("-" * 80)
-        if delete_amb_files:
-            print("Action: Delete .hdr, .tiff, and .amb files")
-            print("Reason: Resolution + quality/mode change requires regeneration\n")
-        else:
-            print("Action: Delete .hdr and .tiff files, RETAIN .amb files")
-            print("Reason: Ambient files are always 64x64 (resolution-independent)")
-            print("        Only final renders need regeneration\n")
-
-        # Delete rendered outputs and conditionally .amb files (skip .gitkeep)
-        if image_dir.exists():
-            for img_file in image_dir.iterdir():
-                if img_file.is_file() and img_file.name not in {".gitkeep", ".gitignore"}:
-                    # Always delete .hdr and .tiff
-                    if img_file.suffix in [".hdr", ".tiff", ".tif"]:
-                        img_file.unlink()
-                        files_removed.append(f"image/{img_file.name}")
-                    # Delete .amb if quality/mode changed, otherwise retain
-                    elif img_file.suffix == ".amb":
-                        if delete_amb_files:
-                            img_file.unlink()
-                            files_removed.append(f"image/{img_file.name}")
-                        else:
-                            files_retained.append(f"image/{img_file.name}")
-
-        # Retain octrees
-        if octree_dir.exists():
-            for oct_file in octree_dir.glob("*.oct"):
-                files_retained.append(f"octree/{oct_file.name}")
-
-    # Summary
-    print("="*80)
-    print("CLEANUP SUMMARY")
-    print("="*80)
-    print(f"Files removed:  {len(files_removed)}")
-    print(f"Files retained: {len(files_retained)}")
-
-    if files_removed:
-        print(f"\nFirst 5 removed files:")
-        for f in files_removed[:5]:
-            print(f"  [-] {f}")
-        if len(files_removed) > 5:
-            print(f"  ... and {len(files_removed) - 5} more")
-
-    if files_retained:
-        print(f"\nFirst 5 retained files:")
-        for f in files_retained[:5]:
-            print(f"  [+] {f}")
-        if len(files_retained) > 5:
-            print(f"  ... and {len(files_retained) - 5} more")
-
-    print("="*80 + "\n")
 
 
 # ── PDF Floor Plan Utilities ──────────────────────────────────────────────────

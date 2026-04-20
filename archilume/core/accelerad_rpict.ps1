@@ -146,6 +146,8 @@ Write-Host "====================================================================
 $renderStart = Get-Date
 $current = 0
 $rendered = 0
+$failed = 0
+$MinValidHdrBytes = 10000  # ~15 MB for a full render; 10 KB is a safe floor - real HDRs are always above this
 
 foreach ($viewFile in $views) {
     $current++
@@ -181,6 +183,13 @@ foreach ($viewFile in $views) {
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: Render failed (exit code $LASTEXITCODE)"
+        $failed++
+    } elseif ((Test-Path $hdrFile) -and (Get-Item $hdrFile).Length -lt $MinValidHdrBytes) {
+        # accelerad_rpict sometimes exits 0 even when OptiX fails mid-render, leaving
+        # only the Radiance header text in the HDR file. Treat tiny HDRs as failures.
+        $hdrSize = (Get-Item $hdrFile).Length
+        Write-Host "  ERROR: HDR suspiciously small ($hdrSize bytes, expected >= $MinValidHdrBytes) - render likely failed silently"
+        $failed++
     } else {
         $rendered++
         $elapsed = (Get-Date) - $viewRenderStart
@@ -192,4 +201,9 @@ foreach ($viewFile in $views) {
 $renderElapsed = (Get-Date) - $renderStart
 Write-Host "============================================================================"
 Write-Host ("Rendering Complete: $rendered views in {0}m {1}s" -f [math]::Floor($renderElapsed.TotalMinutes), $renderElapsed.Seconds)
+if ($failed -gt 0) {
+    Write-Host "FAILED: $failed of $($views.Count) views did not render successfully"
+}
 Write-Host "============================================================================"
+
+if ($failed -gt 0) { exit 1 }

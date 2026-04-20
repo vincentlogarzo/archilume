@@ -59,7 +59,7 @@ for feat in "${relevant[@]}"; do
     if [ ! -f "$repo_root/$test_file" ]; then
         continue
     fi
-    pytest_out="$(cd "$repo_root" && uv run pytest "$test_file" -x --tb=short 2>&1 || true)"
+    pytest_out="$(cd "$repo_root" && uv run pytest "$test_file" --confcutdir=archilume/apps/archilume_app/tests -x --tb=short 2>&1 || true)"
     tail_out="$(echo "$pytest_out" | tail -n 20)"
     summaries+="\n\n### Feature: $slug\n\n\`\`\`\n$tail_out\n\`\`\`"
     audit_requests+="\n- $slug → invoke reflex-audit with file=$file_path, diff=\`git diff HEAD -- $file_path\`, spec=\`.claude/features/$slug.md\`"

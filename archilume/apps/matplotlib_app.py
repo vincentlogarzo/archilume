@@ -1733,9 +1733,9 @@ class HdrAoiEditor:
         # Initialise daylight factor analysis (requires a project with HDR files)
         if self.project and self.image_dir.exists():
             try:
-                coordinate_map_path = utils.create_pixel_to_world_coord_map(self.image_dir)
+                coordinate_map = utils.compute_pixel_to_world_map(self.image_dir)
                 self._hdr2wpd = _get_Hdr2Wpd()(
-                    pixel_to_world_map=coordinate_map_path,
+                    pixel_to_world_map=coordinate_map,
                     aoi_dir=self.aoi_dir,
                     wpd_dir=self.wpd_dir,
                     image_dir=self.image_dir,
@@ -5861,11 +5861,9 @@ class HdrAoiEditor:
         # Initialise field visibility/labels for the default mode
         _toggle_mode_fields()
 
-    def _reload_project(self, name: str, mode: str, pdf_path, image_dir, iesve_room_data,
-                        coordinate_map=None):
+    def _reload_project(self, name: str, mode: str, pdf_path, image_dir, iesve_room_data):
         """Reinitialise the editor in-place with a new project configuration."""
-        log.debug("_reload_project: name=%r, mode=%r, image_dir=%r, coordinate_map=%r",
-                  name, mode, image_dir, coordinate_map)
+        log.debug("_reload_project: name=%r, mode=%r, image_dir=%r", name, mode, image_dir)
 
         paths = config.get_project_paths(name)
         paths.create_dirs()
@@ -5951,15 +5949,10 @@ class HdrAoiEditor:
 
         # Re-initialise daylight factor analysis for the new project
         try:
-            if coordinate_map:
-                p = Path(coordinate_map)
-                coordinate_map_path = paths.project_dir / p if not p.is_absolute() else p
-            else:
-                coordinate_map_path = utils.create_pixel_to_world_coord_map(self.image_dir)
-            log.debug("_reload_project: coord_map_path=%s, exists=%s",
-                      coordinate_map_path, coordinate_map_path.exists())
+            cm = utils.compute_pixel_to_world_map(self.image_dir)
+            log.debug("_reload_project: pixel-to-world map computed from %s", cm.hdr_path)
             self._hdr2wpd = _get_Hdr2Wpd()(
-                pixel_to_world_map=coordinate_map_path,
+                pixel_to_world_map=cm,
                 aoi_dir=self.aoi_dir,
                 wpd_dir=self.wpd_dir,
                 image_dir=self.image_dir,
@@ -9466,28 +9459,16 @@ class HdrAoiEditor:
         Returns:
             Number of .aoi files written.
         """
-        # Parse pixel→world mapping parameters from the coordinate map header
-        coord_map_path = self.aoi_dir / "pixel_to_world_coordinate_map.txt"
+        # Pixel<->world mapping is derived live from the first HDR in image_dir
         vp_x = vp_y = vh = vv = 0.0
         img_w = img_h = 1
-        if coord_map_path.exists():
-            with open(coord_map_path, 'r') as f:
-                header_lines = [f.readline() for _ in range(4)]
-            # Line 0: # VIEW: VIEW= -vtl v -vp X Y Z ... -vh VH -vv VV
-            view_line = header_lines[0]
-            vp_match = re.search(r'-vp\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', view_line)
-            if vp_match:
-                vp_x, vp_y = float(vp_match.group(1)), float(vp_match.group(2))
-            vh_match = re.search(r'-vh\s+([\d.-]+)', view_line)
-            vv_match = re.search(r'-vv\s+([\d.-]+)', view_line)
-            if vh_match:
-                vh = float(vh_match.group(1))
-            if vv_match:
-                vv = float(vv_match.group(1))
-            # Line 1: # Image dimensions in pixels: width=W, height=H
-            dim_line = header_lines[1]
-            img_w = int(dim_line.split('width=')[1].split(',')[0])
-            img_h = int(dim_line.split('height=')[1])
+        try:
+            cm = utils.compute_pixel_to_world_map(self.image_dir)
+            vp_x, vp_y = cm.vp_x, cm.vp_y
+            vh, vv = cm.world_width_m, cm.world_height_m
+            img_w, img_h = cm.image_width, cm.image_height
+        except Exception as exc:
+            log.warning("Could not compute pixel-to-world map: %s", exc)
 
         self.aoi_dir.mkdir(parents=True, exist_ok=True)
         count = 0

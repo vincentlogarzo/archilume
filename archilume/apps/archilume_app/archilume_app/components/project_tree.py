@@ -4,6 +4,7 @@ import reflex as rx
 
 from ..state import EditorState
 from ..styles import COLORS, FONT_MONO, PANEL_CARD_TITLE, PROJECT_TREE_WIDTH
+from .frame_playback_bar import frame_playback_bar
 from .left_panel_sections import floor_plan_section, visualisation_section
 
 _ROW_H = "26px"
@@ -11,6 +12,22 @@ _FONT = {"font_family": FONT_MONO, "font_size": "11px"}
 
 
 def _hdr_row(node: dict) -> rx.Component:
+    label = rx.text(
+        node["label"],
+        style={**_FONT,
+               "overflow": "hidden", "text_overflow": "ellipsis",
+               "white_space": "nowrap", "flex": "1",
+               "font_weight": rx.cond(node["is_current_hdr"], "600", "400"),
+               "cursor": "pointer"},
+        color=rx.cond(node["is_current_hdr"], COLORS["accent"], COLORS["text_pri"]),
+        on_click=EditorState.navigate_to_hdr(node["hdr_idx"]),
+    )
+    # Sunlight rows ship a trimmed label — surface the full view prefix on hover.
+    label_with_tip = rx.cond(
+        node["tooltip"] != "",
+        rx.tooltip(label, content=node["tooltip"], side="right"),
+        label,
+    )
     return rx.flex(
         rx.icon(
             tag=rx.cond(node["collapsed"], "chevron-right", "chevron-down"),
@@ -24,16 +41,7 @@ def _hdr_row(node: dict) -> rx.Component:
             style={"flex_shrink": "0",
                    "color": rx.cond(node["is_current_hdr"], COLORS["accent"], COLORS["text_sec"])},
         ),
-        rx.text(
-            node["label"],
-            style={**_FONT,
-                   "overflow": "hidden", "text_overflow": "ellipsis",
-                   "white_space": "nowrap", "flex": "1",
-                   "font_weight": rx.cond(node["is_current_hdr"], "600", "400"),
-                   "cursor": "pointer"},
-            color=rx.cond(node["is_current_hdr"], COLORS["accent"], COLORS["text_pri"]),
-            on_click=EditorState.navigate_to_hdr(node["hdr_idx"]),
-        ),
+        label_with_tip,
         align="center",
         gap="5px",
         style={
@@ -400,15 +408,18 @@ def project_tree() -> rx.Component:
             # and scroll internally when the list grows taller than the panel.
             rx.cond(
                 EditorState.room_browser_section_open,
-                rx.box(
-                    rx.foreach(EditorState.tree_nodes, _render_tree_node),
-                    style={
-                        "overflow_y": "auto",
-                        "flex": "0 1 auto",
-                        "min_height": "0",
-                        "scrollbar_width": "thin",
-                        "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
-                    },
+                rx.fragment(
+                    frame_playback_bar(),
+                    rx.box(
+                        rx.foreach(EditorState.tree_nodes, _render_tree_node),
+                        style={
+                            "overflow_y": "auto",
+                            "flex": "0 1 auto",
+                            "min_height": "0",
+                            "scrollbar_width": "thin",
+                            "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
+                        },
+                    ),
                 ),
                 rx.fragment(),
             ),

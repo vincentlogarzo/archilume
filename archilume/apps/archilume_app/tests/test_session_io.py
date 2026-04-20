@@ -107,7 +107,7 @@ class TestBuildSessionDict:
         assert d["overlay_visible"] is False
         assert d["overlay_alpha"] == 0.6
         assert d["overlay_page_idx"] == 0
-        assert d["transform_version"] == 4
+        assert d["transform_version"] == 5
 
     def test_custom_values_preserved(self):
         d = build_session_dict(

@@ -24,7 +24,7 @@ class IESVEDaylightWorkflow:
         octree_path: Path,
         rendering_params: Path,
         iesve_room_data: Path,
-        paths: config.ProjectPaths,
+        project: str,
         image_resolution: int = 2048,
         ffl_offset: float = 0.0,
         use_ambient_file: bool = True,
@@ -32,11 +32,13 @@ class IESVEDaylightWorkflow:
     ) -> bool:
         """Execute the IESVE daylight analysis pipeline."""
         timer = PhaseTimer()
+        paths = config.get_project_paths(project)
         paths.create_dirs()
 
         print("\n" + "=" * 100)
         print(f"{'IESVE DAYLIGHT WORKFLOW':^100}")
         print("=" * 100)
+        print(f"{'Project':<30} {project}")
         print(f"{'Octree':<30} {octree_path.name}")
         print(f"{'Rendering Params':<30} {rendering_params.name}")
         print(f"{'IESVE Room Data':<30} {iesve_room_data.name}")
@@ -73,8 +75,8 @@ class IESVEDaylightWorkflow:
 
         with timer("Phase 3: Post-processing"):
             with timer("  3a: Generate .aoi files"):
-                coordinate_map_path = utils.create_pixel_to_world_coord_map(paths.image_dir)
-                view_generator.create_aoi_files(coordinate_map_path=coordinate_map_path)
+                coordinate_map = utils.compute_pixel_to_world_map(paths.image_dir)
+                view_generator.create_aoi_files(coordinate_map=coordinate_map)
 
         timer.print_report(output_dir=paths.outputs_dir)
         return True

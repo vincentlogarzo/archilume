@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Reference rules
+
+For coding conventions, review checklists, and workflow standards see [.claude/rules/common/](.claude/rules/common/) and [.claude/rules/python/](.claude/rules/python/). Consult these before large refactors, code reviews, or security-sensitive changes.
+
 ## Platform & Environment
 
 **Runs on Windows and Linux.** Before any terminal command, detect OS:
@@ -50,7 +54,7 @@ python examples/launch_obj_editor.py              # launch OBJ/AOI editor
 **Key modules:**
 
 - `config.py`: Path management, tool resolution, `RAYPATH`, `WORKERS`. Override via `RADIANCE_ROOT`/`ACCELERAD_ROOT`.
-- `utils.py`: `execute_new_radiance_commands` (parallel), `smart_cleanup()`, geometry helpers, HDR utilities.
+- `utils.py`: `execute_new_radiance_commands` (parallel), `clear_outputs_folder()`, geometry helpers, HDR utilities.
 - `project.py`: Project-level config/state.
 - `apps/matplotlib_app.py`: Main matplotlib HDR+AOI editor entry point.
 - `apps/obj_aoi_editor_matplotlib.py`: OBJ AOI editor.
@@ -76,7 +80,7 @@ Design standards for this project are in `.claude/skills/reflex-docs/design-stan
 - **Imports**: All at top of module — never inside functions. Check before adding. `from tkinter import Tk` does not cover `tk.Toplevel` — add `import tkinter as tk` separately.
 - **Rendering**: Use `SunlightRenderer`/`DaylightRenderer` — don't call Radiance binaries directly.
 - **Parallelism**: `utils.execute_new_radiance_commands`. Respect `config.WORKERS`.
-- **Cleanup**: `utils.smart_cleanup()` before re-runs. Verify HDR outputs in `outputs/image/` before post-processing.
+- **Cleanup**: `utils.clear_outputs_folder(paths)` is called at the start of each workflow run to wipe `outputs/` for a fresh start. Verify HDR outputs in `outputs/image/` before post-processing. (A parameter-aware re-run cache to replace this blanket wipe is on the roadmap — see ROADMAP.md.)
 - **Units**: SI only — metres, millimetres, lux. Never imperial.
 
 ## Code Changes

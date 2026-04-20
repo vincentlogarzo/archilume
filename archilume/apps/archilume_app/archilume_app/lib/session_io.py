@@ -55,7 +55,7 @@ def _prepare_for_json(obj: Any) -> Any:
     return obj
 
 
-DEFAULT_FALSECOLOUR_SETTINGS = {"scale": 4.0, "n_levels": 10}
+DEFAULT_FALSECOLOUR_SETTINGS = {"scale": 4.0, "n_levels": 10, "palette": "spec"}
 DEFAULT_CONTOUR_SETTINGS     = {"scale": 2.0, "n_levels": 4}
 
 
@@ -71,7 +71,7 @@ def build_session_dict(
     overlay_visible: bool = False,
     overlay_alpha: float = 0.6,
     overlay_page_idx: int = 0,
-    transform_version: int = 4,
+    transform_version: int = 5,
     overlay_img_width: int = 0,
     overlay_img_height: int = 0,
     falsecolour_settings: Optional[dict] = None,

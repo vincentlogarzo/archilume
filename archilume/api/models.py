@@ -22,8 +22,6 @@ class DaylightJobRequest(BaseModel):
     ffl_offset: float = 0.0
     use_ambient_file: bool = True
     n_cpus: int | None = None
-    cleanup_resolution_changed: bool = False
-    cleanup_rendering_quality_changed: bool = False
 
 
 class SunlightJobRequest(BaseModel):
@@ -35,17 +33,10 @@ class SunlightJobRequest(BaseModel):
     day: int = Field(ge=1, le=31)
     start_hour: int = Field(ge=0, le=23)
     end_hour: int = Field(ge=0, le=23)
-    timestep: int = Field(ge=1)
-    ffl_offset: float
-    grid_resolution: int = Field(ge=10, le=50)
-    rendering_mode: Literal["cpu", "gpu"]
-    rendering_quality: Literal[
-        "draft", "stand", "prod", "final", "4k",
-        "custom", "fast", "med", "high", "detailed",
-    ]
-    room_boundaries_csv: str
+    timestep_min: int = Field(ge=1)
+    ffl_offset_mm: float
+    grid_resolution_mm: int = Field(ge=10, le=50)
     obj_paths: list[str]
-    animation_format: Literal["gif", "apng"] = "apng"
 
     @model_validator(mode="after")
     def _check_time_range(self) -> SunlightJobRequest:

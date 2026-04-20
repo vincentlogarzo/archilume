@@ -17,7 +17,7 @@ from PIL import Image
 
 _image_cache: OrderedDict[str, str] = OrderedDict()
 _cache_lock = threading.Lock()
-_CACHE_MAX = 15
+_CACHE_MAX = 60
 
 
 def load_image_as_base64(path: Path) -> Optional[str]:
@@ -453,3 +453,143 @@ def clear_cache() -> None:
     """Clear the image cache."""
     with _cache_lock:
         _image_cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Sunlight view grouping (timeseries HDR frames per level)
+# ---------------------------------------------------------------------------
+
+_view_groups_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _extract_view_name(hdr_stem: str, sky_stems: list[str]) -> tuple[str, str]:
+    """Return (view_prefix, sky_name) by stripping the longest matching sky suffix.
+
+    view_prefix is everything up to and excluding the trailing _{sky_name}.
+    Falls back to (hdr_stem, "") when no sky suffix matches — caller treats the
+    HDR as its own single-frame group.
+    """
+    for sky in sorted(sky_stems, key=len, reverse=True):
+        suffix = f"_{sky}"
+        if hdr_stem.endswith(suffix):
+            return hdr_stem[: -len(suffix)], sky
+    return hdr_stem, ""
+
+
+def scan_sunlight_view_groups(image_dir: Path, sky_stems: list[str]) -> list[dict]:
+    """Group HDRs in *image_dir* by view, using sky stems to identify the
+    timestep suffix of each filename.
+
+    Returns a list (sorted by view name) of dicts shaped:
+        {
+            "view_name": str,              # trimmed of the common octree prefix
+            "frames": [
+                {"hdr_path": str, "png_path": str, "sky_name": str,
+                 "hdr_stem": str, "frame_label": str},
+                ...
+            ],
+        }
+
+    ``png_path`` points at the ``{hdr_stem}.png`` sibling written by the
+    SunlightRenderer.sun_only_rendering_pipeline. The app expects the PNG to
+    already exist — there is no on-demand tone-mapping fallback.
+
+    When *sky_stems* is empty, each HDR becomes its own single-frame group so
+    the UI still works for markup-only projects that lack a sky directory.
+    """
+    if not image_dir.exists():
+        return []
+    hdr_infos = scan_hdr_files(image_dir)
+    if not hdr_infos:
+        return []
+
+    key = f"{image_dir}|{'|'.join(sorted(sky_stems))}"
+    try:
+        dir_mtime = image_dir.stat().st_mtime
+    except OSError:
+        dir_mtime = 0.0
+    cached = _view_groups_cache.get(key)
+    if cached is not None and cached[0] == dir_mtime:
+        return cached[1]
+
+    groups: dict[str, list[dict]] = {}
+    for info in hdr_infos:
+        hdr_stem = info["name"]
+        hdr_path = Path(info["hdr_path"])
+        view_prefix, sky_name = _extract_view_name(hdr_stem, sky_stems)
+        png_path = hdr_path.parent / f"{hdr_stem}.png"
+        frame = {
+            "hdr_path": str(hdr_path),
+            "png_path": str(png_path),
+            "sky_name": sky_name,
+            "hdr_stem": hdr_stem,
+            "frame_label": sky_name or hdr_stem,
+        }
+        groups.setdefault(view_prefix, []).append(frame)
+
+    # Trim the shared ``{octree_base}_`` prefix from the displayed view name,
+    # but only at an underscore boundary so sibling views like "level1" and
+    # "level2" don't collapse to "1" / "2". If the remaining token is
+    # digits-only (e.g. ``090000``) roll the cut back one more segment so the
+    # qualifier (e.g. ``ffl_``) rides along and the label reads ``ffl_090000``.
+    # Skip trimming entirely when it would produce a name shorter than 2
+    # chars (markup projects with no sky files).
+    common_prefix = ""
+    if sky_stems and len(groups) > 1:
+        raw = _longest_common_prefix(list(groups.keys()))
+        cut = raw.rfind("_")
+        candidate = raw[: cut + 1] if cut >= 0 else ""
+        if candidate:
+            # If the distinguishing tail is digits-only, include the prior
+            # qualifier token (e.g. ``ffl``) by rolling the cut back once.
+            tails = [k[len(candidate):] for k in groups.keys()]
+            if tails and all(t.isdigit() for t in tails):
+                prev_cut = candidate[:-1].rfind("_")
+                candidate = candidate[: prev_cut + 1] if prev_cut >= 0 else ""
+        if candidate and all(len(k) - len(candidate) >= 2 for k in groups.keys()):
+            common_prefix = candidate
+
+    result: list[dict] = []
+    for view_prefix in sorted(groups.keys()):
+        frames = sorted(groups[view_prefix], key=lambda f: f["sky_name"] or f["hdr_stem"])
+        view_name = view_prefix[len(common_prefix):] if common_prefix else view_prefix
+        if not view_name:
+            view_name = view_prefix
+        result.append({
+            "view_name": view_name,
+            "view_prefix": view_prefix,
+            "frames": frames,
+        })
+
+    _view_groups_cache[key] = (dir_mtime, result)
+    return result
+
+
+def _longest_common_prefix(strings: list[str]) -> str:
+    if not strings:
+        return ""
+    s1, s2 = min(strings), max(strings)
+    i = 0
+    while i < len(s1) and i < len(s2) and s1[i] == s2[i]:
+        i += 1
+    return s1[:i]
+
+
+def load_frame_png_as_base64(hdr_path: Path) -> Optional[str]:
+    """Load a sunlight frame as base64 PNG.
+
+    The SunlightAccessWorkflow writes a `{hdr_stem}.png` sibling next to every
+    HDR. Project open runs a preflight that regenerates any missing PNGs. If a
+    PNG is still absent here (e.g. a single corrupt output), trigger a one-shot
+    HDR→PNG conversion for just this HDR, then load the PNG. The app never
+    tone-maps HDR at runtime.
+    """
+    png_path = hdr_path.parent / f"{hdr_path.stem}.png"
+    if png_path.exists() and png_path.stat().st_size > 0:
+        return load_image_as_base64(png_path)
+
+    from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+    convert_hdrs_to_pngs([hdr_path])
+    if png_path.exists() and png_path.stat().st_size > 0:
+        return load_image_as_base64(png_path)
+    return None

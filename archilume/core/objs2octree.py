@@ -1,8 +1,6 @@
 # Archilume imports
-from archilume import (
-    MtlConverter,
-    config
-    )
+from archilume import config
+from archilume.core.mtl_converter import MtlConverter
 
 # Standard library imports
 import os

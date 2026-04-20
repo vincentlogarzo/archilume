@@ -12,6 +12,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 from archilume import utils, config
 from archilume.utils import PhaseTimer
 from archilume.post.hdr_visualisation import hdr2png_falsecolor, hdr2png_contour
+from archilume.post.hdr_to_png import convert_hdrs_to_pngs
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -221,7 +222,6 @@ class SunlightRenderer:
 
     # Required fields - no defaults
     skyless_octree_path: Path
-    overcast_sky_file_path: Path
     x_res: int
     y_res: int
 
@@ -230,7 +230,8 @@ class SunlightRenderer:
     views_dir:                          Path
     image_dir:                          Path
 
-    # Optional with defaults
+    # Optional — only required by overcast/daylight pipelines (not sun-only)
+    overcast_sky_file_path:             Path | None = None
     rendering_mode:                     str         = 'cpu'
     gpu_quality:                        str         = 'stand'
 
@@ -356,6 +357,89 @@ class SunlightRenderer:
 
         print("RenderingPipelines completed successfully.")
         return timer.phase_timings
+
+    def sun_only_rendering_pipeline(self) -> dict:
+        """Render direct-sun-only HDRs + PNGs per (sky, view).
+
+        Drops the overcast ambient baseline, the pcomb compositing step, and
+        the AOI/WPD post-processing entirely. Output per (sky, view) is a
+        sibling triple: `{octree}_{view}_{sky}.{hdr,tiff,png}` — the PNG is
+        what the archilume-app reads for its sunlight time-series.
+        """
+        timer = PhaseTimer()
+        print("\nSunlightRenderer (sun-only) starting...\n")
+
+        with timer("    Command preparation"):
+            (temp_octree_paths, oconv_cmds, rpict_cmds, hdr_paths) = (
+                self._generate_sun_only_rendering_commands()
+            )
+
+        with timer("    Sunny sky octrees"):
+            utils.copy_files(self.skyless_octree_path, temp_octree_paths)
+            utils.execute_new_radiance_commands(
+                oconv_cmds, number_of_workers=config.WORKERS["oconv_compile"])
+            utils.delete_files(temp_octree_paths)
+
+        with timer("    Sunlight rendering"):
+            utils.execute_new_radiance_commands(
+                rpict_cmds, number_of_workers=config.WORKERS["rpict_direct_sun"])
+
+        with timer("    HDR -> TIFF -> PNG"):
+            convert_hdrs_to_pngs(hdr_paths)
+
+        print("SunlightRenderer (sun-only) completed successfully.")
+        return timer.phase_timings
+
+    def _generate_sun_only_rendering_commands(
+        self,
+        ab: int = 0, ad: int = 128, ar: int = 64, as_val: int = 64,
+        ps: int = 1, lw: float = 0.005,
+    ) -> tuple[list[Path], list[str], list[str], list[Path]]:
+        """Build oconv + rpict commands for sun-only rendering (no pcomb).
+
+        Returns (temp_octree_paths, oconv_cmds, rpict_cmds, hdr_paths). Final
+        HDRs land at `{octree}_{view}_{sky}.hdr` — no `_combined` suffix
+        because nothing is combined.
+        """
+        rpict_cmds, oconv_cmds, temp_octree_paths, hdr_paths = [], [], [], []
+        octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
+
+        for sky_file_path, view_file_path in product(self.sky_files, self.view_files):
+            sky_name = Path(sky_file_path).stem
+            view_name = Path(view_file_path).stem
+            octree_with_sky_path = (
+                self.skyless_octree_path.parent / f"{octree_base_name}_{sky_name}.oct"
+            )
+            output_hdr_path = (
+                self.image_dir / f"{octree_base_name}_{view_name}_{sky_name}.hdr"
+            )
+            temp_octree_path = (
+                self.skyless_octree_path.parent / f"{octree_base_name}_{sky_name}_temp.oct"
+            )
+
+            oconv_cmd = (
+                rf"oconv -i {str(temp_octree_path).replace('_skyless', '')} "
+                rf"{sky_file_path} > {octree_with_sky_path}"
+            )
+            rpict_cmd = (
+                rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} "
+                rf"-ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} "
+                rf"{octree_with_sky_path} > {output_hdr_path}"
+            )
+
+            temp_octree_paths.append(temp_octree_path)
+            oconv_cmds.append(oconv_cmd)
+            rpict_cmds.append(rpict_cmd)
+            hdr_paths.append(output_hdr_path)
+
+        oconv_cmds = list(dict.fromkeys(oconv_cmds))
+
+        logger.info(
+            f"Sun-only rendering: {len(oconv_cmds)} oconv, {len(rpict_cmds)} rpict "
+            f"({len(self.sky_files)} skies x {len(self.view_files)} views @ "
+            f"{self.x_res}x{self.y_res})"
+        )
+        return temp_octree_paths, oconv_cmds, rpict_cmds, hdr_paths
 
     def _generate_overcast_sky_rendering_commands(self, aa: float = 0.1, ab: int = 3, ad: int = 4096, ar: int = 1024, as_val: int = 1024, dj: float = 0.7, lr: int = 12, lw: float = 0.002, pj: int = 1, ps: int = 4, pt: float = 0.05) -> tuple[str, list[str], list[str]]:
         """
@@ -521,26 +605,40 @@ class SunlightRenderer:
 
         return executor, future
 
+    # Minimum plausible size for a real overcast HDR. A failed accelerad_rpict run
+    # writes only the Radiance header text (~1.1 KB). 10 KB is well below any real
+    # render output and well above any failure output.
+    MIN_VALID_HDR_BYTES = 10_000
+
     def _get_expected_overcast_files(self, octree_base_name: str, overcast_sky_name: str) -> List[Path]:
         """Generate list of expected overcast HDR output files."""
         return [self.image_dir / f"{octree_base_name}_{Path(vf).stem}__{overcast_sky_name}.hdr" for vf in self.view_files]
 
     def _check_and_report_existing_files(self, expected_files: List[Path]) -> bool:
-        """Check if files exist and print status. Returns True if all exist."""
-        all_exist = all(f.exists() for f in expected_files)
+        """Check if files exist AND are plausibly valid. Returns True only if every
+        expected HDR exists and is at least MIN_VALID_HDR_BYTES — a small file means
+        a previous run failed silently and left a header-only stub behind.
+        """
+        missing = [f for f in expected_files if not f.exists()]
+        corrupt = [f for f in expected_files if f.exists() and f.stat().st_size < self.MIN_VALID_HDR_BYTES]
+        all_ok = not missing and not corrupt
 
-        if all_exist:
+        if all_ok:
             file_list = '\n'.join(f"  {f.name}" for f in expected_files[:3])
             extra = f"\n  ... and {len(expected_files) - 3} more" if len(
                 expected_files) > 3 else ""
             print(f"\n{'='*80}\nSKIPPING OVERCAST RENDERING - Files Already Exist\n"
                   f"Found all {len(expected_files)} existing overcast HDR files:\n{file_list}{extra}\n{'='*80}\n")
         else:
-            missing = [f for f in expected_files if not f.exists()]
+            reasons = []
+            if missing:
+                reasons.append(f"missing {len(missing)}")
+            if corrupt:
+                reasons.append(f"corrupt {len(corrupt)} (size < {self.MIN_VALID_HDR_BYTES} bytes)")
             print(f"\n{'='*80}\nOVERCAST RENDERING REQUIRED\n"
-                  f"Missing {len(missing)} of {len(expected_files)} overcast HDR files\n{'='*80}\n")
+                  f"{', '.join(reasons)} of {len(expected_files)} overcast HDR files\n{'='*80}\n")
 
-        return all_exist
+        return all_ok
 
     def _launch_gpu_rendering(self, octree_name: str, gpu_quality: str, octree_base_name: str, overcast_sky_name: str):
         """Launch asynchronous GPU rendering via PowerShell/Accelerad."""
@@ -570,18 +668,31 @@ class SunlightRenderer:
 
             print("\nGPU rendering completed successfully")
 
-            # Verify expected output files exist
+            # Verify expected output files exist AND are plausibly valid.
+            # accelerad_rpict can exit 0 while still failing to render (e.g. when
+            # OptiX cannot initialize) - the HDR then contains only the header text,
+            # around 1 KB. Treat anything under MIN_VALID_HDR_BYTES as corrupt so the
+            # caller sees the failure instead of pcomb silently combining garbage.
             expected_files = self._get_expected_overcast_files(
                 octree_base_name, overcast_sky_name)
             missing = [f for f in expected_files if not f.exists()]
-            if missing:
-                print(
-                    f"\nWarning: {len(missing)} expected HDR files not found:")
-                for f in missing[:5]:
-                    print(f"  - {f.name}")
-            else:
-                print(f"Verified: All {len(expected_files)} HDR files created")
+            corrupt = [f for f in expected_files if f.exists() and f.stat().st_size < self.MIN_VALID_HDR_BYTES]
 
+            if missing or corrupt:
+                if missing:
+                    print(f"\nERROR: {len(missing)} expected HDR files not found:")
+                    for f in missing[:5]:
+                        print(f"  - {f.name}")
+                if corrupt:
+                    print(f"\nERROR: {len(corrupt)} HDR files are corrupt (< {self.MIN_VALID_HDR_BYTES} bytes):")
+                    for f in corrupt[:5]:
+                        print(f"  - {f.name} ({f.stat().st_size} bytes)")
+                raise RuntimeError(
+                    f"GPU overcast rendering produced {len(missing)} missing and "
+                    f"{len(corrupt)} corrupt HDR files"
+                )
+
+            print(f"Verified: All {len(expected_files)} HDR files created and non-trivial")
             return returncode
 
         executor = ThreadPoolExecutor(max_workers=1)
