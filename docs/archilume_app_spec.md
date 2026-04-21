@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-`archilume_app` is a Reflex single-page application that replaces the matplotlib `HdrAoiEditor`. It allows users to open an Archilume project, view tone-mapped HDR daylight simulation images, draw room boundary polygons (AOIs), compute Daylight Factor statistics per room, and export Excel reports with archive ZIPs.
+`archilume_app` is a Reflex single-page application. It allows users to open an Archilume project, view tone-mapped HDR daylight simulation images, draw room boundary polygons (AOIs), compute Daylight Factor statistics per room, and export Excel reports with archive ZIPs.
 
 The app runs locally at `http://localhost:3000` via `reflex run` from `archilume/apps/archilume_app/`.
 
@@ -104,7 +104,7 @@ All state lives in **one class**: `EditorState(rx.State)` in `state/editor_state
 
 ### 5.1 Rationale for Single State
 
-Reflex substates that inherit from a parent state cannot cleanly share mutable vars or override event handlers. The original multi-substate design caused import chain errors and delegation failures. The single-class design mirrors the matplotlib editor's architecture.
+Reflex substates that inherit from a parent state cannot cleanly share mutable vars or override event handlers. The original multi-substate design caused import chain errors and delegation failures. Consolidating to a single class eliminates both problems.
 
 ### 5.2 State Sections
 
@@ -500,7 +500,7 @@ pdf_path = "inputs/floor_plans/plan.pdf"
 iesve_room_data = ""  # optional
 ```
 
-Loaded via `archilume.apps.project_config.ProjectConfig`. Standard paths derived from `archilume.config` when not overridden.
+Loaded inline by `EditorState` via `tomllib` (see `state/editor_state.py`). Standard paths derived from `archilume.config` when not overridden.
 
 ---
 
@@ -554,29 +554,7 @@ On first load, `init_on_load` fires: scans `projects/` directory. If exactly one
 
 ---
 
-## 15. Known Gaps vs. Matplotlib Editor
-
-The following features from `HdrAoiEditor` (matplotlib) are not yet implemented. See `docs/archilume_app_gap_report.md` for full details and fix effort estimates.
-
-| Gap | Severity | Effort |
-|-----|----------|--------|
-| Hierarchical project tree (expand/collapse) | Low | ~100 lines |
-| Image prefetching (adjacent HDR preload) | Low | ~30 lines |
-| Shift+click range select | Low | ~15 lines |
-| Edge hover highlight in edit mode | Low | ~40 lines |
-| Shift+drag edge translation | Low | ~50 lines |
-| Arrow-key hold acceleration (overlay nudge) | Very Low | ~15 lines |
-| Multi-line DF annotation colour per line | Low | ~40 lines |
-| Right-click context menu | Very Low | ~40 lines |
-| Clipboard image copy | Very Low | ~30 lines |
-| IESVE AOI file import | Medium | ~80 lines |
-| Non-blocking export (progress bar) | Low | ~40 lines when API available |
-
-**Coverage**: 47 of 52 features implemented (90%). All critical paths functional.
-
----
-
-## 16. File Tree
+## 15. File Tree
 
 ```
 archilume/apps/archilume_app/
@@ -610,5 +588,3 @@ archilume/apps/archilume_app/
 ---
 
 *Specification generated from implemented code — `archilume_app` v1.0, 2026-04-02.*
-*For feature gap details see `docs/archilume_app_gap_report.md`.*
-*For matplotlib editor reference see `docs/matplotlib_editor_ui_spec.md`.*

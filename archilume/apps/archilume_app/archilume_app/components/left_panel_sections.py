@@ -3,7 +3,12 @@
 import reflex as rx
 
 from ..state import EditorState
+from ..state.editor_state import _DPI_STEPS
 from ..styles import COLORS, FONT_MONO, PANEL_CARD_TITLE
+
+_DPI_TOOLTIP = (
+    "Click to cycle: " + " \u2192 ".join(str(d) for d in _DPI_STEPS) + " dpi"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +93,7 @@ def _floor_plan_body() -> rx.Component:
                 style=btn_style,
                 color=COLORS["text_dim"],
             ),
-            content="Click to cycle: 72 → 100 → 150 → 200 → 300 dpi",
+            content=_DPI_TOOLTIP,
         ),
         # Adjust Plan Mode
         rx.flex(

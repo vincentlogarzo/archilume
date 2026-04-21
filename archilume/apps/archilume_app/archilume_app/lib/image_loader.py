@@ -19,6 +19,20 @@ _image_cache: OrderedDict[str, str] = OrderedDict()
 _cache_lock = threading.Lock()
 _CACHE_MAX = 60
 
+# Per-process counter so concurrent rasterize calls for the same (page, dpi)
+# never share a .tmp path. Windows denies a second open() on a file already
+# open for write, so a shared tmp name causes PermissionError races and
+# orphaned .tmp artifacts.
+_tmp_counter_lock = threading.Lock()
+_tmp_counter = 0
+
+
+def _unique_tmp_suffix() -> str:
+    global _tmp_counter
+    with _tmp_counter_lock:
+        _tmp_counter += 1
+        return f"{os.getpid()}_{_tmp_counter}"
+
 
 def load_image_as_base64(path: Path) -> Optional[str]:
     """Load an HDR, PIC, or TIFF image and return as a base64-encoded PNG data URI.
@@ -373,39 +387,62 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
     return result
 
 
+def _pdf_fingerprint(pdf_path: Path) -> str:
+    """md5 of (resolved path | size | mtime_ns), 10 hex chars.
+
+    Stat-only — microseconds to compute. Invalidates cache when the PDF is
+    replaced, edited, or moved. Raises OSError if the file is missing.
+    """
+    st = pdf_path.stat()
+    key = f"{pdf_path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+    return hashlib.md5(key.encode()).hexdigest()[:10]
+
+
+def _overlay_cache_path(
+    pdf_path: Path, page_index: int, dpi: int, cache_dir: Path,
+) -> Path:
+    """Resolve the .png cache path for (pdf, page, dpi). Creates cache_dir.
+
+    Filename encodes the PDF fingerprint so edits/replacements at the same
+    path produce fresh cache entries (old entries remain orphaned).
+    """
+    fp = _pdf_fingerprint(pdf_path)
+    fname = f"{pdf_path.stem}_p{page_index}_{dpi}dpi_{fp}.png"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / fname
+
+
 def rasterize_pdf_page(
     pdf_path: Path, page_index: int = 0, dpi: int = 150,
     cache_dir: Optional[Path] = None,
-) -> tuple[Optional[str], int, int]:
-    """Rasterize a PDF page to a base64-encoded PNG data URI.
+) -> tuple[Optional[Path], int, int]:
+    """Rasterize a PDF page and return (cache_path, width, height).
 
-    Uses PyMuPDF (fitz) for rasterization. If *cache_dir* is provided the
-    rasterized image is saved as a .npy file there (keyed by PDF stem, page,
-    DPI, and a hash of the resolved PDF path) so subsequent calls for the same
-    page/DPI are instant.
+    Caches the rendered page as a deflated PNG under *cache_dir* keyed by
+    (stem, page, dpi, content fingerprint). The caller builds the served
+    URL from the returned Path — image_loader is agnostic of URL shape
+    or project layout.
+
+    Returns (None, 0, 0) when the PDF is missing, the page index is out of
+    range, or *cache_dir* is not supplied.
     """
-    if not pdf_path.exists():
+    if not pdf_path.exists() or cache_dir is None:
         return None, 0, 0
 
-    # --- disk cache lookup ---------------------------------------------------
-    cache_path: Optional[Path] = None
-    if cache_dir is not None:
-        pdf_hash = hashlib.md5(str(pdf_path.resolve()).encode()).hexdigest()[:6]
-        fname = f"{pdf_path.stem}_p{page_index}_{dpi}dpi_{pdf_hash}.npy"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = cache_dir / fname
-        if cache_path.exists():
-            try:
-                arr = np.load(str(cache_path))
-                h, w = arr.shape[:2]
-                img = Image.fromarray(arr)
-                buf = io.BytesIO()
-                img.save(buf, format="PNG", optimize=False)
-                b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                return f"data:image/png;base64,{b64}", w, h
-            except Exception:
-                pass  # fall through to re-rasterize
+    try:
+        cache_path = _overlay_cache_path(pdf_path, page_index, dpi, cache_dir)
+    except OSError:
+        return None, 0, 0
 
+    if cache_path.exists():
+        try:
+            with Image.open(cache_path) as img:
+                w, h = img.size
+            return cache_path, w, h
+        except Exception:
+            pass  # fall through to re-rasterize a corrupt cache entry
+
+    tmp_path = cache_path.with_suffix(f".tmp_{_unique_tmp_suffix()}.png")
     try:
         doc = fitz.open(str(pdf_path))
         if page_index >= len(doc):
@@ -416,26 +453,61 @@ def rasterize_pdf_page(
         scale = dpi / 72.0
         mat = fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat, alpha=False)
-
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         img_w, img_h = pix.width, pix.height
         doc.close()
 
-        # --- write disk cache ------------------------------------------------
-        if cache_path is not None:
-            try:
-                tmp_path = cache_path.with_suffix(".tmp.npy")
-                np.save(str(tmp_path), np.array(img))
-                tmp_path.replace(cache_path)
-            except Exception:
-                pass
-
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=False)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{b64}", img_w, img_h
+        img.save(tmp_path, format="PNG", optimize=True)
+        tmp_path.replace(cache_path)
+        return cache_path, img_w, img_h
     except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None, 0, 0
+
+
+def rasterize_pdf_page_to_cache(
+    pdf_path: Path, page_index: int, dpi: int, cache_dir: Path,
+) -> bool:
+    """Rasterize a PDF page to the PNG disk cache only (no URL return).
+
+    For background prefetch: skip if cache already exists, otherwise rasterise
+    via PyMuPDF and atomically write a deflated PNG. Returns True if the PNG
+    exists after the call, False on any failure.
+    """
+    if not pdf_path.exists():
+        return False
+    try:
+        cache_path = _overlay_cache_path(pdf_path, page_index, dpi, cache_dir)
+    except OSError:
+        return False
+
+    if cache_path.exists():
+        return True
+
+    tmp_path = cache_path.with_suffix(f".tmp_{_unique_tmp_suffix()}.png")
+    try:
+        doc = fitz.open(str(pdf_path))
+        if page_index >= len(doc):
+            doc.close()
+            return False
+        page = doc[page_index]
+        scale = dpi / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        doc.close()
+
+        img.save(tmp_path, format="PNG", optimize=True)
+        tmp_path.replace(cache_path)
+        return True
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 def get_pdf_page_count(pdf_path: Path) -> int:
@@ -450,9 +522,16 @@ def get_pdf_page_count(pdf_path: Path) -> int:
 
 
 def clear_cache() -> None:
-    """Clear the image cache."""
+    """Clear every project-scoped module cache (images, HDR params, dir scans, view groups).
+
+    Called from ``EditorState.init_on_load`` on every boot / project-switch reload so
+    path-keyed cache entries from a previous project can't collide with a new one.
+    """
     with _cache_lock:
         _image_cache.clear()
+    _hdr_params_cache.clear()
+    _scan_hdr_files_cache.clear()
+    _view_groups_cache.clear()
 
 
 # ---------------------------------------------------------------------------

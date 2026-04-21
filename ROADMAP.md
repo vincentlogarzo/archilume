@@ -2,6 +2,21 @@
 
 This file tracks planned features, optimizations, and known issues for the Archilume framework.
 
+## 🎯 IMMEDIATE NEXT ACTION
+
+- **Reintegrate daylight simulation into the sunlight workflow.** The sunlight pipeline previously `pcomb`'d a daylight-rendered backing image with the sunlight `.hdr` series to produce a high-quality composite that exposes the internal layout of the model (walls, rooms, corridors) beneath the sunlight trace. That step has been removed and needs to come back. Without it the user can't see where internal wall surfaces sit, which blocks the vertical-surface feature below.
+  - Restore the backing-image generation stage inside `SunlightRenderer` (see `archilume/core/rendering_pipelines.py`). Seek use of the daylight workflows using of rtpict instead of rpict. It will align well with the existing code and can be reused across the repo and for post commands to cloud computing machines.
+  - Composite via `pcomb` onto every timestep HDR before TIFF/PNG conversion.
+  - Reuse daylight-pipeline rendering code paths where possible; don't duplicate `rpict`/`accelerad_rpict` orchestration.
+
+- **Vertical-surface sunlight investigation (new feature).** Extend the sunlight workflow to analyse wall surfaces, not just horizontal floor planes. A vertical AOI becomes another view associated with a room ID — just a new entry in the view list, consumed by the existing `SunlightAccessWorkflow`.
+  - **Mode A — Individual wall selection:** user picks specific wall segments in the Reflex app; app generates the corresponding vertical views and submits the job.
+  - **Mode B — Blanket boundary sweep:** every vertical surface along a room's boundary is swept automatically, one view per wall face.
+  - **Boundary discipline:** users MUST draw room boundaries just inside the wall surface (not on-centre, not outside) — the vertical view origin is offset from the boundary and needs the boundary to hug the inner face of the wall. This is why the daylight-backing reintegration above is a hard prerequisite: without the daylight composite, users can't see the internal wall position clearly enough to draw accurate boundaries.
+  - Surface in the app UI as a third "View Type" (alongside the existing horizontal plan views) keyed per room, so results integrate naturally with the existing room-browser tree.
+
+---
+
 ## 🚨 TOP PRIORITY: Bugs & Blocking Issues
 
 - **[BUG] Windows Post-Processing Pipeline Failure (`DaylightRenderer`):** The HDR post-processing commands in `_postprocess_hdr` and `_generate_legends` (in `archilume/core/rendering_pipelines.py`) use Unix-style shell pipes (`pcomb | falsecolor | ra_tiff`) which fail silently on Windows. The `rpict` rendering step completes, but no falsecolor or contour TIFFs/PNGs are produced. The size check (`>= 1000 bytes`) masks the failure. Fix: decompose each piped command chain into intermediate temp files so each step runs as a discrete shell call, compatible with both `cmd.exe`/PowerShell and Linux shells.
@@ -52,7 +67,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
   2. `examples/workflow_daylight_iesve.py`
   3. `examples/workflow_daylight_iesve_api.py`
 
-  The `launch_*.py` GUI scripts (`launch_archilume_app.py`, `launch_hdr_editor.py`, `launch_obj_editor.py`) are **out of scope** — they open interactive editors with no headless/container use case.
+  The `launch_archilume_app.py` GUI script is **out of scope** — it opens an interactive editor with no headless/container use case.
 
   **Implementation rules:**
   - Keep the workflow class APIs (`SunlightAccessWorkflow`, `IESVEDaylightWorkflow`) untouched. Example scripts become thin argparse wrappers around the existing class.
@@ -93,6 +108,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Bundling:** Create wrapper scripts to bundle Radiance binaries within the package.
 - **Cloud Costs:** Implement cost-analysis reporting for GCP G4 instances.
 - **Job Scheduling:** Implement a queue system for overnight batch rendering of multiple models.
+- **In-App Bug Reporting & Diagnostics Bundle:** Add a "Report Bug" entry in the Reflex app header that opens `https://github.com/vincentlogarzo/archilume/issues/new` in a new tab. Pair it with an expanded DBG mode that, when toggled on, (a) widens state-diff coverage to viewport/overlay/project fields, (b) installs JS hooks for `window.onerror`, `unhandledrejection`, `console.error/warn`, and a 30-entry pointer-event ring buffer, (c) captures browser info (UA, DPR, viewport, screen) at session start, and (d) exposes a "Copy logs" action that bundles the unified log tail, `debug_trace.json`, state snapshot, and system info into a single redaction-aware Markdown file at `~/.archilume/logs/diagnostics_{timestamp}.md`. When DBG is on, "Report Bug" first builds the bundle, copies its path to the clipboard, then opens the issues page — user pastes the file into the new issue. Reuses the existing `archilume_app/lib/debug.py` infrastructure (rotating file logger, correlation IDs, `_safe_repr` PII redaction, `DebugTrace` ring buffer). Ship alongside a `.github/ISSUE_TEMPLATE/bug_report.md` that prompts the user to attach the Markdown bundle and describe what they were doing when the bug occurred. Rationale: closes the feedback loop with users, auto-captures the environment data that turns "doesn't work" reports into reproducible ones, and does it all without custom backend / telemetry infra — GitHub Issues is the whole stack.
 
 ## 🧹 REFACTORING & CODE CLEANUP
 

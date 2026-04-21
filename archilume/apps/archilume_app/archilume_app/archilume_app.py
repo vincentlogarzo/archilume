@@ -1,8 +1,11 @@
 """Main page — composes all layout regions from spec §1."""
 
 import reflex as rx
+from fastapi import FastAPI, Response
+from fastapi.responses import FileResponse
 
 from .components.header import header
+from .state.editor_state import _overlay_cache_dir
 from .components.modals import (
     accelerad_modal,
     create_project_modal,
@@ -418,9 +421,34 @@ _DEBUG_SCRIPT = rx.script("""
 """)
 
 
+# ── PDF overlay PNG cache — static file route ───────────────────────────────
+# Rasterized PDF pages are cached per-project at
+# ``projects/<name>/inputs/plans/.overlay_cache/`` and served by a FastAPI
+# sub-app registered via ``api_transformer`` at
+# ``/overlay_cache/{project}/{filename}`` on the backend port.
+_overlay_api = FastAPI()
+
+
+@_overlay_api.get("/overlay_cache/{project}/{filename}")
+async def _serve_overlay_png(project: str, filename: str) -> Response:
+    cache_dir = _overlay_cache_dir(project)
+    if cache_dir is None or not cache_dir.exists():
+        return Response(status_code=404)
+    cache_root = cache_dir.resolve()
+    target = (cache_root / filename).resolve()
+    try:
+        target.relative_to(cache_root)
+    except ValueError:
+        return Response(status_code=403)
+    if not target.is_file():
+        return Response(status_code=404)
+    return FileResponse(target, media_type="image/png")
+
+
 app = rx.App(
     style={"font_family": FONT_MONO, "font_size": "18px"},
     stylesheets=[GOOGLE_FONTS_URL, _FONTS_PREVIEW_URL],
+    api_transformer=_overlay_api,
 )
 app.add_page(index, on_load=EditorState.init_on_load, title="Archilume")
 app.add_page(font_preview_page, route="/fonts", title="Archilume — Font Preview")

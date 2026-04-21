@@ -94,6 +94,7 @@ class TestBuildSessionDict:
             "annotation_scale", "overlay_dpi", "overlay_visible",
             "overlay_alpha", "overlay_page_idx",
             "overlay_img_width", "overlay_img_height",
+            "falsecolour_settings", "contour_settings", "last_generated",
         }
         assert expected_keys == set(d.keys())
 
@@ -103,7 +104,7 @@ class TestBuildSessionDict:
         assert d["current_variant_idx"] == 0
         assert d["selected_parent"] == ""
         assert d["annotation_scale"] == 1.0
-        assert d["overlay_dpi"] == 150
+        assert d["overlay_dpi"] == 200
         assert d["overlay_visible"] is False
         assert d["overlay_alpha"] == 0.6
         assert d["overlay_page_idx"] == 0
@@ -186,7 +187,10 @@ class TestSaveLoadRoundTrip:
         assert isinstance(parsed, dict)
 
     def test_save_returns_false_on_unwritable_path(self, tmp_path: Path):
-        bad_path = tmp_path / "nonexistent_dir" / "session.json"
+        # Use a file as a parent component — mkdir will fail (file exists, not a dir).
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x")
+        bad_path = blocker / "session.json"
         result = save_session(bad_path, {})
         assert result is False
 

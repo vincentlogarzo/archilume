@@ -39,6 +39,8 @@ def _make_state(
     current_frame_idx: int = 0,
     overlay_transforms: dict | None = None,
     overlay_align_mode: bool = False,
+    overlay_page_idx: int = 0,
+    overlay_page_count: int = 5,
 ) -> EditorState:
     state = object.__new__(EditorState)
     object.__setattr__(state, "dirty_vars", set())
@@ -46,12 +48,26 @@ def _make_state(
     object.__setattr__(state, "base_state", state)
     object.__setattr__(state, "_auto_save", lambda: None)
     object.__setattr__(state, "_push_overlay_undo", lambda e: None)
+    object.__setattr__(state, "_rasterize_current_page", lambda: None)
+    # Initialise _backend_vars so Reflex's __setattr__ can write backend vars
+    # (vars with a leading underscore). Without this, assignments to e.g.
+    # _overlay_undo_stack inside methods raise AttributeError.
+    _bvars: dict = {}
+    for k in EditorState.backend_vars:
+        _bvars[k] = [] if k in ("_overlay_undo_stack", "_undo_stack", "_redo_stack") else \
+                    {} if k in ("_overlay_session_start",) else \
+                    None
+    object.__setattr__(state, "_backend_vars", _bvars)
 
     state.view_groups = view_groups
     state.current_view_idx = current_view_idx
     state.current_frame_idx = current_frame_idx
     state.overlay_transforms = overlay_transforms or {}
     state.overlay_align_mode = overlay_align_mode
+    state.overlay_page_idx = overlay_page_idx
+    state.overlay_page_count = overlay_page_count
+    state.overlay_visible = False
+    state.overlay_pdf_path = ""
 
     # hdr_files mirrors the frames flattened in view-group order so
     # _current_level_key's daylight fallback path never triggers in these tests.
@@ -208,18 +224,169 @@ def test_migrate_noop_when_view_groups_empty() -> None:
     assert state.overlay_transforms == {"room_A": {"offset_x": 0.2, "is_manual": True}}
 
 
-# ----------------------------------------------------------------- reset
+# ----------------------------------------------------------------- inherit-from-below
 
 
-def test_reset_level_alignment_centres_current_level() -> None:
-    state = _make_state([_view_group("ffl_103180", ["s1", "s2"])])
+def test_inherit_copies_transform_from_level_below() -> None:
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_093260", ["s1"]),
+        ],
+        current_view_idx=1,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.42, "offset_y": 0.17, "scale_x": 1.8, "scale_y": 1.8, "rotation_90": 1, "is_manual": True},
+        },
+    )
+    state.inherit_from_level_below()
+    t = state.overlay_transforms["ffl_093260"]
+    assert t["offset_x"] == 0.42
+    assert t["offset_y"] == 0.17
+    assert t["scale_x"] == 1.8
+    assert t["rotation_90"] == 1
+    # is_manual is re-stamped by _set_current_overlay_transform, not inherited verbatim
+    assert t["is_manual"] is True
+
+
+def test_inherit_picks_nearest_level_below_not_lowest() -> None:
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_093260", ["s1"]),
+            _view_group("ffl_103180", ["s1"]),
+        ],
+        current_view_idx=2,  # on ffl_103180
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.1, "is_manual": True},
+            "ffl_093260": {"offset_x": 0.5, "is_manual": True},
+        },
+    )
+    state.inherit_from_level_below()
+    # Should copy from ffl_093260 (nearest below), not ffl_090000 (lowest).
+    assert state.overlay_transforms["ffl_103180"]["offset_x"] == 0.5
+
+
+def test_inherit_falls_back_to_centred_when_no_level_below() -> None:
+    state = _make_state(
+        [_view_group("ffl_090000", ["s1"])],
+        current_view_idx=0,
+    )
     state._set_current_overlay_transform({"offset_x": 0.9, "scale_x": 3.0})
-    assert state.overlay_transforms["ffl_103180"]["offset_x"] == 0.9
-    state.reset_level_alignment()
-    t = state.overlay_transforms["ffl_103180"]
+    state.inherit_from_level_below()
+    t = state.overlay_transforms["ffl_090000"]
     assert t["offset_x"] == 0.0
     assert t["offset_y"] == 0.0
     assert t["scale_x"] == 1.0
+
+
+def test_inherit_falls_back_when_level_below_has_no_stored_transform() -> None:
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_093260", ["s1"]),
+        ],
+        current_view_idx=1,
+    )
+    state._set_current_overlay_transform({"offset_x": 0.9, "scale_x": 3.0})
+    state.inherit_from_level_below()
+    t = state.overlay_transforms["ffl_093260"]
+    assert t["offset_x"] == 0.0
+    assert t["scale_x"] == 1.0
+
+
+# ----------------------------------------------------------------- page-idx per-level
+
+
+def test_inherit_advances_page_by_one_relative_to_level_below() -> None:
+    """Symptom #1 fix: inherit_from_level_below must set page = below_page + 1,
+    not copy the same page from below."""
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_093260", ["s1"]),
+        ],
+        current_view_idx=1,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.42, "scale_x": 1.8, "page_idx": 2, "is_manual": True},
+        },
+        overlay_page_idx=0,  # current global page (should be overridden)
+        overlay_page_count=5,
+    )
+    state.inherit_from_level_below()
+    t = state.overlay_transforms["ffl_093260"]
+    # Geometry inherited
+    assert t["offset_x"] == 0.42
+    assert t["scale_x"] == 1.8
+    # Page advanced by 1: below was page 2, so this level should be page 3
+    assert t["page_idx"] == 3
+    assert state.overlay_page_idx == 3
+
+
+def test_inherit_page_wraps_at_page_count() -> None:
+    """Page advancement wraps modulo page_count (last page → page 0)."""
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_093260", ["s1"]),
+        ],
+        current_view_idx=1,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.1, "scale_x": 1.0, "page_idx": 4, "is_manual": True},
+        },
+        overlay_page_count=5,
+    )
+    state.inherit_from_level_below()
+    # 4 + 1 = 5 % 5 = 0
+    assert state.overlay_transforms["ffl_093260"]["page_idx"] == 0
+
+
+def test_cycle_page_persists_to_level_transform() -> None:
+    """Symptom #4 fix: changing page on one level must not affect another level's
+    stored page. After cycle_overlay_page, the new page must be in the level's
+    overlay_transforms entry."""
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_093260", ["s1"]),
+        ],
+        current_view_idx=0,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.0, "scale_x": 1.0, "page_idx": 0, "is_manual": True},
+        },
+        overlay_page_idx=0,
+        overlay_page_count=5,
+    )
+    state.cycle_overlay_page()
+    # The level's stored transform must now record page 1
+    assert state.overlay_transforms["ffl_090000"]["page_idx"] == 1
+    assert state.overlay_page_idx == 1
+    # The other level's transform must be unaffected (not present)
+    assert "ffl_093260" not in state.overlay_transforms
+
+
+def test_set_transform_stores_current_page_idx() -> None:
+    """_set_current_overlay_transform must record overlay_page_idx so the page
+    survives level navigation and session save/restore."""
+    state = _make_state(
+        [_view_group("ffl_103180", ["s1"])],
+        overlay_page_idx=3,
+        overlay_page_count=5,
+    )
+    state._set_current_overlay_transform({"offset_x": 0.1, "scale_x": 1.2})
+    stored = state.overlay_transforms["ffl_103180"]
+    assert stored["page_idx"] == 3
+
+
+def test_set_transform_does_not_override_explicit_page_idx() -> None:
+    """If the caller already supplies page_idx (e.g. inherit_from_level_below),
+    the stored value wins over the global overlay_page_idx."""
+    state = _make_state(
+        [_view_group("ffl_103180", ["s1"])],
+        overlay_page_idx=0,  # global is 0
+        overlay_page_count=5,
+    )
+    state._set_current_overlay_transform({"offset_x": 0.1, "page_idx": 4})
+    assert state.overlay_transforms["ffl_103180"]["page_idx"] == 4
 
 
 # ----------------------------------------------------------------- undo payload
@@ -240,3 +407,123 @@ def test_undo_payload_carries_level_key_not_hdr_name() -> None:
     assert entry["after"]["level_key"] == "ffl_103180"
     assert "hdr_name" not in entry["before"]
     assert "hdr_name" not in entry["after"]
+
+
+# ----------------------------------------------------------------- undo page sync
+
+
+def test_undo_page_change_syncs_page_idx_into_level_transform() -> None:
+    """After undoing a page cycle, overlay_transforms[level_key]['page_idx'] must
+    match the restored overlay_page_idx, so navigating away and back shows the
+    correct (undone) page rather than the pre-undo (newer) page."""
+    state = _make_state(
+        [_view_group("ffl_103180", ["s1"])],
+        overlay_page_idx=1,   # global page after cycle
+        overlay_page_count=5,
+        overlay_transforms={
+            "ffl_103180": {"offset_x": 0.0, "scale_x": 1.0, "page_idx": 1, "is_manual": True},
+        },
+    )
+    # _overlay_undo_stack is a Reflex backend var — assign via normal setattr
+    # (not object.__setattr__) so the _backend_vars dict is updated correctly.
+    undo_entry = {
+        "action": "overlay_props",
+        "desc": "Change overlay page",
+        "before": {"page_idx": 0, "dpi": 150, "alpha": 0.6},
+        "after": {"page_idx": 1, "dpi": 150, "alpha": 0.6},
+    }
+    state._overlay_undo_stack = [undo_entry]
+    state._overlay_session_start = {}
+    state.overlay_dpi = 150
+    state.overlay_alpha = 0.6
+    state._undo_overlay()
+    # Global page_idx must be restored to the before value
+    assert state.overlay_page_idx == 0
+    # Per-level transform must also be updated so navigation restores the right page
+    assert state.overlay_transforms["ffl_103180"]["page_idx"] == 0
+
+
+# -------------------------------------------------------- goto_frame page restore
+
+
+def test_restore_overlay_page_infers_when_transform_lacks_page_idx() -> None:
+    """Legacy sessions stored overlay_transforms entries without page_idx. When
+    the user navigates to such a level, the first-branch restore must NOT swallow
+    control — it must fall through to the auto-inherit path so the global
+    overlay_page_idx does not leak from the previously viewed level."""
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_103180", ["s1"]),
+        ],
+        current_view_idx=1,
+        overlay_page_idx=2,  # leaked from level below
+        overlay_page_count=5,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.0, "scale_x": 1.0, "page_idx": 2, "is_manual": True},
+            # Legacy transform: spatial only, no page_idx field.
+            "ffl_103180": {"offset_x": 0.2, "scale_x": 1.1, "is_manual": True},
+        },
+    )
+    state.overlay_pdf_path = "/tmp/plans.pdf"
+    state._restore_overlay_page_for_current_level()
+    # Must auto-inherit (2 + 1 = 3), not leak the previous level's 2.
+    assert state.overlay_page_idx == 3
+
+
+def test_restore_overlay_page_uses_stored_page_idx_when_present() -> None:
+    """Common case: level transform has stored page_idx. Restore it verbatim,
+    overriding whatever the global held from prior navigation."""
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_103180", ["s1"]),
+        ],
+        current_view_idx=1,
+        overlay_page_idx=4,  # leaked from elsewhere
+        overlay_page_count=5,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.0, "scale_x": 1.0, "page_idx": 0, "is_manual": True},
+            "ffl_103180": {"offset_x": 0.2, "scale_x": 1.1, "page_idx": 1, "is_manual": True},
+        },
+    )
+    state.overlay_pdf_path = "/tmp/plans.pdf"
+    state._restore_overlay_page_for_current_level()
+    assert state.overlay_page_idx == 1
+
+
+def test_restore_overlay_page_on_bottom_level_with_stale_transform_defaults_to_zero() -> None:
+    """Navigating DOWN to the bottom level — which has a legacy transform without
+    page_idx and no level below — must not inherit a leaked upper-level page.
+    Infers to 0 (no below, so fall-back default)."""
+    state = _make_state(
+        [
+            _view_group("ffl_090000", ["s1"]),
+            _view_group("ffl_103180", ["s1"]),
+        ],
+        current_view_idx=0,
+        overlay_page_idx=3,  # leaked from upper level
+        overlay_page_count=5,
+        overlay_transforms={
+            "ffl_090000": {"offset_x": 0.0, "scale_x": 1.0, "is_manual": True},
+            "ffl_103180": {"offset_x": 0.2, "scale_x": 1.1, "page_idx": 3, "is_manual": True},
+        },
+    )
+    state.overlay_pdf_path = "/tmp/plans.pdf"
+    state._restore_overlay_page_for_current_level()
+    # Bottom level, no below — must default to 0, not leak 3.
+    assert state.overlay_page_idx == 0
+
+
+def test_restore_overlay_page_noop_when_pdf_not_attached() -> None:
+    """With no PDF attached, overlay_page_idx should not be touched — avoids
+    spurious state diffs when the overlay feature isn't in use."""
+    state = _make_state(
+        [_view_group("ffl_090000", ["s1"])],
+        current_view_idx=0,
+        overlay_page_idx=2,
+        overlay_page_count=0,  # no PDF = no pages
+    )
+    state.overlay_pdf_path = ""
+    state._restore_overlay_page_for_current_level()
+    assert state.overlay_page_idx == 2

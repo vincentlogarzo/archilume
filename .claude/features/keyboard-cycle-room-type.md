@@ -52,11 +52,5 @@ recalibrate category weights after the next audit run.
 ## Test invocation
 
 ```bash
-uv run pytest archilume/apps/archilume_app/tests/test_keyboard_cycle_room_type.py \
-  --confcutdir=archilume/apps/archilume_app/tests
+uv run pytest archilume/apps/archilume_app/tests/test_keyboard_cycle_room_type.py
 ```
-
-`--confcutdir` is required today because `archilume/apps/__init__.py` has a
-broken import (`archilume.apps.project_config` no longer exists — likely a
-casualty of the `archilume_ui → archilume_app` rename in `dcc9d36`). Pre-
-existing repo bug, tracked separately from this feature.

@@ -34,6 +34,7 @@ def save_session(session_path: Path, data: dict[str, Any]) -> bool:
         # Convert tuples to lists for JSON serialization
         serializable = _prepare_for_json(data)
 
+        session_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = session_path.with_suffix(".json.tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(serializable, f, indent=2, default=str)
@@ -67,7 +68,7 @@ def build_session_dict(
     current_variant_idx: int = 0,
     selected_parent: str = "",
     annotation_scale: float = 1.0,
-    overlay_dpi: int = 150,
+    overlay_dpi: int = 200,
     overlay_visible: bool = False,
     overlay_alpha: float = 0.6,
     overlay_page_idx: int = 0,

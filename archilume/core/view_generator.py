@@ -319,26 +319,21 @@ class ViewGenerator:
     def create_aoi_files(self, coordinate_map: "utils.PixelToWorldMap | None" = None) -> bool:
         """Generate AOI files for each room with boundary points and metadata.
 
-        Args:
-            coordinate_map: Optional in-memory PixelToWorldMap. If provided, adds
-                pixel coordinates to each boundary point.
+        Writes pipeline output .aoi files to ``self.aoi_dir`` for daylight
+        tiff-stamping (``post/tiff2animation.py``). These retain the richer v1
+        format (pixel columns + centroid + associated view) because the
+        stamping pass needs pre-projected pixel coordinates.
 
-        Returns:
-            bool: True if successful, False if processed CSV not found.
-
-        Output format per file:
-            - Headers: room info, view file, floor level, centroid
-            - Data: boundary points as "x.xxxx y.yyyy [pixel_x pixel_y]"
-            - Files written to outputs/aoi/ as {apartment}_{room}.aoi
+        For simulation *inputs* under ``projects/*/inputs/aoi/`` the v2 minimal
+        format is preferred — see ``__read_aoi_file`` and the migration script
+        ``scripts/migrate_aoi_v1_to_v2.py``.
         """
 
-        # Check if processed CSV exists (from successful parsing)
         if not hasattr(self, 'processed_room_boundaries_csv_path') or not self.processed_room_boundaries_csv_path.exists():
             logging.error("Processed CSV file not found. Ensure CSV parsing completed successfully.")
             return
 
         try:
-            # Read the CSV file into a pandas DataFrame
             df = pd.read_csv(self.processed_room_boundaries_csv_path)
         except FileNotFoundError:
             logging.error(f"CSV file not found: {self.processed_room_boundaries_csv_path}")
@@ -347,7 +342,6 @@ class ViewGenerator:
             logging.error(f"Error reading the CSV: {e}")
             return
 
-        # Build per-pixel projection params from the in-memory coordinate map
         coord_map_params = None
         if coordinate_map is not None:
             coord_map_params = {
@@ -360,89 +354,56 @@ class ViewGenerator:
             }
             logging.info(f"Loaded coordinate map parameters: {coord_map_params}")
 
-        # Group the DataFrame by the 'apartment_no' and 'room' columns
         grouped = df.groupby(["apartment_no", "room"])
+        logging.info(f"Found {len(grouped)} unique apartment_no/room combinations.")
 
-        print(f"Found {len(grouped)} unique apartment_no/room combinations.")
-
-        # Define worker function for parallel processing
         def _process_single_room(group_data):
-            """Process a single room group to generate AOI file content and path."""
             name, group = group_data
             apartment_name, room_name = name
             num_points = len(group)
 
-            # --- 1. Build the content for the text file ---
-
-            # get centre of mass of group
             centroid_x, centroid_y = calc_centroid_of_points(group[["x_coords", "y_coords"]])
-
-            # Determine associated view file based on z_coordinate
             room_z_coord = group['z_coords'].iloc[0]
 
-            # Convert meters to millimeters (integer) for filename
-            # Calculate padding width based on all z-coordinates in dataset
-            all_z_coords = df['z_coords'].values
-            all_z_mm = [int(round(z * 1000)) for z in all_z_coords]
-            max_abs_mm = max(abs(z_mm) for z_mm in all_z_mm)
-            mm_width = len(str(max_abs_mm))
-
-            # Convert current room z-coordinate to millimeters
+            all_z_mm = [int(round(z * 1000)) for z in df['z_coords'].values]
+            mm_width = len(str(max(abs(z_mm) for z_mm in all_z_mm)))
             room_z_mm = int(round(room_z_coord * 1000))
-
-            # Format filename with zero-padded millimeter value
             if room_z_mm < 0:
                 associated_view_file = f"plan_ffl_-{abs(room_z_mm):0{mm_width}d}.vp"
             else:
                 associated_view_file = f"plan_ffl_{room_z_mm:0{mm_width}d}.vp"
 
-            # Header lines
             header_line1 = f"AOI Points File: {apartment_name} {room_name}"
             header_line2 = f"ASSOCIATED VIEW FILE: {associated_view_file}"
             header_line3 = f"FFL z height(m): {room_z_coord}"
             header_line4 = f"CENTRAL x,y: {centroid_x:.4f} {centroid_y:.4f}"
-
-            # Update header to indicate pixel columns if coordinate map is available
             if coord_map_params is not None:
                 header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y pixel_x pixel_y positions"
             else:
                 header_line5 = f"NO. PERIMETER POINTS {num_points}: x,y positions"
 
-            # Coordinate data lines, formatted to 4 decimal places
             xy_coord_lines = []
-            for index, row in group.iterrows():
+            for _, row in group.iterrows():
                 world_x = row['x_coords']
                 world_y = row['y_coords']
-
-                # Base coordinate line with world coordinates
                 line = f"{world_x:.4f} {world_y:.4f}"
-
-                # Add pixel coordinates if coordinate map is available
                 if coord_map_params is not None:
                     p = coord_map_params
                     pixel_x = int((world_x - p['vp_x']) / p['wu_per_px_x'] + p['width'] / 2)
                     pixel_y = int(p['height'] / 2 - (world_y - p['vp_y']) / p['wu_per_px_y'])
                     line += f" {pixel_x} {pixel_y}"
-
                 xy_coord_lines.append(line)
 
-            # Combine all parts into the final text content
             file_content = "\n".join(
                 [header_line1, header_line2, header_line3, header_line4, header_line5] + xy_coord_lines
             )
 
-            # --- 2. Create a valid filename and save the file ---
-
-            # Clean the room name to make it suitable for a filename
-            clean_room_name = re.sub(r"[^\w\s-]", "", room_name).strip()
+            clean_room_name = re.sub(r"[^\w\s-]", "", str(room_name)).strip()
             clean_room_name = re.sub(r"[-\s]+", "_", clean_room_name)
             filename = f"{apartment_name}_{clean_room_name}.aoi"
             filepath = os.path.join(self.aoi_dir, filename)
-
-            # Write the content to the file
-            with open(filepath, "w") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write(file_content)
-
             return f"File generated: {filepath}"
 
         # Process all rooms in parallel using CPU cores for workers
@@ -461,23 +422,10 @@ class ViewGenerator:
     def __parse_aoi_inputs_dir(self) -> None:
         """Build the processed long-format DataFrame from a directory of .aoi files.
 
-        Produces the same columns downstream code expects (apartment_no, room,
-        x_coords, y_coords, z_coords in metres) and writes the processed CSV
-        to aoi_dir under a stable name, so create_plan_view_files() and
-        create_aoi_files() can consume it unchanged.
-
-        Expected .aoi header (as written by scripts/convert_room_boundaries_csv_to_aoi.py):
-            AOI Points File: {apt} {room}
-            PARENT: {apt}
-            CHILD: {room}
-            FFL z height(m): {z_m}
-            CENTRAL x,y: {cx} {cy}
-            NO. PERIMETER POINTS {n}: x,y positions
-            {x} {y}
-            ...
-
-        Legacy modern .aoi without PARENT/CHILD lines falls back to splitting
-        the "AOI Points File:" line on the first space.
+        Produces the columns downstream code expects (apartment_no, room,
+        x_coords, y_coords, z_coords in metres). For v2 files the filestem
+        becomes both apartment_no and room since parent/child relationships
+        now live only in aoi_session.json.
         """
         logging.info(f"Loading .aoi files from: {self.aoi_inputs_dir}")
         aoi_files = sorted(self.aoi_inputs_dir.glob("*.aoi"))
@@ -488,11 +436,11 @@ class ViewGenerator:
 
         rows: list[dict[str, Any]] = []
         for path in aoi_files:
-            parent, child, ffl_z, vertices = self.__read_aoi_file(path)
+            name, ffl_z, vertices = self.__read_aoi_file(path)
             for idx, (x, y) in enumerate(vertices):
                 rows.append({
-                    "apartment_no": parent,
-                    "room": child,
+                    "apartment_no": name,
+                    "room": name,
                     "vertex_idx": idx,
                     "x_coords": x,
                     "y_coords": y,
@@ -515,41 +463,33 @@ class ViewGenerator:
         )
 
     @staticmethod
-    def __read_aoi_file(path: Path) -> tuple[str, str, float, list[tuple[float, float]]]:
-        """Parse one .aoi file. Returns (parent, child, ffl_z_m, [(x_m, y_m), ...])."""
+    def __read_aoi_file(path: Path) -> tuple[str, float, list[tuple[float, float]]]:
+        """Parse one .aoi file.
+
+        Returns ``(name, ffl_z_m, [(x_m, y_m), ...])`` where ``name`` is the
+        file stem. Accepts both the v2 minimal format (``POINTS N``) and the
+        legacy v1 format (``NO. PERIMETER POINTS N:``) as data-start sentinels
+        so projects can be read mid-migration.
+        """
         text = path.read_text(encoding="utf-8").splitlines()
 
-        parent: str | None = None
-        child: str | None = None
+        name = path.stem
         ffl_z: float | None = None
         vertex_start: int | None = None
-        header_fallback_line: str | None = None
 
         for i, line in enumerate(text):
             stripped = line.strip()
-            if stripped.startswith("PARENT:"):
-                parent = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("CHILD:"):
-                child = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("AOI Points File:"):
-                header_fallback_line = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("FFL z height(m):"):
+            upper = stripped.upper()
+            if stripped.startswith("FFL z height(m):"):
                 ffl_z = float(stripped.split(":", 1)[1].strip())
-            elif stripped.startswith("NO. PERIMETER POINTS"):
+            elif upper.startswith("POINTS ") or upper.startswith("NO. PERIMETER POINTS"):
                 vertex_start = i + 1
                 break
 
-        if (parent is None or child is None) and header_fallback_line is not None:
-            apt, _, rest = header_fallback_line.partition(" ")
-            parent = parent or apt
-            child = child or rest
-
-        if parent is None or child is None:
-            raise ValueError(f"{path.name}: could not resolve PARENT/CHILD")
         if ffl_z is None:
             raise ValueError(f"{path.name}: missing FFL z height(m)")
         if vertex_start is None:
-            raise ValueError(f"{path.name}: missing NO. PERIMETER POINTS header")
+            raise ValueError(f"{path.name}: missing POINTS header")
 
         vertices: list[tuple[float, float]] = []
         for line in text[vertex_start:]:
@@ -559,12 +499,15 @@ class ViewGenerator:
             tokens = stripped.split()
             if len(tokens) < 2:
                 continue
-            vertices.append((float(tokens[0]), float(tokens[1])))
+            try:
+                vertices.append((float(tokens[0]), float(tokens[1])))
+            except ValueError:
+                continue
 
         if not vertices:
             raise ValueError(f"{path.name}: no vertex rows found")
 
-        return parent, child, ffl_z, vertices
+        return name, ffl_z, vertices
 
     def __parse_room_boundaries_csv(self) -> None:
         """

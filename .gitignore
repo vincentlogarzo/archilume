@@ -2,6 +2,12 @@ __pycache__/
 *.egg-info/
 .venv/
 
+# Test artefacts
+.coverage
+tests/.coverage
+htmlcov/
+.pytest_cache/
+
 # AI tool settings — .claude/ is tracked so settings travel with the repo
 .states/
 .env

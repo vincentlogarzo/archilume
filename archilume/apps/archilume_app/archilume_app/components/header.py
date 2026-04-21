@@ -7,9 +7,8 @@ from ..styles import COLORS, FONT_HEAD, FONT_MONO
 
 
 _TAB_ITEMS = [
-    ("pre_simulation", "Pre-Simulation Checks", "ruler"),
-    ("simulation", "Simulation Manager", "cloud-cog"),
-    ("results", "Results Viewer", "bar-chart-3"),
+    ("results", "Viewer", "bar-chart-3"),
+    ("simulation", "Simulate", "cloud-cog"),
 ]
 
 

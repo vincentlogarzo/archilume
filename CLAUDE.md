@@ -31,9 +31,7 @@ uv sync                                           # install dependencies
 pytest                                            # run all tests
 python examples/workflow_sunlight_access.py       # sunlight access example
 python examples/workflow_daylight_iesve.py        # daylight/IESVE example
-python examples/launch_archilume_app.py            # launch Reflex UI (preferred)
-python examples/launch_hdr_editor.py              # launch HDR/AOI matplotlib editor
-python examples/launch_obj_editor.py              # launch OBJ/AOI editor
+python examples/launch_archilume_app.py            # launch Reflex UI
 ```
 
 ## Architecture
@@ -56,10 +54,7 @@ python examples/launch_obj_editor.py              # launch OBJ/AOI editor
 - `config.py`: Path management, tool resolution, `RAYPATH`, `WORKERS`. Override via `RADIANCE_ROOT`/`ACCELERAD_ROOT`.
 - `utils.py`: `execute_new_radiance_commands` (parallel), `clear_outputs_folder()`, geometry helpers, HDR utilities.
 - `project.py`: Project-level config/state.
-- `apps/matplotlib_app.py`: Main matplotlib HDR+AOI editor entry point.
-- `apps/obj_aoi_editor_matplotlib.py`: OBJ AOI editor.
-- `apps/project_config.py`: Project config UI.
-- `apps/reflex_editor/`: Reflex-based web editor (WIP).
+- `apps/archilume_app/`: Reflex-based web editor (primary UI).
 - `GCPVMManager` (`infra/`): GCP VM lifecycle. Config at `~/.archilume_gcp_config.json`. SSH `User` must match VM's provisioned username — never assume or change it.
 
 ## Launching the Reflex App

@@ -41,32 +41,22 @@ def settings_changed(stream: Stream, current: dict, last_generated: dict) -> boo
 
 
 def detect_stale(
-    stream:         Stream,
-    hdr_files:      list[dict],
-    image_dir:      Path,
-    current:        dict,
-    last_generated: dict,
+    stream:    Stream,
+    hdr_files: list[dict],
+    image_dir: Path,
 ) -> list[Path]:
-    """Return HDR paths that need (re)generation for the given stream.
+    """Return HDR paths whose corresponding PNG is missing from *image_dir*.
 
-    If settings changed vs `last_generated`, every HDR is stale. Otherwise we
-    only regenerate HDRs whose PNG is missing or older than the source HDR.
+    Existence-only gating: if the PNG next to an HDR exists we treat it as
+    valid regardless of mtime or settings. Regenerating on settings change is
+    the force=True path's job (invoked via the UI "Regenerate" button).
     """
-    hdr_paths = [Path(h["hdr_path"]) for h in hdr_files]
-    if settings_changed(stream, current, last_generated):
-        return hdr_paths
-
     suffix = _STREAM_PNG_SUFFIX[stream]
     stale: list[Path] = []
-    for hdr in hdr_paths:
+    for h in hdr_files:
+        hdr = Path(h["hdr_path"])
         png = image_dir / f"{hdr.stem}{suffix}"
         if not png.exists():
-            stale.append(hdr)
-            continue
-        try:
-            if hdr.stat().st_mtime > png.stat().st_mtime:
-                stale.append(hdr)
-        except OSError:
             stale.append(hdr)
     return stale
 

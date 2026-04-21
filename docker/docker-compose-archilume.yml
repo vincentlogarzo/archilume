@@ -1,8 +1,13 @@
 # Archilume — frontend + backend + engine.
-# Launch via docker/launch-archilume.ps1 (recommended). Direct invocation from
-# repo root:
-#   docker compose -f docker/docker-compose-archilume.yml -p archilume up -d
+# Launch via the platform entry points (recommended):
+#   Windows : launch-archilume.cmd
+#   macOS   : launch-archilume.command
+#   Linux   : ./launch-archilume.sh
+# Direct invocation from repo root (any OS):
+#   docker compose --env-file docker/.env \
+#       -f docker/docker-compose-archilume.yml -p archilume up -d
 # Then open http://localhost:3000.
+# Image tags are resolved from ARCHILUME_VERSION in docker/.env.
 #
 # The default projects bind mount (../projects) resolves relative to this file,
 # landing at the repo-root projects/ dir for dev use. In the shipped zip, the
@@ -13,7 +18,7 @@ name: archilume
 
 services:
   archilume-frontend:
-    image: vlogarzo/archilume-frontend:latest
+    image: vlogarzo/archilume-frontend:${ARCHILUME_VERSION:-latest}
     ports:
       - "3000:3000"
     depends_on:
@@ -38,7 +43,7 @@ services:
       - NET_BIND_SERVICE
 
   archilume-backend:
-    image: vlogarzo/archilume-backend:latest
+    image: vlogarzo/archilume-backend:${ARCHILUME_VERSION:-latest}
     expose:
       - "8000"
     volumes:
@@ -62,7 +67,7 @@ services:
           memory: 1g
 
   archilume-engine:
-    image: vlogarzo/archilume-engine:latest
+    image: vlogarzo/archilume-engine:${ARCHILUME_VERSION:-latest}
     expose:
       - "8100"
     volumes:

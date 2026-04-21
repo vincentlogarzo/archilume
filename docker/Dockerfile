@@ -11,18 +11,18 @@
 
 # All commands below are run from the repo root.
 
-# Build all three images (PowerShell one-liner — local use, no push):
-#   docker build --target archilume-frontend -f docker/Dockerfile -t vlogarzo/archilume-frontend:latest . ; docker build --target archilume-backend -f docker/Dockerfile -t vlogarzo/archilume-backend:latest . ; docker build --target archilume-engine -f docker/Dockerfile -t vlogarzo/archilume-engine:latest .
+# Build all three images in parallel (recommended — BuildKit fans out independent targets):
+#   docker buildx bake --load -f docker/docker-bake.hcl
 
-# Build all three without cache (forces every layer to re-run — use after
-#   docker build --no-cache --target archilume-frontend -f docker/Dockerfile -t vlogarzo/archilume-frontend:latest . ; docker build --no-cache --target archilume-backend -f docker/Dockerfile -t vlogarzo/archilume-backend:latest . ; docker build --no-cache --target archilume-engine -f docker/Dockerfile -t vlogarzo/archilume-engine:latest .
+# Build without cache:
+#   docker buildx bake --load --no-cache -f docker/docker-bake.hcl
 
-# Build + push to Docker Hub (PowerShell one-liner):
+# Build + push to Docker Hub:
 #   docker login
-#   docker push vlogarzo/archilume-frontend:latest ; docker push vlogarzo/archilume-backend:latest ; docker push vlogarzo/archilume-engine:latest
+#   docker buildx bake --push --provenance=false -f docker/docker-bake.hcl
 
 # Cloud frontend build (bake a public URL into the JS bundle):
-#   docker build --target archilume-frontend -f docker/Dockerfile --build-arg REFLEX_API_URL=https://archilume.example.com -t vlogarzo/archilume-frontend:cloud .
+#   REFLEX_API_URL=https://archilume.example.com docker buildx bake --load -f docker/docker-bake.hcl archilume-frontend
 
 # Run the app:
 #   docker compose -f docker/docker-compose-archilume.yml up -d

@@ -2,6 +2,9 @@
   "permissions": {
     "allow": [
       "WebFetch",
+      "Grep",
+      "Glob",
+      "Read",
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",

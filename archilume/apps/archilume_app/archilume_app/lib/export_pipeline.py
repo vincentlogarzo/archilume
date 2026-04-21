@@ -1,8 +1,4 @@
-"""Export pipeline — DF analysis → WPD report → annotated overlays → ZIP archive.
-
-Mirrors :mod:`archilume.apps.matplotlib_app`'s export outputs so both editors
-produce identical artefacts for downstream WPD consumers.
-"""
+"""Export pipeline — DF analysis → WPD report → annotated overlays → ZIP archive."""
 
 from __future__ import annotations
 
@@ -735,7 +731,7 @@ def _pct_colour_from_stats(stats: dict, default: tuple) -> tuple:
 
 
 # =========================================================================
-# PIL helpers (ported from matplotlib_app._render_pdf_underlay)
+# PIL helpers for PDF underlay rendering
 # =========================================================================
 
 def _stroked_text(

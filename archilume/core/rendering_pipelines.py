@@ -12,7 +12,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 from archilume import utils, config
 from archilume.utils import PhaseTimer
 from archilume.post.hdr_visualisation import hdr2png_falsecolor, hdr2png_contour
-from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+from archilume.post.hdr_to_png import convert_hdrs_to_pngs, convert_hdrs_in_dir
 
 # Standard library imports
 from dataclasses import dataclass, field
@@ -37,6 +37,72 @@ Y_RES_OVERTURE          = 64
 IS_LINUX                = platform.system() == 'Linux'
 N_PROCESSORS_MAX        = 64  # Number of processors for rtpict on Linux
 N_CPUS                  = config.DEFAULT_MAX_WORKERS  # All available cores
+
+
+def render_view_with_warmup(
+    *,
+    octree_path: Path,
+    view_file: Path,
+    output_hdr_path: Path,
+    ambient_file_path: Optional[Path],
+    render_x: int,
+    render_y: int,
+    render_params: str,
+    warmup_params: Optional[str] = None,
+    warmup_x: int = X_RES_OVERTURE,
+    warmup_y: int = Y_RES_OVERTURE,
+    use_ambient_file: bool = True,
+    n_cpus: int = N_CPUS,
+    rpict_threads: int = 1,
+    irradiance: bool = True,
+    view_label: str = "",
+) -> Path:
+    """Run ambient warmup (if needed) + full-res render for a single view.
+
+    Picks rtpict on Linux (multi-core via -n) or rpict on Windows.
+    Warmup is skipped when the .amb file already exists. `render_params`
+    and `warmup_params` are passed verbatim to Radiance — either inline
+    flags (e.g. "-aa 0.1 -ab 3 ...") or an @file.rdp reference are valid.
+    Returns the output HDR path.
+    """
+    warmup_params = render_params if warmup_params is None else warmup_params
+    null_target = "/dev/null" if IS_LINUX else "NUL"
+    label = view_label or view_file.stem
+    i_flag = "-i" if irradiance else ""
+
+    amb_flag = ""
+    amb_exists = False
+    if use_ambient_file and ambient_file_path is not None:
+        amb_flag = f"-af {ambient_file_path}"
+        amb_exists = ambient_file_path.exists()
+
+    def build(x_res: int, y_res: int, params: str, stdout_target: str) -> str:
+        if IS_LINUX:
+            prefix = f"rtpict -n {n_cpus} -t {rpict_threads}"
+        else:
+            prefix = f"rpict -w -t {rpict_threads}"
+        return (
+            f"{prefix} -vf {view_file} -x {x_res} -y {y_res} "
+            f"{params} {i_flag} {amb_flag} {octree_path} > {stdout_target}"
+        )
+
+    if use_ambient_file and ambient_file_path is not None:
+        if amb_exists:
+            print(f"Skipping ambient warming for {label} — {ambient_file_path.name} already exists")
+        else:
+            print(f"Warming ambient file for {label} [{warmup_x}x{warmup_y}] started {time.strftime('%H:%M:%S')}")
+            warmup_cmd = build(warmup_x, warmup_y, warmup_params, null_target)
+            utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
+            print(f"Ambient warming for {label} complete {time.strftime('%H:%M:%S')}")
+    else:
+        print(f"Ambient file disabled for {label} — rendering without ambient cache")
+
+    print(f"Rendering view {label} [{render_x}x{render_y}] started {time.strftime('%H:%M:%S')}")
+    render_cmd = build(render_x, render_y, render_params, str(output_hdr_path))
+    utils.execute_new_radiance_commands(render_cmd, number_of_workers=1)
+    print(f"Rendering view {label} complete {time.strftime('%H:%M:%S')}")
+
+    return output_hdr_path
 
 
 @dataclass
@@ -92,49 +158,22 @@ class DaylightRenderer:
         if not self.rdp_path.exists():
             raise FileNotFoundError(f"RDP file not found: {self.rdp_path}")
 
-    def _build_view_commands(self, view_file: Path, octree_base_name: str):
-        """Build warmup and render commands for a single view."""
-        view_name = view_file.stem
-        hdr_path = self.image_dir / f"{octree_base_name}_{view_name}.hdr"
-        amb_path = self.image_dir / f"{octree_base_name}_{view_name}.amb"
-
-        warmup_cmd = None
-        amb_flag = ""
-
-        if self.use_ambient_file:
-            amb_flag = f"-af {amb_path}"
-            if not amb_path.exists():
-                null_target = "/dev/null" if IS_LINUX else "NUL"
-                if IS_LINUX:
-                    warmup_cmd = rf"rtpict -n {self.n_cpus} -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
-                else:
-                    warmup_cmd = rf"rpict -w -t 1 -vf {view_file} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} @{self.rdp_path} -i -af {amb_path} {self.octree_path} > {null_target}"
-
-        if IS_LINUX:
-            render_cmd = rf"rtpict -n {self.n_cpus} -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
-        else:
-            render_cmd = rf"rpict -w -t 1 -vf {view_file} -x {self.x_res} -y {self.y_res} @{self.rdp_path} -i {amb_flag} {self.octree_path} > {hdr_path}"
-
-        return view_name, hdr_path, amb_path, warmup_cmd, render_cmd
-
     def _render_single_view(self, view_file: Path, view_idx: int, total: int, octree_base_name: str) -> Path:
         """Warm ambient file (if needed) and render a single view. Returns the HDR path."""
-        view_name, hdr_path, amb_path, warmup_cmd, render_cmd = self._build_view_commands(view_file, octree_base_name)
-
-        if self.use_ambient_file:
-            if amb_path.exists():
-                print(f"Skipping ambient warming for {view_name} — {amb_path.name} already exists")
-            else:
-                print(f"Warming ambient file for view {view_idx}/{total}: {view_name} [{X_RES_OVERTURE}x{Y_RES_OVERTURE}] started {time.strftime('%H:%M:%S')}")
-                utils.execute_new_radiance_commands(warmup_cmd, number_of_workers=1)
-                print(f"Ambient warming for {view_name} complete {time.strftime('%H:%M:%S')}")
-        else:
-            print(f"Ambient file disabled for {view_name} — rendering without ambient cache")
-
-        print(f"Rendering view {view_idx}/{total}: {view_name} [{self.x_res}x{self.y_res}] started {time.strftime('%H:%M:%S')}")
-        utils.execute_new_radiance_commands(render_cmd, number_of_workers=1)
-        print(f"Rendering view {view_name} complete {time.strftime('%H:%M:%S')}")
-        return hdr_path
+        view_name = view_file.stem
+        assert self.y_res is not None and self.n_cpus is not None  # set in __post_init__
+        return render_view_with_warmup(
+            octree_path=self.octree_path,
+            view_file=view_file,
+            output_hdr_path=self.image_dir / f"{octree_base_name}_{view_name}.hdr",
+            ambient_file_path=self.image_dir / f"{octree_base_name}_{view_name}.amb",
+            render_x=self.x_res,
+            render_y=self.y_res,
+            render_params=f"@{self.rdp_path}",
+            use_ambient_file=self.use_ambient_file,
+            n_cpus=self.n_cpus,
+            view_label=f"view {view_idx}/{total}: {view_name}",
+        )
 
     def daylight_rendering_pipeline(self) -> None:
         """
@@ -211,13 +250,11 @@ class SunlightRenderer:
         sky_files (List[Path]): Discovered sky files from skies_dir (*.sky)
         view_files (List[Path]): Discovered view files from views_dir (*.vp)
         overcast_octree_cmd (str): Command for overcast sky octree generation
-        rpict_daylight_overture_cmds (List[str]): Overture rendering commands
-        rpict_daylight_med_qual_cmds (List[str]): Medium quality rendering commands
+        overcast_warmup_params (str): Inline Radiance flags for overcast ambient warmup
+        overcast_render_params (str): Inline Radiance flags for overcast full-res render
         temp_octree_with_sky_paths (List[Path]): Temporary octree file paths
         oconv_cmds (List[str]): Octree compilation commands
         rpict_direct_sun_cmds (List[str]): Direct sun rendering commands
-        pcomb_cmds (List[str]): Image composite commands
-        ra_tiff_cmds (List[str]): TIFF conversion commands
     """
 
     # Required fields - no defaults
@@ -239,13 +276,11 @@ class SunlightRenderer:
     sky_files:                      List[Path]  = field(default_factory=list, init=False)
     view_files:                     List[Path]  = field(default_factory=list, init=False)
     overcast_octree_cmd:            str | None  = field(default=None, init=False)
-    rpict_daylight_overture_cmds:   List[str]   = field(default_factory=list, init=False)
-    rpict_daylight_med_qual_cmds:   List[str]   = field(default_factory=list, init=False)
+    overcast_warmup_params:         str         = field(default="", init=False)
+    overcast_render_params:         str         = field(default="", init=False)
     temp_octree_with_sky_paths:     List[Path]  = field(default_factory=list, init=False)
     oconv_cmds:                     List[str]   = field(default_factory=list, init=False)
     rpict_direct_sun_cmds:          List[str]   = field(default_factory=list, init=False)
-    pcomb_cmds:                     List[str]   = field(default_factory=list, init=False)
-    ra_tiff_cmds:                   List[str]   = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """
@@ -302,13 +337,13 @@ class SunlightRenderer:
 
         # --- Phase 0: Prepare commands ---
         with timer("    Command preparation"):
-            # Generate overcast sky rendering commands
-            (self.overcast_octree_cmd, self.rpict_daylight_overture_cmds,
-             self.rpict_daylight_med_qual_cmds) = self._generate_overcast_sky_rendering_commands()
+            # Generate overcast sky oconv command + inline Radiance params
+            (self.overcast_octree_cmd, self.overcast_warmup_params,
+             self.overcast_render_params) = self._generate_overcast_sky_rendering_commands()
 
-            # Generate sunny sky rendering commands
-            (self.temp_octree_with_sky_paths, self.oconv_cmds, self.rpict_direct_sun_cmds,
-             self.pcomb_ra_tiff_cmds) = self._generate_sunny_sky_rendering_commands()
+            # Generate sunny sky rendering commands (no pcomb — app composites at read time)
+            (self.temp_octree_with_sky_paths, self.oconv_cmds,
+             self.rpict_direct_sun_cmds) = self._generate_sunny_sky_rendering_commands()
 
         # --- Phase 1: Generate ambient lighting foundation using overcast sky conditions ---
         # Create octree with overcast sky for ambient file generation, establishing the indirect lighting baseline
@@ -337,7 +372,7 @@ class SunlightRenderer:
                 self.oconv_cmds, number_of_workers=config.WORKERS["oconv_compile"])
             utils.delete_files(self.temp_octree_with_sky_paths)
 
-        # --- Phase 4: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to tiff ---
+        # --- Phase 4: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to png ---
         with timer("    Sunlight rendering"):
             utils.execute_new_radiance_commands(
                 self.rpict_direct_sun_cmds, number_of_workers=config.WORKERS["rpict_direct_sun"])
@@ -347,12 +382,9 @@ class SunlightRenderer:
         with timer(phase_name):
             future.result()  # Ensure overcast rendering is complete before combining
 
-        with timer("    HDR combination & TIFF conversion"):
+        with timer("    Combine overcast and sunny .HDR and convert to .TIFF"):
             utils.execute_new_radiance_commands(
                 self.pcomb_ra_tiff_cmds, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
-
-        # --- Phase 5: Convert TIFF files to PNG format ---
-        with timer("    TIFF to PNG conversion"):
             self._convert_tiff_to_png()
 
         print("RenderingPipelines completed successfully.")
@@ -394,7 +426,7 @@ class SunlightRenderer:
         self,
         ab: int = 0, ad: int = 128, ar: int = 64, as_val: int = 64,
         ps: int = 1, lw: float = 0.005,
-    ) -> tuple[list[Path], list[str], list[str], list[Path]]:
+        ) -> tuple[list[Path], list[str], list[str], list[Path]]:
         """Build oconv + rpict commands for sun-only rendering (no pcomb).
 
         Returns (temp_octree_paths, oconv_cmds, rpict_cmds, hdr_paths). Final
@@ -441,154 +473,101 @@ class SunlightRenderer:
         )
         return temp_octree_paths, oconv_cmds, rpict_cmds, hdr_paths
 
-    def _generate_overcast_sky_rendering_commands(self, aa: float = 0.1, ab: int = 3, ad: int = 4096, ar: int = 1024, as_val: int = 1024, dj: float = 0.7, lr: int = 12, lw: float = 0.002, pj: int = 1, ps: int = 4, pt: float = 0.05) -> tuple[str, list[str], list[str]]:
+    def _generate_overcast_sky_rendering_commands(
+            self,
+            aa: float = 0.1, ab: int = 3, ad: int = 4096, ar: int = 1024, as_val: int = 1024,
+            dj: float = 0.7, lr: int = 12, lw: float = 0.002, pj: int = 1, ps: int = 4, pt: float = 0.05,
+            ) -> tuple[str, str, str]:
         """
-        Generates oconv, rpict warming run and rpict medium quality run for overcast sky view_file combinations.
+        Build the oconv command that bakes the overcast sky into the octree, and
+        the inline Radiance param strings consumed by ``render_view_with_warmup``
+        during per-view execution.
 
-        Creates all permutations of the instance's overcast sky file and view files with the skyless octree,
-        generating the necessary Radiance commands for the complete rendering pipeline: octree compilation
-        with sky (oconv), scene rendering (rpict), and HDR to TIFF conversion (ra_tiff).
-
-        Uses instance variables:
-            - self.skyless_octree_path: Base octree file (typically skyless)
-            - self.overcast_sky_file_path: Overcast sky file (.sky or .rad file)
-            - self.view_files: List of view file paths (.vp files)
-            - self.image_dir: Directory path for output images
-            - self.x_res, self.y_res: Resolution for medium quality rendering
+        The kwargs are intentionally exposed so the archilume-app UI can let users
+        override overcast rendering parameters without editing source.
 
         Args:
-            aa (float, optional): Ambient accuracy for rpict. Defaults to 0.1. 
-                If this value is set to zero then interpolations are not used
-            ab (int, optional): Ambient bounces for rpict [low_qual=1, med_qual=2]. Defaults to 1.
-            ad (int, optional): Ambient divisions for rpict [low_qual=2048, med_qual=4096]. Defaults to 4096.
-            ar (int, optional): Ambient resolution for rpict [low_qual=512, med_qual=1024]. Defaults to 1024.
-            as_val (int, optional): Ambient samples for rpict [low_qual=512, med_qual=1024]. Defaults to 1024.
-            dj (float, optional): Direct jitter for rpict. Defaults to 0.7.
-            lr (int, optional): Limit reflection for rpict. Defaults to 12.
-            lw (float, optional): Limit weight for rpict. Defaults to 0.002.
-            i : irradiance calculation on, limits blurry images with high contrast (i.e. deep buildings)
-            pj (int, optional): Pixel jitter for rpict. Defaults to 1.
-            ps (int, optional): Pixel sample spacing for rpict [low_qual=1, med_qual=4]. Defaults to 4.
-            pt (float, optional): Pixel threshold for rpict [low_qual=0.06, med_qual=0.05]. Defaults to 0.05.
+            aa: Ambient accuracy. 0 disables interpolation.
+            ab: Ambient bounces.
+            ad: Ambient divisions. Warmup halves this.
+            ar: Ambient resolution.
+            as_val: Ambient samples. Warmup halves this.
+            dj: Direct jitter.
+            lr: Limit reflection.
+            lw: Limit weight.
+            pj: Pixel jitter.
+            ps: Pixel sample spacing.
+            pt: Pixel threshold.
 
         Returns:
-            tuple[str, list[str], list[str]]: A 3-tuple containing:
-                - overcast_octree_cmd (str): Command to combine octree with overcast sky file.
-                - rpict_low_qual_commands (list[str]): Commands for low quality rendering (512x512, ambient file warming).
-                - rpict_med_qual_cmds (list[str]): Commands for medium quality rendering (using instance x_res/y_res).
-
-        Note:
-            # example radiance command warming up the ambient file:
-                rpict -w -t 2 -vf view.vp -x 64 -y 64 -aa 0.1 -ab 1 -ad 4096 -ar 1024 -as 1024 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -lr 12 -lw 0.00200 -af ambient.amb model_overcast_sky.oct
-            # subsequent medium quality rendering with the ambient file producing an ouptut indirect image
-                rpict -w -t 2 -vf view.vp -x 2048 -y 2048 -ps 4 -pt 0.05 -pj 1 -dj 0.7 -ab 2 -aa 0.1 -ar 1024 -ad 4096 -as 1024 -lr 12 -lw 0.00200 -af ambient_file.amb model_overcast_sky.oct > output_image.hdr
+            (overcast_octree_cmd, warmup_params, render_params) — the oconv
+            command that produces the sky-baked octree, the warmup flag string
+            (lower ad/as for the ambient prime), and the full-resolution render
+            flag string. ``-i`` and ``-af`` are NOT in the strings; the helper
+            adds them.
         """
-
-        octree_base_name = self.skyless_octree_path.stem.replace(
-            '_skyless', '')
+        octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
         octree_with_overcast_sky_path = self.skyless_octree_path.parent / f"{octree_base_name}_{self.overcast_sky_file_path.stem}.oct"
         overcast_octree_cmd = rf"oconv -i {self.skyless_octree_path} {self.overcast_sky_file_path} > {octree_with_overcast_sky_path}"
 
-        rpict_overture_cmds, rpict_med_qual_cmds = [], []
+        common = f"-ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw}"
+        warmup_params = f"-aa {aa} -ab {ab} -ad {ad // 2} -ar {ar} -as {as_val // 2} {common}"
+        render_params = f"-aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} {common}"
 
-        for octree_with_overcast_sky_path, view_file_path in product([octree_with_overcast_sky_path], self.view_files):
-            
-            ambient_file_path   = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.amb"
-            output_hdr_path     = self.image_dir / f"{octree_base_name}_{Path(view_file_path).stem}__{self.overcast_sky_file_path.stem}.hdr"
-
-            params_overture     = rf"-aa {aa} -ab {ab} -ad {ad//2} -ar {ar} -as {as_val//2} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path}"
-            params_med_qual     = rf" -aa {aa} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -pt {pt} -pj {pj} -dj {dj} -lr {lr} -lw {lw} -i -af {ambient_file_path} {octree_with_overcast_sky_path} > {output_hdr_path}"
-
-            # constructed commands that will be executed in parallel from each other until all are complete.
-            if IS_LINUX:
-                # Use rtpict on Linux for multi-processor rendering
-                rpict_overture_cmd = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
-                rpict_med_qual_cmd = rf"rtpict -n {N_PROCESSORS_MAX} -t 1 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
-            else:
-                # Use standard rpict on Windows/other platforms
-                rpict_overture_cmd = rf"rpict -w -t 2 -vf {view_file_path} -x {X_RES_OVERTURE} -y {Y_RES_OVERTURE} {params_overture}"
-                rpict_med_qual_cmd = rf"rpict -w -t 2 -vf {view_file_path} -x {self.x_res} -y {self.y_res} {params_med_qual}"
-
-            rpict_overture_cmds.append(rpict_overture_cmd)
-            rpict_med_qual_cmds.append(rpict_med_qual_cmd)
-
-        # Log summary before exit
         logger.info(
-            f"Generated {len(rpict_overture_cmds)} low-quality and "
-            f"{len(rpict_med_qual_cmds)} medium-quality overcast rendering commands "
-            f"for {len(self.view_files)} views at resolution {self.x_res}x{self.y_res}"
+            f"Overcast rendering params prepared for {len(self.view_files)} views at "
+            f"{self.x_res}x{self.y_res} (warmup {X_RES_OVERTURE}x{Y_RES_OVERTURE})"
         )
 
-        return overcast_octree_cmd, rpict_overture_cmds, rpict_med_qual_cmds
+        return overcast_octree_cmd, warmup_params, render_params
 
-    def _generate_sunny_sky_rendering_commands(self, ab: int = 0, ad: int = 128, ar: int = 64, as_val: int = 64, ps: int = 1, lw: float = 0.005) -> tuple[list[Path], list[str], list[str], list[str]]:
+    def _generate_sunny_sky_rendering_commands(
+        self,
+        ab: int = 0, ad: int = 128, ar: int = 64,
+        as_val: int = 64, ps: int = 1, lw: float = 0.005,
+    ) -> tuple[list[Path], list[str], list[str]]:
+        """Build oconv + direct-sun rpict commands for every (sky, view) pair.
+
+        The pcomb compositing step has been removed — the archilume-app now
+        composites the overcast backing image with each sun frame at read
+        time, which is cheaper than pre-combining every timestep to disk.
+
+        Returns ``(temp_octree_with_sky_paths, oconv_cmds, rpict_cmds)``.
+        Output HDRs land at ``{octree_base}_{view}_{sky}.hdr``.
         """
-        TODO: increase the generic use of this function to include all parameters as optional for rpict.
-        Generates oconv, rpict, and ra_tiff commands for rendering combinations of octree, sky, and view files.
-
-        Creates all permutations of sky files and view files with a single octree file, generating
-        the necessary Radiance commands for the complete rendering pipeline: octree compilation
-        with sky (oconv), scene rendering (rpict), and HDR to TIFF conversion (ra_tiff).
-
-        Args:
-            ab (int, optional): Ambient bounces for rpict. Defaults to 2.
-            ad (int, optional): Ambient divisions for rpict. Defaults to 128.
-            ar (int, optional): Ambient resolution for rpict. Defaults to 64.
-            as_val (int, optional): Ambient samples for rpict. Defaults to 64.
-            ps (int, optional): Pixel sample spacing for rpict. Defaults to 6.
-            lw (float, optional): Limit weight for rpict. Defaults to 0.00500.
-
-        Returns:
-            tuple: A 4-tuple containing:
-                - temp_octree_with_sky_paths (list[Path]): Temporary octree file paths for oconv input.
-                - oconv_cmds (list[str]): Commands to combine octree with sky files.
-                - rpict_cmds (list[str]): Commands to render scenes from different viewpoints.
-                - pcomb_cmds (list[str]): Commands to combine indirect and direct hdr files.
-                - ra_tiff_cmds (list[str]): Commands to convert HDR output to tiff format with 8-bit flowting points precision.
-
-        Note:
-            Output files are named using the pattern: {octree_base}_{view_name}_{sky_name}.{ext}
-            Duplicate oconv commands are automatically removed while preserving order.
-        """
-
-        rpict_cmds, oconv_cmds, temp_octree_with_sky_paths, pcomb_ra_tiff_cmds = [], [], [], []
-
-        octree_base_name = self.skyless_octree_path.stem.replace(
-            '_skyless', '')
+        rpict_cmds, oconv_cmds, temp_octree_with_sky_paths = [], [], []
+        octree_base_name = self.skyless_octree_path.stem.replace('_skyless', '')
 
         for sky_file_path, view_file_path in product(self.sky_files, self.view_files):
-
             sky_file_name = Path(sky_file_path).stem
             view_file_name = Path(view_file_path).stem
             octree_with_sky_path = self.skyless_octree_path.parent / f"{octree_base_name}_{sky_file_name}.oct"
             output_hdr_path = self.image_dir / f"{octree_base_name}_{view_file_name}_{sky_file_name}.hdr"
-            output_hdr_path_combined = self.image_dir / f"{octree_base_name}_{view_file_name}_{sky_file_name}_combined.hdr"
-            overcast_hdr_path = self.image_dir / f"{octree_base_name}_{view_file_name}__TenK_cie_overcast.hdr"
+            temp_octree_with_sky_path = self.skyless_octree_path.parent / f"{octree_base_name}_{sky_file_name}_temp.oct"
 
-            # constructed commands that will be executed in parallel from each other untill all are complete.
-            temp_octree_with_sky_path = self.skyless_octree_path.parent / f'{octree_base_name}_{sky_file_name}_temp.oct'
-            oconv_cmd, rpict_cmd, pcomb_ra_tiff_cmd = [
-                rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} {sky_file_path} > {octree_with_sky_path}",
-                rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} -ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} {octree_with_sky_path} > {output_hdr_path}",
-                rf'pcomb -e "ro=ri(1)+ri(2); go=gi(1)+gi(2); bo=bi(1)+bi(2)" {overcast_hdr_path} {output_hdr_path} | pfilt -1 | ra_tiff -e -4 - {self.image_dir / f'{output_hdr_path_combined.stem}.tiff'}',
-            ]
+            oconv_cmd = (
+                rf"oconv -i {str(temp_octree_with_sky_path).replace('_skyless', '')} "
+                rf"{sky_file_path} > {octree_with_sky_path}"
+            )
+            rpict_cmd = (
+                rf"rpict -w -t 3 -vf {view_file_path} -x {self.x_res} -y {self.y_res} "
+                rf"-ab {ab} -ad {ad} -ar {ar} -as {as_val} -ps {ps} -lw {lw} "
+                rf"{octree_with_sky_path} > {output_hdr_path}"
+            )
 
             temp_octree_with_sky_paths.append(temp_octree_with_sky_path)
             oconv_cmds.append(oconv_cmd)
             rpict_cmds.append(rpict_cmd)
-            pcomb_ra_tiff_cmds.append(pcomb_ra_tiff_cmd)
 
-        # get rid of duplicate oconv commands while retaining list order
         oconv_cmds = list(dict.fromkeys(oconv_cmds))
 
-        # Log summary before exit
         logger.info(
             f"Generated sunny sky rendering commands: {len(oconv_cmds)} oconv, "
-            f"{len(rpict_cmds)} rpict, {len(pcomb_ra_tiff_cmds)} pcomb_ra_tiff"
-            f"for {len(self.sky_files)} sky files {len(self.view_files)} views at resolution {self.x_res}x{self.y_res}"
+            f"{len(rpict_cmds)} rpict for {len(self.sky_files)} skies x "
+            f"{len(self.view_files)} views @ {self.x_res}x{self.y_res}"
         )
 
-        return temp_octree_with_sky_paths, oconv_cmds, rpict_cmds, pcomb_ra_tiff_cmds
+        return temp_octree_with_sky_paths, oconv_cmds, rpict_cmds
 
     def _render_overcast_gpu(self, octree_base_name: str, overcast_sky_name: str, gpu_quality: str) -> tuple:
         """Handle GPU-based overcast rendering with file checking. Returns (executor, future)."""
@@ -699,37 +678,58 @@ class SunlightRenderer:
         return executor, executor.submit(wait_for_gpu_completion)
 
     def _render_overcast_cpu(self, octree_base_name: str, overcast_sky_name: str) -> tuple:
-        """Handle CPU-based overcast rendering with file checking. Returns (executor, future)."""
-        expected_files = self._get_expected_overcast_files(
-            octree_base_name, overcast_sky_name)
+        """Render overcast HDRs per view using the shared warmup+render helper.
+
+        On Linux the helper emits ``rtpict -n <N_PROCESSORS_MAX>`` per view; on
+        Windows it emits ``rpict -w``. Returns (executor, future) — the future
+        wraps the full warmup+render batch so Phase 3/4 (sunny oconv, direct
+        sun rpict) can overlap with it just as before.
+        """
+        expected_files = self._get_expected_overcast_files(octree_base_name, overcast_sky_name)
 
         if self._check_and_report_existing_files(expected_files):
             executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(lambda: None)
-        else:
-            # Calculate optimal parallelism for overcast rendering
-            # Each rtpict process uses max N_PROCESSORS CPUs (hardcoded limit in Radiance)
-            # With available CPUs, run floor(total_cpus / cpus_per_render) processes in parallel
-            total_cpus = config.DEFAULT_MAX_WORKERS
-            cpus_per_render = N_PROCESSORS_MAX
-            max_parallel_renders = max(1, total_cpus // cpus_per_render)
+            return executor, executor.submit(lambda: None)
 
-            print(f"Overcast rendering parallelism: {max_parallel_renders} concurrent renders "
-                  f"({total_cpus} total CPUs, {cpus_per_render} CPUs/render)")
+        # Each rtpict saturates up to N_PROCESSORS_MAX cores; run
+        # floor(total_cpus / N_PROCESSORS_MAX) views concurrently.
+        total_cpus = config.DEFAULT_MAX_WORKERS
+        max_parallel_renders = max(1, total_cpus // N_PROCESSORS_MAX)
 
-            # Run overture commands with calculated parallelism
-            utils.execute_new_radiance_commands(
-                self.rpict_daylight_overture_cmds,
-                number_of_workers=max_parallel_renders)
+        print(
+            f"Overcast rendering parallelism: {max_parallel_renders} concurrent renders "
+            f"({total_cpus} total CPUs, {N_PROCESSORS_MAX} CPUs/render, "
+            f"{'rtpict' if IS_LINUX else 'rpict'})"
+        )
 
-            # Run medium quality commands with calculated parallelism in background
-            executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(
-                utils.execute_new_radiance_commands,
-                self.rpict_daylight_med_qual_cmds,
-                number_of_workers=max_parallel_renders)
+        octree_with_overcast_sky_path = (
+            self.skyless_octree_path.parent
+            / f"{octree_base_name}_{overcast_sky_name}.oct"
+        )
 
-        return executor, future
+        def render_all() -> None:
+            with ThreadPoolExecutor(max_workers=max_parallel_renders) as pool:
+                futures = []
+                for idx, view_file in enumerate(self.view_files, 1):
+                    stem = f"{octree_base_name}_{view_file.stem}__{overcast_sky_name}"
+                    futures.append(pool.submit(
+                        render_view_with_warmup,
+                        octree_path=octree_with_overcast_sky_path,
+                        view_file=view_file,
+                        output_hdr_path=self.image_dir / f"{stem}.hdr",
+                        ambient_file_path=self.image_dir / f"{stem}.amb",
+                        render_x=self.x_res,
+                        render_y=self.y_res,
+                        render_params=self.overcast_render_params,
+                        warmup_params=self.overcast_warmup_params,
+                        n_cpus=N_PROCESSORS_MAX,
+                        view_label=f"overcast view {idx}/{len(self.view_files)}: {view_file.stem}",
+                    ))
+                for f in futures:
+                    f.result()
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        return executor, executor.submit(render_all)
 
     def _convert_tiff_to_png(self) -> None:
         """Convert all TIFF files in image directory to PNG format using parallel processing."""

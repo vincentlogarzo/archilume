@@ -520,12 +520,25 @@ def _create_fields_for_mode(mode_id: str) -> rx.Component:
             _create_upload_field("hdr_results", "HDR results — for markup",
                                  _ACCEPT_HDR, True,
                                  S.staged_create_hdr_results, ".hdr", S.upload_create_hdr_results),
-            _create_upload_field("room_data", "room_boundaries.csv",
+            rx.text("Rooms (choose one)", style={
+                "font_family": FONT_MONO, "font_size": "11px",
+                "text_transform": "uppercase", "color": COLORS["text_dim"],
+                "margin_top": "8px", "margin_bottom": "4px",
+            }),
+            _create_upload_field("room_data", "room_boundaries.csv — rows become .aoi files",
                                  _ACCEPT_CSV, False,
                                  S.staged_create_room_data, ".csv", S.upload_create_room_data),
-            _create_upload_field("aoi_files", ".aoi files",
+            _create_upload_field("aoi_files", ".aoi files — pre-built room boundaries",
                                  _ACCEPT_AOI, True,
                                  S.staged_create_aoi_files, ".aoi", S.upload_create_aoi_files),
+            rx.cond(
+                S.create_exclusivity_error != "",
+                rx.text(S.create_exclusivity_error, style={
+                    "font_family": FONT_MONO, "font_size": "11px",
+                    "color": COLORS["danger"], "margin_top": "4px",
+                }),
+                rx.fragment(),
+            ),
         )
     if mode_id == "daylight":
         return rx.fragment(

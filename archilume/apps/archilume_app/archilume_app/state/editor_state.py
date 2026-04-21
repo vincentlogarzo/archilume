@@ -8,14 +8,18 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Optional, TypedDict
+from urllib.parse import quote
 
 import pandas as pd
 import reflex as rx
+
+from archilume.config import get_project_paths
 
 from ..lib.debug import (
     debug_handler,
@@ -34,6 +38,40 @@ from ..lib import project_modes
 
 # Module-level DF image cache (numpy arrays can't be Reflex state vars)
 _df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
+
+# PDF overlay "Plan Resolution" cycle. Compressed-PNG disk cache keeps even the
+# 400 DPI variant cheap, so 72/100 (visibly soft on high-DPI displays) were
+# dropped and 400 was added for extreme-zoom inspection.
+_DPI_STEPS: tuple[int, ...] = (150, 200, 300, 400)
+_DEFAULT_OVERLAY_DPI: int = 200
+
+
+def _overlay_cache_dir(project: str) -> Optional[Path]:
+    """Filesystem path of the per-project PDF overlay PNG cache.
+
+    Lives under ``projects/<project>/inputs/plans/.overlay_cache/`` — keeps
+    cache artefacts project-bound (moves with archive/restore, deleted with
+    the project). Served by a FastAPI sub-app at
+    ``/overlay_cache/{project}/{filename}``. Returns None when *project* is
+    empty (no project is active — no cache location is defined).
+    """
+    if not project:
+        return None
+    return get_project_paths(project).plans_dir / ".overlay_cache"
+
+
+def _backend_base_url() -> str:
+    """Absolute base URL of the Reflex FastAPI backend.
+
+    Mirrors the precedence used in ``rxconfig.py`` so the browser fetches
+    ``/overlay_cache/...`` from the backend port (8000 in dev) instead of
+    the frontend port (3000). On a reverse-proxied production origin this
+    prefix resolves to the same host and remains correct.
+    """
+    return os.environ.get(
+        "REFLEX_API_URL",
+        os.environ.get("API_URL", "http://localhost:8000"),
+    )
 
 
 def _snap_scale_top(value: str) -> "float | None":
@@ -95,6 +133,52 @@ def _stem_to_view_map(view_groups: list) -> dict[str, str]:
         for vg in view_groups
         for frame in vg["frames"]
     }
+
+
+def _select_level_prefetch_targets(
+    project_mode: str,
+    view_groups: list,
+    current_view_idx: int,
+    hdr_files: list,
+    current_hdr_idx: int,
+    current_variant_idx: int,
+) -> list[Path]:
+    """Resolve +/-1 adjacent-level image Paths for background LRU warm.
+
+    Sunlight: frame-0 PNG sibling of each neighbour view (what
+    ``load_current_image`` reads for variant 0). Daylight: the neighbour's
+    current-variant TIFF if populated, else its raw HDR.
+
+    Clamped to valid index range; returns an empty list when no neighbours
+    qualify (e.g. first/last level, or no images loaded).
+    """
+    targets: list[Path] = []
+    if project_mode == "sunlight" and view_groups:
+        total = len(view_groups)
+        for delta in (-1, 1):
+            idx = current_view_idx + delta
+            if 0 <= idx < total:
+                frames = view_groups[idx].get("frames") or []
+                if frames:
+                    png = frames[0].get("png_path") or ""
+                    if png:
+                        targets.append(Path(png))
+        return targets
+    if hdr_files:
+        total = len(hdr_files)
+        for delta in (-1, 1):
+            idx = current_hdr_idx + delta
+            if 0 <= idx < total:
+                info = hdr_files[idx]
+                variants = list(info.get("tiff_paths") or [])
+                if variants:
+                    v = min(max(0, current_variant_idx), len(variants) - 1)
+                    targets.append(Path(variants[v]))
+                else:
+                    hdr_path = info.get("hdr_path")
+                    if hdr_path:
+                        targets.append(Path(hdr_path))
+    return targets
 
 
 class RoomDict(TypedDict):
@@ -337,11 +421,11 @@ class EditorState(rx.State):
     # §8 — PDF overlay
     # =====================================================================
     overlay_visible: bool = False
-    overlay_image_b64: str = ""
+    overlay_image_url: str = ""
     overlay_pdf_path: str = ""
     overlay_page_idx: int = 0
     overlay_page_count: int = 0
-    overlay_dpi: int = 150
+    overlay_dpi: int = _DEFAULT_OVERLAY_DPI
     overlay_alpha: float = 0.6
     overlay_align_mode: bool = False
     overlay_transforms: dict = {}
@@ -356,6 +440,8 @@ class EditorState(rx.State):
     _overlay_drag_start_y: float = 0.0
     _overlay_drag_start_ox: float = 0.0
     _overlay_drag_start_oy: float = 0.0
+    _overlay_prefetch_token: int = 0  # cancellation epoch for background DPI prefetch
+    _level_prefetch_token: int = 0  # cancellation epoch for adjacent-level PNG warm
     _legacy_overlay_pending: bool = False
     _session_load_ok: bool = False  # guards auto-save; True only after a successful load
 
@@ -611,22 +697,23 @@ class EditorState(rx.State):
                         "hdr_idx": hdr_idx,
                     })
 
-            # Orphan children (parent name not present as a top-level room)
+            # Safety net: post-validation orphans (parent name not present as
+            # a real top-level room). Render as parent_room so orphans never
+            # display with child styling. Layers 1-2 should prevent reaching
+            # this path with well-formed AOI inputs.
             top_level_names = {r.get("name", "") for _, r in top_level}
             orphan_groups = [(p, c) for p, c in child_map.items() if p not in top_level_names]
-            for group_pos, (parent_name, children) in enumerate(orphan_groups):
+            for group_pos, (_parent_name, children) in enumerate(orphan_groups):
                 is_last_group = (group_pos == len(orphan_groups) - 1)
                 for child_pos, (child_idx, child) in enumerate(children):
                     child_selected = (
                         child_idx == self.selected_room_idx
                         or child_idx in self.multi_selected_idxs
                     )
-                    child_name = child.get("name", "")
-                    child_label = child_name.removeprefix(parent_name).strip("_ ") or child_name
                     is_last_child = (child_pos == len(children) - 1 and is_last_group)
                     nodes.append({
-                        "node_type": "child_room",
-                        "label": child_label,
+                        "node_type": "parent_room",
+                        "label": child.get("name", ""),
                         "tooltip": "",
                         "room_type": child.get("room_type", "") or "NONE",
                         "indent": "16px",
@@ -739,21 +826,20 @@ class EditorState(rx.State):
                         "hdr_idx": view_idx,
                     })
 
+            # Safety net (see tree_nodes comment above).
             top_level_names = {r.get("name", "") for _, r in top_level}
             orphan_groups = [(p, c) for p, c in child_map.items() if p not in top_level_names]
-            for group_pos, (parent_name, children) in enumerate(orphan_groups):
+            for group_pos, (_parent_name, children) in enumerate(orphan_groups):
                 is_last_group = (group_pos == len(orphan_groups) - 1)
                 for child_pos, (child_idx, child) in enumerate(children):
                     child_selected = (
                         child_idx == self.selected_room_idx
                         or child_idx in self.multi_selected_idxs
                     )
-                    child_name = child.get("name", "")
-                    child_label = child_name.removeprefix(parent_name).strip("_ ") or child_name
                     is_last_child = (child_pos == len(children) - 1 and is_last_group)
                     nodes.append({
-                        "node_type": "child_room",
-                        "label": child_label,
+                        "node_type": "parent_room",
+                        "label": child.get("name", ""),
                         "tooltip": "",
                         "room_type": child.get("room_type", "") or "NONE",
                         "indent": "16px",
@@ -1902,13 +1988,14 @@ class EditorState(rx.State):
         _df_cache["hdr_path"] = ""
         if self.df_placement_mode:
             self._load_df_image_cache()
+        self._restore_overlay_page_for_current_level()
 
-    def navigate_to_view(self, view_idx: int) -> None:
+    def navigate_to_view(self, view_idx: int):
         """Click handler for a sunlight view (level) header."""
         if not self.view_groups:
-            return
+            return None
         if not (0 <= view_idx < len(self.view_groups)):
-            return
+            return None
         # Toggle collapse to mirror existing navigate_to_hdr behaviour
         view_name = self.view_groups[view_idx]["view_name"]
         self.toggle_hdr_collapse(view_name)
@@ -1916,6 +2003,30 @@ class EditorState(rx.State):
         # Auto-play multi-frame views; stay paused on single-frame views
         frame_count = len(self.view_groups[view_idx]["frames"])
         self.frame_autoplay = frame_count > 1
+        return EditorState.prefetch_level_window
+
+    def navigate_level(self, direction: int):
+        """Arrow-key / toolbar chevron handler — move between levels in sunlight,
+        between HDRs in daylight. ``direction`` is +1 (next) or -1 (previous).
+
+        Collapses all other levels/HDRs and expands the target, mirroring the
+        daylight ``navigate_hdr`` behaviour."""
+        if self.is_sunlight_mode:
+            if not self.view_groups:
+                return None
+            new_idx = self.current_view_idx + direction
+            if not (0 <= new_idx < len(self.view_groups)):
+                return None
+            target_name = self.view_groups[new_idx]["view_name"]
+            self.collapsed_hdrs = [
+                vg["view_name"] for vg in self.view_groups if vg["view_name"] != target_name
+            ]
+            self._goto_frame(new_idx, 0)
+            frame_count = len(self.view_groups[new_idx]["frames"])
+            self.frame_autoplay = frame_count > 1
+        else:
+            self.navigate_hdr(direction)
+        return EditorState.prefetch_level_window
 
     def set_frame_idx(self, idx: int) -> None:
         """Scrub-slider handler. ``idx`` may arrive as str from the slider."""
@@ -1957,12 +2068,12 @@ class EditorState(rx.State):
             return
         self.frame_playback_fps = max(1, min(30, v))
 
-    def navigate_to_hdr(self, hdr_idx: int) -> None:
+    def navigate_to_hdr(self, hdr_idx: int):
         # Sunlight: tree rows carry the view_groups index in ``hdr_idx`` —
         # route to the view-level navigator so frame state stays coherent.
         if self.project_mode == "sunlight" and self.view_groups:
             self.navigate_to_view(hdr_idx)
-            return
+            return EditorState.prefetch_level_window
         if 0 <= hdr_idx < len(self.hdr_files):
             old_hdr_idx = self.current_hdr_idx
             old_variant_idx = self.current_variant_idx
@@ -1984,6 +2095,8 @@ class EditorState(rx.State):
                     "before": {"hdr_idx": old_hdr_idx, "variant_idx": old_variant_idx},
                     "after": {"hdr_idx": hdr_idx, "variant_idx": self.current_variant_idx},
                 })
+            return EditorState.prefetch_level_window
+        return None
 
     def select_all_rooms(self) -> None:
         if self.project_mode == "sunlight" and self.view_groups:
@@ -2093,12 +2206,18 @@ class EditorState(rx.State):
 
     @debug_handler
     def delete_room(self) -> None:
+        deleted_top_names: list[str] = []
         if self.multi_selected_idxs:
             to_delete = self._collect_children(set(self.multi_selected_idxs))
             undo_rooms = [
                 {"idx": i, "data": dict(self.rooms[i])}
                 for i in sorted(to_delete)
                 if 0 <= i < len(self.rooms)
+            ]
+            deleted_top_names = [
+                self.rooms[i].get("name", "")
+                for i in to_delete
+                if 0 <= i < len(self.rooms) and self.rooms[i].get("parent") is None
             ]
             self._push_undo({
                 "action": "room_delete",
@@ -2116,6 +2235,11 @@ class EditorState(rx.State):
                 for i in sorted(to_delete)
                 if 0 <= i < len(self.rooms)
             ]
+            deleted_top_names = [
+                self.rooms[i].get("name", "")
+                for i in to_delete
+                if 0 <= i < len(self.rooms) and self.rooms[i].get("parent") is None
+            ]
             room_name = self.rooms[self.selected_room_idx].get("name", "?")
             child_count = len(to_delete) - 1
             desc = f"Delete room {room_name}"
@@ -2129,6 +2253,8 @@ class EditorState(rx.State):
             })
             self.rooms = [r for i, r in enumerate(self.rooms) if i not in to_delete]
             self.selected_room_idx = -1
+        for name in deleted_top_names:
+            self._delete_aoi_for_room(name)
         self.status_message = "Room deleted"
         self._auto_save()
         self._recompute_df()
@@ -2598,6 +2724,94 @@ class EditorState(rx.State):
                     f"  save_room → NOOP: no active mode, selected_room_idx={self.selected_room_idx}"
                 )
 
+    # ---- Drawn-room .aoi writeback (sunlight only) -----------------------
+    #
+    # Contract: top-level rooms (``parent is None``) persist as v2 ``.aoi``
+    # files in ``aoi_inputs_dir`` *and* in ``aoi_session.json``. Child rooms
+    # (``parent`` set) persist in the session only. This matches the upload
+    # path — seeded parent rooms come from ``.aoi`` files; children drawn on
+    # top are session-only.
+    def _aoi_inputs_dir_for_writeback(self) -> Optional[Path]:
+        if self.project_mode != "sunlight" or not self.project:
+            return None
+        try:
+            from archilume.config import get_project_paths
+            return get_project_paths(self.project).aoi_inputs_dir
+        except Exception:
+            return None
+
+    def _resolve_room_world_vertices(self, room: dict) -> Optional[list[list[float]]]:
+        """Return the room's world vertices in metres, projecting from pixel
+        vertices if necessary. Returns None when the HDR view params are
+        unavailable."""
+        world = room.get("world_vertices")
+        if world:
+            return [[float(x), float(y)] for x, y in world]
+        pixel_verts = room.get("vertices") or []
+        if len(pixel_verts) < 3:
+            return None
+        hdr_key = room.get("hdr_file", "")
+        vp = self.hdr_view_params.get(hdr_key) if self.hdr_view_params else None
+        if not vp or len(vp) < 6:
+            return None
+        return self._project_pixels_to_world(pixel_verts, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5])
+
+    def _resolve_room_ffl_m(self, room: dict) -> Optional[float]:
+        """FFL in metres for a drawn room. Derived from the room's HDR name —
+        ``plan_ffl_<mm>`` → ``mm / 1000``. Returns None when no HDR is bound."""
+        import re
+        if "ffl" in room:
+            try:
+                return float(room["ffl"])
+            except (TypeError, ValueError):
+                pass
+        hdr_key = room.get("hdr_file", "") or ""
+        m = re.search(r"plan_ffl_(-?\d+)", hdr_key)
+        if not m:
+            return None
+        return int(m.group(1)) / 1000.0
+
+    def _write_aoi_for_room(self, room: dict) -> None:
+        """Write a v2 ``.aoi`` for a top-level sunlight room. No-op otherwise."""
+        if room.get("parent") is not None:
+            return
+        dest_dir = self._aoi_inputs_dir_for_writeback()
+        if dest_dir is None:
+            return
+        world = self._resolve_room_world_vertices(room)
+        ffl = self._resolve_room_ffl_m(room)
+        if world is None or ffl is None:
+            logger.debug(
+                "[aoi_writeback] skipping %r — world_vertices=%s ffl=%s",
+                room.get("name"), world is not None, ffl,
+            )
+            return
+        from ..lib import aoi_io
+        try:
+            aoi_io.write_v2_aoi(dest_dir, room.get("name", ""), ffl, world)
+        except Exception as e:
+            logger.warning("[aoi_writeback] write failed for %r: %s", room.get("name"), e)
+
+    def _delete_aoi_for_room(self, name: str) -> None:
+        dest_dir = self._aoi_inputs_dir_for_writeback()
+        if dest_dir is None or not name:
+            return
+        from ..lib import aoi_io
+        try:
+            aoi_io.delete_aoi(dest_dir, name)
+        except Exception as e:
+            logger.warning("[aoi_writeback] delete failed for %r: %s", name, e)
+
+    def _rename_aoi_for_room(self, old_name: str, new_name: str) -> None:
+        dest_dir = self._aoi_inputs_dir_for_writeback()
+        if dest_dir is None or not old_name or not new_name or old_name == new_name:
+            return
+        from ..lib import aoi_io
+        try:
+            aoi_io.rename_aoi(dest_dir, old_name, new_name)
+        except Exception as e:
+            logger.warning("[aoi_writeback] rename failed %r -> %r: %s", old_name, new_name, e)
+
     def _save_new_room(self) -> None:
         from ..lib.geometry import make_unique_name, next_room_number, point_in_polygon, polygons_overlap
         vertices = [[v["x"], v["y"]] for v in self.draw_vertices]
@@ -2644,6 +2858,7 @@ class EditorState(rx.State):
             "visible": True,
         }
         self.rooms = self.rooms + [new_room]
+        self._write_aoi_for_room(new_room)
         self.draw_vertices = []
         self.snap_point = {}
         self.preview_point = {}
@@ -2658,12 +2873,26 @@ class EditorState(rx.State):
             return
         rooms_copy = list(self.rooms)
         room = dict(rooms_copy[self.selected_room_idx])
+        old_name = room.get("name", "") or ""
+        old_parent = room.get("parent")
         if self.room_name_input.strip():
             room["name"] = self.room_name_input.strip()
         room["room_type"] = self.room_type_input
         room["parent"] = self.selected_parent or None
         rooms_copy[self.selected_room_idx] = room
         self.rooms = rooms_copy
+        new_name = room.get("name", "") or ""
+        new_parent = room.get("parent")
+        was_top = old_parent is None
+        is_top = new_parent is None
+        if was_top and is_top:
+            if old_name != new_name:
+                self._rename_aoi_for_room(old_name, new_name)
+            self._write_aoi_for_room(room)
+        elif was_top and not is_top:
+            self._delete_aoi_for_room(old_name)
+        elif not was_top and is_top:
+            self._write_aoi_for_room(room)
         self.status_message = f"Updated: {room['name']}"
         self._auto_save()
         self._recompute_df()
@@ -3072,6 +3301,16 @@ class EditorState(rx.State):
             self.overlay_dpi = before.get("dpi", self.overlay_dpi)
             self.overlay_alpha = before.get("alpha", self.overlay_alpha)
             self.overlay_page_idx = before.get("page_idx", self.overlay_page_idx)
+            # Sync the restored page_idx back into the per-level transform so that
+            # navigating away and returning restores the correct (undone) page.
+            if page_changed:
+                level_key = self._current_level_key()
+                if level_key and level_key in self.overlay_transforms:
+                    t = dict(self.overlay_transforms)
+                    entry_t = dict(t[level_key])
+                    entry_t["page_idx"] = self.overlay_page_idx
+                    t[level_key] = entry_t
+                    self.overlay_transforms = t
             if dpi_changed or page_changed:
                 self._rasterize_current_page()
         self._auto_save()
@@ -3477,28 +3716,42 @@ class EditorState(rx.State):
             for wx, wy in world_verts
         ]
 
+    @staticmethod
+    def _project_pixels_to_world(
+        pixel_verts: list[list[float]],
+        vp_x: float, vp_y: float, vh: float, vv: float,
+        img_w: float, img_h: float,
+    ) -> list[list[float]]:
+        """Pixel coords -> world (metres). Inverse of :meth:`_project_world_to_pixels`."""
+        return [
+            [(px - img_w / 2) * (vh / img_w) + vp_x,
+             vp_y - (py - img_h / 2) * (vv / img_h)]
+            for px, py in pixel_verts
+        ]
+
     def _seed_rooms_from_modern_aoi(self, aoi_dir: Path) -> int:
         """Seed ``self.rooms`` from modern ``.aoi`` files.
 
-        Handles two header variants:
+        Supports three header variants:
 
-        * Phase-5 *processed* files — line[1] begins ``ASSOCIATED VIEW FILE:``
-          and data rows carry both world and pixel columns (produced by
+        * **v2 minimal** — ``AoI Points File : X,Y positions`` / ``FFL z height(m):`` /
+          ``POINTS N`` / world-only ``x y`` rows. Filestem is the room name;
+          parent is always ``None`` (child relationships live only in
+          ``aoi_session.json``). Pixels are projected client-side via the
+          HDR's view params, matched by FFL.
+        * **v1 input** — ``PARENT:`` / ``CHILD:`` / ``FFL z height(m):`` /
+          ``CENTRAL x,y:`` / ``NO. PERIMETER POINTS N:`` with world-only rows.
+          Kept for read-only back-compat with pre-migration projects.
+        * **v1 processed** — ``ASSOCIATED VIEW FILE:`` on line[1] with
+          ``x y pixel_x pixel_y`` data rows (produced by
           ``ViewGenerator.create_aoi_files(coordinate_map)``).
-        * Input files from the OBJ/AOI editor or
-          ``scripts/convert_room_boundaries_csv_to_aoi.py`` — line[1] begins
-          ``PARENT:`` / line[2] ``CHILD:`` and data rows carry world-only
-          coordinates. These are projected to pixels client-side using each
-          HDR's view params, mirroring the IESVE seeder.
-
-        Parity with ``matplotlib_app._load_from_aoi_files``.
         """
         import re
         seeded = 0
 
-        # Built once: ffl_mm -> (hdr_entry, vp) — used by the world-only
-        # input-format branch to map an .aoi FFL to its matching HDR so the
-        # stored pixel verts line up with the HDR the room will render over.
+        # Built once: ffl_mm -> (hdr_entry, vp) — used to map an .aoi FFL to
+        # its matching HDR so the stored pixel verts line up with the HDR the
+        # room will render over.
         ffl_mm_to_entry: dict[int, tuple[dict, list[float]]] = {}
         for entry in self.hdr_files:
             m = re.search(r"plan_ffl_(\d+)", entry["name"])
@@ -3513,90 +3766,102 @@ class EditorState(rx.State):
                 lines = [l.strip() for l in aoi_path.read_text(encoding="utf-8").splitlines()]
             except Exception:
                 continue
-            if len(lines) < 6:
+            if len(lines) < 4:
                 continue
-            m_name = re.match(r"AOI Points File:\s*(.+)", lines[0])
-            if not m_name:
-                # Not a modern-format file (likely IESVE "AoI Points File :") — skip.
+            if not re.match(r"AO?I Points File\s*:", lines[0], re.IGNORECASE):
                 continue
-            name = m_name.group(1).strip()
 
-            if lines[1].startswith("PARENT:"):
-                parent = lines[1].split(":", 1)[1].strip()
-                child = (
-                    lines[2].split(":", 1)[1].strip()
-                    if lines[2].startswith("CHILD:")
-                    else name
+            # ---- Detect format + locate data-start sentinel ----
+            ffl: float | None = None
+            vertex_start: int | None = None
+            is_v1_processed = False
+            for i, ln in enumerate(lines):
+                upper = ln.upper()
+                if ln.startswith("FFL z height(m):"):
+                    try:
+                        ffl = float(ln.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                elif upper.startswith("ASSOCIATED VIEW FILE:"):
+                    is_v1_processed = True
+                elif upper.startswith("POINTS ") or upper.startswith("NO. PERIMETER POINTS"):
+                    vertex_start = i + 1
+                    break
+            if ffl is None or vertex_start is None:
+                continue
+
+            # ---- v1 processed: world + pixel columns in data rows ----
+            if is_v1_processed:
+                m_view = re.search(r"plan_ffl_(\d+)", lines[1])
+                if not m_view:
+                    continue
+                ffl_pat = re.compile(r"plan_ffl_" + m_view.group(1) + r"(?!\d)")
+                hdr_name = next(
+                    (entry["name"] for entry in self.hdr_files if ffl_pat.search(entry["name"])),
+                    None,
                 )
-                m_ffl_z = re.search(r"FFL z height\(m\):\s*([\d.]+)", lines[3])
-                if not m_ffl_z:
+                if hdr_name is None:
                     continue
-                ffl = float(m_ffl_z.group(1))
-                cached = ffl_mm_to_entry.get(int(round(ffl * 1000)))
-                if cached is None:
-                    continue
-                entry, vp = cached
+                pixel_verts: list[list[float]] = []
                 world_verts: list[list[float]] = []
-                for line in lines[6:]:
-                    parts = line.split()
-                    if len(parts) >= 2:
+                for ln in lines[vertex_start:]:
+                    parts = ln.split()
+                    if len(parts) >= 4:
                         try:
                             world_verts.append([float(parts[0]), float(parts[1])])
+                            pixel_verts.append([float(parts[2]), float(parts[3])])
                         except ValueError:
                             continue
-                if len(world_verts) < 3:
+                if len(pixel_verts) < 3:
                     continue
-                pixel_verts = self._project_world_to_pixels(
-                    world_verts, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5],
-                )
+                m_name = re.match(r"AOI Points File:\s*(.+)", lines[0])
+                display_name = m_name.group(1).strip() if m_name else aoi_path.stem
                 self.rooms.append({
-                    "name": child,
-                    "parent": parent,
+                    "name": display_name,
+                    "parent": None,
                     "vertices": pixel_verts,
                     "world_vertices": world_verts,
                     "ffl": ffl,
-                    "hdr_file": self._resolve_room_hdr_key(entry["name"]),
+                    "hdr_file": self._resolve_room_hdr_key(hdr_name),
                     "visible": True,
                 })
                 seeded += 1
                 continue
 
-            m_view = re.search(r"plan_ffl_(\d+)", lines[1])
-            if not m_view:
-                continue
-            ffl_str = m_view.group(1)
-            ffl_pat = re.compile(r"plan_ffl_" + ffl_str + r"(?!\d)")
-            hdr_name = next(
-                (entry["name"] for entry in self.hdr_files
-                 if ffl_pat.search(entry["name"])),
-                None,
-            )
-            if hdr_name is None:
-                continue
-            m_ffl_z = re.search(r"FFL z height\(m\):\s*([\d.]+)", lines[2])
-            ffl = float(m_ffl_z.group(1)) if m_ffl_z else 0.0
-            pixel_verts: list[list[float]] = []
+            # ---- v1 input (PARENT/CHILD) and v2 minimal: world-only rows ----
             world_verts = []
-            for line in lines[5:]:
-                parts = line.split()
-                if len(parts) >= 4:
+            for ln in lines[vertex_start:]:
+                parts = ln.split()
+                if len(parts) >= 2:
                     try:
                         world_verts.append([float(parts[0]), float(parts[1])])
-                        pixel_verts.append([float(parts[2]), float(parts[3])])
                     except ValueError:
                         continue
-            if len(pixel_verts) < 3:
+            if len(world_verts) < 3:
                 continue
+
+            cached = ffl_mm_to_entry.get(int(round(ffl * 1000)))
+            if cached is None:
+                continue
+            entry, vp = cached
+            pixel_verts = self._project_world_to_pixels(
+                world_verts, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5],
+            )
+
+            # Room name: always the filestem. Parent/child relationships are
+            # managed in-app and persisted to aoi_session.json — never
+            # reconstructed from .aoi header lines (even in v1 files).
             self.rooms.append({
-                "name": name,
+                "name": aoi_path.stem,
                 "parent": None,
                 "vertices": pixel_verts,
                 "world_vertices": world_verts,
                 "ffl": ffl,
-                "hdr_file": self._resolve_room_hdr_key(hdr_name),
+                "hdr_file": self._resolve_room_hdr_key(entry["name"]),
                 "visible": True,
             })
             seeded += 1
+        self._validate_room_hierarchy()
         return seeded
 
     def _seed_rooms_from_iesve_aoi(self, aoi_dir: Path) -> int:
@@ -3604,8 +3869,7 @@ class EditorState(rx.State):
 
         FFL per zone is looked up in the converted ``room_boundaries.csv`` when
         available. Rooms are projected into the first HDR matching their FFL
-        (or level-code prefix) using ``hdr_view_params``. Parity with
-        ``matplotlib_app._load_from_iesve_aoi``.
+        (or level-code prefix) using ``hdr_view_params``.
         """
         import re
         if not self.hdr_files or not self.hdr_view_params:
@@ -3683,7 +3947,62 @@ class EditorState(rx.State):
                 "visible": True,
             })
             seeded += 1
+        self._validate_room_hierarchy()
         return seeded
+
+    def _validate_room_hierarchy(self) -> None:
+        """Enforce: a room is a child only when its ``parent`` names a real
+        top-level sibling (same ``hdr_file``, no parent of its own) AND every
+        child vertex sits inside that parent's polygon. Violations are demoted
+        to ``parent = None`` so they render top-level. Idempotent.
+
+        A room with ``parent`` set to ``None`` or ``""`` is treated as
+        top-level (the codebase uses both sentinels interchangeably — e.g. the
+        divider tool at :3309 vs zone-click at :3885).
+        """
+        from ..lib.geometry import point_in_polygon, polygon_centroid
+        by_hdr: dict[str, list[int]] = {}
+        for idx, room in enumerate(self.rooms):
+            by_hdr.setdefault(room.get("hdr_file", ""), []).append(idx)
+        for hdr_key, idxs in by_hdr.items():
+            name_to_idx = {
+                self.rooms[i].get("name", ""): i
+                for i in idxs
+                if not self.rooms[i].get("parent")
+            }
+            for i in idxs:
+                room = self.rooms[i]
+                parent_name = room.get("parent")
+                if not parent_name:
+                    continue
+                parent_idx = name_to_idx.get(parent_name)
+                if parent_idx is None:
+                    logger.warning(
+                        "[hierarchy] demoting %r — parent %r not found in %r",
+                        room.get("name"), parent_name, hdr_key,
+                    )
+                    room["parent"] = None
+                    continue
+                parent_verts = self.rooms[parent_idx].get("vertices") or []
+                child_verts = room.get("vertices") or []
+                if len(parent_verts) < 3 or len(child_verts) < 3:
+                    logger.warning(
+                        "[hierarchy] demoting %r — insufficient vertices for containment test",
+                        room.get("name"),
+                    )
+                    room["parent"] = None
+                    continue
+                # Probe the child's interior (centroid) rather than every
+                # vertex. Divider-produced children share edges with the
+                # parent, so boundary-coincident vertices would fail the
+                # strict ray-cast containment test.
+                cx, cy = polygon_centroid(child_verts)
+                if not point_in_polygon(cx, cy, parent_verts):
+                    logger.warning(
+                        "[hierarchy] demoting %r — centroid outside parent %r",
+                        room.get("name"), parent_name,
+                    )
+                    room["parent"] = None
 
     def _maybe_seed_from_aoi_files(self) -> int:
         """If the current project has ``.aoi`` files but no session yet, seed
@@ -3702,10 +4021,13 @@ class EditorState(rx.State):
         aoi_files = [p for p in aoi_dir.glob("*.aoi") if p.stem != "aoi_session"]
         if not aoi_files:
             return 0
+        # IESVE files carry a ``ZONE {space_id} {level_code}`` line on line 1;
+        # v2 sunlight files share the ``AoI Points File :`` header but have no
+        # ZONE line. Use ZONE presence as the discriminator.
         is_iesve = False
         try:
-            header = aoi_files[0].read_text(encoding="utf-8").splitlines()[:1]
-            if header and header[0].startswith("AoI Points File :"):
+            head = aoi_files[0].read_text(encoding="utf-8").splitlines()[:5]
+            if any(l.lstrip().upper().startswith("ZONE ") for l in head):
                 is_iesve = True
         except Exception:
             pass
@@ -3850,17 +4172,22 @@ class EditorState(rx.State):
     def set_legend_hovered(self, v: bool) -> None:
         self.legend_hovered = v
 
-    def toggle_overlay(self) -> None:
+    def toggle_overlay(self):
         if not self.overlay_pdf_path:
             self._pick_pdf_via_dialog()
-            return
-        self.overlay_visible = not self.overlay_visible
-        logger.debug(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', b64_len={len(self.overlay_image_b64)}")
-        if self.overlay_visible and not self.overlay_image_b64:
-            self._rasterize_current_page()
-        if self.overlay_visible:
-            self._ensure_default_transform()
-        self._auto_save()
+        else:
+            self.overlay_visible = not self.overlay_visible
+            logger.debug(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', url='{self.overlay_image_url}'")
+            if self.overlay_visible and not self.overlay_image_url:
+                self._rasterize_current_page()
+            if self.overlay_visible:
+                self._ensure_default_transform()
+            self._auto_save()
+        # Warm the disk cache for other DPI variants in the background so
+        # cycling "Plan Resolution" is instant. Safe to call unconditionally:
+        # the prefetch task bails if pdf_path or project is empty.
+        if self.overlay_pdf_path:
+            return EditorState.prefetch_overlay_dpi_cache
 
     def _pick_pdf_via_dialog(self) -> None:
         import tkinter as tk
@@ -3879,10 +4206,10 @@ class EditorState(rx.State):
         from ..lib.image_loader import get_pdf_page_count
         self.overlay_page_count = get_pdf_page_count(Path(path))
         self.overlay_page_idx = 0
-        self.overlay_image_b64 = ""
+        self.overlay_image_url = ""
         self._save_pdf_path_to_toml(path)
         self._rasterize_current_page()
-        if self.overlay_image_b64:
+        if self.overlay_image_url:
             self.overlay_visible = True
             self.status_message = f"Floor plan attached ({self.overlay_page_count} page(s))"
             self.status_colour = "accent"
@@ -3902,8 +4229,8 @@ class EditorState(rx.State):
             if toml_path.exists():
                 with open(toml_path, "rb") as f:
                     data = tomllib.load(f)
-            # Store relative to inputs_dir (matches matplotlib_app schema); fall back
-            # to absolute only when PDF lives outside the project.
+            # Store relative to inputs_dir; fall back to absolute only when PDF
+            # lives outside the project.
             pdf_p = Path(path)
             try:
                 rel = pdf_p.resolve().relative_to(project_paths.inputs_dir.resolve())
@@ -3947,12 +4274,17 @@ class EditorState(rx.State):
             transform = dict(self.overlay_transforms.get(key, {})) if key and key in self.overlay_transforms else None
             self._overlay_session_start = {"level_key": key, "transform": transform}
             self._overlay_undo_stack = []
+            # In sunlight mode, auto-inherit from below on first entry to adjust-plan
+            # for this level (no stored transform yet) so the user doesn't have to
+            # manually click "Inherit from Below" every time.
+            if self.is_sunlight_mode and key and key not in self.overlay_transforms:
+                self.inherit_from_level_below()
         else:
             # Exiting: commit final position, clear overlay undo stack
             self._overlay_undo_stack = []
             self._overlay_session_start = {}
 
-    def cycle_overlay_page(self) -> None:
+    def cycle_overlay_page(self):
         if self.overlay_page_count <= 0:
             return
         old_page = self.overlay_page_idx
@@ -3964,7 +4296,20 @@ class EditorState(rx.State):
                 "before": {"page_idx": old_page, "dpi": self.overlay_dpi, "alpha": self.overlay_alpha},
                 "after": {"page_idx": self.overlay_page_idx, "dpi": self.overlay_dpi, "alpha": self.overlay_alpha},
             })
+        # Persist new page into the per-level transform so navigating away and back
+        # restores the correct page for this level (fixes cross-level page mutation).
+        key = self._current_level_key()
+        if key:
+            t = dict(self._get_current_overlay_transform())
+            t["page_idx"] = self.overlay_page_idx
+            t.setdefault("is_manual", True)
+            outer = dict(self.overlay_transforms)
+            outer[key] = t
+            self.overlay_transforms = outer
+            self._auto_save()
         self._rasterize_current_page()
+        if self.overlay_pdf_path:
+            return EditorState.prefetch_overlay_dpi_cache
 
     def set_overlay_dpi(self, dpi: str) -> None:
         try:
@@ -3974,12 +4319,14 @@ class EditorState(rx.State):
         self._rasterize_current_page()
 
     def cycle_overlay_dpi(self) -> None:
-        _DPI_STEPS = [72, 100, 150, 200, 300]
         old_dpi = self.overlay_dpi
         try:
             idx = _DPI_STEPS.index(self.overlay_dpi)
         except ValueError:
-            idx = 2  # default to 150
+            # Legacy sessions may hold a retired DPI (e.g. 72 or 100).
+            # Snap to the default and start cycling from there.
+            self.overlay_dpi = _DEFAULT_OVERLAY_DPI
+            idx = _DPI_STEPS.index(_DEFAULT_OVERLAY_DPI)
         self.overlay_dpi = _DPI_STEPS[(idx + 1) % len(_DPI_STEPS)]
         if self.overlay_align_mode:
             self._push_overlay_undo({
@@ -4136,21 +4483,23 @@ class EditorState(rx.State):
                 "palette": self.falsecolour_palette,
             }
             ct_settings = {"scale": self.contour_scale,    "n_levels": self.contour_n_levels}
-            last_gen = dict(self.last_generated or {})
             self.is_regenerating = True
             self.regen_progress = ""
 
         # Determine work per stream (snapshot copies — no state access here).
+        # Existence-only gating on the non-force path: regen is only driven by
+        # a missing PNG. Force=True (Regenerate button) still rebuilds every
+        # HDR and invalidates both legends.
         if force:
             fc_stale = [Path(h["hdr_path"]) for h in hdr_files]
             ct_stale = [Path(h["hdr_path"]) for h in hdr_files]
             fc_force_legend = True
             ct_force_legend = True
         else:
-            fc_stale = vm.detect_stale("falsecolour", hdr_files, image_dir, fc_settings, last_gen)
-            ct_stale = vm.detect_stale("contour",    hdr_files, image_dir, ct_settings, last_gen)
-            fc_force_legend = vm.settings_changed("falsecolour", fc_settings, last_gen)
-            ct_force_legend = vm.settings_changed("contour",    ct_settings, last_gen)
+            fc_stale = vm.detect_stale("falsecolour", hdr_files, image_dir)
+            ct_stale = vm.detect_stale("contour",    hdr_files, image_dir)
+            fc_force_legend = False
+            ct_force_legend = False
 
         if not fc_stale and not ct_stale:
             async with self:
@@ -4292,13 +4641,85 @@ class EditorState(rx.State):
         """
         return {"offset_x": 0.0, "offset_y": 0.0, "scale_x": 1.0, "scale_y": 1.0, "rotation_90": 0}
 
-    def reset_level_alignment(self) -> None:
-        """Reset this level's underlay transform to the centred default."""
-        key = self._current_level_key()
-        if not key:
+    def inherit_from_level_below(self) -> None:
+        """Copy the overlay transform from the level immediately below onto this level.
+
+        Sunlight view_generator uses shared view extents across levels, so a transform
+        aligned on one level applies 1:1 to any other level. If no lower level exists
+        or it has no stored transform, fall back to the centred default.
+
+        Size/scale/opacity/rotation are inherited verbatim. The PDF page is advanced
+        by one (page_below + 1) so each floor level shows the next plan sheet.
+        """
+        current_key = self._current_level_key()
+        if not current_key:
             return
-        logger.debug("[overlay-clear] level=%s — reset to centred default", key)
-        self._set_current_overlay_transform(self._centred_default_transform())
+        below_key = self._level_below_key()
+        below_t = self.overlay_transforms.get(below_key) if below_key else None
+        if below_t:
+            logger.debug("[overlay-inherit] %s <- %s", current_key, below_key)
+            # Copy geometry (scale/offset/rotation) but NOT page_idx or is_manual.
+            new_t = {k: v for k, v in below_t.items() if k not in ("is_manual", "page_idx")}
+            # Advance the PDF page by one relative to the level below so each floor
+            # shows the next plan sheet (expected: page_below + 1).
+            below_page = int(below_t.get("page_idx", self.overlay_page_idx))
+            if self.overlay_page_count > 0:
+                new_page = (below_page + 1) % self.overlay_page_count
+            else:
+                new_page = below_page
+            new_t["page_idx"] = new_page
+            self.overlay_page_idx = new_page
+            self._set_current_overlay_transform(new_t)
+            if self.overlay_visible and self.overlay_pdf_path:
+                self._rasterize_current_page()
+        else:
+            logger.debug(
+                "[overlay-inherit] %s: no lower level with transform — reset to centred",
+                current_key,
+            )
+            self._set_current_overlay_transform(self._centred_default_transform())
+
+    def _restore_overlay_page_for_current_level(self) -> None:
+        """Restore or infer the PDF page for the current level so each level displays
+        its own page.
+
+        Prevents cross-level page mutation (``overlay_page_idx`` was a shared global)
+        and auto-inherits ``page_below + 1`` on first visit so the user doesn't need
+        to open Adjust Plan. A stored transform that predates the ``page_idx`` field
+        (legacy session data) is treated the same as a first visit — otherwise the
+        stale transform would swallow the restore branch and leave ``overlay_page_idx``
+        leaking from the previous level.
+        """
+        level_key = self._current_level_key()
+        if not (level_key and self.overlay_pdf_path and self.overlay_page_count > 0):
+            return
+        stored_page = None
+        if level_key in self.overlay_transforms:
+            stored_page = self.overlay_transforms[level_key].get("page_idx")
+        new_page = int(stored_page) if stored_page is not None else self._infer_default_page_for_current_level()
+        if new_page != self.overlay_page_idx:
+            self.overlay_page_idx = new_page
+            if self.overlay_visible:
+                self._rasterize_current_page()
+
+    def _infer_default_page_for_current_level(self) -> int:
+        """Compute the default PDF page for the current level without storing a transform.
+
+        In sunlight mode, looks up the level immediately below and returns
+        ``page_below + 1`` (modulo page_count) so each floor shows the next
+        plan sheet automatically.  If no lower level with a stored page exists,
+        returns 0.  Used by ``_goto_frame`` to set ``overlay_page_idx`` on
+        first navigation to a level that has no stored transform yet.
+        """
+        if self.overlay_page_count <= 0:
+            return 0
+        below_key = self._level_below_key()
+        if below_key:
+            below_t = self.overlay_transforms.get(below_key)
+            if below_t is not None:
+                below_page = int(below_t.get("page_idx", 0))
+                return (below_page + 1) % self.overlay_page_count
+        return 0
 
     def _ensure_default_transform(self) -> None:
         """Store a centred default transform for the current level if none exists yet."""
@@ -4399,6 +4820,36 @@ class EditorState(rx.State):
             return self.hdr_files[self.current_hdr_idx]["name"]
         return ""
 
+    def _level_below_key(self) -> str:
+        """Return the level key immediately below the current one by ``ffl_NNNNNN`` elevation.
+
+        Works for both modes: sunlight keys are view_names (``ffl_NNNNNN``), daylight
+        keys are HDR stems that embed ``ffl_NNNNNN``. Returns "" if the current key
+        lacks an ffl token or no lower level exists.
+        """
+        current = self._current_level_key()
+        if not current:
+            return ""
+        m = re.search(r"ffl_(\d+)", current)
+        if not m:
+            return ""
+        current_z = int(m.group(1))
+        if self.view_groups:
+            candidates = [vg["view_name"] for vg in self.view_groups]
+        else:
+            candidates = [h["name"] for h in self.hdr_files]
+        below_z = -1
+        below_key = ""
+        for key in candidates:
+            mm = re.search(r"ffl_(\d+)", key)
+            if not mm:
+                continue
+            z = int(mm.group(1))
+            if z < current_z and z > below_z:
+                below_z = z
+                below_key = key
+        return below_key
+
     def _get_current_overlay_transform(self) -> dict:
         key = self._current_level_key()
         if key and key in self.overlay_transforms:
@@ -4411,11 +4862,16 @@ class EditorState(rx.State):
             return
         stored = dict(transform)
         stored["is_manual"] = True
+        # Persist the current page index so each level remembers its own PDF page.
+        # This prevents cross-level mutation: navigating to another level restores
+        # that level's own page rather than inheriting the global overlay_page_idx.
+        if "page_idx" not in stored:
+            stored["page_idx"] = self.overlay_page_idx
         logger.debug(
-            "[overlay-set] level=%s ox=%.6f oy=%.6f sx=%.4f sy=%.4f rot=%s vw=%d iw=%d ih=%d pw=%d ph=%d",
+            "[overlay-set] level=%s ox=%.6f oy=%.6f sx=%.4f sy=%.4f rot=%s page=%d vw=%d iw=%d ih=%d pw=%d ph=%d",
             key, stored.get("offset_x", 0), stored.get("offset_y", 0),
             stored.get("scale_x", 1), stored.get("scale_y", 1),
-            stored.get("rotation_90", 0),
+            stored.get("rotation_90", 0), stored.get("page_idx", 0),
             self.viewport_width, self.image_width, self.image_height,
             self.overlay_img_width, self.overlay_img_height,
         )
@@ -4437,23 +4893,169 @@ class EditorState(rx.State):
         if not self.overlay_pdf_path:
             logger.debug("[overlay] _rasterize skipped: no overlay_pdf_path")
             return
+        pdf_path = Path(self.overlay_pdf_path)
+        if not pdf_path.exists():
+            logger.warning("[overlay] PDF missing: %s — clearing overlay state", pdf_path)
+            self.status_message = f"Floor plan not found: {pdf_path.name} — select a new PDF"
+            self.status_colour = "danger"
+            self.overlay_image_url = ""
+            self.overlay_img_width = 0
+            self.overlay_img_height = 0
+            self.overlay_pdf_path = ""
+            self.overlay_page_count = 0
+            self.overlay_page_idx = 0
+            return
         from ..lib.image_loader import rasterize_pdf_page
-        cache_dir = None
-        if self.project:
-            try:
-                from archilume.config import get_project_paths
-                cache_dir = get_project_paths(self.project).plans_dir / ".overlay_cache"
-            except Exception:
-                pass
+        cache_dir = _overlay_cache_dir(self.project)
+        if cache_dir is None:
+            logger.debug("[overlay] _rasterize skipped: no active project")
+            return
         logger.debug(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
-        b64, pw, ph = rasterize_pdf_page(Path(self.overlay_pdf_path), self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
-        if b64:
-            logger.debug(f"[overlay] Rasterized OK, b64 length={len(b64)}")
+        cache_path, pw, ph = rasterize_pdf_page(pdf_path, self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
+        if cache_path:
+            logger.debug(f"[overlay] Rasterized OK, path={cache_path}")
         else:
             logger.debug("[overlay] Rasterization FAILED — returned None/empty")
-        self.overlay_image_b64 = b64 or ""
+        # URL is served by the FastAPI /overlay_cache/{project}/{filename}
+        # route on the backend port. Both segments percent-encoded to handle
+        # spaces and other reserved characters in project or file names.
+        if cache_path:
+            url = f"/overlay_cache/{quote(self.project)}/{quote(cache_path.name)}"
+            self.overlay_image_url = f"{_backend_base_url()}{url}"
+        else:
+            self.overlay_image_url = ""
         self.overlay_img_width = pw
         self.overlay_img_height = ph
+
+    @rx.event(background=True)
+    async def prefetch_overlay_dpi_cache(self):
+        """Warm the PNG disk cache for every (page, dpi) combination.
+
+        Runs PyMuPDF rasterisation on worker threads so the Reflex event loop
+        stays responsive. Processes combinations in priority order:
+
+        1. Current page at non-current DPIs (user likely to cycle DPI)
+        2. Neighbouring pages at current DPI (user likely to page next/prev)
+        3. All remaining pages × DPIs
+
+        Between iterations we re-check the snapshot under the state lock and
+        abort if the user opened a different PDF (token bumped) — a page or
+        DPI change is *not* grounds to abort, since the point of prefetch is
+        to cover those navigations in advance. Cache hits skip rasterisation.
+        """
+        import asyncio
+        from ..lib.image_loader import rasterize_pdf_page_to_cache
+
+        async with self:
+            if not self.overlay_pdf_path:
+                return
+            cache_dir = _overlay_cache_dir(self.project)
+            if cache_dir is None:
+                return
+            pdf_path = Path(self.overlay_pdf_path)
+            current_page = self.overlay_page_idx
+            current_dpi = self.overlay_dpi
+            page_count = self.overlay_page_count or 1
+            self._overlay_prefetch_token += 1
+            my_token = self._overlay_prefetch_token
+            pdf_path_str = self.overlay_pdf_path
+
+        # Priority-ordered (page, dpi) queue. A page's distance from
+        # current_page is the primary sort key so pages nearer the user's
+        # current position warm first; DPI tiebreaker puts current_dpi last
+        # (it is already rendered synchronously on demand).
+        combos: list[tuple[int, int]] = []
+        # Tier 1: current page, non-current DPIs first
+        for dpi in _DPI_STEPS:
+            if dpi != current_dpi:
+                combos.append((current_page, dpi))
+        combos.append((current_page, current_dpi))
+        # Tier 2+: all other pages, ordered by distance to current_page
+        other_pages = sorted(
+            (p for p in range(page_count) if p != current_page),
+            key=lambda p: abs(p - current_page),
+        )
+        for page in other_pages:
+            # current_dpi first for fast page navigation at the active zoom
+            combos.append((page, current_dpi))
+            for dpi in _DPI_STEPS:
+                if dpi != current_dpi:
+                    combos.append((page, dpi))
+
+        logger.debug(
+            "[overlay] prefetch started: %d combos (%d pages × %d dpis)",
+            len(combos), page_count, len(_DPI_STEPS),
+        )
+
+        for page, dpi in combos:
+            async with self:
+                if (
+                    self._overlay_prefetch_token != my_token
+                    or self.overlay_pdf_path != pdf_path_str
+                ):
+                    logger.debug("[overlay] prefetch superseded — aborting")
+                    return
+            try:
+                await asyncio.to_thread(
+                    rasterize_pdf_page_to_cache, pdf_path, page, dpi, cache_dir,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[overlay] prefetch page=%d dpi=%d failed: %r", page, dpi, exc,
+                )
+
+        logger.debug("[overlay] prefetch complete: all %d combos warmed", len(combos))
+
+    @rx.event(background=True)
+    async def prefetch_level_window(self):
+        """Warm the image LRU for the +/-1 adjacent levels so flicking between
+        level-above and level-below is served from memory.
+
+        Mirrors ``prefetch_overlay_dpi_cache``: token-based supersede,
+        ``asyncio.to_thread`` to keep the event loop responsive, and a
+        per-target abort check so rapid keyboard flicks do not back up stale
+        work. Picks targets by mode:
+
+        * Sunlight: neighbours in ``view_groups`` -> frame-0 PNG sibling
+          (``load_current_image`` reads that PNG for variant 0).
+        * Daylight: neighbours in ``hdr_files`` -> ``tiff_paths[variant]`` if
+          present, else the HDR itself (what ``_rebuild_variants`` plus
+          ``load_current_image`` will load on navigate).
+
+        Target list is bounded to at most two Paths, safely within the
+        ``_image_cache`` capacity (60).
+        """
+        import asyncio
+        from ..lib.image_loader import load_image_as_base64
+
+        async with self:
+            self._level_prefetch_token += 1
+            my_token = self._level_prefetch_token
+            targets = _select_level_prefetch_targets(
+                self.project_mode,
+                list(self.view_groups),
+                self.current_view_idx,
+                list(self.hdr_files),
+                self.current_hdr_idx,
+                self.current_variant_idx,
+            )
+
+        if not targets:
+            return
+
+        logger.debug("[level] prefetch started: %d targets", len(targets))
+
+        for path in targets:
+            async with self:
+                if self._level_prefetch_token != my_token:
+                    logger.debug("[level] prefetch superseded — aborting")
+                    return
+            try:
+                await asyncio.to_thread(load_image_as_base64, path)
+            except Exception as exc:
+                logger.debug("[level] prefetch %s failed: %r", path, exc)
+
+        logger.debug("[level] prefetch complete: %d targets warmed", len(targets))
 
     def _add_align_point(self, x: float, y: float) -> None:
         self.align_points = self.align_points + [{"x": x, "y": y}]
@@ -4869,6 +5471,7 @@ class EditorState(rx.State):
                 self.status_message = f"Seeded {seeded} rooms from .aoi files"
             return
         self.rooms = data.get("rooms", [])
+        self._validate_room_hierarchy()
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
         _tv = data.get("transform_version", 0)
@@ -4880,7 +5483,7 @@ class EditorState(rx.State):
         self.current_variant_idx = data.get("current_variant_idx", 0)
         self.selected_parent = data.get("selected_parent", "")
         self.annotation_scale = data.get("annotation_scale", 1.0)
-        self.overlay_dpi = data.get("overlay_dpi", 150)
+        self.overlay_dpi = data.get("overlay_dpi", _DEFAULT_OVERLAY_DPI)
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
@@ -4940,6 +5543,7 @@ class EditorState(rx.State):
                 self.status_message = f"Seeded {seeded} rooms from .aoi files"
             return
         self.rooms = data.get("rooms", [])
+        self._validate_room_hierarchy()
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
         _tv = data.get("transform_version", 0)
@@ -4951,7 +5555,7 @@ class EditorState(rx.State):
         self.current_variant_idx = data.get("current_variant_idx", 0)
         self.selected_parent = data.get("selected_parent", "")
         self.annotation_scale = data.get("annotation_scale", 1.0)
-        self.overlay_dpi = data.get("overlay_dpi", 150)
+        self.overlay_dpi = data.get("overlay_dpi", _DEFAULT_OVERLAY_DPI)
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
@@ -4974,7 +5578,7 @@ class EditorState(rx.State):
             data.get("transform_version", "?"), self.overlay_visible,
         )
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
-        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
+        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_url:
             self._rasterize_current_page()
         self._recompute_df()
 
@@ -5179,27 +5783,23 @@ class EditorState(rx.State):
             self.available_projects = []
 
     def open_project(self, name: str):
-        """Open a project and schedule visualisation regeneration.
+        """Switch projects by forcing a full page reload with ``?project=NAME``.
 
-        Returns ``EditorState.regenerate_visualisation_bg(False)`` so Reflex
-        fires the background regen after this handler flushes state. Without
-        that return, user-driven opens (modal click, import, link) never
-        trigger falsecolour/contour PNG regeneration — the automatic path
-        only runs via ``_open_project_progressive`` in ``init_on_load``.
+        The fresh page load constructs a pristine ``EditorState`` — guaranteed
+        zero residue from the outgoing project. All post-reload work
+        (``_init_project_paths``, ``load_session``, visualisation regen,
+        overlay prefetch, level-window prefetch) runs through
+        ``init_on_load`` → ``_open_project_progressive`` exactly as on first
+        launch. Persists the outgoing session first so no edits are lost.
         """
         if not name:
             return None
-        self.save_session()
-        self.project = name
-        self._init_project_paths()
-        self._rebuild_variants()
-        self.load_session()
-        self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
-        self.load_current_image()
-        self.open_project_modal_open = False
-        self.status_message = f"Opened: {name}"
-        self.status_colour = "accent"
-        return EditorState.regenerate_visualisation_bg(False)
+        try:
+            self.save_session()
+        except Exception:
+            logger.exception("[open_project] save_session failed for outgoing project")
+        from urllib.parse import quote
+        return rx.redirect(f"/?project={quote(name, safe='')}", is_external=True)
 
     def _open_project_progressive(self, name: str):
         """Open a project with progressive UI updates via yield.
@@ -5222,7 +5822,7 @@ class EditorState(rx.State):
 
         # Phase 2: session restore (JSON parse, no heavy compute)
         self._load_session_core()
-        self.collapsed_hdrs = [h["name"] for h in self.hdr_files]
+        self.collapse_all_hdrs()
         yield
 
         # Phase 3: load main image — app feels "ready" after this
@@ -5233,10 +5833,18 @@ class EditorState(rx.State):
         yield
 
         # Phase 4: deferred heavy compute
-        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_b64:
+        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_url:
             self._rasterize_current_page()
             yield
         self._recompute_df()
+
+        # Phase 4b: warm the PDF overlay cache for every (page, dpi) in the
+        # background so navigating levels or cycling DPI is cache-served.
+        if self.overlay_pdf_path:
+            yield EditorState.prefetch_overlay_dpi_cache
+
+        # Warm adjacent-level PNGs so +1/-1 flicks hit the in-memory LRU.
+        yield EditorState.prefetch_level_window
 
         # Phase 5: detect & regenerate any missing/stale falsecolour or contour
         # PNGs in the background. UI is fully interactive at this point.
@@ -5280,6 +5888,11 @@ class EditorState(rx.State):
             self.create_error = f"Missing: {', '.join(missing)}"
             return
 
+        invalid_combos = project_modes.invalid_combinations(mode_id, self.new_project_staged)
+        if invalid_combos:
+            self.create_error = invalid_combos[0]
+            return
+
         # Reject if any staged file failed validation.
         invalid = [
             e.get("name", "?")
@@ -5292,9 +5905,16 @@ class EditorState(rx.State):
             return
 
         try:
-            paths.create_dirs()
+            # Create only project roots. Per-field directories (aoi/, plans/,
+            # pic/, image/, …) are made on-demand by their writers — a field
+            # with no staged files never creates its dir. This keeps the
+            # project layout scoped to the mode's declared fields.
+            paths.project_dir.mkdir(parents=True, exist_ok=True)
+            paths.inputs_dir.mkdir(parents=True, exist_ok=True)
+            paths.archive_dir.mkdir(parents=True, exist_ok=True)
             self._move_staged_into_project(paths, mode_id, self.new_project_staged)
             self._maybe_convert_iesve_room_data(paths)
+            self._maybe_convert_sunlight_csv_to_aoi(paths, mode_id)
             self._write_project_toml(name, mode_id, paths)
         except Exception as e:
             shutil.rmtree(paths.project_dir, ignore_errors=True)
@@ -5342,7 +5962,8 @@ class EditorState(rx.State):
 
     def _maybe_convert_iesve_room_data(self, paths) -> None:
         """If an ``iesve_room_data.xlsx`` landed in ``aoi_inputs_dir``, convert
-        it to the canonical ``room_boundaries.csv`` (matplotlib_app parity)."""
+        it to the canonical ``room_boundaries.csv``."""
+        paths.aoi_inputs_dir.mkdir(parents=True, exist_ok=True)
         xlsx_candidates = sorted(paths.aoi_inputs_dir.glob("*.xlsx"))
         if not xlsx_candidates:
             return
@@ -5359,9 +5980,39 @@ class EditorState(rx.State):
             except Exception as e:
                 logger.warning("xlsx conversion failed for %s: %s", xlsx, e)
 
+    def _maybe_convert_sunlight_csv_to_aoi(self, paths, mode_id: str) -> None:
+        """Sunlight mode: convert ``room_boundaries.csv`` in ``aoi_inputs_dir``
+        to v2 ``.aoi`` files so the downstream seeder picks them up as if the
+        user had uploaded ``.aoi`` files directly.
+
+        Skips silently when the CSV is absent or any ``.aoi`` already exists.
+        Exclusivity at staging time (``project_modes.invalid_combinations``)
+        prevents both-supplied scenarios; the existing-.aoi check here is a
+        defensive fallback when projects are created outside the UI.
+        """
+        if mode_id != "sunlight":
+            return
+        csv_path = paths.aoi_inputs_dir / "room_boundaries.csv"
+        if not csv_path.exists():
+            return
+        if any(paths.aoi_inputs_dir.glob("*.aoi")):
+            logger.info(
+                "[sunlight_csv] .aoi files already present in %s; skipping CSV conversion",
+                paths.aoi_inputs_dir,
+            )
+            return
+        from ..lib.sunlight_csv import SunlightCsvError, convert_csv_to_aoi_files
+        try:
+            written = convert_csv_to_aoi_files(csv_path, paths.aoi_inputs_dir)
+        except SunlightCsvError as e:
+            logger.warning("room_boundaries.csv conversion failed: %s", e)
+            return
+        logger.info("[sunlight_csv] generated %d .aoi files from %s", len(written), csv_path.name)
+
     def _write_project_toml(self, name: str, mode_id: str, paths) -> None:
         """Write ``project.toml`` referencing only the files present for this mode."""
 
+        paths.project_dir.mkdir(parents=True, exist_ok=True)
         toml_path = paths.project_dir / "project.toml"
         lines = [
             "[project]",
@@ -5439,7 +6090,10 @@ class EditorState(rx.State):
             # 3. Re-run xlsx -> csv conversion in case room data was replaced.
             self._maybe_convert_iesve_room_data(paths)
 
-            # 4. Rewrite project.toml so paths reflect the new canonical set.
+            # 4. Sunlight only: regenerate .aoi files when a new CSV was staged.
+            self._maybe_convert_sunlight_csv_to_aoi(paths, self.project_mode)
+
+            # 5. Rewrite project.toml so paths reflect the new canonical set.
             self._write_project_toml(self.project, self.project_mode, paths)
         except Exception as e:
             logger.exception("apply_settings failed")
@@ -5464,7 +6118,7 @@ class EditorState(rx.State):
         if not self.project:
             return
         self.overlay_pdf_path = ""
-        self.overlay_image_b64 = ""
+        self.overlay_image_url = ""
         self.overlay_visible = False
         self.overlay_page_idx = 0
         self.overlay_page_count = 0
@@ -5514,6 +6168,15 @@ class EditorState(rx.State):
                             self.overlay_pdf_path = str(paths.project_dir / pdf_p)
                         elif (paths.inputs_dir / pdf_p).exists():
                             self.overlay_pdf_path = str(paths.inputs_dir / pdf_p)
+                        else:
+                            logger.warning("[overlay] persisted pdf_path not found: %s", pdf_path_str)
+                            self.status_message = f"Saved floor plan not found: {pdf_path_str}"
+                            self.status_colour = "accent2"
+                        # Populate page count so prefetch knows how many pages
+                        # to warm in the background.
+                        if self.overlay_pdf_path:
+                            from ..lib.image_loader import get_pdf_page_count
+                            self.overlay_page_count = get_pdf_page_count(Path(self.overlay_pdf_path))
                 except Exception:
                     pass
             self.session_path = str(paths.aoi_inputs_dir / "aoi_session.json")
@@ -5568,7 +6231,26 @@ class EditorState(rx.State):
     def init_on_load(self):
         self.scan_projects(force=True)
         yield
-        initial = os.environ.get("ARCHILUME_INITIAL_PROJECT", "").strip()
+
+        # Clear process-scoped caches on every boot (including project-switch
+        # reloads). image_loader caches are path-keyed and live in the server
+        # process — without this, same-filename assets across projects could
+        # collide. _df_cache is a single-entry singleton on this module.
+        from ..lib.image_loader import clear_cache as clear_image_loader_caches
+        clear_image_loader_caches()
+        _df_cache["image"] = None
+        _df_cache["hdr_path"] = ""
+
+        # Project target: URL query (?project=NAME) takes precedence over the
+        # env var so the reload-based switch in open_project lands on the right
+        # project. Falls back to ARCHILUME_INITIAL_PROJECT, then to auto-open
+        # when there is exactly one project available.
+        try:
+            query_params = dict(self.router.url.query_parameters)
+        except Exception:
+            query_params = {}
+        query_project = str(query_params.get("project", "")).strip()
+        initial = query_project or os.environ.get("ARCHILUME_INITIAL_PROJECT", "").strip()
         if initial and initial in self.available_projects:
             yield from self._open_project_progressive(initial)
         elif len(self.available_projects) == 1:
@@ -6248,7 +6930,10 @@ class EditorState(rx.State):
     # CREATE PROJECT — computed vars
     # =====================================================================
 
-    @rx.var
+    @rx.var(
+        auto_deps=False,
+        deps=["project", "project_mode", "settings_staged", "settings_pending_removals"],
+    )
     def settings_mode_fields(self) -> list[dict]:
         """UI-friendly serialisation for the settings modal (current project mode)."""
         mode = project_modes.MODES.get(self.project_mode)
@@ -6333,6 +7018,14 @@ class EditorState(rx.State):
         return self.settings_staged.get("aoi_files", [])
 
     @rx.var
+    def create_exclusivity_error(self) -> str:
+        """Sunlight: non-empty when both room_boundaries.csv and .aoi files
+        have been staged for the new project. Displayed inline in the modal
+        so the user sees the exclusivity rule without clicking Create."""
+        errors = project_modes.invalid_combinations(self.new_project_mode, self.new_project_staged)
+        return errors[0] if errors else ""
+
+    @rx.var
     def project_mode_display(self) -> str:
         """Human-readable workflow mode label for the header bar.
         Empty when no project is loaded or mode is unknown."""
@@ -6341,7 +7034,7 @@ class EditorState(rx.State):
         mode = project_modes.MODES.get(self.project_mode)
         return mode.display if mode is not None else ""
 
-    @rx.var
+    @rx.var(auto_deps=False, deps=["project", "project_mode"])
     def settings_canonical_files(self) -> dict[str, list[str]]:
         """Filenames currently in canonical destination dirs for the active project,
         keyed by field id. Used by the settings modal to show existing files."""
@@ -6378,6 +7071,8 @@ class EditorState(rx.State):
         missing = project_modes.missing_required(self.new_project_mode, self.new_project_staged)
         if missing:
             return False
+        if project_modes.invalid_combinations(self.new_project_mode, self.new_project_staged):
+            return False
         # Reject if any staged file failed its validator.
         for entries in self.new_project_staged.values():
             for e in entries:
@@ -6385,7 +7080,10 @@ class EditorState(rx.State):
                     return False
         return True
 
-    @rx.var
+    @rx.var(
+        auto_deps=False,
+        deps=["project", "project_mode", "settings_staged", "settings_pending_removals"],
+    )
     def settings_form_is_valid(self) -> bool:
         # All staged replacements must be valid.
         for entries in self.settings_staged.values():
@@ -6696,16 +7394,26 @@ class EditorState(rx.State):
                 logger.debug(f"  handle_key 'ArrowUp' → nudge_overlay(0, -{step})")
                 self.nudge_overlay(0, -step)
             else:
-                logger.debug(f"  handle_key 'ArrowUp' → navigate_hdr(1) (current={self.current_hdr_idx})")
-                self.navigate_hdr(1)
+                logger.debug(
+                    f"  handle_key 'ArrowUp' → navigate_level(1) "
+                    f"(sunlight={self.is_sunlight_mode} view_idx={self.current_view_idx} "
+                    f"hdr_idx={self.current_hdr_idx})"
+                )
+                self.navigate_level(1)
+                yield EditorState.prefetch_level_window
         elif k == "ArrowDown":
             if self.overlay_align_mode:
                 step = self._arrow_accel("down")
                 logger.debug(f"  handle_key 'ArrowDown' → nudge_overlay(0, {step})")
                 self.nudge_overlay(0, step)
             else:
-                logger.debug(f"  handle_key 'ArrowDown' → navigate_hdr(-1) (current={self.current_hdr_idx})")
-                self.navigate_hdr(-1)
+                logger.debug(
+                    f"  handle_key 'ArrowDown' → navigate_level(-1) "
+                    f"(sunlight={self.is_sunlight_mode} view_idx={self.current_view_idx} "
+                    f"hdr_idx={self.current_hdr_idx})"
+                )
+                self.navigate_level(-1)
+                yield EditorState.prefetch_level_window
         elif k == "ArrowLeft":
             if self.overlay_align_mode:
                 step = self._arrow_accel("left")

@@ -96,6 +96,28 @@ def validate_room_data(path: Path) -> ValidationResult:
     return False, f"Unsupported room-data extension: {suffix}"
 
 
+def validate_sunlight_room_csv(path: Path) -> ValidationResult:
+    """Strict validator for the sunlight ``room_boundaries.csv`` schema.
+
+    Accepts only ``.csv`` with the three required columns (``Room Name``,
+    ``z_FFL(m)``, ``Vertex Coordinates (X:Y)``) and at least one parseable row.
+    Parse errors from :func:`sunlight_csv.parse_room_boundaries_csv` are
+    surfaced verbatim so the user can correct the file.
+    """
+    if path.suffix.lower() != ".csv":
+        return False, f"Sunlight room data must be a .csv (got {path.suffix})"
+    from .sunlight_csv import SunlightCsvError, parse_room_boundaries_csv
+    try:
+        rooms = parse_room_boundaries_csv(path)
+    except SunlightCsvError as e:
+        return False, str(e)
+    except Exception as e:
+        return False, f"Could not parse room_boundaries.csv: {e}"
+    if not rooms:
+        return False, "room_boundaries.csv has no rows"
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # Octree (.oct)
 # ---------------------------------------------------------------------------
@@ -192,26 +214,43 @@ def validate_mtl(path: Path) -> ValidationResult:
 # ---------------------------------------------------------------------------
 
 def validate_aoi(path: Path) -> ValidationResult:
-    """AOI file must have the 5-line header plus ≥3 parseable coordinate rows.
+    """AOI file must carry an ``AOI Points File`` header, an ``FFL z height(m)``
+    line, a ``POINTS`` / ``NO. PERIMETER POINTS`` data-start sentinel, and ≥3
+    parseable coordinate rows below it.
 
-    Format (see archilume/core/view_generator.py ``create_aoi_files``):
-        Line 1: "AOI Points File: ..."
-        Line 2: "ASSOCIATED VIEW FILE: ..."
-        Line 3: "FFL z height(m): ..."
-        Line 4: "CENTRAL x,y: ..."
-        Line 5: "NO. PERIMETER POINTS N: ..."
-        Lines 6+: "x y [pixel_x pixel_y]"
+    Accepts both v2 minimal format::
+
+        AoI Points File : X,Y positions
+        FFL z height(m): 93.260
+        POINTS 13
+        <x y rows>
+
+    and legacy v1 format with PARENT/CHILD/CENTRAL header lines.
     """
     try:
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError as e:
         return False, f"Could not read aoi: {e}"
-    if len(lines) < 8:
-        return False, f"Too few lines ({len(lines)}); expected header + ≥3 points"
-    if not lines[0].lstrip().startswith("AOI Points File"):
+
+    has_header = any(l.lstrip().lower().startswith("aoi points file") for l in lines[:2])
+    if not has_header:
         return False, "Missing 'AOI Points File' header"
+
+    ffl_ok = any(l.strip().startswith("FFL z height(m):") for l in lines)
+    if not ffl_ok:
+        return False, "Missing 'FFL z height(m)' line"
+
+    vertex_start: int | None = None
+    for i, line in enumerate(lines):
+        upper = line.strip().upper()
+        if upper.startswith("POINTS ") or upper.startswith("NO. PERIMETER POINTS"):
+            vertex_start = i + 1
+            break
+    if vertex_start is None:
+        return False, "Missing 'POINTS' / 'NO. PERIMETER POINTS' header"
+
     coord_rows = 0
-    for line in lines[5:]:
+    for line in lines[vertex_start:]:
         parts = line.split()
         if len(parts) < 2:
             continue

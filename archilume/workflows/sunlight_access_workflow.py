@@ -34,8 +34,23 @@ class SunlightAccessWorkflow:
         aoi_inputs_dir: Path,
         obj_paths: List[Path],
         project: str,
+        include_overcast: bool = False,
+        rendering_mode: str = "cpu",
+        rendering_quality: str = "stand",
     ) -> bool:
-        """Execute the sun-only sunlight access pipeline."""
+        """Execute the sunlight access pipeline.
+
+        Args:
+            include_overcast: When True, also render the overcast ambient baseline
+                and composite it onto each sun frame via pcomb (full sunlight
+                pipeline). When False (default), run the sun-only pipeline —
+                faster, no ambient bounce light.
+            rendering_mode: "cpu" or "gpu". Only consulted when
+                include_overcast=True; the sun-only path is CPU-only.
+            rendering_quality: GPU quality preset — one of "draft", "stand",
+                "prod", "final", "4k", "custom", "fast", "med", "high",
+                "detailed". Ignored when rendering_mode="cpu".
+        """
         timer = PhaseTimer()
 
         paths = config.get_project_paths(project)
@@ -51,6 +66,11 @@ class SunlightAccessWorkflow:
         print(f"{'Timestep':<30} {timestep_min} min")
         print(f"{'Camera Height (FFL)':<30} {ffl_offset_mm} mm ({ffl_offset_m} m)")
         print(f"{'Grid Resolution':<30} {grid_resolution_mm} mm/px")
+        print(f"{'Overcast Baseline':<30} {'ON' if include_overcast else 'OFF (sun-only)'}")
+        if include_overcast:
+            print(f"{'Rendering Mode':<30} {rendering_mode.upper()}")
+            if rendering_mode == 'gpu':
+                print(f"{'Rendering Quality':<30} {rendering_quality}")
         print(f"{'AOI Inputs Dir':<30} {aoi_inputs_dir}")
         print(f"{'Geometry Files':<30} {len(obj_paths)}")
         for i, obj in enumerate(obj_paths, 1):
@@ -81,6 +101,8 @@ class SunlightAccessWorkflow:
                 end_hour_24hr_format=end_hour,
                 minute_increment=timestep_min,
             )
+            if include_overcast:
+                sky_generator.generate_TenK_cie_overcast_skyfile()
 
         with timer("Phase 3: Prepare Camera Views"):
             view_generator = ViewGenerator(
@@ -110,7 +132,12 @@ class SunlightAccessWorkflow:
             print(f"Grid: {grid_resolution_mm}mm/px -> Resolution: {image_resolution}px "
                   f"(view width: {view_generator.view_horizontal:.2f}m)")
 
-        with timer("Phase 4: Render sun-only frames + PNGs"):
+        phase_label = (
+            "Phase 4: Render overcast + sun frames + PNGs"
+            if include_overcast else
+            "Phase 4: Render sun-only frames + PNGs"
+        )
+        with timer(phase_label):
             renderer = SunlightRenderer(
                 skyless_octree_path=octree_generator.skyless_octree_path,
                 x_res=image_resolution,
@@ -118,8 +145,17 @@ class SunlightAccessWorkflow:
                 skies_dir=paths.sky_dir,
                 views_dir=paths.view_dir,
                 image_dir=paths.image_dir,
+                overcast_sky_file_path=(
+                    sky_generator.TenK_cie_overcast_sky_file_path
+                    if include_overcast else None
+                ),
+                rendering_mode=rendering_mode,
+                gpu_quality=rendering_quality,
             )
-            renderer.sun_only_rendering_pipeline()
+            if include_overcast:
+                renderer.sunlight_rendering_pipeline()
+            else:
+                renderer.sun_only_rendering_pipeline()
 
         timer.print_report(output_dir=paths.outputs_dir)
         return True

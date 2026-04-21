@@ -28,6 +28,7 @@ $FrontendUrl    = "http://localhost:$FrontendPort"
 $HealthPath     = '/ping-frontend'
 $DockerHintFile = Join-Path $PSScriptRoot '.docker-path.txt'
 $ComposeFile    = Join-Path $PSScriptRoot 'docker-compose-archilume.yml'
+$EnvFile        = Join-Path $PSScriptRoot '.env'
 $ProjectsDir    = Join-Path $PSScriptRoot 'projects'
 
 function Write-Step([string]$Message) {
@@ -153,8 +154,18 @@ function Resolve-PortConflict([int]$Port) {
 }
 
 function Invoke-Compose([string[]]$Arguments) {
-    # Runs `docker compose -f <file> -p <project> <args...>`. Fails fast on non-zero exit.
-    $all = @('compose', '-f', $ComposeFile, '-p', $ComposeProject) + $Arguments
+    # Runs `docker compose [--env-file .env] -f <file> -p <project> <args...>`.
+    # Fails fast on non-zero exit.
+    #
+    # --env-file is passed explicitly when .env is present so that compose
+    # variable substitution (e.g. ARCHILUME_VERSION in image tags) resolves
+    # regardless of the caller's current working directory — compose's default
+    # .env lookup is cwd-relative, not compose-file-relative.
+    $prefix = @('compose')
+    if (Test-Path -LiteralPath $EnvFile) {
+        $prefix += @('--env-file', $EnvFile)
+    }
+    $all = $prefix + @('-f', $ComposeFile, '-p', $ComposeProject) + $Arguments
     & docker @all
     if ($LASTEXITCODE -ne 0) {
         Fail "Command failed: docker $($all -join ' ')"
@@ -179,7 +190,7 @@ function Wait-FrontendReady {
     }
     Write-Host ""
     # Surface container status to aid debugging.
-    & docker compose -f $ComposeFile -p $ComposeProject ps
+    Invoke-Compose @('ps')
     Fail "Frontend did not become healthy within 180 seconds. See container status above."
 }
 

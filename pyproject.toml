@@ -24,7 +24,8 @@ exclude = ["inputs*", "outputs*", "intermediates*"]
 
 [dependency-groups]
 app = [
-    "reflex>=0.8.28.post1",
+    "reflex>=0.9.0",
+    "fastapi>=0.135.3",
 ]
 engine = [
     "fastapi>=0.135.3",
@@ -48,7 +49,33 @@ desktop = [
 dev = [
     "coverage>=7.10.3",
     "pytest>=8.4.1",
+    "pytest-cov>=6.3.0",
 ]
 
 [tool.uv]
 default-groups = ["app", "engine", "desktop", "dev"]
+
+[tool.coverage.run]
+data_file = tests/.coverage
+
+[tool.coverage.report]
+omit = ["tests/*", "conftest.py"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+    "archilume/apps/archilume_app/tests",
+]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: fast, isolated pure-Python tests",
+    "integration: exercises multiple modules end-to-end",
+    "slow: takes > 1 s; skipped by default in local runs",
+    "gcp: requires GCP credentials or gcloud mock setup",
+    "radiance: requires Radiance binaries or mocked subprocess",
+]
+# --import-mode=importlib avoids module-name collision between top-level
+# tests/ and archilume/apps/archilume_app/tests/ (both ship __init__.py).
+addopts = "--strict-markers --import-mode=importlib"

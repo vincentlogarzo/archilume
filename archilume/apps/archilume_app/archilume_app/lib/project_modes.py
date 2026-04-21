@@ -155,11 +155,11 @@ RDP = FieldSpec(
 ROOM_DATA_SUNLIGHT = FieldSpec(
     id="room_data",
     label="room_boundaries.csv",
-    description="Room definitions (csv). Optional — AOI files may be used instead.",
+    description="Rooms as CSV — converted to .aoi on upload. Mutually exclusive with .aoi files.",
     accept={"text/csv": [".csv"]},
     multiple=False,
     dest_attr="aoi_inputs_dir",
-    validator=V.validate_room_data,
+    validator=V.validate_sunlight_room_csv,
     allowed_extensions=(".csv",),
 )
 
@@ -180,7 +180,7 @@ ROOM_DATA_IESVE = FieldSpec(
 AOI_FILES = FieldSpec(
     id="aoi_files",
     label=".aoi files",
-    description="Pre-built AOI files defining rooms.",
+    description="Pre-built AOI files defining rooms. Sunlight: mutually exclusive with room_boundaries.csv.",
     accept={"application/octet-stream": [".aoi"]},
     multiple=True,
     dest_attr="aoi_inputs_dir",
@@ -290,3 +290,28 @@ def missing_required(
             missing.append(labels)
 
     return missing
+
+
+def invalid_combinations(
+    mode_id: str,
+    staged: Dict[str, List[dict]],
+) -> List[str]:
+    """Return human-readable errors for mutually-exclusive field combinations.
+
+    Sunlight mode: ``room_data`` (``room_boundaries.csv``) and ``aoi_files``
+    are each individually valid but must not be supplied together. The CSV is
+    converted to ``.aoi`` files at project creation; accepting both would
+    race against user-supplied ``.aoi`` files.
+    """
+
+    def field_ok(field_id: str) -> bool:
+        entries = staged.get(field_id) or []
+        return any(e.get("ok") for e in entries)
+
+    errors: List[str] = []
+    if mode_id == "sunlight":
+        if field_ok("room_data") and field_ok("aoi_files"):
+            errors.append(
+                "Provide either room_boundaries.csv OR .aoi files, not both."
+            )
+    return errors

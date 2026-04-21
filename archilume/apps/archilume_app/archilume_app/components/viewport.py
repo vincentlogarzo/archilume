@@ -37,10 +37,10 @@ def _top_toolbar() -> rx.Component:
         rx.flex(
             rx.icon_button(rx.icon(tag="chevron-up", size=14),
                            variant="outline", size="1",
-                           on_click=lambda: EditorState.navigate_hdr(1)),
+                           on_click=lambda: EditorState.navigate_level(1)),
             rx.icon_button(rx.icon(tag="chevron-down", size=14),
                            variant="outline", size="1",
-                           on_click=lambda: EditorState.navigate_hdr(-1)),
+                           on_click=lambda: EditorState.navigate_level(-1)),
             gap="2px",
         ),
         # Filename
@@ -194,7 +194,7 @@ def _overlay_align_panel() -> rx.Component:
                                             "margin_left": "4px"}),
                     variant="ghost", size="1",
                     on_click=[
-                        EditorState.reset_level_alignment,
+                        EditorState.inherit_from_level_below,
                         rx.call_script("if(window._cancelOverlaySync)window._cancelOverlaySync();"),
                     ],
                     style={"color": COLORS["text_dim"], "width": "100%",
@@ -664,7 +664,7 @@ def _render_stamp(stamp: dict) -> rx.Component:
 # JavaScript for coordinate conversion and event bridging
 # ---------------------------------------------------------------------------
 
-_CANVAS_JS = rx.script("""
+_CANVAS_JS = rx.script(r"""
 (function() {
     // ---------------------------------------------------------------------------
     // Pure-JS zoom/pan — bypasses Python state round-trip for smooth 60fps zoom.
@@ -1236,13 +1236,13 @@ def _svg_canvas() -> rx.Component:
     return rx.box(
         # PDF underlay — lowest layer, sits behind the HDR image.
         # Uses rx.el.img (native <img>) to avoid Next.js Image constraints.
-        # Keep the img mounted whenever b64 data is present; toggle visibility via
-        # opacity/pointer-events so JS-set style.transform is preserved across
+        # Keep the img mounted whenever a cached URL is present; toggle visibility
+        # via opacity/pointer-events so JS-set style.transform is preserved across
         # hide/show cycles (avoids unmount/remount resetting the dragged position).
         rx.cond(
-            EditorState.overlay_image_b64 != "",
+            EditorState.overlay_image_url != "",
             rx.el.img(
-                src=EditorState.overlay_image_b64,
+                src=EditorState.overlay_image_url,
                 id="overlay-img",
                 data_transform=EditorState.overlay_css_transform,
                 data_overlay_params=EditorState.overlay_params_json,
@@ -1616,31 +1616,11 @@ def _viewport_resize_js() -> rx.Component:
 # ---------------------------------------------------------------------------
 
 def _empty_state() -> rx.Component:
-    """Centred Open/Create buttons shown in Results Viewer when no image is loaded."""
+    """Centred Open/Create buttons shown in the Viewer when no image is loaded."""
     return rx.cond(
         EditorState.current_image_b64 == "",
         _empty_state_buttons(),
         rx.fragment(),
-    )
-
-
-def _tab_placeholder(title: str, description: str, icon_tag: str) -> rx.Component:
-    """Placeholder content for tabs not yet implemented."""
-    return rx.box(
-        rx.flex(
-            rx.icon(tag=icon_tag, style={"width": "48px", "height": "48px",
-                                          "stroke_width": "1", "color": COLORS["text_dim"]}),
-            rx.text(title, style={"font_family": FONT_MONO, "font_size": "18px",
-                                   "color": COLORS["text_pri"], "margin_top": "12px"}),
-            rx.text(description, style={"font_family": FONT_MONO, "font_size": "12px",
-                                         "color": COLORS["text_dim"], "margin_top": "4px",
-                                         "text_align": "center", "max_width": "400px"}),
-            direction="column", align="center",
-        ),
-        style={
-            "flex": "1",
-            "display": "flex", "align_items": "center", "justify_content": "center",
-        },
     )
 
 
@@ -1709,19 +1689,7 @@ def _empty_state_buttons() -> rx.Component:
 
 def viewport() -> rx.Component:
     return rx.flex(
-        # Pre-Simulation Checks — room boundary editing (no HDR viewing)
-        rx.cond(
-            EditorState.active_tab == "pre_simulation",
-            _tab_with_no_project_gate(
-                _tab_placeholder(
-                    "Pre-Simulation Checks",
-                    "Room boundary editing, AOI setup, and simulation preparation tools.",
-                    "ruler",
-                ),
-            ),
-            rx.fragment(),
-        ),
-        # Simulation Manager
+        # Simulate
         rx.cond(
             EditorState.active_tab == "simulation",
             _tab_with_no_project_gate(
@@ -1729,8 +1697,8 @@ def viewport() -> rx.Component:
                     rx.flex(
                         rx.icon(tag="cloud-cog", style={"width": "48px", "height": "48px",
                                                          "stroke_width": "1", "color": COLORS["text_dim"]}),
-                        rx.text("Simulation Manager", style={"font_family": FONT_MONO, "font_size": "18px",
-                                                              "color": COLORS["text_pri"], "margin_top": "12px"}),
+                        rx.text("Simulate", style={"font_family": FONT_MONO, "font_size": "18px",
+                                                    "color": COLORS["text_pri"], "margin_top": "12px"}),
                         rx.text("Connect to GCP VM, launch simulations, and stream results back to the project directory.",
                                 style={"font_family": FONT_MONO, "font_size": "12px",
                                        "color": COLORS["text_dim"], "margin_top": "4px",
@@ -1783,7 +1751,7 @@ def viewport() -> rx.Component:
             ),
             rx.fragment(),
         ),
-        # Results Viewer — HDR/AOI editor
+        # Viewer — HDR/AOI editor
         rx.cond(
             EditorState.active_tab == "results",
             rx.fragment(
