@@ -23,7 +23,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import time
 import subprocess
-from PIL import Image
 import platform
 
 # Third-party imports
@@ -372,20 +371,19 @@ class SunlightRenderer:
                 self.oconv_cmds, number_of_workers=config.WORKERS["oconv_compile"])
             utils.delete_files(self.temp_octree_with_sky_paths)
 
-        # --- Phase 4: Execute Sunlight rendering Analysis, combined sunlight and daylight images, convert to png ---
+        # --- Phase 4: Direct-sun rendering per (sky, view) ---
         with timer("    Sunlight rendering"):
             utils.execute_new_radiance_commands(
                 self.rpict_direct_sun_cmds, number_of_workers=config.WORKERS["rpict_direct_sun"])
 
-        # Wait for GPU/CPU overcast rendering to complete before combining
+        # Wait for overcast rendering before writing PNGs so the backing image is present.
         phase_name = "    GPU rendering (total)" if self.rendering_mode == 'gpu' else "    Indirect diffuse rendering"
         with timer(phase_name):
-            future.result()  # Ensure overcast rendering is complete before combining
+            future.result()
 
-        with timer("    Combine overcast and sunny .HDR and convert to .TIFF"):
-            utils.execute_new_radiance_commands(
-                self.pcomb_ra_tiff_cmds, number_of_workers=config.WORKERS["pcomb_tiff_conversion"])
-            self._convert_tiff_to_png()
+        # --- Phase 5: Compact PNG per HDR (no pre-compositing — app overlays at read time) ---
+        with timer("    HDR -> PNG"):
+            convert_hdrs_in_dir(self.image_dir)
 
         print("RenderingPipelines completed successfully.")
         return timer.phase_timings
@@ -730,65 +728,3 @@ class SunlightRenderer:
 
         executor = ThreadPoolExecutor(max_workers=1)
         return executor, executor.submit(render_all)
-
-    def _convert_tiff_to_png(self) -> None:
-        """Convert all TIFF files in image directory to PNG format using parallel processing."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        tiff_files = list(self.image_dir.glob('*.tiff')) + \
-            list(self.image_dir.glob('*.tif'))
-
-        # Filter out files that already have PNG equivalents
-        files_to_convert = []
-        for tiff_path in tiff_files:
-            png_path = tiff_path.with_suffix('.png')
-            if not png_path.exists():
-                files_to_convert.append(tiff_path)
-
-        if not files_to_convert:
-            print(f"All {len(tiff_files)} TIFF files already have PNG versions")
-            return
-
-        print(f"Converting {len(files_to_convert)} of {len(tiff_files)} TIFF files to PNG...")
-
-        converted_count = 0
-        skipped_count = 0
-
-        def convert_single_file(tiff_path):
-            """Convert a single TIFF to PNG. Returns (success, error_msg)."""
-            try:
-                # Skip files that are too small (likely corrupted/empty TIFF headers)
-                if tiff_path.stat().st_size < 1000:  # Less than 1KB
-                    return (False, f"Corrupted/empty file: {tiff_path.stat().st_size} bytes")
-
-                # Use optimize=False for much faster conversion
-                Image.open(tiff_path).save(tiff_path.with_suffix('.png'),
-                                          format='PNG', optimize=False, compress_level=6)
-                return (True, None)
-            except Exception as e:
-                return (False, str(e))
-
-        # Parallel conversion using ThreadPoolExecutor
-        max_workers = min(config.WORKERS.get("metadata_stamping", 14), len(files_to_convert))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_file = {executor.submit(convert_single_file, f): f for f in files_to_convert}
-
-            for i, future in enumerate(as_completed(future_to_file), 1):
-                tiff_path = future_to_file[future]
-                success, error_msg = future.result()
-
-                if success:
-                    converted_count += 1
-                else:
-                    print(f"WARNING: Failed to convert {tiff_path.name}: {error_msg}")
-                    skipped_count += 1
-
-                # Print progress every 5%
-                pct = int((i / len(files_to_convert)) * 100)
-                if i == 1 or pct % 5 == 0 or i == len(files_to_convert):
-                    print(f"\r[{i}/{len(files_to_convert)}] {pct}% converted", flush=True)
-
-        if converted_count > 0:
-            print(f"\nConverted {converted_count} TIFF files to PNG")
-        if skipped_count > 0:
-            print(f"Skipped {skipped_count} corrupted or invalid files")

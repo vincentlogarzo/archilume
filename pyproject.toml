@@ -56,7 +56,7 @@ dev = [
 default-groups = ["app", "engine", "desktop", "dev"]
 
 [tool.coverage.run]
-data_file = tests/.coverage
+data_file = "tests/.coverage"
 
 [tool.coverage.report]
 omit = ["tests/*", "conftest.py"]

@@ -26,7 +26,7 @@ def run_sunlight_analysis():
         timestep_min        = 15,
         ffl_offset_mm       = 1000,
         grid_resolution_mm  = 15,
-        include_overcast    = False,     # True -> composite overcast ambient + sun via pcomb
+        include_overcast    = True,     # True -> overcast image + sunny timeseries
         rendering_mode      = "cpu",     # "cpu" or "gpu" (only used when include_overcast=True)
         rendering_quality   = "stand",   # GPU preset: "draft","stand","prod","final","4k","fast","med","high","detailed"
         project             = project,

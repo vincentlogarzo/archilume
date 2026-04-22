@@ -211,6 +211,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     env = os.environ.copy()
+    env["REFLEX_STATES_WORKDIR"] = str(app_dir / ".states")
 
     # --- Compile skip logic ---
     if args.fast:
