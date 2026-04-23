@@ -193,7 +193,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch the Archilume app dev server.")
     parser.add_argument("--ensure", action="store_true",
                         help="Reuse an already-running dev server if :3000 is serving.")
-    parser.add_argument("--project", default="527DP-gcloud-lowRes-GregW",
+    parser.add_argument("--project", default="cowles",
                         help="Project name to open automatically on load.")
     parser.add_argument("--fast", action="store_true",
                         help="Skip compile and cleanup for fastest possible restart.")
