@@ -110,7 +110,21 @@ ENV PATH="/root/.bun/bin:${PATH}"
 ARG REFLEX_API_URL=http://localhost:3000
 ENV API_URL=${REFLEX_API_URL}
 
+# Slim archilume copy needed for `reflex export` to import the app module.
+# editor_state.py: `from archilume.config import get_project_paths`
+# visualisation_manager.py: `from archilume.post.hdr_visualisation import ...`
+# Heavy engine submodules (core/, geo/, infra/, workflows/) are NOT copied —
+# archilume/__init__.py uses PEP 562 lazy loading so they aren't imported
+# unless the corresponding attribute is accessed (which the app never does).
 COPY archilume/apps/archilume_app/ /app/archilume_app/
+COPY \
+    archilume/__init__.py \
+    archilume/config.py \
+    archilume/utils.py \
+    archilume/project.py \
+    archilume/_template_dataclass.py \
+    /app/archilume/
+COPY archilume/post/__init__.py archilume/post/hdr_visualisation.py /app/archilume/post/
 WORKDIR /app/archilume_app
 RUN reflex export --frontend-only --no-zip
 
