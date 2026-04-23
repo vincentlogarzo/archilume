@@ -23,6 +23,8 @@ from archilume import config, utils
 
 def _tiff_to_png(tiff: Path) -> tuple[bool, str | None]:
     """Re-encode a tone-mapped TIFF as PNG at the same resolution, then delete the TIFF."""
+    if not tiff.exists():
+        return False, f"TIFF not created (pfilt|ra_tiff pipeline failed): {tiff.name}"
     if tiff.stat().st_size < 1000:
         return False, f"corrupt/empty TIFF ({tiff.stat().st_size} bytes)"
     try:
@@ -38,21 +40,26 @@ def _tiff_to_png(tiff: Path) -> tuple[bool, str | None]:
         return False, str(exc)
 
 
-def convert_hdrs_to_pngs(hdr_paths: Iterable[Path]) -> list[Path]:
+def convert_hdrs_to_pngs(hdr_paths: Iterable[Path], exposure: float = -4.0) -> list[Path]:
     """Write a compact ``{stem}.png`` next to every HDR in ``hdr_paths``.
 
     Skips HDRs whose ``.png`` already exists (idempotent re-run). The
     tone-mapped TIFF intermediate is removed after the PNG is written.
+
+    Args:
+        hdr_paths: Iterable of HDR file paths to convert
+        exposure: f-stop exposure adjustment for ra_tiff (default -4.0)
     """
     hdrs = [h for h in hdr_paths if not h.with_suffix(".png").exists()]
     if not hdrs:
         print("All HDRs already have .png siblings — nothing to convert.")
         return []
 
-    print(f"Converting {len(hdrs)} HDR files -> PNG...")
+    print(f"Converting {len(hdrs)} HDR files -> PNG (exposure {exposure:+.1f} f-stops)...")
 
     tiffs = [h.with_suffix(".tiff") for h in hdrs]
-    cmds = [rf"pfilt -1 {h} | ra_tiff -e -4 - {t}" for h, t in zip(hdrs, tiffs)]
+    # ra_tiff -e requires an explicit sign (+/-) prefix on the f-stop value.
+    cmds = [rf"pfilt -1 {h} | ra_tiff -e {exposure:+.1f} - {t}" for h, t in zip(hdrs, tiffs)]
     utils.execute_new_radiance_commands(
         cmds, number_of_workers=config.WORKERS["pcomb_tiff_conversion"]
     )

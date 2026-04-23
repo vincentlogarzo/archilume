@@ -295,12 +295,14 @@ class SunlightRenderer:
         if self.x_res <= 0 or self.y_res <= 0:
             raise ValueError(f"Resolution must be positive: x_res={self.x_res}, y_res={self.y_res}")
 
-        # Validate rendering_mode
+        # Normalise + validate rendering_mode
+        self.rendering_mode = self.rendering_mode.lower()
         if self.rendering_mode not in (valid_modes := ['cpu', 'gpu']):
             raise ValueError(f"Invalid rendering_mode '{self.rendering_mode}'. Valid options: {', '.join(valid_modes)}")
 
-        # Validate gpu_quality
-        if self.gpu_quality.lower() not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
+        # Normalise + validate gpu_quality
+        self.gpu_quality = self.gpu_quality.lower()
+        if self.gpu_quality not in (valid_quals := ['draft', 'stand', 'prod', 'final', '4k', 'custom', 'fast', 'med', 'high', 'detailed']):
             raise ValueError(f"Invalid gpu_quality '{self.gpu_quality}'. Valid options: {', '.join(valid_quals)}")
 
         if not os.path.exists(self.image_dir):
