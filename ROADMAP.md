@@ -4,11 +4,6 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ## 🎯 IMMEDIATE NEXT ACTION
 
-- **Reintegrate daylight simulation into the sunlight workflow.** The sunlight pipeline previously `pcomb`'d a daylight-rendered backing image with the sunlight `.hdr` series to produce a high-quality composite that exposes the internal layout of the model (walls, rooms, corridors) beneath the sunlight trace. That step has been removed and needs to come back. Without it the user can't see where internal wall surfaces sit, which blocks the vertical-surface feature below.
-  - Restore the backing-image generation stage inside `SunlightRenderer` (see `archilume/core/rendering_pipelines.py`). Seek use of the daylight workflows using of rtpict instead of rpict. It will align well with the existing code and can be reused across the repo and for post commands to cloud computing machines.
-  - Composite via `pcomb` onto every timestep HDR before TIFF/PNG conversion.
-  - Reuse daylight-pipeline rendering code paths where possible; don't duplicate `rpict`/`accelerad_rpict` orchestration.
-
 - **Vertical-surface sunlight investigation (new feature).** Extend the sunlight workflow to analyse wall surfaces, not just horizontal floor planes. A vertical AOI becomes another view associated with a room ID — just a new entry in the view list, consumed by the existing `SunlightAccessWorkflow`.
   - **Mode A — Individual wall selection:** user picks specific wall segments in the Reflex app; app generates the corresponding vertical views and submits the job.
   - **Mode B — Blanket boundary sweep:** every vertical surface along a room's boundary is swept automatically, one view per wall face.
@@ -81,6 +76,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 
 ## 🟡 MEDIUM PRIORITY: Input Handling & Validation
 
+- **[CRITICAL] Input File Validity Tests & Validator Refinement:** The archilume-app upload validators currently reject valid files (false positives), blocking users at the very first step of new project setup. Write a detailed, parameterised test suite covering every supported input format (OBJ, MTL, IFC, CSV room boundaries, IESVE `.pic`/`.oct`, HDR) with fixtures for: known-good files, known-bad files, and the awkward middle cases (mm-scaled OBJs, non-ASCII material names, duplicate room names, missing `mtllib` refs, IFC schema mismatches, CSVs with trailing blank lines, etc.). Use the test results to refine the validator logic so the rejection message tells the user *exactly* which rule failed and what to fix. This is a critical onboarding step — if a user can't tell whether their files are valid, they can't start a project. Target: zero false-positive rejections on the known-good fixture set, and human-readable diagnostics on every failure path.
 - **Path Support:** Add support for file paths with spaces (quote all f-strings).
 - **Duplicate Handling:** Handle duplicate room names in CSV by auto-appending suffixes.
 - **Unit Scaling:** Support OBJ files exported in millimeters (auto-detect and convert to meters). Currently caught using the inputs validator class prior to simulation runs. 
@@ -92,6 +88,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 - **Indirect Toggle:** Add toggle to skip indirect lighting calculation for faster compliance-only runs.
 - **GPU Batching:** Explore direct `.bat` calls for `accelerad_rpict` to reduce Python overhead.
 - **Custom Parameters:** Allow user-defined Radiance parameters as an alternative to presets.
+- **Accelerad OptiX 7 port (external dependency):** Accelerad 0.7 beta is the terminal release from upstream and ships only the OptiX 6 runtime. NVIDIA drivers newer than R581 have dropped OptiX 6 support, which pins GPU users to ≤ R580 (see [README — GPU Rendering](README.md#gpu-rendering-accelerad--driver-compatibility)). Nathaniel Jones (Accelerad author) mentioned a community effort to port Accelerad to the OptiX 7 API via NVIDIA's OWL framework on the radiance-online forum. When that port lands, bundle the updated `accelerad_rpict.exe` into `.devcontainer/` and drop the driver ceiling from the README. No archilume code change is blocked on this — it is purely an upstream dependency upgrade. Track: [Accelerad GitHub](https://github.com/nljones/Accelerad) and the [radiance-online OptiX thread](https://discourse.radiance-online.org/t/optix-error-for-rtx5080/6966).
 
 ## 🟡 MEDIUM PRIORITY: View Generation & AOI
 

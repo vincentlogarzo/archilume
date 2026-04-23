@@ -66,7 +66,7 @@ uv sync
 uv run python examples/launch_archilume_app.py
 ```
 
-Requires a local Radiance install on `PATH` (or pointed at via `RADIANCE_ROOT`). Accelerad is optional for GPU rendering on Windows.
+Requires a local Radiance install on `PATH` (or pointed at via `RADIANCE_ROOT`). Accelerad is optional for GPU rendering on Windows — see [GPU Rendering (Accelerad) — Driver Compatibility](#gpu-rendering-accelerad--driver-compatibility) for the mandatory NVIDIA driver ceiling before enabling GPU mode.
 
 ---
 
@@ -265,6 +265,55 @@ uv run python examples/workflow_daylight_iesve_api.py
 - **Project paths** — `config.get_project_paths("myproject")` returns a `ProjectPaths` object with every directory for that project. Workflows call `paths.create_dirs()` automatically at startup. The Reflex app does not — project directories appear only when the corresponding upload field receives a file.
 - **Worker count** — Parallel operations respect `config.WORKERS` (defaults to CPU count).
 - **Platform awareness** — Detects Windows vs Linux, bundled vs system Radiance, GPU availability.
+
+---
+
+## GPU Rendering (Accelerad) — Driver Compatibility
+
+GPU rendering in the Sunlight Access workflow uses **Accelerad 0.7 beta** (bundled in `.devcontainer/accelerad_07_beta_Windows/`). Accelerad 0.7 beta links against the **OptiX 6.0 client runtime**, and NVIDIA removed OptiX 6 support from driver branches **after R581**. If you run GPU mode on a newer driver, `accelerad_rpict` fails immediately with:
+
+```text
+accelerad_rpict: internal - Error reading OptiX library. Update your graphics driver.
+```
+
+The workflow will then write header-only HDR stubs and abort.
+
+### Required driver ceiling
+
+| Status | NVIDIA driver | Notes |
+| --- | --- | --- |
+| ✅ Known-good | **R580 U2 (580.97)** — Aug 2025 | Confirmed working with Accelerad 0.7 beta on RTX A1000 (Ampere, CC 8.6). |
+| ✅ Likely OK | Any driver **≤ R581** | Per Nathaniel Jones (Accelerad author) — see [radiance-online thread](https://discourse.radiance-online.org/t/optix-error-for-rtx5080/6966). |
+| ❌ Broken | R582 and newer (incl. R595.x) | OptiX 6 client runtime fails to load. |
+
+Before enabling GPU mode, check your driver:
+
+```powershell
+nvidia-smi
+```
+
+If the reported version is above 580.97, either downgrade (below) or set `rendering_mode = "cpu"` in your workflow script.
+
+### Downgrade procedure
+
+In-place NVIDIA installer is **not sufficient** — the DriverStore retains the newer `nvoptix.dll` and the OptiX error persists. Use DDU.
+
+1. **Download** [Display Driver Uninstaller (DDU)](https://www.wagnardsoft.com/display-driver-uninstaller-DDU) and the target NVIDIA driver (e.g. R580 U2 from the [NVIDIA driver search](https://www.nvidia.com/Download/Find.aspx)).
+2. **Disable Windows Update driver delivery** (Settings → Windows Update → Advanced options → *Receive updates for other Microsoft products* → OFF). Windows 11 will re-push the latest driver automatically otherwise.
+3. **Disconnect from the internet**, reboot into **Safe Mode** (Shift + Restart → Troubleshoot → Advanced options → Startup Settings → press 4).
+4. In Safe Mode run DDU → select NVIDIA → **Clean and restart**.
+5. After the reboot, run the R580 installer → **Custom install** → tick **Perform a clean installation**.
+6. Verify with `nvidia-smi` (should report `Driver Version: 580.97`).
+7. Run `.devcontainer\accelerad_07_beta_Windows\demo\test_accelerad_rpict.bat` — it should produce `test_rpict.hdr` above 10 KB.
+8. Re-enable Windows Update driver delivery if desired.
+
+### Docker / dev container users
+
+The dev container runs on Linux via WSL2. Accelerad is Windows-host-only and not active inside the container — the driver ceiling only applies if you intend to run the Windows-native workflow with `rendering_mode = "GPU"`.
+
+### Long-term
+
+A community port of Accelerad to OptiX 7 (via NVIDIA's OWL framework) has been mentioned in the Accelerad forum. When it lands, this driver ceiling is lifted. Track progress at the [Accelerad GitHub](https://github.com/nljones/Accelerad).
 
 ---
 
