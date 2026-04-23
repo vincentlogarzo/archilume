@@ -4,8 +4,11 @@ import reflex as rx
 
 from ..state import EditorState
 from ..styles import COLORS, FONT_MONO, PANEL_CARD_TITLE, PROJECT_TREE_WIDTH
-from .frame_playback_bar import frame_playback_bar
-from .left_panel_sections import floor_plan_section, visualisation_section
+from .left_panel_sections import (
+    floor_plan_section,
+    visualisation_section,
+    sunlight_section,
+)
 
 _ROW_H = "26px"
 _FONT = {"font_family": FONT_MONO, "font_size": "11px"}
@@ -295,12 +298,37 @@ def _tree_header() -> rx.Component:
         rx.spacer(),
         rx.tooltip(
             rx.icon_button(
-                rx.icon(tag="layers", size=12),
+                rx.icon(tag="sun-dim", size=12),
                 variant="ghost", size="1",
-                on_click=EditorState.toggle_image_variant.stop_propagation,
-                style={"color": COLORS["text_dim"], "flex_shrink": "0"},
+                on_click=EditorState.toggle_sunlight_underlay.stop_propagation,
+                disabled=~EditorState.has_sunlight_underlay,
+                style={
+                    "color": rx.cond(
+                        EditorState.has_sunlight_underlay,
+                        rx.cond(
+                            EditorState.sunlight_underlay_visible,
+                            COLORS["accent"],
+                            COLORS["text_dim"],
+                        ),
+                        COLORS["panel_bdr"],
+                    ),
+                    "cursor": rx.cond(
+                        EditorState.has_sunlight_underlay, "pointer", "not-allowed"
+                    ),
+                    "flex_shrink": "0",
+                    "opacity": rx.cond(EditorState.has_sunlight_underlay, "1", "0.4"),
+                },
             ),
-            content="Toggle Image Layers [T]", side="bottom",
+            content=rx.cond(
+                EditorState.has_sunlight_underlay,
+                rx.cond(
+                    EditorState.sunlight_underlay_visible,
+                    "Hide Daylight Underlay",
+                    "Show Daylight Underlay",
+                ),
+                "No daylight underlay in this view",
+            ),
+            side="bottom",
         ),
         rx.box(style={"width": "1px", "height": "16px", "background": COLORS["panel_bdr"], "flex_shrink": "0"}),
         rx.tooltip(
@@ -408,25 +436,24 @@ def project_tree() -> rx.Component:
             # and scroll internally when the list grows taller than the panel.
             rx.cond(
                 EditorState.room_browser_section_open,
-                rx.fragment(
-                    frame_playback_bar(),
-                    rx.box(
-                        rx.foreach(EditorState.tree_nodes, _render_tree_node),
-                        style={
-                            "overflow_y": "auto",
-                            "flex": "0 1 auto",
-                            "min_height": "0",
-                            "scrollbar_width": "thin",
-                            "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
-                        },
-                    ),
+                rx.box(
+                    rx.foreach(EditorState.tree_nodes, _render_tree_node),
+                    style={
+                        "overflow_y": "auto",
+                        "flex": "0 1 auto",
+                        "min_height": "0",
+                        "scrollbar_width": "thin",
+                        "scrollbar_color": f"{COLORS['panel_bdr']} transparent",
+                    },
                 ),
                 rx.fragment(),
             ),
             # Floor plan section: fixed size, never shrinks.
             rx.box(floor_plan_section(), style={"flex_shrink": "0"}),
-            # Visualisation (falsecolour + contour) settings.
+            # Visualisation (falsecolour + contour) settings — daylight only.
             rx.box(visualisation_section(), style={"flex_shrink": "0"}),
+            # Overcast exposure adjustment — sunlight only.
+            rx.box(sunlight_section(), style={"flex_shrink": "0"}),
             # Absorb any leftover vertical space so the list+floor-plan stack
             # stays top-packed when content is short.
             rx.box(style={"flex": "1 1 auto"}),

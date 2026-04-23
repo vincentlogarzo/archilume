@@ -60,6 +60,20 @@ def _overlay_cache_dir(project: str) -> Optional[Path]:
     return get_project_paths(project).plans_dir / ".overlay_cache"
 
 
+def _sunlight_frame_dir(project: str) -> Optional[Path]:
+    """Filesystem path of the per-project sunlight frame PNG directory.
+
+    The SunlightAccessWorkflow writes a ``{hdr_stem}.png`` sibling next to
+    every HDR under ``projects/<project>/outputs/image/``. Served by a
+    FastAPI sub-app at ``/sunlight_frame/{project}/{filename}`` so playback
+    can hand the browser a URL instead of a multi-MB base64 data URI — the
+    browser then caches decoded bitmaps per URL across the loop.
+    """
+    if not project:
+        return None
+    return get_project_paths(project).image_dir
+
+
 def _backend_base_url() -> str:
     """Absolute base URL of the Reflex FastAPI backend.
 
@@ -93,6 +107,16 @@ def _snap_scale_divisions(value: str) -> "int | None":
     return max(0, min(10, v))
 
 
+def _snap_exposure(value: str) -> "float | None":
+    """Parse, clamp to [-6, 6], and snap to nearest 0.5 f-stop. Returns None if non-numeric."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    v = max(-6.0, min(6.0, v))
+    return round(round(v * 2) / 2, 1)
+
+
 class _StagedUploadBytes:
     """Tiny container used by project-create/settings upload handlers to pass
     already-read upload bytes into the synchronous staging helper."""
@@ -124,6 +148,8 @@ class ViewGroupDict(TypedDict):
     view_name: str       # display label, trimmed of common octree prefix
     view_prefix: str     # full prefix used to match HDR stems (includes octree_base)
     frames: list[FrameDict]
+    underlay_png_path: str   # overcast baseline PNG; "" when not rendered
+    underlay_hdr_stem: str   # overcast HDR stem; "" when not rendered
 
 
 def _stem_to_view_map(view_groups: list) -> dict[str, str]:
@@ -334,9 +360,13 @@ class EditorState(rx.State):
     current_frame_idx: int = 0
     frame_autoplay: bool = False
     frame_playback_fps: int = 5
+    _frame_autoplay_token: int = 0
 
     # -- Image display
     current_image_b64: str = ""
+    current_image_url: str = ""      # backend URL for the current frame PNG; sunlight playback uses this so the browser can cache decoded bitmaps instead of re-decoding an inline base64 string each tick
+    current_underlay_b64: str = ""   # overcast base image layered beneath sunlight frames; "" when none
+    sunlight_underlay_visible: bool = True
     current_legend_b64: str = ""
     legend_pinned: bool = False
     legend_hovered: bool = False
@@ -356,6 +386,11 @@ class EditorState(rx.State):
     last_generated: dict = {}  # {"falsecolour": {scale,n_levels}, "contour": {...}}
     is_regenerating: bool = False
     regen_progress: str = ""
+
+    # -- Sunlight exposure adjustment (per-project, persisted in aoi_session.json).
+    #    Controls tone-mapping brightness of overcast underlay PNGs; range -6 to +6 f-stops.
+    sunlight_exposure: float = -4.0
+    is_regen_underlay: bool = False
 
     # =====================================================================
     # §3 — Rooms
@@ -496,6 +531,7 @@ class EditorState(rx.State):
     room_browser_section_open: bool = True
     floor_plan_section_open: bool = True
     visualisation_section_open: bool = True
+    sunlight_section_open: bool = True
     collapsed_hdrs: list[str] = []
     shortcuts_modal_open: bool = False
     open_project_modal_open: bool = False
@@ -1770,23 +1806,47 @@ class EditorState(rx.State):
     def load_current_image(self) -> None:
         from ..lib.image_loader import (
             get_image_dimensions,
-            load_frame_png_as_base64,
             load_image_as_base64,
         )
-        # Sunlight: read the {stem}.png sibling written by the renderer.
+        # Start from a clean URL slot — only the sunlight branch below sets it.
+        # Variant / IESVE modes fall through to the base64 path unchanged.
+        self.current_image_url = ""
+
+        # Sunlight: the {stem}.png sibling is already on disk (rendered at
+        # build time by SunlightAccessWorkflow). Hand the browser a backend
+        # URL so the bitmap is cached per-frame and the per-tick WebSocket
+        # delta stays tiny, instead of re-sending a multi-MB data URI.
         if (self.project_mode == "sunlight" and self.hdr_files
                 and 0 <= self.current_hdr_idx < len(self.hdr_files)
                 and self.current_variant_idx == 0):
             hdr_path = Path(self.hdr_files[self.current_hdr_idx]["hdr_path"])
-            b64 = load_frame_png_as_base64(hdr_path)
-            if b64:
-                self.current_image_b64 = b64
-                png_path = hdr_path.parent / f"{hdr_path.stem}.png"
+            png_path = hdr_path.parent / f"{hdr_path.stem}.png"
+            if not png_path.exists() or png_path.stat().st_size == 0:
+                # One-shot regen for a missing/corrupt PNG — matches the
+                # fallback previously inside load_frame_png_as_base64.
+                from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+                convert_hdrs_to_pngs([hdr_path])
+            if png_path.exists() and png_path.stat().st_size > 0:
+                self.current_image_url = (
+                    f"{_backend_base_url()}/sunlight_frame/"
+                    f"{quote(self.project)}/{quote(png_path.name)}"
+                )
+                self.current_image_b64 = ""
                 w, h = get_image_dimensions(png_path)
                 self.image_width = w
                 self.image_height = h
+                # Refresh the overcast underlay for the active view group.
+                underlay_path = ""
+                if 0 <= self.current_view_idx < len(self.view_groups):
+                    underlay_path = self.view_groups[self.current_view_idx].get("underlay_png_path", "")
+                if underlay_path:
+                    self.current_underlay_b64 = load_image_as_base64(Path(underlay_path)) or ""
+                else:
+                    self.current_underlay_b64 = ""
                 self._update_legend()
                 return
+        # Non-sunlight or falling through: ensure underlay is cleared.
+        self.current_underlay_b64 = ""
 
         if not self.image_variants:
             self.current_image_b64 = ""
@@ -2046,13 +2106,7 @@ class EditorState(rx.State):
         new_idx = (self.current_frame_idx + delta) % len(frames)
         self._goto_frame(self.current_view_idx, new_idx)
 
-    def advance_frame(self) -> None:
-        """Autoplay tick — advance one frame with wrap-around."""
-        if not self.frame_autoplay:
-            return
-        self.step_frame(1)
-
-    def toggle_frame_autoplay(self) -> None:
+    def toggle_frame_autoplay(self):
         if not self.view_groups:
             return
         frames = self.view_groups[self.current_view_idx]["frames"]
@@ -2060,8 +2114,36 @@ class EditorState(rx.State):
             self.frame_autoplay = False
             return
         self.frame_autoplay = not self.frame_autoplay
+        if self.frame_autoplay:
+            self._frame_autoplay_token += 1
+            return EditorState.autoplay_frames_loop(self._frame_autoplay_token)
+        return None
 
-    def set_frame_fps(self, fps: int) -> None:
+    @rx.event(background=True)
+    async def autoplay_frames_loop(self, token: int):
+        """Server-side autoplay ticker. Advances the frame at the configured
+        fps while ``frame_autoplay`` stays true and the token matches — a new
+        toggle_on bumps the token so any prior loop exits cleanly."""
+        import asyncio
+
+        while True:
+            async with self:
+                if (
+                    not self.frame_autoplay
+                    or token != self._frame_autoplay_token
+                    or not self.view_groups
+                ):
+                    return
+                frames = self.view_groups[self.current_view_idx]["frames"]
+                if len(frames) <= 1:
+                    self.frame_autoplay = False
+                    return
+                new_idx = (self.current_frame_idx + 1) % len(frames)
+                self._goto_frame(self.current_view_idx, new_idx)
+                fps = max(1, min(30, self.frame_playback_fps))
+            await asyncio.sleep(1.0 / fps)
+
+    def set_frame_fps(self, fps) -> None:
         try:
             v = int(fps)
         except (TypeError, ValueError):
@@ -4172,6 +4254,54 @@ class EditorState(rx.State):
     def set_legend_hovered(self, v: bool) -> None:
         self.legend_hovered = v
 
+    def toggle_sunlight_underlay(self) -> None:
+        """Flip the overcast-underlay visibility. No re-read — the b64 stays
+        loaded so toggling is instant."""
+        self.sunlight_underlay_visible = not self.sunlight_underlay_visible
+
+    @rx.var(cache=True)
+    def has_sunlight_underlay(self) -> bool:
+        return self.current_underlay_b64 != ""
+
+    @rx.var(cache=True)
+    def sunlight_blend_mode(self) -> str:
+        """Sunny frame blends with ``lighten`` over the overcast backdrop
+        when overcast is loaded and visible; ``normal`` otherwise. PDF (if
+        present) paints on top of the sunny frame with its own multiply
+        blend in sunlight mode (see ``pdf_layer_blend_mode``)."""
+        if self.current_underlay_b64 != "" and self.sunlight_underlay_visible:
+            return "lighten"
+        return "normal"
+
+    @rx.var(cache=True)
+    def pdf_layer_blend_mode(self) -> str:
+        """PDF paints on top of the render with ``multiply`` in sunlight
+        mode, so render pixels show through white PDF regions and black
+        linework is preserved. Stays ``normal`` in daylight / AOI mode for
+        back-compat (PDF is at the bottom there, not blended)."""
+        if self.is_sunlight_mode and self.overlay_visible and self.overlay_image_url != "":
+            return "multiply"
+        return "normal"
+
+    @rx.var(cache=True)
+    def pdf_layer_z_index(self) -> str:
+        """PDF paints last (on top) in sunlight mode so the ``multiply``
+        blend composites correctly over the render backdrop. Stays at the
+        bottom in daylight / AOI mode where the sunny image is
+        opacity-faded over it."""
+        return "2" if self.is_sunlight_mode else "0"
+
+    @rx.var(cache=True)
+    def sunny_layer_opacity(self) -> str:
+        """Sunny frame runs at full opacity in sunlight mode (PDF multiply
+        on top handles visibility). Daylight / AOI keeps the legacy
+        ``overlay_alpha`` fade when a PDF underlay is shown."""
+        if self.is_sunlight_mode:
+            return "1"
+        if self.overlay_visible:
+            return self.overlay_alpha_str
+        return "1"
+
     def toggle_overlay(self):
         if not self.overlay_pdf_path:
             self._pick_pdf_via_dialog()
@@ -4392,6 +4522,13 @@ class EditorState(rx.State):
             self._auto_save()
         return self._sync_vis_input("vis-ct-div", self.contour_n_levels)
 
+    def set_sunlight_exposure(self, value: float):
+        snapped = _snap_exposure(value)
+        if snapped is not None:
+            self.sunlight_exposure = snapped
+            self._auto_save()
+        return self._sync_vis_input("sl-exposure", self.sunlight_exposure)
+
     def _current_image_dir(self) -> "Path | None":
         if not self.hdr_files:
             return None
@@ -4546,6 +4683,89 @@ class EditorState(rx.State):
             self.status_colour = "accent"
             self._rebuild_variants()
             self.load_current_image()
+            self._auto_save()
+
+    @rx.event(background=True)
+    async def regenerate_sunlight_underlay_bg(self) -> None:
+        """Regenerate sunlight overcast underlay PNG with current exposure setting.
+
+        Regenerates the underlay for the current view first (immediate feedback),
+        then queues underlays for other views in the background. Non-blocking UI.
+        """
+        import asyncio
+        from ..lib.image_loader import regenerate_sunlight_underlay_png
+
+        # Snapshot inputs under the state lock.
+        async with self:
+            if self.is_regen_underlay:
+                return  # already running
+            if self.project_mode != "sunlight":
+                return  # only for sunlight projects
+            if not self.view_groups:
+                return
+            if self.current_view_idx < 0 or self.current_view_idx >= len(self.view_groups):
+                return
+            current_view = self.view_groups[self.current_view_idx]
+            underlay_hdr_stem = current_view.get("underlay_hdr_stem", "")
+            if not underlay_hdr_stem:
+                self.status_message = "No overcast underlay rendered for this view"
+                return
+            exposure = self.sunlight_exposure
+            all_views = list(self.view_groups)
+            self.is_regen_underlay = True
+            self.regen_progress = "Regenerating current view..."
+
+        # Get the project image directory.
+        try:
+            from archilume.config import get_project_paths
+            paths = get_project_paths(self.project)
+            image_dir = paths.image_dir
+        except Exception:
+            async with self:
+                self.is_regen_underlay = False
+                self.status_message = "Error: Could not find project image directory"
+            return
+
+        # Regenerate current view's underlay immediately.
+        current_underlay_hdr = image_dir / f"{underlay_hdr_stem}.hdr"
+        if current_underlay_hdr.exists():
+            try:
+                await asyncio.to_thread(
+                    regenerate_sunlight_underlay_png, current_underlay_hdr, exposure
+                )
+            except Exception as e:
+                logger.exception("Failed to regenerate current view underlay: %s", e)
+                async with self:
+                    self.regen_progress = f"Error: {str(e)[:50]}"
+
+        # Reload current image to show new underlay immediately.
+        async with self:
+            self.load_current_image()
+
+        # Queue other views for background regeneration (if multiple views exist).
+        if len(all_views) > 1:
+            for view_idx, view in enumerate(all_views):
+                if view_idx == self.current_view_idx:
+                    continue  # already done
+                async with self:
+                    self.regen_progress = f"Background: View {view_idx + 1}/{len(all_views)}"
+                other_underlay_hdr = image_dir / f"{view.get('underlay_hdr_stem', '')}.hdr"
+                if other_underlay_hdr.exists():
+                    try:
+                        await asyncio.to_thread(
+                            regenerate_sunlight_underlay_png, other_underlay_hdr, exposure
+                        )
+                    except Exception as e:
+                        logger.exception("Failed to regenerate view %d underlay: %s", view_idx, e)
+
+        # Clear cache and finish.
+        from ..lib.image_loader import clear_cache
+        clear_cache()
+        async with self:
+            self.is_regen_underlay = False
+            self.regen_progress = ""
+            self.status_message = "Underlay regenerated"
+            self.status_colour = "accent"
             self._auto_save()
 
     def set_overlay_transparency_fraction(self, value: str) -> None:
@@ -5472,6 +5692,11 @@ class EditorState(rx.State):
             return
         self.rooms = data.get("rooms", [])
         self._validate_room_hierarchy()
+        # Sunlight projects: session may have been written before the per-frame
+        # stem → view-name migration existed, or before the current scan ran.
+        # Re-apply here so enriched_rooms can match rooms by view_name after
+        # Phase 2 of _open_project_progressive (view_groups already set in Phase 1).
+        self._migrate_sunlight_room_keys()
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
         _tv = data.get("transform_version", 0)
@@ -5507,12 +5732,15 @@ class EditorState(rx.State):
     def _restore_visualisation_settings(self, data: dict) -> None:
         fc = data.get("falsecolour_settings") or {}
         ct = data.get("contour_settings") or {}
+        sl = data.get("sunlight_settings") or {}
         self.falsecolour_scale    = float(fc.get("scale", 4.0))
         self.falsecolour_n_levels = int(fc.get("n_levels", 10))
         pal = str(fc.get("palette", "spec"))
         self.falsecolour_palette  = pal if pal in ("spec", "def", "pm3d", "hot", "eco", "tbo") else "spec"
         self.contour_scale        = float(ct.get("scale", 2.0))
         self.contour_n_levels     = int(ct.get("n_levels", 4))
+        exp = float(sl.get("exposure", -4.0))
+        self.sunlight_exposure    = max(-6.0, min(6.0, exp))
         self.last_generated       = data.get("last_generated") or {}
 
     def load_session(self) -> None:
@@ -5544,6 +5772,10 @@ class EditorState(rx.State):
             return
         self.rooms = data.get("rooms", [])
         self._validate_room_hierarchy()
+        # Sunlight projects: session may have been written before the per-frame
+        # stem → view-name migration existed, or before the current scan ran.
+        # Re-apply here so enriched_rooms can match rooms by view_name.
+        self._migrate_sunlight_room_keys()
         self.df_stamps = data.get("df_stamps", {})
         self.overlay_transforms = data.get("overlay_transforms", {})
         _tv = data.get("transform_version", 0)
@@ -5613,6 +5845,7 @@ class EditorState(rx.State):
                 "palette": self.falsecolour_palette,
             },
             contour_settings={"scale": self.contour_scale, "n_levels": self.contour_n_levels},
+            sunlight_settings={"exposure": self.sunlight_exposure},
             last_generated=dict(self.last_generated),
         )
         save_session(Path(self.session_path), data)
@@ -6201,14 +6434,24 @@ class EditorState(rx.State):
                 sky_stems: list[str] = []
                 if paths.sky_dir.exists():
                     sky_stems = [p.stem for p in paths.sky_dir.glob("*.sky")]
-                self.view_groups = scan_sunlight_view_groups(image_dir, sky_stems)
+                    # SkyGenerator writes the overcast baseline as
+                    # TenK_cie_overcast.rad (not .sky); include it so the
+                    # scanner can match the suffix on overcast HDRs and
+                    # segregate them into the view group underlay.
+                    if (paths.sky_dir / "TenK_cie_overcast.rad").exists():
+                        sky_stems.append("TenK_cie_overcast")
+                overcast_stem = "TenK_cie_overcast" if "TenK_cie_overcast" in sky_stems else ""
+                self.view_groups = scan_sunlight_view_groups(image_dir, sky_stems, overcast_stem)
                 if self.view_groups:
-                    missing_pngs = [
-                        Path(frame["hdr_path"])
-                        for group in self.view_groups
-                        for frame in group["frames"]
-                        if not Path(frame["png_path"]).exists()
-                    ]
+                    missing_pngs: list[Path] = []
+                    for group in self.view_groups:
+                        for frame in group["frames"]:
+                            if not Path(frame["png_path"]).exists():
+                                missing_pngs.append(Path(frame["hdr_path"]))
+                        underlay_png = group.get("underlay_png_path", "")
+                        underlay_stem = group.get("underlay_hdr_stem", "")
+                        if underlay_png and underlay_stem and not Path(underlay_png).exists():
+                            missing_pngs.append(Path(underlay_png).with_suffix(".hdr"))
                     if missing_pngs:
                         from archilume.post.hdr_to_png import convert_hdrs_to_pngs
                         print(
@@ -6217,11 +6460,15 @@ class EditorState(rx.State):
                         )
                         convert_hdrs_to_pngs(missing_pngs)
                     self._migrate_sunlight_room_keys()
-                    first_frame = self.view_groups[0]["frames"][0]
-                    for i, h in enumerate(self.hdr_files):
-                        if h["name"] == first_frame["hdr_stem"]:
-                            self.current_hdr_idx = i
-                            break
+                    first_frame = next(
+                        (g["frames"][0] for g in self.view_groups if g["frames"]),
+                        None,
+                    )
+                    if first_frame is not None:
+                        for i, h in enumerate(self.hdr_files):
+                            if h["name"] == first_frame["hdr_stem"]:
+                                self.current_hdr_idx = i
+                                break
             if self.overlay_pdf_path:
                 from ..lib.image_loader import get_pdf_page_count
                 self.overlay_page_count = get_pdf_page_count(Path(self.overlay_pdf_path))
@@ -6268,6 +6515,9 @@ class EditorState(rx.State):
 
     def toggle_visualisation_section(self) -> None:
         self.visualisation_section_open = not self.visualisation_section_open
+
+    def toggle_sunlight_section(self) -> None:
+        self.sunlight_section_open = not self.sunlight_section_open
 
     def toggle_room_browser_section(self) -> None:
         self.room_browser_section_open = not self.room_browser_section_open

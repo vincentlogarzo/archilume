@@ -541,37 +541,61 @@ def clear_cache() -> None:
 _view_groups_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
-def _extract_view_name(hdr_stem: str, sky_stems: list[str]) -> tuple[str, str]:
+def _extract_view_name(
+    hdr_stem: str,
+    sky_stems: list[str],
+    overcast_sky_stem: str = "",
+) -> tuple[str, str]:
     """Return (view_prefix, sky_name) by stripping the longest matching sky suffix.
 
     view_prefix is everything up to and excluding the trailing _{sky_name}.
     Falls back to (hdr_stem, "") when no sky suffix matches — caller treats the
     HDR as its own single-frame group.
+
+    The SunlightRenderer names the overcast baseline with a *double* underscore
+    (``{octree}_{view}__{overcast_sky_stem}``) so it can be distinguished from
+    the single-underscore timestep frames. When the matched sky is the
+    overcast, strip that extra underscore so the returned view_prefix lines up
+    with the sunlight-frame prefix for the same view.
     """
     for sky in sorted(sky_stems, key=len, reverse=True):
         suffix = f"_{sky}"
         if hdr_stem.endswith(suffix):
-            return hdr_stem[: -len(suffix)], sky
+            prefix = hdr_stem[: -len(suffix)]
+            if overcast_sky_stem and sky == overcast_sky_stem and prefix.endswith("_"):
+                prefix = prefix[:-1]
+            return prefix, sky
     return hdr_stem, ""
 
 
-def scan_sunlight_view_groups(image_dir: Path, sky_stems: list[str]) -> list[dict]:
+def scan_sunlight_view_groups(
+    image_dir: Path,
+    sky_stems: list[str],
+    overcast_sky_stem: str = "",
+) -> list[dict]:
     """Group HDRs in *image_dir* by view, using sky stems to identify the
     timestep suffix of each filename.
 
     Returns a list (sorted by view name) of dicts shaped:
         {
             "view_name": str,              # trimmed of the common octree prefix
+            "view_prefix": str,
             "frames": [
                 {"hdr_path": str, "png_path": str, "sky_name": str,
                  "hdr_stem": str, "frame_label": str},
                 ...
             ],
+            "underlay_png_path": str,      # "" when overcast not rendered
+            "underlay_hdr_stem": str,      # "" when overcast not rendered
         }
 
     ``png_path`` points at the ``{hdr_stem}.png`` sibling written by the
     SunlightRenderer.sun_only_rendering_pipeline. The app expects the PNG to
     already exist — there is no on-demand tone-mapping fallback.
+
+    When ``overcast_sky_stem`` is supplied and matches a frame's sky name, that
+    frame is pulled out of ``frames`` and attached to the view group as the
+    underlay baseline instead. Absent overcast → ``underlay_png_path == ""``.
 
     When *sky_stems* is empty, each HDR becomes its own single-frame group so
     the UI still works for markup-only projects that lack a sky directory.
@@ -582,7 +606,7 @@ def scan_sunlight_view_groups(image_dir: Path, sky_stems: list[str]) -> list[dic
     if not hdr_infos:
         return []
 
-    key = f"{image_dir}|{'|'.join(sorted(sky_stems))}"
+    key = f"{image_dir}|{'|'.join(sorted(sky_stems))}|{overcast_sky_stem}"
     try:
         dir_mtime = image_dir.stat().st_mtime
     except OSError:
@@ -592,11 +616,19 @@ def scan_sunlight_view_groups(image_dir: Path, sky_stems: list[str]) -> list[dic
         return cached[1]
 
     groups: dict[str, list[dict]] = {}
+    underlays: dict[str, dict] = {}
     for info in hdr_infos:
         hdr_stem = info["name"]
         hdr_path = Path(info["hdr_path"])
-        view_prefix, sky_name = _extract_view_name(hdr_stem, sky_stems)
+        view_prefix, sky_name = _extract_view_name(hdr_stem, sky_stems, overcast_sky_stem)
         png_path = hdr_path.parent / f"{hdr_stem}.png"
+        if overcast_sky_stem and sky_name == overcast_sky_stem:
+            underlays[view_prefix] = {
+                "png_path": str(png_path),
+                "hdr_stem": hdr_stem,
+            }
+            groups.setdefault(view_prefix, [])
+            continue
         frame = {
             "hdr_path": str(hdr_path),
             "png_path": str(png_path),
@@ -634,10 +666,13 @@ def scan_sunlight_view_groups(image_dir: Path, sky_stems: list[str]) -> list[dic
         view_name = view_prefix[len(common_prefix):] if common_prefix else view_prefix
         if not view_name:
             view_name = view_prefix
+        underlay = underlays.get(view_prefix, {})
         result.append({
             "view_name": view_name,
             "view_prefix": view_prefix,
             "frames": frames,
+            "underlay_png_path": underlay.get("png_path", ""),
+            "underlay_hdr_stem": underlay.get("hdr_stem", ""),
         })
 
     _view_groups_cache[key] = (dir_mtime, result)
@@ -672,3 +707,30 @@ def load_frame_png_as_base64(hdr_path: Path) -> Optional[str]:
     if png_path.exists() and png_path.stat().st_size > 0:
         return load_image_as_base64(png_path)
     return None
+
+
+def regenerate_sunlight_underlay_png(underlay_hdr_path: Path, exposure: float) -> None:
+    """Regenerate a sunlight overcast underlay PNG with new exposure setting.
+
+    Converts the HDR to PNG with the specified exposure, then invalidates
+    the image cache so the updated PNG is loaded on next access.
+
+    Args:
+        underlay_hdr_path: Path to the overcast baseline HDR file
+        exposure: f-stop exposure adjustment (-6 to +6)
+    """
+    if not underlay_hdr_path.exists():
+        return
+
+    # Force regeneration by deleting the PNG first
+    png_path = underlay_hdr_path.parent / f"{underlay_hdr_path.stem}.png"
+    png_path.unlink(missing_ok=True)
+
+    # Regenerate PNG with new exposure
+    from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+    convert_hdrs_to_pngs([underlay_hdr_path], exposure=exposure)
+
+    # Invalidate cache for this PNG and TIFF so next load gets fresh data
+    with _cache_lock:
+        for key in [str(png_path), str(underlay_hdr_path.with_suffix(".tiff"))]:
+            _image_cache.pop(key, None)

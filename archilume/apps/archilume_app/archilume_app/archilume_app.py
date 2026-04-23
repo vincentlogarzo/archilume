@@ -5,7 +5,7 @@ from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse
 
 from .components.header import header
-from .state.editor_state import _overlay_cache_dir
+from .state.editor_state import _overlay_cache_dir, _sunlight_frame_dir
 from .components.modals import (
     accelerad_modal,
     create_project_modal,
@@ -39,8 +39,8 @@ _FONTS_PREVIEW_URL = (
 # window_event_listener does not fire shortcuts while the user is typing.
 _NUMERIC_GUARD_SCRIPT = rx.script("""
 (function() {
-    // Guards any <input data-numeric-guard="int"|"decimal"> against:
-    //   - non-digit keystrokes (allows nav keys, one '.' for decimal)
+    // Guards any <input data-numeric-guard="int"|"decimal"|"signed-decimal"> against:
+    //   - non-digit keystrokes (allows nav keys, one '.' for decimal, '-' at start for signed)
     //   - Ctrl/Cmd-modified keys (paste shortcut, etc.)
     //   - paste events (even right-click paste)
     var NAV = ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Tab','Home','End','Enter'];
@@ -52,9 +52,20 @@ _NUMERIC_GUARD_SCRIPT = rx.script("""
         if (NAV.indexOf(e.key) !== -1) return;
         if (e.ctrlKey || e.metaKey || e.altKey) { e.preventDefault(); return; }
         var digit = /^[0-9]$/.test(e.key);
-        var ok = kind === 'int'
-            ? digit
-            : (digit || (e.key === '.' && el.value.indexOf('.') === -1));
+        var ok;
+        if (kind === 'int') {
+            ok = digit;
+        } else if (kind === 'signed-decimal') {
+            // Allow digits, one '.', and '-' only at the start (when selection at pos 0 and no existing '-')
+            var atStart = el.selectionStart === 0;
+            var hasMinus = el.value.indexOf('-') !== -1;
+            ok = digit
+                || (e.key === '.' && el.value.indexOf('.') === -1)
+                || (e.key === '-' && atStart && !hasMinus);
+        } else {
+            // 'decimal' — digits and one '.'
+            ok = digit || (e.key === '.' && el.value.indexOf('.') === -1);
+        }
         if (!ok) e.preventDefault();
     }, true);
     document.addEventListener('paste', function(e) {
@@ -443,6 +454,36 @@ async def _serve_overlay_png(project: str, filename: str) -> Response:
     if not target.is_file():
         return Response(status_code=404)
     return FileResponse(target, media_type="image/png")
+
+
+# ── Sunlight frame PNGs — static file route ─────────────────────────────────
+# The sunlight renderer writes one PNG per timestep under
+# ``projects/<name>/outputs/image/``. Playback hands the browser a URL to
+# these PNGs (via ``EditorState.current_image_url``) instead of re-sending
+# a multi-MB base64 string each tick, so the browser can cache decoded
+# bitmaps per URL across loop iterations. Served by the same FastAPI
+# sub-app mounted via ``api_transformer``.
+@_overlay_api.get("/sunlight_frame/{project}/{filename}")
+async def _serve_sunlight_frame(project: str, filename: str) -> Response:
+    frame_dir = _sunlight_frame_dir(project)
+    if frame_dir is None or not frame_dir.exists():
+        return Response(status_code=404)
+    frame_root = frame_dir.resolve()
+    target = (frame_root / filename).resolve()
+    try:
+        target.relative_to(frame_root)
+    except ValueError:
+        return Response(status_code=403)
+    if not target.is_file():
+        return Response(status_code=404)
+    # Cache aggressively in the browser — a rendered frame PNG is immutable
+    # for a given (project, stem); the URL changes if the PNG is regenerated
+    # because the caller bumps the stem or deletes the file first.
+    return FileResponse(
+        target,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 app = rx.App(

@@ -165,20 +165,25 @@ def _vis_col_header(label: str) -> rx.Component:
 
 def _vis_num_cell(
     value, on_change, *, is_int: bool, tip: str, input_id: str,
+    min_val: str = "0", max_val: str = "10", step: str = "",
+    width: str = "",
 ) -> rx.Component:
-    guard_kind = "int" if is_int else "decimal"
+    guard_kind = "signed-decimal" if (not is_int and float(min_val) < 0) else ("int" if is_int else "decimal")
+    style = dict(_CELL_INPUT_STYLE)
+    if width:
+        style["width"] = width
     return rx.tooltip(
         rx.el.input(
             id=input_id,
             default_value=value.to_string(),
             on_blur=on_change,
             type="number",
-            step=rx.cond(is_int, "1", "0.5"),
-            min="0", max="10",
+            step=step if step else rx.cond(is_int, "1", "0.5"),
+            min=min_val, max=max_val,
             input_mode="numeric" if is_int else "decimal",
             auto_complete="off",
             custom_attrs={"data-numeric-guard": guard_kind},
-            style=_CELL_INPUT_STYLE,
+            style=style,
         ),
         content=tip,
     )
@@ -302,6 +307,104 @@ def visualisation_section() -> rx.Component:
             ),
             rx.cond(EditorState.visualisation_section_open, _visualisation_body(), rx.fragment()),
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sunlight Exposure section (sunlight projects only)
+# ---------------------------------------------------------------------------
+
+_EXPOSURE_HINT = (
+    "Overcast baseline tone-mapping exposure in f-stops. "
+    "Controls how bright the overcast PNG appears without altering the underlying HDR data. "
+    "Increase (+) to brighten the underlay and reveal detail in shaded areas; "
+    "decrease (-) to darken the underlay and emphasise sun-lit contrast. "
+    "Each step of 1.0 doubles or halves the apparent brightness. "
+    "Range -6 to +6; default -4. Snaps to 0.5 on commit. Click Regenerate to apply."
+)
+
+
+def _sunlight_body() -> rx.Component:
+    btn_style = {
+        "font_family": FONT_MONO, "font_size": "11px",
+        "padding": "4px 10px", "cursor": "pointer",
+        "display": "flex", "align_items": "center", "gap": "5px",
+        "border": f"1px solid {COLORS['panel_bdr']}",
+        "border_radius": "3px",
+        "background": COLORS["panel_bg"],
+        "_hover": {"background": COLORS["hover"]},
+    }
+
+    return rx.box(
+        # Single row: Exposure label + input
+        rx.flex(
+            rx.text(
+                "Overcast Exposure",
+                style={
+                    **_ROW_LABEL_STYLE,
+                    "flex": "1",
+                },
+            ),
+            _vis_num_cell(
+                EditorState.sunlight_exposure,
+                EditorState.set_sunlight_exposure,
+                is_int=False, tip=_EXPOSURE_HINT,
+                input_id="sl-exposure",
+                min_val="-6", max_val="6", step="0.5",
+                width="72px",
+            ),
+            align="center", gap="10px",
+            style={"margin_top": "4px", "margin_bottom": "6px"},
+        ),
+        # Action row
+        rx.flex(
+            rx.el.button(
+                rx.icon(tag="refresh-cw", size=12),
+                rx.text(
+                    rx.cond(EditorState.is_regen_underlay, "Regenerating…", "Regenerate Underlay"),
+                    style={"font_family": FONT_MONO, "font_size": "11px"},
+                ),
+                on_click=EditorState.regenerate_sunlight_underlay_bg,
+                disabled=EditorState.is_regen_underlay,
+                style=btn_style,
+                color=COLORS["text_pri"],
+            ),
+            align="center", gap="6px",
+            style={"margin_top": "6px"},
+        ),
+        # Progress / status line (reuse regen_progress from daylight if needed, or keep separate)
+        rx.cond(
+            EditorState.regen_progress != "",
+            rx.text(
+                EditorState.regen_progress,
+                style={
+                    "font_family": FONT_MONO, "font_size": "10px",
+                    "color": COLORS["text_dim"],
+                    "margin_top": "4px",
+                    "white_space": "nowrap", "overflow": "hidden",
+                    "text_overflow": "ellipsis",
+                },
+            ),
+            rx.fragment(),
+        ),
+        style={"padding": "4px 8px 6px 24px"},
+    )
+
+
+def sunlight_section() -> rx.Component:
+    # Overcast exposure adjustment is specific to sunlight projects.
+    # Hidden in daylight mode.
+    return rx.cond(
+        EditorState.is_sunlight_mode,
+        rx.box(
+            _section_header(
+                "Overcast Exposure",
+                EditorState.sunlight_section_open,
+                EditorState.toggle_sunlight_section,
+            ),
+            rx.cond(EditorState.sunlight_section_open, _sunlight_body(), rx.fragment()),
+        ),
+        rx.fragment(),
     )
 
 

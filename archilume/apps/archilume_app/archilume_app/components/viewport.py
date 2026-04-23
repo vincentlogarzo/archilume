@@ -4,6 +4,7 @@ import reflex as rx
 
 from ..state import EditorState
 from ..styles import COLORS, FONT_MONO, KBD_BADGE
+from .frame_playback_bar import frame_playback_bar
 
 
 # ---------------------------------------------------------------------------
@@ -1252,16 +1253,38 @@ def _svg_canvas() -> rx.Component:
                     "opacity": rx.cond(EditorState.overlay_visible, "1", "0"),
                     "transform_origin": "top left",
                     "pointer_events": "none",
+                    "mix_blend_mode": EditorState.pdf_layer_blend_mode,
+                    "z_index": EditorState.pdf_layer_z_index,
+                },
+            ),
+            rx.fragment(),
+        ),
+        # Sunlight overcast underlay — overcast baseline PNG rendered behind
+        # every sunlight timestep frame for the active view. Stays mounted when
+        # loaded so the blend on #editor-img reconciles cleanly on toggle.
+        rx.cond(
+            EditorState.current_underlay_b64 != "",
+            rx.el.img(
+                src=EditorState.current_underlay_b64,
+                id="sunlight-underlay-img",
+                style={
+                    "position": "absolute", "top": "0", "left": "0",
+                    "width": "100%", "height": "auto",
+                    "opacity": rx.cond(EditorState.sunlight_underlay_visible, "1", "0"),
+                    "pointer_events": "none",
                     "z_index": "0",
                 },
             ),
             rx.fragment(),
         ),
-        # Background image — normal flow element, drives container height
+        # Background image — normal flow element, drives container height.
+        # Prefer the backend URL (sunlight playback) over base64 (variant
+        # modes) so the browser can cache decoded bitmaps per URL instead
+        # of re-decoding a multi-MB data URI on every frame tick.
         rx.cond(
-            EditorState.current_image_b64 != "",
+            EditorState.current_image_url != "",
             rx.el.img(
-                src=EditorState.current_image_b64,
+                src=EditorState.current_image_url,
                 id="editor-img",
                 style={
                     "display": "block",
@@ -1270,14 +1293,28 @@ def _svg_canvas() -> rx.Component:
                     "height": "100%",
                     "image_rendering": "pixelated",
                     "z_index": "1",
-                    "opacity": rx.cond(
-                        EditorState.overlay_visible,
-                        EditorState.overlay_alpha_str,
-                        "1",
-                    ),
+                    "mix_blend_mode": EditorState.sunlight_blend_mode,
+                    "opacity": EditorState.sunny_layer_opacity,
                 },
             ),
-            rx.fragment(),
+            rx.cond(
+                EditorState.current_image_b64 != "",
+                rx.el.img(
+                    src=EditorState.current_image_b64,
+                    id="editor-img",
+                    style={
+                        "display": "block",
+                        "position": "relative",
+                        "width": "100%",
+                        "height": "100%",
+                        "image_rendering": "pixelated",
+                        "z_index": "1",
+                        "mix_blend_mode": EditorState.sunlight_blend_mode,
+                        "opacity": EditorState.sunny_layer_opacity,
+                    },
+                ),
+                rx.fragment(),
+            ),
         ),
         # SVG overlay — absolutely positioned on top of the image
         rx.el.svg(
@@ -1496,7 +1533,7 @@ def _svg_canvas() -> rx.Component:
                     EditorState.pan_mode, "grab",
                     rx.cond(EditorState.overlay_align_mode, "grab", "default"),
                 ),
-                "z_index": "2",
+                "z_index": "3",
             },
         ),
         # HTML annotation overlay (labels rendered as HTML, clipped per-room)
@@ -1508,7 +1545,7 @@ def _svg_canvas() -> rx.Component:
                 "top": "0", "left": "0",
                 "width": "100%", "height": "100%",
                 "pointer_events": "none",
-                "z_index": "3",
+                "z_index": "4",
                 "container_type": "inline-size",
             },
         ),
@@ -1618,7 +1655,7 @@ def _viewport_resize_js() -> rx.Component:
 def _empty_state() -> rx.Component:
     """Centred Open/Create buttons shown in the Viewer when no image is loaded."""
     return rx.cond(
-        EditorState.current_image_b64 == "",
+        (EditorState.current_image_url == "") & (EditorState.current_image_b64 == ""),
         _empty_state_buttons(),
         rx.fragment(),
     )
@@ -1784,6 +1821,7 @@ def viewport() -> rx.Component:
                             _viewport_resize_js(),
                             _legend_popout(),
                             _legend_button(),
+                            frame_playback_bar(),
                             id="viewport-container",
                             align="center",
                             justify="center",
