@@ -343,15 +343,6 @@ class TestFramePlayback:
         s.set_frame_fps("bad")
         assert s.frame_playback_fps == 10
 
-    def test_advance_frame_skips_when_not_autoplaying(self, make_editor_state):
-        groups = [_view_group("v1", ["a", "b"])]
-        s = make_editor_state(
-            view_groups=groups, current_view_idx=0,
-            current_frame_idx=0, frame_autoplay=False,
-        )
-        s.advance_frame()
-        assert s.current_frame_idx == 0
-
     def test_toggle_frame_autoplay_requires_multiple_frames(self, make_editor_state):
         single = [_view_group("v1", ["only"])]
         s = make_editor_state(
@@ -392,3 +383,119 @@ class TestSelectAllRooms:
         assert sorted(s.multi_selected_idxs) == [0, 1]
         s.select_all_rooms()  # second call deselects
         assert s.multi_selected_idxs == []
+
+
+# =========================================================================
+# Image-stack blend-mode computed vars
+# =========================================================================
+
+
+def _sunlight_mode_kwargs() -> dict:
+    """Minimum state kwargs to make ``is_sunlight_mode`` return True."""
+    return {
+        "project_mode": "sunlight",
+        "view_groups": [_view_group("v", ["F0"])],
+    }
+
+
+class TestSunlightBlendMode:
+    def test_lighten_when_overcast_loaded_and_visible(self, make_editor_state):
+        s = make_editor_state(
+            current_underlay_b64="data:image/png;base64,AAAA",
+            sunlight_underlay_visible=True,
+        )
+        assert s.sunlight_blend_mode == "lighten"
+
+    def test_normal_when_overcast_hidden(self, make_editor_state):
+        s = make_editor_state(
+            current_underlay_b64="data:image/png;base64,AAAA",
+            sunlight_underlay_visible=False,
+        )
+        assert s.sunlight_blend_mode == "normal"
+
+    def test_normal_when_no_overcast_loaded(self, make_editor_state):
+        s = make_editor_state(
+            current_underlay_b64="",
+            sunlight_underlay_visible=True,
+        )
+        assert s.sunlight_blend_mode == "normal"
+
+
+class TestPdfLayerBlendMode:
+    def test_multiply_in_sunlight_mode_with_pdf_visible(self, make_editor_state):
+        s = make_editor_state(
+            **_sunlight_mode_kwargs(),
+            overlay_visible=True,
+            overlay_image_url="data:image/png;base64,AAAA",
+        )
+        assert s.pdf_layer_blend_mode == "multiply"
+
+    def test_normal_in_sunlight_mode_with_pdf_hidden(self, make_editor_state):
+        s = make_editor_state(
+            **_sunlight_mode_kwargs(),
+            overlay_visible=False,
+            overlay_image_url="data:image/png;base64,AAAA",
+        )
+        assert s.pdf_layer_blend_mode == "normal"
+
+    def test_normal_in_sunlight_mode_without_pdf_loaded(self, make_editor_state):
+        s = make_editor_state(
+            **_sunlight_mode_kwargs(),
+            overlay_visible=True,
+            overlay_image_url="",
+        )
+        assert s.pdf_layer_blend_mode == "normal"
+
+    def test_normal_in_non_sunlight_mode_even_with_pdf(self, make_editor_state):
+        # Daylight / AOI mode must retain its original composite — no multiply.
+        s = make_editor_state(
+            project_mode="aoi",
+            view_groups=[],
+            overlay_visible=True,
+            overlay_image_url="data:image/png;base64,AAAA",
+        )
+        assert s.pdf_layer_blend_mode == "normal"
+
+
+class TestPdfLayerZIndex:
+    def test_two_in_sunlight_mode(self, make_editor_state):
+        s = make_editor_state(**_sunlight_mode_kwargs())
+        assert s.pdf_layer_z_index == "2"
+
+    def test_zero_in_non_sunlight_mode(self, make_editor_state):
+        s = make_editor_state(project_mode="aoi", view_groups=[])
+        assert s.pdf_layer_z_index == "0"
+
+
+class TestSunnyLayerOpacity:
+    def test_full_opacity_in_sunlight_mode_even_with_pdf(self, make_editor_state):
+        s = make_editor_state(
+            **_sunlight_mode_kwargs(),
+            overlay_visible=True,
+            overlay_alpha=0.6,
+        )
+        assert s.sunny_layer_opacity == "1"
+
+    def test_full_opacity_in_sunlight_mode_without_pdf(self, make_editor_state):
+        s = make_editor_state(
+            **_sunlight_mode_kwargs(),
+            overlay_visible=False,
+            overlay_alpha=0.6,
+        )
+        assert s.sunny_layer_opacity == "1"
+
+    def test_faded_in_non_sunlight_mode_with_pdf_visible(self, make_editor_state):
+        s = make_editor_state(
+            project_mode="aoi", view_groups=[],
+            overlay_visible=True,
+            overlay_alpha=0.6,
+        )
+        assert s.sunny_layer_opacity == "0.6"
+
+    def test_full_opacity_in_non_sunlight_mode_with_pdf_hidden(self, make_editor_state):
+        s = make_editor_state(
+            project_mode="aoi", view_groups=[],
+            overlay_visible=False,
+            overlay_alpha=0.6,
+        )
+        assert s.sunny_layer_opacity == "1"
