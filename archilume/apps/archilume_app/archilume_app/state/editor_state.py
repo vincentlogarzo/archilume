@@ -153,12 +153,19 @@ class ViewGroupDict(TypedDict):
 
 
 def _stem_to_view_map(view_groups: list) -> dict[str, str]:
-    """Flatten view_groups → {hdr_stem: view_name}. Empty for daylight."""
-    return {
-        frame["hdr_stem"]: vg["view_name"]
-        for vg in view_groups
-        for frame in vg["frames"]
-    }
+    """Flatten view_groups → {hdr_stem: view_name}. Empty for daylight.
+
+    Includes per-frame sunny HDR stems and the per-view overcast underlay stem
+    (when present), so rooms saved against either one migrate to the view name.
+    """
+    result: dict[str, str] = {}
+    for vg in view_groups:
+        for frame in vg["frames"]:
+            result[frame["hdr_stem"]] = vg["view_name"]
+        underlay_stem = vg.get("underlay_hdr_stem", "")
+        if underlay_stem:
+            result[underlay_stem] = vg["view_name"]
+    return result
 
 
 def _select_level_prefetch_targets(
@@ -2001,11 +2008,26 @@ class EditorState(rx.State):
     def _migrate_sunlight_room_keys(self) -> None:
         """Rewrite existing rooms so ``hdr_file`` holds the view name (level),
         not a per-frame HDR stem. Idempotent — rooms already keyed to view
-        names are left alone."""
+        names are left alone.
+
+        Three lookup tiers:
+          1. Stored key already a current view_name → no-op.
+          2. Stored key matches a frame or underlay stem in the current scan →
+             map via ``_stem_to_view_map``.
+          3. Legacy fallback: stored key contains the same FFL digit run as
+             exactly one current view_name (e.g. legacy overcast-as-view strings
+             like ``093260__TenK_cie_overcast`` map to ``ffl_093260``). Skip if
+             zero or multiple views match — don't silently corrupt.
+        """
         if not self.view_groups:
             return
         stem_to_view = _stem_to_view_map(self.view_groups)
         view_names = {vg["view_name"] for vg in self.view_groups}
+        ffl_to_view: dict[str, list[str]] = {}
+        for vg in self.view_groups:
+            m = re.search(r"(\d{4,6})", vg["view_name"])
+            if m:
+                ffl_to_view.setdefault(m.group(1), []).append(vg["view_name"])
         changed = False
         new_rooms: list[RoomDict] = []
         for room in self.rooms:
@@ -2014,6 +2036,18 @@ class EditorState(rx.State):
                 new_rooms.append(room)
                 continue
             mapped = stem_to_view.get(key)
+            if mapped is None:
+                legacy_m = re.search(r"(\d{4,6})", key)
+                if legacy_m:
+                    candidates = ffl_to_view.get(legacy_m.group(1), [])
+                    if len(candidates) == 1:
+                        mapped = candidates[0]
+                    elif len(candidates) > 1:
+                        logger.warning(
+                            "[aoi-migrate] ambiguous FFL token %r in legacy key %r — "
+                            "matches %d view names %r; leaving untouched",
+                            legacy_m.group(1), key, len(candidates), candidates,
+                        )
             if mapped and mapped != key:
                 updated = dict(room)
                 updated["hdr_file"] = mapped
