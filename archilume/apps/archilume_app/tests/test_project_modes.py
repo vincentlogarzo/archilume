@@ -1,10 +1,9 @@
 """Tests for archilume_app.lib.project_modes — the two-mode taxonomy.
 
 The current model exposes only two workflow modes (``sunlight`` and
-``daylight``). Every field inside a mode is optional: a project can be
-created with just a name + mode, and inputs are added later via the
-Project Settings modal or by dropping files directly into the project
-directories.
+``daylight``). Sunlight requires a building-geometry slot (the thing being
+analysed); everything else — site geometry, HDR results, room data — is
+optional. Daylight has no required fields today.
 """
 
 from __future__ import annotations
@@ -39,17 +38,34 @@ class TestFieldShape:
 
     def test_sunlight_fields(self):
         ids = [f.id for f in pm.MODES["sunlight"].fields]
-        assert ids == ["pdf", "geometry", "hdr_results", "room_data", "aoi_files"]
+        assert ids == [
+            "pdf",
+            "geometry_building",
+            "geometry_site",
+            "hdr_results",
+            "room_data",
+            "aoi_files",
+        ]
 
     def test_daylight_fields(self):
         ids = [f.id for f in pm.MODES["daylight"].fields]
         assert ids == ["pdf", "oct", "rdp", "pic_results", "aoi_files", "room_data"]
 
-    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
-    def test_no_field_is_required(self, mode_id: str):
-        """Fields are always optional — the user decides what to supply."""
-        for f in pm.MODES[mode_id].fields:
-            assert f.required is False, f"{mode_id}.{f.id} is marked required"
+    def test_sunlight_building_is_required(self):
+        """Building geometry is the single mandatory sunlight input."""
+        f = pm.field_by_id("sunlight", "geometry_building")
+        assert f is not None
+        assert f.required is True
+
+    def test_sunlight_site_is_optional(self):
+        f = pm.field_by_id("sunlight", "geometry_site")
+        assert f is not None
+        assert f.required is False
+
+    def test_daylight_fields_all_optional(self):
+        """Daylight mode keeps the previous 'everything optional' shape."""
+        for f in pm.MODES["daylight"].fields:
+            assert f.required is False, f"daylight.{f.id} is unexpectedly required"
 
     @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
     def test_no_one_of_groups(self, mode_id: str):
@@ -63,19 +79,25 @@ class TestFieldShape:
 # ---------------------------------------------------------------------------
 
 class TestMissingRequired:
-    """With nothing marked required, the helper always returns an empty list."""
+    """Sunlight requires the building geometry slot; everything else is optional."""
 
     def _ok(self, name: str = "any.bin") -> dict:
         return {"path": "/tmp/x", "name": name, "ok": True, "error": ""}
 
-    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
-    def test_empty_staging_reports_nothing_missing(self, mode_id: str):
-        assert pm.missing_required(mode_id, {}) == []
+    def test_sunlight_empty_reports_building_missing(self):
+        missing = pm.missing_required("sunlight", {})
+        assert missing == ["Building geometry (.obj + .mtl)"]
 
-    @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
-    def test_partial_staging_reports_nothing_missing(self, mode_id: str):
+    def test_sunlight_building_staged_reports_nothing_missing(self):
+        staged = {"geometry_building": [self._ok("bld.obj")]}
+        assert pm.missing_required("sunlight", staged) == []
+
+    def test_daylight_empty_reports_nothing_missing(self):
+        assert pm.missing_required("daylight", {}) == []
+
+    def test_daylight_partial_reports_nothing_missing(self):
         staged = {"pdf": [self._ok("plan.pdf")]}
-        assert pm.missing_required(mode_id, staged) == []
+        assert pm.missing_required("daylight", staged) == []
 
     @pytest.mark.parametrize("mode_id", pm.MODE_IDS)
     def test_no_one_of_groups_reported(self, mode_id: str):
@@ -93,8 +115,10 @@ class TestFieldLookup:
         assert f.dest_attr == "plans_dir"
 
     def test_field_by_id_geometry_only_sunlight(self):
-        assert pm.field_by_id("sunlight", "geometry") is not None
-        assert pm.field_by_id("daylight", "geometry") is None
+        assert pm.field_by_id("sunlight", "geometry_building") is not None
+        assert pm.field_by_id("sunlight", "geometry_site") is not None
+        assert pm.field_by_id("daylight", "geometry_building") is None
+        assert pm.field_by_id("daylight", "geometry_site") is None
 
     def test_field_by_id_oct_only_daylight(self):
         assert pm.field_by_id("daylight", "oct") is not None

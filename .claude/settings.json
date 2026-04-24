@@ -95,6 +95,36 @@
             "statusMessage": "Running /feature tests + requesting audit..."
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *archilume_app*.py ]] && [[ \"$FILE\" != */tests/* ]] && echo '[Hook] Archilume app file modified — run /verify-ui to validate the change using live logs, debug trace, and tests before marking complete.' || true",
+            "statusMessage": "Checking if verify-ui reminder needed..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *archilume_app/archilume_app/components/* || \"$FILE\" == *archilume_app/archilume_app/state/* ]] && [[ \"$FILE\" == *.py ]] && cd $(git rev-parse --show-toplevel) && uv run python archilume/apps/archilume_app/scripts/check_state_refs.py 2>&1 || true",
+            "statusMessage": "Cross-checking EditorState references..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(cat | jq -r '.tool_input.file_path // empty') && [ -n \"$FILE\" ] && [[ \"$FILE\" == *archilume_app*.py ]] && [[ \"$FILE\" != */tests/* ]] && cd $(git rev-parse --show-toplevel) && uv run pytest archilume/apps/archilume_app/tests/test_app_compiles.py -q --no-header 2>&1 | tail -5 || true",
+            "statusMessage": "Reflex dry-compile check..."
+          }
+        ]
       }
     ]
   },

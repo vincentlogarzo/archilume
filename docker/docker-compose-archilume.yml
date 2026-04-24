@@ -51,6 +51,7 @@ services:
     environment:
       - ARCHILUME_ENGINE_URL=http://archilume-engine:8100
       - ARCHILUME_HOST_PROJECTS_DIR=${ARCHILUME_HOST_PROJECTS_DIR:-/app/projects}
+      - ARCHILUME_DEPLOYMENT_MODE=${ARCHILUME_DEPLOYMENT_MODE:-local-docker}
     # No depends_on archilume-engine — backend boots immediately and the
     # engine finishes starting in the background. UI is fully usable for
     # editor work (rooms/AOIs/export) without the engine; the simulation
@@ -74,6 +75,7 @@ services:
       - ${ARCHILUME_PROJECTS_DIR:-../projects}:/app/projects:rw
     environment:
       - ARCHILUME_HOST_PROJECTS_DIR=${ARCHILUME_HOST_PROJECTS_DIR:-/app/projects}
+      - ARCHILUME_DEPLOYMENT_MODE=${ARCHILUME_DEPLOYMENT_MODE:-local-docker}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

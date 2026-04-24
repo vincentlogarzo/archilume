@@ -34,6 +34,13 @@ PROJECTS_DIR        = Path(os.getenv("ARCHILUME_PROJECTS_DIR", str(PROJECT_ROOT 
 # script sets ARCHILUME_HOST_PROJECTS_DIR to the host-side absolute path.
 HOST_PROJECTS_DIR   = os.getenv("ARCHILUME_HOST_PROJECTS_DIR", str(PROJECTS_DIR))
 
+# Deployment context. Drives UI affordances that only make sense when the
+# server FS is reachable to the user:
+#   native        — desktop app, tkinter dialogs work.
+#   local-docker  — container on same machine as browser; bind mount visible.
+#   hosted        — container on remote VM; server FS is opaque to the user.
+DEPLOYMENT_MODE     = os.getenv("ARCHILUME_DEPLOYMENT_MODE", "native").lower()
+
 # Reflex app directory (contains rxconfig.py and the archilume_app/ source package)
 ARCHILUME_APP_DIR   = PROJECT_ROOT / "archilume" / "apps" / "archilume_app"
 

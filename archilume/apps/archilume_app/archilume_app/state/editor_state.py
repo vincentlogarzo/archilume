@@ -74,6 +74,20 @@ def _sunlight_frame_dir(project: str) -> Optional[Path]:
     return get_project_paths(project).image_dir
 
 
+def _deployment_is_native() -> bool:
+    """True when running as a native desktop app (tkinter pickers available).
+
+    ``local-docker`` and ``hosted`` both disable the tkinter fallback path.
+    Reads ``archilume.config.DEPLOYMENT_MODE`` at call time so monkeypatched
+    tests see the live value.
+    """
+    try:
+        from archilume import config as cfg
+        return getattr(cfg, "DEPLOYMENT_MODE", "native") == "native"
+    except ImportError:
+        return True
+
+
 def _backend_base_url() -> str:
     """Absolute base URL of the Reflex FastAPI backend.
 
@@ -126,6 +140,24 @@ class _StagedUploadBytes:
     def __init__(self, name: str, data: bytes) -> None:
         self.name = name
         self.data = data
+
+
+# Building and site geometry share ``inputs_dir`` on disk but must be
+# partitioned into their respective modal slots when loading existing
+# projects into the settings modal. Stems containing "site" or "shading"
+# (case-insensitive) belong to the site slot; everything else defaults to
+# the building slot. Non-geometry fields pass through unchanged.
+_SITE_STEM_HINTS = ("site", "shading")
+
+
+def _geometry_slot_owns(field_id: str, filename: str) -> bool:
+    stem = Path(filename).stem.lower()
+    is_site_file = any(hint in stem for hint in _SITE_STEM_HINTS)
+    if field_id == "geometry_site":
+        return is_site_file
+    if field_id == "geometry_building":
+        return not is_site_file
+    return True
 
 
 class HdrFileInfo(TypedDict):
@@ -488,6 +520,15 @@ class EditorState(rx.State):
     _session_load_ok: bool = False  # guards auto-save; True only after a successful load
 
     # =====================================================================
+    # §8.5 — Calibration rectangle (overlay Plan-Mode alignment)
+    # =====================================================================
+    calib_rect_active: bool = False
+    calib_rect_x1: float = 0.0
+    calib_rect_y1: float = 0.0
+    calib_rect_x2: float = 0.0
+    calib_rect_y2: float = 0.0
+
+    # =====================================================================
     # §9 — DF% analysis
     # =====================================================================
     df_stamps: dict = {}
@@ -557,6 +598,8 @@ class EditorState(rx.State):
     external_browser_target_field: str = ""
     external_browser_allowed_extensions: list[str] = []
     external_browser_multiple: bool = False
+    # Clamp root — when set, external_browser_navigate/go_up refuse to step above it.
+    external_browser_root: str = ""
     status_message: str = "Ready"
     status_colour: str = "accent2"
     _last_d_press: float = 0.0
@@ -1632,6 +1675,79 @@ class EditorState(rx.State):
         return str((rot90 % 4) * 90)
 
     @rx.var
+    def calib_rect_svg_x(self) -> str:
+        return str(min(self.calib_rect_x1, self.calib_rect_x2))
+
+    @rx.var
+    def calib_rect_svg_y(self) -> str:
+        return str(min(self.calib_rect_y1, self.calib_rect_y2))
+
+    @rx.var
+    def calib_rect_svg_w(self) -> str:
+        return str(abs(self.calib_rect_x2 - self.calib_rect_x1))
+
+    @rx.var
+    def calib_rect_svg_h(self) -> str:
+        return str(abs(self.calib_rect_y2 - self.calib_rect_y1))
+
+    @rx.var
+    def show_server_browse(self) -> bool:
+        """True when the server-side Browse… button should be visible.
+
+        Hidden on 'hosted' deployments (no filesystem access worth exposing);
+        visible in 'native' and 'local-docker' so users can pick from bind-mounted
+        projects/ without the OS file dialog.
+        """
+        try:
+            from archilume import config as cfg
+            return getattr(cfg, "DEPLOYMENT_MODE", "native") in ("native", "local-docker")
+        except ImportError:
+            return True
+
+    @rx.var
+    def external_browser_at_root(self) -> bool:
+        """True when external_browser_path == external_browser_root (disables Up)."""
+        if not self.external_browser_root or not self.external_browser_path:
+            return False
+        try:
+            return Path(self.external_browser_path).resolve() == Path(self.external_browser_root).resolve()
+        except OSError:
+            return False
+
+    @rx.var
+    def external_browser_display_path(self) -> str:
+        """Container → host path mapping for the UI breadcrumb.
+
+        When running inside Docker with bind-mounted projects/, the container sees
+        e.g. /workspace/projects while the host sees C:\\projects. The UI shows the
+        host path so the user's mental model matches what they typed on the host.
+        """
+        path = self.external_browser_path
+        if not path:
+            return ""
+        try:
+            from archilume import config as cfg
+            container = getattr(cfg, "PROJECTS_DIR", None)
+            host = getattr(cfg, "HOST_PROJECTS_DIR", None)
+            if container is None or host is None:
+                return path
+            container_str = str(container)
+            host_str = str(host)
+            if container_str == host_str:
+                return path
+            if path == container_str:
+                return host_str
+            prefix = container_str.rstrip("/\\") + os.sep
+            if path.startswith(prefix):
+                remainder = path[len(prefix):]
+                return str(Path(host_str) / remainder)
+            if path.startswith(container_str):
+                return host_str + path[len(container_str):]
+        except ImportError:
+            pass
+        return path
+
+    @rx.var
     def selected_room_vertices(self) -> list[VertexPoint]:
         """Vertices of the selected room, for edit mode handles."""
         if self.selected_room_idx < 0 or self.selected_room_idx >= len(self.rooms):
@@ -1831,7 +1947,7 @@ class EditorState(rx.State):
             if not png_path.exists() or png_path.stat().st_size == 0:
                 # One-shot regen for a missing/corrupt PNG — matches the
                 # fallback previously inside load_frame_png_as_base64.
-                from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+                from archilume.post.hdr2png import convert_hdrs_to_pngs
                 convert_hdrs_to_pngs([hdr_path])
             if png_path.exists() and png_path.stat().st_size > 0:
                 self.current_image_url = (
@@ -4445,8 +4561,62 @@ class EditorState(rx.State):
                 self.inherit_from_level_below()
         else:
             # Exiting: commit final position, clear overlay undo stack
+            self.calib_rect_active = False
             self._overlay_undo_stack = []
             self._overlay_session_start = {}
+
+    def spawn_calibration_rect(self) -> None:
+        if not self.overlay_align_mode or not self.image_width or not self.image_height:
+            return
+        iw, ih = float(self.image_width), float(self.image_height)
+        half_w = iw * 0.25
+        half_h = ih * 0.25
+        cx, cy = iw / 2.0, ih / 2.0
+        self.calib_rect_x1 = cx - half_w
+        self.calib_rect_y1 = cy - half_h
+        self.calib_rect_x2 = cx + half_w
+        self.calib_rect_y2 = cy + half_h
+        self.calib_rect_active = True
+
+    def cancel_calibration_rect(self) -> None:
+        self.calib_rect_active = False
+
+    def update_calibration_rect(self, delta: dict) -> None:
+        if "x1" in delta:
+            self.calib_rect_x1 = float(delta["x1"])
+        if "y1" in delta:
+            self.calib_rect_y1 = float(delta["y1"])
+        if "x2" in delta:
+            self.calib_rect_x2 = float(delta["x2"])
+        if "y2" in delta:
+            self.calib_rect_y2 = float(delta["y2"])
+
+    def apply_calibration_rect(self) -> None:
+        if not self.calib_rect_active:
+            return
+        if not self.hdr_files or not (0 <= self.current_hdr_idx < len(self.hdr_files)):
+            return
+        key = self.hdr_files[self.current_hdr_idx]["name"]
+        iw = float(self.image_width)
+        ih = float(self.image_height)
+        rx1 = min(self.calib_rect_x1, self.calib_rect_x2)
+        ry1 = min(self.calib_rect_y1, self.calib_rect_y2)
+        rx2 = max(self.calib_rect_x1, self.calib_rect_x2)
+        ry2 = max(self.calib_rect_y1, self.calib_rect_y2)
+        pdf_aspect = float(self.overlay_img_height) / float(self.overlay_img_width)
+        sx = (rx2 - rx1) / iw
+        sy = (ry2 - ry1) / (iw * pdf_aspect)
+        offset_x = (rx1 - iw * (1.0 - sx) / 2.0) / iw
+        offset_y = (ry1 - (ih - iw * pdf_aspect * sy) / 2.0) / ih
+        old_transform = dict(self.overlay_transforms[key]) if key in self.overlay_transforms else None
+        new_t = {"scale_x": sx, "scale_y": sy, "offset_x": offset_x, "offset_y": offset_y}
+        self._push_overlay_undo({"action": "overlay_transform", "desc": "Calibration rect apply",
+                                  "before": {"level_key": key, "transform": old_transform},
+                                  "after": {"level_key": key, "transform": new_t}})
+        new_transforms = dict(self.overlay_transforms)
+        new_transforms[key] = new_t
+        self.overlay_transforms = new_transforms
+        self.calib_rect_active = False
 
     def cycle_overlay_page(self):
         if self.overlay_page_count <= 0:
@@ -5700,7 +5870,11 @@ class EditorState(rx.State):
         Used by _open_project_progressive to defer heavy work until after the
         UI has rendered the main image.
         """
-        if not self.session_path:
+        # Guard via __dict__ to avoid VarTypeError when session_path is absent
+        # from the instance dict (e.g. object.__new__-constructed state in tests
+        # or a partially-restored pickle). Otherwise __getattribute__ falls
+        # through to the class-level Var whose __bool__ raises.
+        if not self.__dict__.get("session_path"):
             return
         from ..lib.session_io import load_session
         data = load_session(Path(self.session_path))
@@ -5778,7 +5952,7 @@ class EditorState(rx.State):
         self.last_generated       = data.get("last_generated") or {}
 
     def load_session(self) -> None:
-        if not self.session_path:
+        if not self.__dict__.get("session_path"):
             return
         from ..lib.session_io import load_session
         data = load_session(Path(self.session_path))
@@ -5849,7 +6023,7 @@ class EditorState(rx.State):
         self._recompute_df()
 
     def save_session(self) -> None:
-        if not self.session_path:
+        if not self.__dict__.get("session_path"):
             return
         from ..lib.session_io import build_session_dict, save_session
         # Write tv=5 (level-keyed, v4 numerics) when all transforms are safe.
@@ -6487,7 +6661,7 @@ class EditorState(rx.State):
                         if underlay_png and underlay_stem and not Path(underlay_png).exists():
                             missing_pngs.append(Path(underlay_png).with_suffix(".hdr"))
                     if missing_pngs:
-                        from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+                        from archilume.post.hdr2png import convert_hdrs_to_pngs
                         print(
                             f"[archilume-app] {len(missing_pngs)} sunlight frames missing "
                             f".png siblings — regenerating from HDR..."
@@ -6789,13 +6963,28 @@ class EditorState(rx.State):
         entries.sort(key=_key)
         return entries
 
+    def _path_within_root(self, path) -> bool:
+        """True when *path* is equal to or nested beneath ``external_browser_root``.
+
+        Empty root disables the clamp (returns True). Used by navigate/go_up/select
+        to enforce a configured boundary (security on hosted, hygiene on local-docker).
+        """
+        if not self.external_browser_root:
+            return True
+        try:
+            root = Path(self.external_browser_root).resolve()
+            target = Path(path).resolve()
+        except OSError:
+            return False
+        return target == root or root in target.parents
+
     def open_external_browser(self) -> None:
         try:
-            from archilume.config import HOST_PROJECTS_DIR
+            from archilume.config import PROJECTS_DIR
         except ImportError:
             self.external_browser_error = "Projects directory not configured"
-            HOST_PROJECTS_DIR = str(Path.cwd())
-        start = Path(HOST_PROJECTS_DIR)
+            PROJECTS_DIR = Path.cwd()
+        start = Path(PROJECTS_DIR)
         if not start.exists() or not start.is_dir():
             start = Path("/") if sys.platform != "win32" else Path(start.anchor or "C:\\")
         self.open_project_modal_open = False
@@ -6805,6 +6994,7 @@ class EditorState(rx.State):
         self.external_browser_target_field = ""
         self.external_browser_allowed_extensions = []
         self.external_browser_multiple = False
+        self.external_browser_root = str(start)
         self.external_browser_path = str(start)
         self.external_browser_entries = self._scan_browser_dir(start)
         self.external_browser_open = True
@@ -6817,6 +7007,10 @@ class EditorState(rx.State):
         if not target.is_dir():
             self.external_browser_error = "Not a directory"
             return
+        if not self._path_within_root(target):
+            self.external_browser_error = "Outside of allowed root"
+            return
+        self.external_browser_error = ""
         self.external_browser_path = str(target)
         self.external_browser_entries = self._scan_browser_dir(target)
 
@@ -6825,16 +7019,50 @@ class EditorState(rx.State):
         parent = current.parent
         if parent == current:
             return
+        if not self._path_within_root(parent):
+            return
         self.external_browser_path = str(parent)
         self.external_browser_entries = self._scan_browser_dir(parent)
 
     def external_browser_select(self, path: str):
+        picked = Path(path).resolve()
         if self.external_browser_mode == "settings_file":
-            return self._select_settings_browser_file(Path(path).resolve())
-        result = self._link_external_project(Path(path).resolve())
+            if not self._path_within_root(picked):
+                self.external_browser_error = "Outside of allowed root"
+                return None
+            return self._select_settings_browser_file(picked)
+        if self.external_browser_mode == "create_file":
+            if not self._path_within_root(picked):
+                self.external_browser_error = "Outside of allowed root"
+                return None
+            return self._select_create_browser_file(picked)
+        result = self._link_external_project(picked)
         if result is None:
             self.external_browser_open = False
         return result
+
+    def _select_create_browser_file(self, picked):
+        """Stage a file picked from the server-side browser into the active
+        create-project field, then close the browser."""
+        field_id = self.external_browser_target_field
+        if not field_id:
+            self.external_browser_error = "No target field set"
+            return None
+        if not picked.is_file():
+            self.external_browser_error = "Not a file"
+            return None
+        try:
+            data = picked.read_bytes()
+        except OSError as exc:
+            self.external_browser_error = f"Cannot read file: {exc}"
+            return None
+        self._stage_uploaded_files(
+            field_id,
+            [_StagedUploadBytes(name=picked.name, data=data)],
+            target="create",
+        )
+        self.external_browser_open = False
+        return None
 
     def _select_settings_browser_file(self, picked: Path):
         """Stage a file picked from the server-side browser into the active
@@ -6986,7 +7214,11 @@ class EditorState(rx.State):
                 })
                 continue
 
-            ok, msg = field.validator(dest)
+            validator = (
+                field.extension_validators.get(ext)
+                if field.extension_validators else None
+            ) or field.validator
+            ok, msg = validator(dest)
             if not ok:
                 # Keep the file on disk so the user sees the failed row, but
                 # mark as invalid. Removed when they click the row's X.
@@ -7029,6 +7261,10 @@ class EditorState(rx.State):
         await self._read_and_stage(files, "pdf", "create")
     async def upload_create_geometry(self, files: list[rx.UploadFile]) -> None:
         await self._read_and_stage(files, "geometry", "create")
+    async def upload_create_geometry_building(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "geometry_building", "create")
+    async def upload_create_geometry_site(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "geometry_site", "create")
     async def upload_create_hdr_results(self, files: list[rx.UploadFile]) -> None:
         await self._read_and_stage(files, "hdr_results", "create")
     async def upload_create_pic_results(self, files: list[rx.UploadFile]) -> None:
@@ -7045,6 +7281,10 @@ class EditorState(rx.State):
     # --- Settings flow: one handler per field_id -------------------------
     async def upload_settings_pdf(self, files: list[rx.UploadFile]) -> None:
         await self._read_and_stage(files, "pdf", "settings")
+    async def upload_settings_geometry_building(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "geometry_building", "settings")
+    async def upload_settings_geometry_site(self, files: list[rx.UploadFile]) -> None:
+        await self._read_and_stage(files, "geometry_site", "settings")
     async def upload_settings_geometry(self, files: list[rx.UploadFile]) -> None:
         await self._read_and_stage(files, "geometry", "settings")
     async def upload_settings_hdr_results(self, files: list[rx.UploadFile]) -> None:
@@ -7065,6 +7305,113 @@ class EditorState(rx.State):
     # so the user lands where the existing file already lives. Falls back to
     # the server-side in-browser file picker when tkinter is unavailable
     # (e.g. headless Docker backend).
+    def pick_create_field_file(self, field_id: str):
+        """Open a file picker for the create-project modal field.
+
+        On native, uses tkinter. On local-docker/hosted, skips tkinter and routes
+        straight into the server-side browser so the bind-mounted projects/ tree is
+        reachable without an X server. Returns ``rx.toast.error`` for unknown fields.
+        """
+        field = project_modes.field_by_id(self.new_project_mode, field_id)
+        if field is None:
+            return rx.toast.error(f"Unknown field: {field_id}")
+        try:
+            from archilume.config import PROJECTS_DIR
+            initial_dir = Path(PROJECTS_DIR)
+        except ImportError:
+            initial_dir = Path.cwd()
+        if not _deployment_is_native():
+            return self.open_create_file_browser(field_id, initial_dir)
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except (ImportError, ModuleNotFoundError):
+            return self.open_create_file_browser(field_id, initial_dir)
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            filetypes = [
+                (f"{ext.lstrip('.').upper()} files", f"*{ext}")
+                for ext in field.allowed_extensions
+            ]
+            filetypes.append(("All files", "*.*"))
+            if field.multiple:
+                picked = filedialog.askopenfilenames(
+                    title=f"Select {field.label}",
+                    filetypes=filetypes,
+                    initialdir=str(initial_dir),
+                )
+                picked_paths = [Path(p) for p in (picked or ())]
+            else:
+                picked = filedialog.askopenfilename(
+                    title=f"Select {field.label}",
+                    filetypes=filetypes,
+                    initialdir=str(initial_dir),
+                )
+                picked_paths = [Path(picked)] if picked else []
+            root.destroy()
+        except tk.TclError:
+            return self.open_create_file_browser(field_id, initial_dir)
+        if not picked_paths:
+            return None
+        staged: list[_StagedUploadBytes] = []
+        for p in picked_paths:
+            try:
+                staged.append(_StagedUploadBytes(name=p.name, data=p.read_bytes()))
+            except OSError as exc:
+                logger.warning("create pick read failed for %s: %s", p, exc)
+        if staged:
+            self._stage_uploaded_files(field_id, staged, target="create")
+        return None
+
+    def open_create_file_browser(self, field_id: str, initial_dir: Optional[Path] = None):
+        """Server-side file picker fallback for the create-project modal."""
+        field = project_modes.field_by_id(self.new_project_mode, field_id)
+        if field is None:
+            return rx.toast.error(f"Unknown field: {field_id}")
+        if initial_dir is None or not initial_dir.exists():
+            try:
+                from archilume.config import PROJECTS_DIR
+                initial_dir = Path(PROJECTS_DIR)
+            except ImportError:
+                initial_dir = Path.cwd()
+        self.external_browser_mode = "create_file"
+        self.external_browser_target_field = field_id
+        self.external_browser_allowed_extensions = list(field.allowed_extensions)
+        self.external_browser_multiple = field.multiple
+        self.external_browser_root = str(initial_dir)
+        self.external_browser_path = str(initial_dir)
+        self.external_browser_entries = self._scan_browser_dir(initial_dir)
+        self.external_browser_open = True
+        return None
+
+    def clear_new_project_field(self, field_id: str) -> None:
+        """Remove all staged files for a single create-modal field."""
+        staged = dict(self.new_project_staged)
+        entries = staged.pop(field_id, [])
+        for entry in entries:
+            path = entry.get("path") or ""
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.new_project_staged = staged
+
+    def clear_settings_field(self, field_id: str) -> None:
+        """Remove all staged files for a single settings-modal field."""
+        staged = dict(self.settings_staged)
+        entries = staged.pop(field_id, [])
+        for entry in entries:
+            path = entry.get("path") or ""
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.settings_staged = staged
+
     def pick_settings_field_file(self, field_id: str):
         field = project_modes.field_by_id(self.project_mode, field_id)
         if field is None:
@@ -7258,6 +7605,12 @@ class EditorState(rx.State):
     def staged_create_geometry(self) -> list[dict]:
         return self.new_project_staged.get("geometry", [])
     @rx.var
+    def staged_create_geometry_building(self) -> list[dict]:
+        return self.new_project_staged.get("geometry_building", [])
+    @rx.var
+    def staged_create_geometry_site(self) -> list[dict]:
+        return self.new_project_staged.get("geometry_site", [])
+    @rx.var
     def staged_create_hdr_results(self) -> list[dict]:
         return self.new_project_staged.get("hdr_results", [])
     @rx.var
@@ -7282,6 +7635,12 @@ class EditorState(rx.State):
     @rx.var
     def staged_settings_geometry(self) -> list[dict]:
         return self.settings_staged.get("geometry", [])
+    @rx.var
+    def staged_settings_geometry_building(self) -> list[dict]:
+        return self.settings_staged.get("geometry_building", [])
+    @rx.var
+    def staged_settings_geometry_site(self) -> list[dict]:
+        return self.settings_staged.get("geometry_site", [])
     @rx.var
     def staged_settings_hdr_results(self) -> list[dict]:
         return self.settings_staged.get("hdr_results", [])

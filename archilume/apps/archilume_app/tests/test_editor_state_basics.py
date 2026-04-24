@@ -499,3 +499,201 @@ class TestSunnyLayerOpacity:
             overlay_alpha=0.6,
         )
         assert s.sunny_layer_opacity == "1"
+
+
+# =========================================================================
+# Calibration rectangle
+# =========================================================================
+
+
+def _calib_state(make_editor_state, **extra):
+    """Minimal state for calibration rect tests — 1000×500 HDR, 800×600 viewport."""
+    defaults = dict(
+        image_width=1000, image_height=500,
+        viewport_width=800, viewport_height=600,
+        overlay_img_width=400, overlay_img_height=300,
+        overlay_transforms={},
+        overlay_page_idx=0,
+        overlay_align_mode=True,
+        calib_rect_active=False,
+        calib_rect_x1=0.0, calib_rect_y1=0.0,
+        calib_rect_x2=0.0, calib_rect_y2=0.0,
+        hdr_files=[{"name": "test.hdr"}],
+        current_hdr_idx=0,
+        view_groups=[],
+        _overlay_undo_stack=[],
+    )
+    defaults.update(extra)
+    return make_editor_state(**defaults)
+
+
+class TestCalibRectSpawn:
+    def test_requires_overlay_align_mode(self, make_editor_state):
+        s = _calib_state(make_editor_state, overlay_align_mode=False)
+        s.spawn_calibration_rect()
+        assert s.calib_rect_active is False
+
+    def test_requires_nonzero_image_dims(self, make_editor_state):
+        s = _calib_state(make_editor_state, image_width=0)
+        s.spawn_calibration_rect()
+        assert s.calib_rect_active is False
+
+    def test_sets_active_flag(self, make_editor_state):
+        s = _calib_state(make_editor_state)
+        s.spawn_calibration_rect()
+        assert s.calib_rect_active is True
+
+    def test_rect_centred_on_hdr(self, make_editor_state):
+        s = _calib_state(make_editor_state)
+        s.spawn_calibration_rect()
+        cx = (s.calib_rect_x1 + s.calib_rect_x2) / 2
+        cy = (s.calib_rect_y1 + s.calib_rect_y2) / 2
+        assert abs(cx - 500) < 1e-6  # HDR centre X = 1000/2
+        assert abs(cy - 250) < 1e-6  # HDR centre Y = 500/2
+
+    def test_rect_enforces_hdr_aspect_ratio(self, make_editor_state):
+        s = _calib_state(make_editor_state)
+        s.spawn_calibration_rect()
+        w = s.calib_rect_x2 - s.calib_rect_x1
+        h = s.calib_rect_y2 - s.calib_rect_y1
+        aspect = h / w
+        expected_aspect = 500 / 1000  # ih / iw
+        assert abs(aspect - expected_aspect) < 1e-6
+
+
+class TestCalibRectApplyMath:
+    def _apply_and_read(self, make_editor_state, rx1, ry1, rx2, ry2):
+        """Apply a given rectangle and return the resulting overlay transform."""
+        s = _calib_state(
+            make_editor_state,
+            calib_rect_active=True,
+            calib_rect_x1=rx1, calib_rect_y1=ry1,
+            calib_rect_x2=rx2, calib_rect_y2=ry2,
+        )
+        s.apply_calibration_rect()
+        return s.overlay_transforms.get("test.hdr", {}), s
+
+    def test_clears_active_flag_after_apply(self, make_editor_state):
+        _, s = self._apply_and_read(make_editor_state, 100, 50, 900, 450)
+        assert s.calib_rect_active is False
+
+    def test_roundtrip_transform_tl_matches_rect(self, make_editor_state):
+        """After apply, overlay_svg_transform TL should equal (rx1, ry1)."""
+        rx1, ry1, rx2, ry2 = 100.0, 50.0, 900.0, 450.0
+        t, s = self._apply_and_read(make_editor_state, rx1, ry1, rx2, ry2)
+        iw, ih = 1000.0, 500.0
+        pdf_aspect = 300.0 / 400.0  # overlay_img_height / overlay_img_width
+        sx = t["scale_x"]
+        sy = t["scale_y"]
+        # Invert overlay_svg_transform to get ox, oy:
+        cx_term = iw * (1.0 - sx) / 2.0
+        cy_term = (ih - iw * pdf_aspect * sy) / 2.0
+        ox = cx_term + t["offset_x"] * iw
+        oy = cy_term + t["offset_y"] * ih
+        assert abs(ox - rx1) < 1e-6
+        assert abs(oy - ry1) < 1e-6
+
+    def test_roundtrip_transform_br_matches_rect(self, make_editor_state):
+        """After apply, overlay bottom-right == (rx2, ry2)."""
+        rx1, ry1, rx2, ry2 = 100.0, 50.0, 900.0, 450.0
+        t, s = self._apply_and_read(make_editor_state, rx1, ry1, rx2, ry2)
+        iw, ih = 1000.0, 500.0
+        pdf_aspect = 300.0 / 400.0
+        sx = t["scale_x"]
+        sy = t["scale_y"]
+        cx_term = iw * (1.0 - sx) / 2.0
+        cy_term = (ih - iw * pdf_aspect * sy) / 2.0
+        ox = cx_term + t["offset_x"] * iw
+        oy = cy_term + t["offset_y"] * ih
+        assert abs(ox + iw * sx - rx2) < 1e-6
+        assert abs(oy + iw * pdf_aspect * sy - ry2) < 1e-6
+
+    def test_mismatched_pdf_aspect_gives_unequal_sx_sy(self, make_editor_state):
+        """HDR aspect != PDF aspect ⇒ sx != sy (valid non-uniform scale)."""
+        # HDR is 1000×500 (aspect 0.5), PDF is 400×300 (aspect 0.75)
+        rx1, ry1, rx2, ry2 = 0.0, 0.0, 500.0, 250.0  # HDR-aspect rect
+        t, _ = self._apply_and_read(make_editor_state, rx1, ry1, rx2, ry2)
+        assert abs(t["scale_x"] - t["scale_y"]) > 1e-6
+
+    def test_normalises_flipped_corners(self, make_editor_state):
+        """Rect specified BR→TL must produce same transform as TL→BR."""
+        rx1, ry1, rx2, ry2 = 100.0, 50.0, 900.0, 450.0
+        t_fwd, _ = self._apply_and_read(make_editor_state, rx1, ry1, rx2, ry2)
+        t_rev, _ = self._apply_and_read(make_editor_state, rx2, ry2, rx1, ry1)
+        assert abs(t_fwd["scale_x"] - t_rev["scale_x"]) < 1e-10
+        assert abs(t_fwd["offset_x"] - t_rev["offset_x"]) < 1e-10
+
+    def test_does_not_apply_when_inactive(self, make_editor_state):
+        s = _calib_state(
+            make_editor_state,
+            calib_rect_active=False,
+            calib_rect_x1=100.0, calib_rect_y1=50.0,
+            calib_rect_x2=900.0, calib_rect_y2=450.0,
+        )
+        s.apply_calibration_rect()
+        assert s.overlay_transforms == {}
+
+
+class TestCalibRectStateTransitions:
+    def test_cancel_clears_active(self, make_editor_state):
+        s = _calib_state(make_editor_state, calib_rect_active=True)
+        s.cancel_calibration_rect()
+        assert s.calib_rect_active is False
+
+    def test_exit_plan_mode_clears_active(self, make_editor_state):
+        s = _calib_state(make_editor_state, overlay_align_mode=True, calib_rect_active=True,
+                         df_placement_mode=False, align_points=[],
+                         _overlay_session_start={}, _overlay_undo_stack=[])
+        s.toggle_overlay_align()
+        assert s.calib_rect_active is False
+        assert s.overlay_align_mode is False
+
+    def test_apply_registers_undo_entry(self, make_editor_state):
+        undo_calls = []
+        s = _calib_state(
+            make_editor_state,
+            calib_rect_active=True,
+            calib_rect_x1=100.0, calib_rect_y1=50.0,
+            calib_rect_x2=900.0, calib_rect_y2=450.0,
+        )
+        object.__setattr__(s, "_push_overlay_undo", lambda entry: undo_calls.append(entry))
+        s.apply_calibration_rect()
+        assert len(undo_calls) == 1
+        assert undo_calls[0]["action"] == "overlay_transform"
+
+    def test_update_calibration_rect_sets_coords(self, make_editor_state):
+        s = _calib_state(make_editor_state)
+        s.update_calibration_rect({"x1": 10.0, "y1": 20.0, "x2": 300.0, "y2": 150.0})
+        assert s.calib_rect_x1 == pytest.approx(10.0)
+        assert s.calib_rect_y2 == pytest.approx(150.0)
+
+    def test_undo_after_apply_restores_prior_transform(self, make_editor_state):
+        """Ctrl+Z after Apply Calibration reverts to the pre-apply transform."""
+        prior = {"offset_x": 0.1, "offset_y": -0.05, "scale_x": 1.2, "scale_y": 1.2,
+                 "rotation_90": 0, "is_manual": True, "page_idx": 0}
+        s = _calib_state(
+            make_editor_state,
+            overlay_transforms={"test.hdr": dict(prior)},
+            calib_rect_active=True,
+            calib_rect_x1=100.0, calib_rect_y1=50.0,
+            calib_rect_x2=900.0, calib_rect_y2=450.0,
+            _overlay_session_start={"level_key": "test.hdr", "transform": dict(prior)},
+            _last_undo_push_time=0.0,
+            _UNDO_MAX=100,
+        )
+        # Use the real _push_overlay_undo so the undo stack is populated
+        import types
+        from archilume_app.state.editor_state import EditorState
+        object.__setattr__(s, "_push_overlay_undo",
+                           types.MethodType(EditorState._push_overlay_undo, s))
+        s.apply_calibration_rect()
+        # Transform changed
+        applied = s.overlay_transforms["test.hdr"]
+        assert applied["scale_x"] != pytest.approx(prior["scale_x"])
+        # Undo routes to overlay stack in align mode
+        s.undo()
+        restored = s.overlay_transforms["test.hdr"]
+        assert restored["offset_x"] == pytest.approx(prior["offset_x"])
+        assert restored["offset_y"] == pytest.approx(prior["offset_y"])
+        assert restored["scale_x"] == pytest.approx(prior["scale_x"])
+        assert restored["scale_y"] == pytest.approx(prior["scale_y"])

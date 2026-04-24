@@ -8,12 +8,21 @@ project with a broken HDR, the wrong xlsx schema, or an empty rdp.
 
 from __future__ import annotations
 
+import logging
+import math
+import re
 from pathlib import Path
 from typing import Callable, Tuple
 
 import pandas as pd
 
 ValidationResult = Tuple[bool, str]
+
+# Radiance works in metres. Reject obvious unit mismatches — models under 1 m
+# across are almost certainly unit-scaled incorrectly, models over 10 km are
+# almost certainly exported in millimetres or a similar sub-metre unit.
+_MIN_BBOX_DIAGONAL_M = 1.0
+_MAX_BBOX_DIAGONAL_M = 10_000.0
 
 
 # ---------------------------------------------------------------------------
@@ -173,39 +182,138 @@ def validate_rdp(path: Path) -> ValidationResult:
 
 
 # ---------------------------------------------------------------------------
-# Geometry (.obj)
+# Geometry (.obj / .mtl)
 # ---------------------------------------------------------------------------
 
-def validate_obj(path: Path) -> ValidationResult:
-    """Minimal OBJ validity — must contain vertices or faces.
+# Regex for a well-formed MTL material declaration: ``newmtl <name>`` with any
+# run of whitespace (space, tab) between the directive and the material name,
+# and a non-empty name token. Anchored to line start to reject matches inside
+# comments like ``# newmtl foo``.
+_NEWMTL_RE = re.compile(r"(?m)^\s*newmtl\s+\S+")
 
-    We don't block on missing ``.mtl`` siblings because users may supply them in
-    a follow-up upload; that's surfaced as a warning at create time.
+
+def _parse_obj_with_pywavefront(path: Path):
+    """Parse ``path`` with pywavefront in tolerant mode, suppressing its noisy
+    per-line warnings. Returns the ``Wavefront`` scene, or raises whatever
+    pywavefront raised (caller wraps into ``ValidationResult``).
+    """
+    import pywavefront
+
+    # pywavefront logs one warning per unsupported directive (``g``, ``s``, …).
+    # Real Revit/Blender exports are dense with these and the console floods;
+    # the validator only cares whether parsing succeeded.
+    prior_level = pywavefront.logger.level
+    pywavefront.logger.setLevel(logging.ERROR)
+    try:
+        return pywavefront.Wavefront(
+            str(path),
+            strict=False,
+            create_materials=True,
+            collect_faces=True,
+        )
+    finally:
+        pywavefront.logger.setLevel(prior_level)
+
+
+def _bbox_diagonal(vertices) -> float:
+    """Euclidean diagonal of the axis-aligned bbox over ``vertices``.
+
+    ``vertices`` is pywavefront's ``scene.vertices`` — a list of ``(x, y, z)``
+    tuples. Returns ``0.0`` for an empty list rather than raising.
+    """
+    if not vertices:
+        return 0.0
+    xs = [v[0] for v in vertices]
+    ys = [v[1] for v in vertices]
+    zs = [v[2] for v in vertices]
+    return math.sqrt(
+        (max(xs) - min(xs)) ** 2
+        + (max(ys) - min(ys)) ** 2
+        + (max(zs) - min(zs)) ** 2
+    )
+
+
+def validate_obj(path: Path) -> ValidationResult:
+    """Structural + unit-of-measure validation of a Wavefront ``.obj`` file.
+
+    Parses the file with :mod:`pywavefront` in tolerant mode, then:
+
+    1. Requires at least one face — a vertices-only export (normals/UVs only)
+       produces an empty octree downstream.
+    2. Checks the axis-aligned bbox diagonal against a metres-based sanity
+       range (1 m ≤ d ≤ 10 km) so SketchUp-inches or Revit-millimetres
+       exports fail fast instead of silently producing wrong sun angles.
     """
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                stripped = line.lstrip()
-                if (
-                    stripped.startswith("v ")
-                    or stripped.startswith("f ")
-                    or stripped.startswith("vn ")
-                    or stripped.startswith("vt ")
-                ):
-                    return True, ""
-    except OSError as e:
+        from pywavefront import PywavefrontException
+    except ImportError as e:
+        return False, f"pywavefront not installed: {e}"
+
+    try:
+        scene = _parse_obj_with_pywavefront(path)
+    except FileNotFoundError:
+        return False, "File not found"
+    except PywavefrontException as e:
+        return False, f"OBJ parse failed: {e}"
+    except Exception as e:
         return False, f"Could not read obj: {e}"
-    return False, "No OBJ vertex/face lines found"
+
+    face_count = sum(len(m.faces) for m in scene.mesh_list)
+    if face_count == 0:
+        return False, (
+            "OBJ has no faces. Archilume needs triangulated faces to build an "
+            "octree — re-export with 'Triangulate faces' enabled."
+        )
+
+    diagonal = _bbox_diagonal(scene.vertices)
+    if diagonal < _MIN_BBOX_DIAGONAL_M:
+        return False, (
+            f"Model is only {diagonal:.3f} m across. Units look wrong — "
+            "archilume expects metres. Re-export in metres."
+        )
+    if diagonal > _MAX_BBOX_DIAGONAL_M:
+        return False, (
+            f"Model is {diagonal:.0f} m across (> 10 km). Units look wrong "
+            "(likely millimetres). Re-export in metres."
+        )
+    return True, ""
 
 
 def validate_mtl(path: Path) -> ValidationResult:
-    """Minimal MTL validity — must declare at least one ``newmtl`` material."""
+    """Accept any ``.mtl`` with ≥1 ``newmtl <name>`` declaration, regardless
+    of the whitespace (space / tab) between directive and name."""
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError as e:
         return False, f"Could not read mtl: {e}"
-    if "newmtl " not in text:
-        return False, "No 'newmtl' declarations found"
+    if not _NEWMTL_RE.search(text):
+        return False, (
+            "MTL file has no 'newmtl <name>' material definitions. "
+            "Export materials alongside the .obj."
+        )
+    return True, ""
+
+
+def validate_geometry_pair(
+    obj_path: Path, mtl_path: Path | None
+) -> ValidationResult:
+    """Confirm that an uploaded ``.obj`` has a stem-matched ``.mtl`` sibling.
+
+    Returns ``(False, msg)`` when ``mtl_path`` is missing or has a different
+    stem — downstream ``Objs2Octree`` resolves MTL paths via
+    ``obj_path.with_suffix('.mtl')`` so a mismatched stem causes every
+    material to default to grey plastic.
+    """
+    if mtl_path is None:
+        return False, (
+            f"OBJ '{obj_path.name}' has no matching MTL. "
+            f"Upload '{obj_path.stem}.mtl'."
+        )
+    if obj_path.stem != mtl_path.stem:
+        return False, (
+            f"OBJ '{obj_path.name}' and MTL '{mtl_path.name}' have different "
+            f"stems. Rename the MTL to '{obj_path.stem}.mtl'."
+        )
     return True, ""
 
 

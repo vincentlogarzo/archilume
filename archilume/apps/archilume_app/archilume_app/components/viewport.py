@@ -204,6 +204,41 @@ def _overlay_align_panel() -> rx.Component:
                 ),
                 style={"border_top": f"1px solid {COLORS['panel_bdr']}"},
             ),
+            # Calibration rectangle confirm/cancel — visible only when rect is active
+            rx.cond(
+                EditorState.calib_rect_active,
+                rx.flex(
+                    rx.flex(
+                        rx.icon_button(
+                            rx.icon(tag="check", size=12),
+                            rx.text("Apply Calibration", style={"font_family": FONT_MONO, "font_size": "10px",
+                                                                 "margin_left": "4px"}),
+                            variant="ghost", size="1",
+                            on_click=EditorState.apply_calibration_rect,
+                            style={"color": COLORS["accent"], "width": "100%",
+                                   "padding": "4px 8px", "cursor": "pointer",
+                                   "_hover": {"background": COLORS["hover"]}},
+                        ),
+                        style={"width": "100%"},
+                    ),
+                    rx.flex(
+                        rx.icon_button(
+                            rx.icon(tag="x", size=12),
+                            rx.text("Cancel", style={"font_family": FONT_MONO, "font_size": "10px",
+                                                     "margin_left": "4px"}),
+                            variant="ghost", size="1",
+                            on_click=EditorState.cancel_calibration_rect,
+                            style={"color": COLORS["text_dim"], "width": "100%",
+                                   "padding": "4px 8px", "cursor": "pointer",
+                                   "_hover": {"background": COLORS["hover"]}},
+                        ),
+                        style={"width": "100%"},
+                    ),
+                    direction="column",
+                    style={"border_top": f"1px solid {COLORS['panel_bdr']}"},
+                ),
+                rx.fragment(),
+            ),
             id="overlay-align-panel",
             style={
                 "position": "absolute",
@@ -1048,6 +1083,9 @@ _CANVAS_JS = rx.script(r"""
         // Don't capture clicks inside the alignment panel UI
         var panel = document.getElementById('overlay-align-panel');
         if (panel && panel.contains(e.target)) return;
+        // Don't capture calibration rect / handle interactions
+        var calibIds = ['calib-rect', 'calib-handle-tl', 'calib-handle-tr', 'calib-handle-bl', 'calib-handle-br'];
+        if (calibIds.indexOf(e.target.id) !== -1) return;
         var overlayImg = getOverlayImg();
         if (!overlayImg) return;
         e.preventDefault();
@@ -1107,6 +1145,145 @@ _CANVAS_JS = rx.script(r"""
             applyDataTransform(img);
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Calibration rectangle — drag body to move, drag corner handle to resize.
+    // Aspect ratio (HDR ih/iw) is enforced on corner drag.
+    // All coords are SVG image-pixel space. Syncs to Python on mouseup.
+    // ---------------------------------------------------------------------------
+    var _calibDragging = false;
+    var _calibCorner = null;      // 'tl'|'tr'|'bl'|'br'|null (null = body drag)
+    var _calibDragStartClient = {x: 0, y: 0};
+    var _calibDragStartRect = {x1: 0, y1: 0, x2: 0, y2: 0};
+
+    var _calibSyncTimer = null;
+    function scheduleCalibSync(x1, y1, x2, y2) {
+        if (_calibSyncTimer) clearTimeout(_calibSyncTimer);
+        _calibSyncTimer = setTimeout(function() {
+            _calibSyncTimer = null;
+            if (typeof dispatch !== 'undefined') {
+                dispatch('editor_state.update_calibration_rect', {data: {x1: x1, y1: y1, x2: x2, y2: y2}});
+            }
+        }, 50);
+    }
+
+    function getCalibRectFromSvg() {
+        var svg = document.getElementById('editor-svg');
+        var rect = document.getElementById('calib-rect');
+        if (!svg || !rect) return null;
+        var vb = svg.viewBox.baseVal;
+        // rect x/y/width/height are already in SVG (image-pixel) coords
+        var x = parseFloat(rect.getAttribute('x') || '0');
+        var y = parseFloat(rect.getAttribute('y') || '0');
+        var w = parseFloat(rect.getAttribute('width') || '0');
+        var h = parseFloat(rect.getAttribute('height') || '0');
+        return {x1: x, y1: y, x2: x + w, y2: y + h};
+    }
+
+    function applyCalibRect(x1, y1, x2, y2) {
+        var svg = document.getElementById('editor-svg');
+        var rect = document.getElementById('calib-rect');
+        var tl = document.getElementById('calib-handle-tl');
+        var tr = document.getElementById('calib-handle-tr');
+        var bl = document.getElementById('calib-handle-bl');
+        var br = document.getElementById('calib-handle-br');
+        if (!rect) return;
+        var lx = Math.min(x1, x2), ly = Math.min(y1, y2);
+        var rx = Math.max(x1, x2), ry = Math.max(y1, y2);
+        rect.setAttribute('x', lx);
+        rect.setAttribute('y', ly);
+        rect.setAttribute('width', rx - lx);
+        rect.setAttribute('height', ry - ly);
+        if (tl) { tl.setAttribute('cx', lx); tl.setAttribute('cy', ly); }
+        if (tr) { tr.setAttribute('cx', rx); tr.setAttribute('cy', ly); }
+        if (bl) { bl.setAttribute('cx', lx); bl.setAttribute('cy', ry); }
+        if (br) { br.setAttribute('cx', rx); br.setAttribute('cy', ry); }
+    }
+
+    document.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        var calibIds = ['calib-rect', 'calib-handle-tl', 'calib-handle-tr', 'calib-handle-bl', 'calib-handle-br'];
+        if (calibIds.indexOf(e.target.id) === -1) return;
+        var svg = document.getElementById('editor-svg');
+        if (!svg) return;
+        var cur = getCalibRectFromSvg();
+        if (!cur) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        _calibDragging = true;
+        _calibCorner = (e.target.id === 'calib-rect') ? null : e.target.id.replace('calib-handle-', '');
+        var svgPt = getSvgCoords(svg, e.clientX, e.clientY);
+        _calibDragStartClient = {x: svgPt.x, y: svgPt.y};
+        _calibDragStartRect = {x1: cur.x1, y1: cur.y1, x2: cur.x2, y2: cur.y2};
+    }, true);
+
+    window.addEventListener('mousemove', function(e) {
+        if (!_calibDragging) return;
+        var svg = document.getElementById('editor-svg');
+        if (!svg) return;
+        var vb = svg.viewBox.baseVal;
+        var iw = vb.width, ih = vb.height;
+        var aspect = (iw > 0) ? ih / iw : 1.0;
+        var svgPt = getSvgCoords(svg, e.clientX, e.clientY);
+        var dx = svgPt.x - _calibDragStartClient.x;
+        var dy = svgPt.y - _calibDragStartClient.y;
+        var r = _calibDragStartRect;
+        var x1 = r.x1, y1 = r.y1, x2 = r.x2, y2 = r.y2;
+
+        if (_calibCorner === null) {
+            // Body drag — translate
+            x1 = r.x1 + dx; y1 = r.y1 + dy;
+            x2 = r.x2 + dx; y2 = r.y2 + dy;
+        } else {
+            // Corner drag — resize with HDR aspect lock.
+            // The dragged corner moves; the opposite corner is anchored.
+            // Dominant axis drives the other via aspect ratio.
+            var anchorX, anchorY, rawNewX, rawNewY;
+            if (_calibCorner === 'tl') {
+                anchorX = r.x2; anchorY = r.y2;
+                rawNewX = r.x1 + dx; rawNewY = r.y1 + dy;
+            } else if (_calibCorner === 'tr') {
+                anchorX = r.x1; anchorY = r.y2;
+                rawNewX = r.x2 + dx; rawNewY = r.y1 + dy;
+            } else if (_calibCorner === 'bl') {
+                anchorX = r.x2; anchorY = r.y1;
+                rawNewX = r.x1 + dx; rawNewY = r.y2 + dy;
+            } else { // br
+                anchorX = r.x1; anchorY = r.y1;
+                rawNewX = r.x2 + dx; rawNewY = r.y2 + dy;
+            }
+            // Enforce aspect: choose the axis with the larger absolute delta
+            var absDx = Math.abs(rawNewX - anchorX);
+            var absDy = Math.abs(rawNewY - anchorY);
+            var newCX, newCY;
+            if (absDx * aspect >= absDy) {
+                newCX = rawNewX;
+                var signY = (rawNewX > anchorX) === (_calibCorner === 'br' || _calibCorner === 'bl') ? 1 : -1;
+                // height = width * aspect, preserve Y direction relative to anchor
+                newCY = anchorY + Math.sign(rawNewY - anchorY) * absDx * aspect;
+                if (rawNewY === anchorY) newCY = anchorY + (rawNewX > anchorX ? 1 : -1) * absDx * aspect;
+            } else {
+                newCY = rawNewY;
+                newCX = anchorX + Math.sign(rawNewX - anchorX) * absDy / aspect;
+                if (rawNewX === anchorX) newCX = anchorX + (rawNewY > anchorY ? 1 : -1) * absDy / aspect;
+            }
+            // Enforce minimum size (8px)
+            if (Math.abs(newCX - anchorX) < 8) { newCX = anchorX + Math.sign(newCX - anchorX) * 8; newCY = anchorY + Math.sign(newCY - anchorY) * 8 * aspect; }
+            if (_calibCorner === 'tl') { x1 = newCX; y1 = newCY; x2 = anchorX; y2 = anchorY; }
+            else if (_calibCorner === 'tr') { x1 = anchorX; y1 = newCY; x2 = newCX; y2 = anchorY; }
+            else if (_calibCorner === 'bl') { x1 = newCX; y1 = anchorY; x2 = anchorX; y2 = newCY; }
+            else { x1 = anchorX; y1 = anchorY; x2 = newCX; y2 = newCY; }
+        }
+        applyCalibRect(x1, y1, x2, y2);
+    });
+
+    window.addEventListener('mouseup', function(e) {
+        if (!_calibDragging) return;
+        _calibDragging = false;
+        var cur = getCalibRectFromSvg();
+        if (cur) scheduleCalibSync(cur.x1, cur.y1, cur.x2, cur.y2);
+        _calibCorner = null;
+    });
 
     // ---------------------------------------------------------------------------
     // Pixel inspector — shows RGB values when zoomed in to pixel level
@@ -1478,6 +1655,70 @@ def _svg_canvas() -> rx.Component:
                     stroke_width="1.5",
                     stroke_dasharray="4,4",
                     opacity="0.7",
+                ),
+                rx.fragment(),
+            ),
+
+            # Calibration rectangle — shown in Plan Mode while calib_rect_active
+            rx.cond(
+                EditorState.calib_rect_active,
+                rx.fragment(
+                    rx.el.rect(
+                        id="calib-rect",
+                        x=EditorState.calib_rect_svg_x,
+                        y=EditorState.calib_rect_svg_y,
+                        width=EditorState.calib_rect_svg_w,
+                        height=EditorState.calib_rect_svg_h,
+                        fill="rgba(13,148,136,0.08)",
+                        stroke=COLORS["accent"],
+                        stroke_width="1.5",
+                        stroke_dasharray="6,3",
+                        style={"pointer_events": "all", "cursor": "move"},
+                    ),
+                    # Top-left handle
+                    rx.el.circle(
+                        id="calib-handle-tl",
+                        cx=EditorState.calib_rect_x1.to(str),
+                        cy=EditorState.calib_rect_y1.to(str),
+                        r="6",
+                        fill="white",
+                        stroke=COLORS["accent"],
+                        stroke_width="1.5",
+                        style={"pointer_events": "all", "cursor": "nwse-resize"},
+                    ),
+                    # Top-right handle
+                    rx.el.circle(
+                        id="calib-handle-tr",
+                        cx=EditorState.calib_rect_x2.to(str),
+                        cy=EditorState.calib_rect_y1.to(str),
+                        r="6",
+                        fill="white",
+                        stroke=COLORS["accent"],
+                        stroke_width="1.5",
+                        style={"pointer_events": "all", "cursor": "nesw-resize"},
+                    ),
+                    # Bottom-left handle
+                    rx.el.circle(
+                        id="calib-handle-bl",
+                        cx=EditorState.calib_rect_x1.to(str),
+                        cy=EditorState.calib_rect_y2.to(str),
+                        r="6",
+                        fill="white",
+                        stroke=COLORS["accent"],
+                        stroke_width="1.5",
+                        style={"pointer_events": "all", "cursor": "nesw-resize"},
+                    ),
+                    # Bottom-right handle
+                    rx.el.circle(
+                        id="calib-handle-br",
+                        cx=EditorState.calib_rect_x2.to(str),
+                        cy=EditorState.calib_rect_y2.to(str),
+                        r="6",
+                        fill="white",
+                        stroke=COLORS["accent"],
+                        stroke_width="1.5",
+                        style={"pointer_events": "all", "cursor": "nwse-resize"},
+                    ),
                 ),
                 rx.fragment(),
             ),

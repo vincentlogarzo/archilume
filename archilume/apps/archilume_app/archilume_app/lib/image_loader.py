@@ -702,7 +702,7 @@ def load_frame_png_as_base64(hdr_path: Path) -> Optional[str]:
     if png_path.exists() and png_path.stat().st_size > 0:
         return load_image_as_base64(png_path)
 
-    from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+    from archilume.post.hdr2png import convert_hdrs_to_pngs
     convert_hdrs_to_pngs([hdr_path])
     if png_path.exists() and png_path.stat().st_size > 0:
         return load_image_as_base64(png_path)
@@ -727,7 +727,7 @@ def regenerate_sunlight_underlay_png(underlay_hdr_path: Path, exposure: float) -
     png_path.unlink(missing_ok=True)
 
     # Regenerate PNG with new exposure
-    from archilume.post.hdr_to_png import convert_hdrs_to_pngs
+    from archilume.post.hdr2png import convert_hdrs_to_pngs
     convert_hdrs_to_pngs([underlay_hdr_path], exposure=exposure)
 
     # Invalidate cache for this PNG and TIFF so next load gets fresh data

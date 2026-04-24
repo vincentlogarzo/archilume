@@ -55,6 +55,7 @@ dependencies = [
 [package.dev-dependencies]
 app = [
     { name = "fastapi" },
+    { name = "pywavefront" },
     { name = "reflex" },
 ]
 desktop = [
@@ -96,6 +97,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 app = [
     { name = "fastapi", specifier = ">=0.135.3" },
+    { name = "pywavefront", specifier = ">=1.3.3" },
     { name = "reflex", specifier = ">=0.9.0" },
 ]
 desktop = [
@@ -1318,6 +1320,14 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/0e/ab/4813c71ac41b6691f16f658a9432ffe6d536a1f55d79c193c5c073eb370e/pyvista-0.47.1.tar.gz", hash = "sha256:2d517aeb0e76ea29d7a21ad95237c03ea0b45257d87d0bd88987b49965d1f1a3", size = 2463080, upload-time = "2026-02-23T07:07:11.324Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/52/a98dea948d9782b80e8e60804097fee7f7bd8fed92c9d4f0c657e4c3a6f8/pyvista-0.47.1-py3-none-any.whl", hash = "sha256:eb8cee6b6246c41f1a9d2d07e662ec7d0192ea5cf585d64ebf1266774258df59", size = 2508384, upload-time = "2026-02-23T07:07:09.069Z" },
+]
+
+[[package]]
+name = "pywavefront"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/f2/db25754f3d7f948e1cb7191a393284e29bc2497dae9d8456cbf25ddac671/PyWavefront-1.3.3-py3-none-any.whl", hash = "sha256:ec79cadd046b168434b01031e574f4105f821d06cb8cf754801e4dc18076bbeb", size = 28842, upload-time = "2020-12-10T04:21:56.711Z" },
 ]
 
 [[package]]

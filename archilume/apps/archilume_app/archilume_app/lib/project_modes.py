@@ -68,6 +68,12 @@ class FieldSpec:
         Lower-case file extensions (including leading dot) accepted for this
         field. Used by the state layer to reject uploads with the wrong suffix
         before running the content validator.
+    extension_validators:
+        Optional per-extension validator dispatch. When a multi-extension
+        field (e.g. geometry accepting ``.obj`` and ``.mtl``) needs different
+        validation per suffix, map ``{".obj": validate_obj, ".mtl": validate_mtl}``
+        here. The state layer picks the matching validator by file extension
+        and falls back to ``validator`` when no mapping is registered.
     """
 
     id: str
@@ -80,6 +86,7 @@ class FieldSpec:
     allowed_extensions: Tuple[str, ...]
     required: bool = False
     one_of: Optional[str] = None
+    extension_validators: Optional[Dict[str, Validator]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,15 +104,35 @@ PDF = FieldSpec(
     allowed_extensions=(".pdf",),
 )
 
-GEOMETRY = FieldSpec(
-    id="geometry",
-    label="Geometry (.obj + .mtl)",
-    description="Model geometry for the archilume engine to compile an octree",
+_GEOMETRY_EXT_VALIDATORS: Dict[str, Validator] = {
+    ".obj": V.validate_obj,
+    ".mtl": V.validate_mtl,
+}
+
+GEOMETRY_BUILDING = FieldSpec(
+    id="geometry_building",
+    label="Building geometry (.obj + .mtl)",
+    description="The building being analysed — exactly one .obj plus its .mtl (same stem).",
     accept={"application/octet-stream": [".obj", ".mtl"]},
     multiple=True,
     dest_attr="inputs_dir",
-    validator=V.validate_obj,  # mtl files validated separately per-file
+    validator=V.validate_obj,
     allowed_extensions=(".obj", ".mtl"),
+    required=True,
+    extension_validators=_GEOMETRY_EXT_VALIDATORS,
+)
+
+GEOMETRY_SITE = FieldSpec(
+    id="geometry_site",
+    label="Site & near-shading geometry (.obj + .mtl)",
+    description="Adjacent buildings, trees, ground plane — exactly one .obj plus its .mtl.",
+    accept={"application/octet-stream": [".obj", ".mtl"]},
+    multiple=True,
+    dest_attr="inputs_dir",
+    validator=V.validate_obj,
+    allowed_extensions=(".obj", ".mtl"),
+    required=False,
+    extension_validators=_GEOMETRY_EXT_VALIDATORS,
 )
 
 HDR_RESULTS = FieldSpec(
@@ -209,7 +236,7 @@ MODES: Dict[str, ModeSpec] = {
             "Sunlight workflow — supply geometry to simulate, or drop in "
             "pre-rendered HDR results to mark up."
         ),
-        fields=(PDF, GEOMETRY, HDR_RESULTS, ROOM_DATA_SUNLIGHT, AOI_FILES),
+        fields=(PDF, GEOMETRY_BUILDING, GEOMETRY_SITE, HDR_RESULTS, ROOM_DATA_SUNLIGHT, AOI_FILES),
     ),
     "daylight": ModeSpec(
         id="daylight",
@@ -298,10 +325,17 @@ def invalid_combinations(
 ) -> List[str]:
     """Return human-readable errors for mutually-exclusive field combinations.
 
-    Sunlight mode: ``room_data`` (``room_boundaries.csv``) and ``aoi_files``
-    are each individually valid but must not be supplied together. The CSV is
-    converted to ``.aoi`` files at project creation; accepting both would
-    race against user-supplied ``.aoi`` files.
+    Sunlight mode:
+
+    * ``room_data`` (``room_boundaries.csv``) and ``aoi_files`` are each
+      individually valid but must not be supplied together — the CSV is
+      converted to ``.aoi`` files at project creation and would race with any
+      user-supplied ``.aoi`` files.
+    * Each geometry slot (``geometry_building``, ``geometry_site``) must
+      contain exactly one ``.obj`` and exactly one ``.mtl`` whose stems match.
+      Downstream :class:`archilume.core.objs2octree.Objs2Octree` resolves MTL
+      paths via ``obj_path.with_suffix('.mtl')`` — a stem mismatch or missing
+      MTL causes every material to default to grey plastic.
     """
 
     def field_ok(field_id: str) -> bool:
@@ -313,5 +347,64 @@ def invalid_combinations(
         if field_ok("room_data") and field_ok("aoi_files"):
             errors.append(
                 "Provide either room_boundaries.csv OR .aoi files, not both."
+            )
+        for slot_id, slot_label in (
+            ("geometry_building", "Building geometry"),
+            ("geometry_site", "Site geometry"),
+        ):
+            errors.extend(_geometry_slot_errors(staged, slot_id, slot_label))
+    return errors
+
+
+def _geometry_slot_errors(
+    staged: Dict[str, List[dict]],
+    slot_id: str,
+    slot_label: str,
+) -> List[str]:
+    """Validate one geometry slot's staged contents (see ``invalid_combinations``).
+
+    Only valid (``ok=True``) entries count — rows flagged by the per-file
+    validator are reported separately on the row itself. Returns an empty
+    list when the slot is empty (building is marked required elsewhere via
+    ``missing_required``).
+    """
+    entries = [e for e in (staged.get(slot_id) or []) if e.get("ok")]
+    if not entries:
+        return []
+
+    objs = [e for e in entries if Path(e.get("name", "")).suffix.lower() == ".obj"]
+    mtls = [e for e in entries if Path(e.get("name", "")).suffix.lower() == ".mtl"]
+
+    errors: List[str] = []
+    if len(objs) > 1:
+        errors.append(
+            f"{slot_label} must contain exactly one .obj — "
+            f"got {len(objs)}. Remove extras."
+        )
+    if len(mtls) > 1:
+        errors.append(
+            f"{slot_label} must contain exactly one .mtl — "
+            f"got {len(mtls)}. Remove extras."
+        )
+    if len(objs) == 1 and len(mtls) == 0:
+        obj_name = objs[0].get("name", "")
+        stem = Path(obj_name).stem
+        errors.append(
+            f"{slot_label} is missing '{stem}.mtl'. "
+            f"Upload the MTL sibling of '{obj_name}'."
+        )
+    if len(objs) == 0 and len(mtls) == 1:
+        errors.append(
+            f"{slot_label} has an .mtl without a matching .obj. "
+            f"Upload the OBJ, or remove the MTL."
+        )
+    if len(objs) == 1 and len(mtls) == 1:
+        obj_stem = Path(objs[0].get("name", "")).stem
+        mtl_stem = Path(mtls[0].get("name", "")).stem
+        if obj_stem != mtl_stem:
+            errors.append(
+                f"{slot_label}: '{objs[0].get('name')}' and "
+                f"'{mtls[0].get('name')}' have different stems. "
+                f"Rename the MTL to '{obj_stem}.mtl'."
             )
     return errors

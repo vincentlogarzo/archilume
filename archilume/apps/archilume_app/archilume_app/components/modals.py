@@ -68,11 +68,25 @@ def open_project_modal() -> rx.Component:
             rx.flex(
                 rx.dialog.title("Open Project", style={"font_family": FONT_MONO, "font_size": "18px", "margin": "0"}),
                 rx.spacer(),
+                rx.cond(
+                    EditorState.show_server_browse,
+                    rx.tooltip(
+                        rx.button(
+                            rx.icon(tag="hard-drive", size=14),
+                            "Browse on server…",
+                            size="1", variant="outline",
+                            on_click=EditorState.open_external_browser,
+                            style={"font_family": FONT_MONO, "margin_right": "6px"},
+                        ),
+                        content="Browse the server's projects/ folder", side="left",
+                    ),
+                    rx.fragment(),
+                ),
                 rx.tooltip(
                     rx.upload(
                         rx.button(
                             rx.icon(tag="folder-open", size=14),
-                            "Browse…",
+                            "Upload…",
                             size="1", variant="outline",
                             style={"font_family": FONT_MONO},
                         ),
@@ -86,7 +100,7 @@ def open_project_modal() -> rx.Component:
                         padding="0",
                         style={"display": "inline-block", "min_height": "0", "height": "auto"},
                     ),
-                    content="Upload a .zip of a project folder", side="left",
+                    content="Upload a .zip from your computer", side="left",
                 ),
                 align="center", style={"margin_bottom": "14px"},
             ),
@@ -190,7 +204,8 @@ def _browser_entry_row(entry) -> rx.Component:
 
 
 def external_browser_modal() -> rx.Component:
-    is_file_mode = EditorState.external_browser_mode == "settings_file"
+    is_file_mode = (EditorState.external_browser_mode == "settings_file") | \
+                   (EditorState.external_browser_mode == "create_file")
     return rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title(
@@ -212,11 +227,12 @@ def external_browser_modal() -> rx.Component:
                         rx.icon(tag="arrow-up", size=14),
                         size="1", variant="outline",
                         on_click=EditorState.external_browser_go_up,
+                        disabled=EditorState.external_browser_at_root,
                     ),
                     content="Parent folder", side="bottom",
                 ),
                 rx.text(
-                    EditorState.external_browser_path,
+                    EditorState.external_browser_display_path,
                     style={"font_family": FONT_MONO, "font_size": "11px",
                            "color": COLORS["text_pri"], "overflow": "hidden",
                            "text_overflow": "ellipsis", "white_space": "nowrap"},
@@ -272,35 +288,41 @@ _MODE_OPTIONS: list[tuple[str, str]] = [
 
 
 def _file_row(entry, on_remove) -> rx.Component:
-    """Render one staged file row with ✓/✗ icon, filename, error, remove button."""
+    """One staged file row: remove button on the left, filename middle, error right.
+
+    The filename column does not wrap — it gets its own horizontal scrollbar
+    so long stems (e.g. ``87Cowles_BLD_withWindows_with_site_plan_ffl_…``)
+    don't expand the modal width. Invalid rows surface the validator's error
+    in red; valid rows are shown without a success tick (no news is good news).
+    """
     return rx.flex(
-        rx.cond(
-            entry["ok"],
-            rx.icon(tag="check", size=14, style={"color": COLORS["success"]}),
-            rx.icon(tag="x", size=14, style={"color": COLORS["danger"]}),
+        rx.icon_button(
+            rx.icon(tag="x", size=12),
+            variant="ghost", size="1",
+            on_click=on_remove,
+            style={"color": COLORS["text_dim"], "flex": "0 0 auto"},
         ),
         rx.text(
             entry["name"],
-            style={"font_family": FONT_MONO, "font_size": "11px", "color": COLORS["text_pri"]},
+            style={
+                "font_family": FONT_MONO, "font_size": "11px",
+                "color": COLORS["text_pri"],
+                "white_space": "nowrap",
+                "flex": "1 1 auto",
+            },
         ),
         rx.cond(
             entry["error"] != "",
             rx.text(
                 entry["error"],
                 style={"font_family": FONT_MONO, "font_size": "10px",
-                       "color": COLORS["danger"], "margin_left": "6px"},
+                       "color": COLORS["danger"], "margin_left": "6px",
+                       "white_space": "nowrap", "flex": "0 0 auto"},
             ),
             rx.fragment(),
         ),
-        rx.spacer(),
-        rx.icon_button(
-            rx.icon(tag="x", size=12),
-            variant="ghost", size="1",
-            on_click=on_remove,
-            style={"color": COLORS["text_dim"]},
-        ),
         align="center", gap="6px",
-        style={"padding": "3px 6px", "border_radius": "4px"},
+        style={"padding": "3px 6px", "border_radius": "4px", "min_width": "max-content"},
     )
 
 
@@ -349,6 +371,9 @@ def _create_upload_field(
     ``EditorState.upload_create_pdf``); Reflex requires the handler's
     parameter list to match the event spec exactly, so we cannot pass the
     field_id through the event — it is baked into the chosen handler.
+
+    A sibling "Browse on server…" button is surfaced when the deployment
+    has a reachable bind-mounted ``projects/`` tree (native + local-docker).
     """
     upload_id = f"create-{field_id}"
     return rx.box(
@@ -358,6 +383,30 @@ def _create_upload_field(
                 "text_transform": "uppercase", "color": COLORS["text_dim"],
             }),
             rx.spacer(),
+            rx.cond(
+                EditorState.show_server_browse,
+                rx.button(
+                    rx.icon(tag="hard-drive", size=12),
+                    rx.text("Browse…", style={"font_family": FONT_MONO, "font_size": "10px"}),
+                    size="1",
+                    variant="outline",
+                    on_click=EditorState.pick_create_field_file(field_id),
+                    style={"gap": "4px", "margin_right": "6px"},
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                files_var.length() > 0,
+                rx.button(
+                    rx.icon(tag="trash-2", size=12),
+                    rx.text("Clear all", style={"font_family": FONT_MONO, "font_size": "10px"}),
+                    size="1",
+                    variant="outline",
+                    on_click=EditorState.clear_new_project_field(field_id),
+                    style={"gap": "4px", "margin_right": "6px"},
+                ),
+                rx.fragment(),
+            ),
             rx.text("required", style={
                 "font_family": FONT_MONO, "font_size": "9px",
                 "color": COLORS["text_dim"], "letter_spacing": "0.06em",
@@ -374,49 +423,54 @@ def _create_upload_field(
             padding="0",
             style={"width": "100%"},
         ),
-        rx.foreach(
-            files_var,
-            lambda entry: _file_row(
-                entry,
-                EditorState.remove_new_project_file(field_id, entry["name"]),
+        rx.box(
+            rx.foreach(
+                files_var,
+                lambda entry: _file_row(
+                    entry,
+                    EditorState.remove_new_project_file(field_id, entry["name"]),
+                ),
             ),
+            style={"overflow_x": "auto"},
         ),
         style={"margin_bottom": "10px"},
     )
 
 
 def _settings_canonical_row(field_id: str, filename) -> rx.Component:
-    """Settings-modal row for an existing canonical file. Shows pending-removal toggle."""
+    """Settings-modal row for an existing canonical file. Shows pending-removal toggle.
+
+    Mirrors :func:`_file_row`: remove toggle sits on the left, filename column
+    scrolls horizontally if the stem is long, status text (``will be removed``)
+    trails on the right.
+    """
     is_pending = EditorState.settings_pending_removals.get(field_id, []).contains(filename)
     return rx.flex(
-        rx.cond(
-            is_pending,
-            rx.icon(tag="trash-2", size=14, style={"color": COLORS["danger"]}),
-            rx.icon(tag="file", size=14, style={"color": COLORS["text_sec"]}),
+        rx.icon_button(
+            rx.cond(is_pending, rx.icon(tag="undo-2", size=12), rx.icon(tag="x", size=12)),
+            variant="ghost", size="1",
+            on_click=EditorState.toggle_canonical_removal(field_id, filename),
+            style={"color": COLORS["text_dim"], "flex": "0 0 auto"},
         ),
         rx.text(
             filename,
             style={
                 "font_family": FONT_MONO, "font_size": "11px",
                 "color": COLORS["text_pri"],
+                "white_space": "nowrap",
+                "flex": "1 1 auto",
             },
         ),
         rx.cond(
             is_pending,
             rx.text("will be removed",
                     style={"font_family": FONT_MONO, "font_size": "10px",
-                           "color": COLORS["danger"], "margin_left": "6px"}),
+                           "color": COLORS["danger"], "margin_left": "6px",
+                           "white_space": "nowrap", "flex": "0 0 auto"}),
             rx.fragment(),
         ),
-        rx.spacer(),
-        rx.icon_button(
-            rx.cond(is_pending, rx.icon(tag="undo-2", size=12), rx.icon(tag="x", size=12)),
-            variant="ghost", size="1",
-            on_click=EditorState.toggle_canonical_removal(field_id, filename),
-            style={"color": COLORS["text_dim"]},
-        ),
         align="center", gap="6px",
-        style={"padding": "3px 6px", "border_radius": "4px"},
+        style={"padding": "3px 6px", "border_radius": "4px", "min_width": "max-content"},
     )
 
 
@@ -451,14 +505,29 @@ def _settings_upload_field(
                 size="1",
                 variant="outline",
                 on_click=EditorState.pick_settings_field_file(field_id),
-                style={"gap": "4px"},
+                style={"gap": "4px", "margin_right": "6px"},
+            ),
+            rx.cond(
+                staged_files_var.length() > 0,
+                rx.button(
+                    rx.icon(tag="trash-2", size=12),
+                    rx.text("Clear all", style={"font_family": FONT_MONO, "font_size": "10px"}),
+                    size="1",
+                    variant="outline",
+                    on_click=EditorState.clear_settings_field(field_id),
+                    style={"gap": "4px"},
+                ),
+                rx.fragment(),
             ),
             align="center", style={"margin_bottom": "4px"},
         ),
-        # Existing canonical files
-        rx.foreach(
-            canonical_files,
-            lambda fname: _settings_canonical_row(field_id, fname),
+        # Existing canonical files — one shared scroll bar for the whole list
+        rx.box(
+            rx.foreach(
+                canonical_files,
+                lambda fname: _settings_canonical_row(field_id, fname),
+            ),
+            style={"overflow_x": "auto"},
         ),
         # Drop zone for drag-and-drop (click-to-browse handled by the button above)
         rx.upload(
@@ -471,13 +540,16 @@ def _settings_upload_field(
             padding="0",
             style={"width": "100%", "margin_top": "4px"},
         ),
-        # Staged (not-yet-applied) replacements / additions
-        rx.foreach(
-            staged_files_var,
-            lambda entry: _file_row(
-                entry,
-                EditorState.remove_settings_staged_file(field_id, entry["name"]),
+        # Staged (not-yet-applied) replacements / additions — own scroll track
+        rx.box(
+            rx.foreach(
+                staged_files_var,
+                lambda entry: _file_row(
+                    entry,
+                    EditorState.remove_settings_staged_file(field_id, entry["name"]),
+                ),
             ),
+            style={"overflow_x": "auto"},
         ),
         style={"margin_bottom": "10px"},
     )
@@ -514,9 +586,14 @@ def _create_fields_for_mode(mode_id: str) -> rx.Component:
         return rx.fragment(
             _create_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
                                  S.staged_create_pdf, ".pdf", S.upload_create_pdf),
-            _create_upload_field("geometry", "Geometry (.obj + .mtl) — for simulation",
+            _create_upload_field("geometry_building", "Building geometry (.obj + .mtl) — required",
                                  _ACCEPT_GEOMETRY, True,
-                                 S.staged_create_geometry, ".obj / .mtl", S.upload_create_geometry),
+                                 S.staged_create_geometry_building, ".obj + .mtl",
+                                 S.upload_create_geometry_building),
+            _create_upload_field("geometry_site", "Site & near-shading (.obj + .mtl) — optional",
+                                 _ACCEPT_GEOMETRY, True,
+                                 S.staged_create_geometry_site, ".obj + .mtl",
+                                 S.upload_create_geometry_site),
             _create_upload_field("hdr_results", "HDR results — for markup",
                                  _ACCEPT_HDR, True,
                                  S.staged_create_hdr_results, ".hdr", S.upload_create_hdr_results),
@@ -570,9 +647,14 @@ def _settings_fields_for_mode(mode_id: str) -> rx.Component:
         return rx.fragment(
             _settings_upload_field("pdf", "PDF floor plan", _ACCEPT_PDF, False,
                                    S.staged_settings_pdf, ".pdf", S.upload_settings_pdf),
-            _settings_upload_field("geometry", "Geometry (.obj + .mtl)",
+            _settings_upload_field("geometry_building", "Building geometry (.obj + .mtl)",
                                    _ACCEPT_GEOMETRY, True,
-                                   S.staged_settings_geometry, ".obj / .mtl", S.upload_settings_geometry),
+                                   S.staged_settings_geometry_building, ".obj + .mtl",
+                                   S.upload_settings_geometry_building),
+            _settings_upload_field("geometry_site", "Site & near-shading (.obj + .mtl)",
+                                   _ACCEPT_GEOMETRY, True,
+                                   S.staged_settings_geometry_site, ".obj + .mtl",
+                                   S.upload_settings_geometry_site),
             _settings_upload_field("hdr_results", "HDR results",
                                    _ACCEPT_HDR, True,
                                    S.staged_settings_hdr_results, ".hdr", S.upload_settings_hdr_results),
@@ -606,8 +688,31 @@ def _settings_fields_for_mode(mode_id: str) -> rx.Component:
 def create_project_modal() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("Create New Project",
-                            style={"font_family": FONT_MONO, "font_size": "18px"}),
+            # Sticky top bar — title on the left, Cancel/Create on the right.
+            # Kept visible while the body scrolls so users never need to scroll
+            # back to the bottom to apply or cancel.
+            rx.flex(
+                rx.dialog.title("Create New Project",
+                                style={"font_family": FONT_MONO, "font_size": "18px",
+                                       "margin": "0"}),
+                rx.spacer(),
+                rx.dialog.close(rx.button("Cancel", variant="outline", size="1",
+                                          style={"font_family": FONT_MONO})),
+                rx.button(
+                    "Create",
+                    size="1",
+                    on_click=EditorState.create_project,
+                    disabled=~EditorState.create_form_is_valid,
+                    style={"font_family": FONT_MONO, "background": COLORS["success"]},
+                ),
+                align="center", gap="8px",
+                style={
+                    "position": "sticky", "top": "0", "z_index": "10",
+                    "background": COLORS["panel_bg"],
+                    "padding": "8px 0", "margin_bottom": "10px",
+                    "border_bottom": f"1px solid {COLORS['panel_bdr']}",
+                },
+            ),
 
             # Project name
             rx.box(
@@ -659,19 +764,6 @@ def create_project_modal() -> rx.Component:
                 rx.fragment(),
             ),
 
-            rx.flex(
-                rx.dialog.close(rx.button("Cancel", variant="outline", size="1",
-                                          style={"font_family": FONT_MONO})),
-                rx.button(
-                    "Create",
-                    size="1",
-                    on_click=EditorState.create_project,
-                    disabled=~EditorState.create_form_is_valid,
-                    style={"font_family": FONT_MONO, "background": COLORS["success"]},
-                ),
-                justify="end", gap="8px", style={"margin_top": "12px"},
-            ),
-
             style={"max_width": "560px", "max_height": "85vh", "overflow_y": "auto"},
         ),
         open=EditorState.create_project_modal_open,
@@ -682,13 +774,34 @@ def create_project_modal() -> rx.Component:
 def project_settings_modal() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title(
-                rx.flex(
-                    rx.icon(tag="settings", size=16, style={"color": COLORS["accent"]}),
-                    rx.text("Project Settings", style={"margin_left": "6px"}),
-                    align="center",
+            # Sticky top bar — title on the left, Cancel/Apply on the right.
+            # Stays visible while the canonical-files list scrolls.
+            rx.flex(
+                rx.dialog.title(
+                    rx.flex(
+                        rx.icon(tag="settings", size=16, style={"color": COLORS["accent"]}),
+                        rx.text("Project Settings", style={"margin_left": "6px"}),
+                        align="center",
+                    ),
+                    style={"font_family": FONT_MONO, "font_size": "18px", "margin": "0"},
                 ),
-                style={"font_family": FONT_MONO, "font_size": "18px"},
+                rx.spacer(),
+                rx.dialog.close(rx.button("Cancel", variant="outline", size="1",
+                                          style={"font_family": FONT_MONO})),
+                rx.button(
+                    "Apply",
+                    size="1",
+                    on_click=EditorState.apply_settings,
+                    disabled=~EditorState.settings_form_is_valid,
+                    style={"font_family": FONT_MONO, "background": COLORS["accent"], "color": "white"},
+                ),
+                align="center", gap="8px",
+                style={
+                    "position": "sticky", "top": "0", "z_index": "10",
+                    "background": COLORS["panel_bg"],
+                    "padding": "8px 0", "margin_bottom": "10px",
+                    "border_bottom": f"1px solid {COLORS['panel_bdr']}",
+                },
             ),
             rx.text(
                 EditorState.project,
@@ -714,19 +827,6 @@ def project_settings_modal() -> rx.Component:
                     "color": COLORS["danger"], "margin_top": "8px",
                 }),
                 rx.fragment(),
-            ),
-
-            rx.flex(
-                rx.dialog.close(rx.button("Cancel", variant="outline", size="1",
-                                          style={"font_family": FONT_MONO})),
-                rx.button(
-                    "Apply",
-                    size="1",
-                    on_click=EditorState.apply_settings,
-                    disabled=~EditorState.settings_form_is_valid,
-                    style={"font_family": FONT_MONO, "background": COLORS["accent"], "color": "white"},
-                ),
-                justify="end", gap="8px", style={"margin_top": "12px"},
             ),
 
             style={"max_width": "560px", "max_height": "85vh", "overflow_y": "auto"},

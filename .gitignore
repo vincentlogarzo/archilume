@@ -2,6 +2,9 @@ __pycache__/
 *.egg-info/
 .venv/
 
+# Reflex build scaffold (auto-regenerated on `reflex run`)
+.web/
+
 # Test artefacts
 .coverage
 tests/.coverage
