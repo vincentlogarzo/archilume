@@ -40,9 +40,9 @@ debug_trace.json
 .ssh/
 !.ssh/config.template
 
-# Local hint file written by docker/launch-archilume.ps1 when Docker Desktop
+# Local hint file written by .docker/launch-archilume.ps1 when Docker Desktop
 # lives outside the default install path. Personal to the host, not shipped.
-docker/.docker-path.txt
+.docker/.docker-path.txt
 
-# Build artifacts from docker/build-zip.ps1 — recreated on demand.
-docker/dist/
+# Build artifacts from .docker/build-dist-zip.ps1 — recreated on demand.
+.docker/dist/

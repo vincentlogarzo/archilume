@@ -43,7 +43,7 @@ Refresh to the latest published images before the next launch:
 docker compose -f docker-compose-archilume.yml -p archilume pull
 ```
 
-See [docker/README.md](docker/README.md) for the end-user troubleshooting guide shipped inside the zip.
+See [.docker/README.md](.docker/README.md) for the end-user troubleshooting guide shipped inside the zip.
 
 ### Option B — Dev Container (Recommended for Developers)
 
@@ -168,11 +168,11 @@ SunlightAccessWorkflow().run(
 ```text
 archilume/
 ├── .devcontainer/                          # Docker dev container (Radiance + Accelerad)
-├── docker/                                 # End-user Docker distribution
+├── .docker/                                # End-user Docker distribution
 │   ├── Dockerfile
 │   ├── docker-compose-archilume.yml
 │   ├── launch-archilume.cmd                # Windows launcher
-│   ├── launch-archilume.ps1                # PowerShell implementation
+│   ├── _launch-archilume.ps1               # PowerShell implementation
 │   └── README.md                           # End-user troubleshooting guide
 │
 ├── archilume/                              # Core package

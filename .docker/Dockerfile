@@ -12,20 +12,20 @@
 # All commands below are run from the repo root.
 
 # Build all three images in parallel (recommended — BuildKit fans out independent targets):
-#   docker buildx bake --load -f docker/docker-bake.hcl
+#   docker buildx bake --load -f .docker/docker-bake.hcl
 
 # Build without cache:
-#   docker buildx bake --load --no-cache -f docker/docker-bake.hcl
+#   docker buildx bake --load --no-cache -f .docker/docker-bake.hcl
 
 # Build + push to Docker Hub:
 #   docker login
-#   docker buildx bake --push --provenance=false -f docker/docker-bake.hcl
+#   docker buildx bake --push --provenance=false -f .docker/docker-bake.hcl
 
 # Cloud frontend build (bake a public URL into the JS bundle):
-#   REFLEX_API_URL=https://archilume.example.com docker buildx bake --load -f docker/docker-bake.hcl archilume-frontend
+#   REFLEX_API_URL=https://archilume.example.com docker buildx bake --load -f .docker/docker-bake.hcl archilume-frontend
 
 # Run the app:
-#   docker compose -f docker/docker-compose-archilume.yml up -d
+#   docker compose -f .docker/docker-compose-archilume.yml up -d
 #   Then open http://localhost:3000
 
 
@@ -136,7 +136,7 @@ LABEL org.opencontainers.image.title="Archilume Frontend"
 LABEL org.opencontainers.image.description="Caddy serving exported Reflex static build + reverse proxy to backend on :3000"
 
 COPY --from=frontend-builder /app/archilume_app/.web/build/client /srv
-COPY docker/Caddyfile /etc/caddy/Caddyfile
+COPY .docker/Caddyfile /etc/caddy/Caddyfile
 
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

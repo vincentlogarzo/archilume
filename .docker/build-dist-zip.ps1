@@ -5,16 +5,16 @@
 
 .DESCRIPTION
   Stages:
-    - docker\launch-archilume.cmd    (Windows double-click entry point)
-    - docker\_launch-archilume.ps1   (PowerShell implementation, hidden via `_` prefix)
-    - docker\launch-archilume.sh     (Linux entry point)
-    - docker\launch-archilume.command (macOS Finder double-click entry point)
-    - docker\docker-compose-archilume.yml
-    - docker\.env                    (ARCHILUME_VERSION pin for image tags)
-    - docker\README.md
-    - docker\demos\demo-sunlight\  -> projects\demo-sunlight\
-    - docker\demos\demo-daylight\  -> projects\demo-daylight\
-  into a temp folder, then Compress-Archive into docker\dist\archilume.zip,
+    - .docker\launch-archilume.cmd    (Windows double-click entry point)
+    - .docker\_launch-archilume.ps1   (PowerShell implementation, hidden via `_` prefix)
+    - .docker\launch-archilume.sh     (Linux entry point)
+    - .docker\launch-archilume.command (macOS Finder double-click entry point)
+    - .docker\docker-compose-archilume.yml
+    - .docker\.env                    (ARCHILUME_VERSION pin for image tags)
+    - .docker\README.md
+    - .docker\demos\demo-sunlight\  -> projects\demo-sunlight\
+    - .docker\demos\demo-daylight\  -> projects\demo-daylight\
+  into a temp folder, then Compress-Archive into .docker\dist\archilume.zip,
   then patches the zip's central directory so that launch-archilume.sh and
   launch-archilume.command carry Unix file mode 0755 (rwxr-xr-x).
 
@@ -24,9 +24,9 @@
   fields per entry in the central directory — VersionMadeBy and ExternalAttributes
   — to carry the Unix exec bit. Compressed data is untouched.
 
-  Demo content is curated in-tree under docker\demos\ so the shipped payload is
+  Demo content is curated in-tree under .docker\demos\ so the shipped payload is
   reviewable in git and stays small. To update a demo, edit the files under
-  docker\demos\ directly.
+  .docker\demos\ directly.
 #>
 
 [CmdletBinding()]
@@ -204,10 +204,10 @@ try {
     $stagedProjects = Join-Path $Staging 'projects'
     New-Item -ItemType Directory -Path $stagedProjects | Out-Null
 
-    Write-Host "  + demo-sunlight  (from docker\demos\demo-sunlight)" -ForegroundColor Gray
+    Write-Host "  + demo-sunlight  (from .docker\demos\demo-sunlight)" -ForegroundColor Gray
     Copy-Item -LiteralPath $SunlightSrc -Destination (Join-Path $stagedProjects 'demo-sunlight') -Recurse
 
-    Write-Host "  + demo-daylight  (from docker\demos\demo-daylight)" -ForegroundColor Gray
+    Write-Host "  + demo-daylight  (from .docker\demos\demo-daylight)" -ForegroundColor Gray
     Copy-Item -LiteralPath $DaylightSrc -Destination (Join-Path $stagedProjects 'demo-daylight') -Recurse
 
     # Prepare output path.

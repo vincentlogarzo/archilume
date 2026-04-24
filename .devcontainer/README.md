@@ -15,7 +15,7 @@ Linux development environment for Archilume. Intended to run on a cloud Linux VM
 
 ## Build Source
 
-The container builds from [`../docker/Dockerfile`](../docker/Dockerfile), target `archilume-dev`. It reuses the same `base-slim` and `radiance-extract` stages as the distribution engine image, so Python and Radiance versions can't drift between dev and production.
+The container builds from [`../.docker/Dockerfile`](../.docker/Dockerfile), target `archilume-dev`. It reuses the same `base-slim` and `radiance-extract` stages as the distribution engine image, so Python and Radiance versions can't drift between dev and production.
 
 ## Environment Variables
 
@@ -59,7 +59,7 @@ Supplied at runtime by [`devcontainer.json`](devcontainer.json) `remoteEnv`:
 
 ### Rebuilding
 
-After changing `.devcontainer/devcontainer.json` or `docker/Dockerfile`:
+After changing `.devcontainer/devcontainer.json` or `.docker/Dockerfile`:
 
 1. `Ctrl+Shift+P` → "Dev Containers: Rebuild Container"
 2. Wait for rebuild (layer cache keeps this fast unless apt/uv layers changed)
@@ -112,12 +112,12 @@ Not available in this container. Run Accelerad locally on a Windows/macOS host w
 
 ### "Reopen in Container" fails with unknown target
 
-Ensure `docker/Dockerfile` is on disk and git up to date — the `archilume-dev` target must exist. If the build references `../Dockerfile` (old path), pull latest and rebuild.
+Ensure `.docker/Dockerfile` is on disk and git up to date — the `archilume-dev` target must exist. If the build references `../Dockerfile` (old path), pull latest and rebuild.
 
 ## Architecture
 
 - [`devcontainer.json`](devcontainer.json) — VS Code build + runtime config
-- [`../docker/Dockerfile`](../docker/Dockerfile) — `archilume-dev` target (single source of truth)
+- [`../.docker/Dockerfile`](../.docker/Dockerfile) — `archilume-dev` target (single source of truth)
 - [`README.md`](README.md) — this file
 - `Radiance_5085332d_Linux/` — bundled Radiance tarball, extracted into the image
 

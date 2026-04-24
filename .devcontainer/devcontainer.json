@@ -1,13 +1,13 @@
 {
   "name": "Archilume Development Container",
 
-  // Build from docker/Dockerfile's archilume-dev target. Context is the repo
+  // Build from .docker/Dockerfile's archilume-dev target. Context is the repo
   // root so COPY paths (pyproject.toml, .devcontainer/Radiance_*) resolve.
   //
   // To swap to a pre-built image (faster team onboarding), replace the "build"
   // block with:  "image": "ghcr.io/<your-org>/archilume-dev:latest"
   "build": {
-    "dockerfile": "../docker/Dockerfile",
+    "dockerfile": "../.docker/Dockerfile",
     "context": "..",
     "target": "archilume-dev"
   },

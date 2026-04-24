@@ -4,10 +4,10 @@
 #   macOS   : launch-archilume.command
 #   Linux   : ./launch-archilume.sh
 # Direct invocation from repo root (any OS):
-#   docker compose --env-file docker/.env \
-#       -f docker/docker-compose-archilume.yml -p archilume up -d
+#   docker compose --env-file .docker/.env \
+#       -f .docker/docker-compose-archilume.yml -p archilume up -d
 # Then open http://localhost:3000.
-# Image tags are resolved from ARCHILUME_VERSION in docker/.env.
+# Image tags are resolved from ARCHILUME_VERSION in .docker/.env.
 #
 # The default projects bind mount (../projects) resolves relative to this file,
 # landing at the repo-root projects/ dir for dev use. In the shipped zip, the
