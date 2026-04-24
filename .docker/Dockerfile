@@ -236,6 +236,11 @@ LABEL org.opencontainers.image.description="Linux dev environment for Archilume 
 
 USER root
 
+# Remove the `app` user inherited from base-slim so UID 1000 is free.
+# VS Code's updateRemoteUserUID rewrites `vscode` to match the host UID at
+# container start; that rewrite silently fails if 1000 is already taken.
+RUN userdel -r app && groupdel app
+
 # Dev-time system libs + build tools. Mirrors what setup.sh used to install
 # plus X11/OpenGL libs shared with archilume-engine for desktop visualisation.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -271,13 +276,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project \
     && chown -R 1000:1000 /opt/venv
 
-# vscode user at UID 1001 (app is UID 1000 in base-slim — keep distinct).
-# Primary group 0 (root) matches Microsoft devcontainer convention for bind
-# mount compatibility across arbitrary host UIDs.
-RUN useradd --uid 1001 --gid 0 --create-home --shell /bin/bash vscode \
+# vscode at UID 1000:1000 — matches the default WSL first-user UID so files
+# written into the bind-mounted workspace are accessible on the host without
+# a chown. app (UID 1000) was deleted above to free this slot.
+RUN groupadd -g 1000 vscode \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash vscode \
     && echo "vscode ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/vscode \
     && chmod 0440 /etc/sudoers.d/vscode \
-    && chown -R 1001:0 /opt/venv /home/vscode
+    && chown -R 1000:1000 /opt/venv /home/vscode
 
 ENV PATH=/opt/venv/bin:/usr/local/radiance/bin:/opt/google-cloud-sdk/bin:/home/vscode/.local/bin:${PATH} \
     RAYPATH=/usr/local/radiance/lib \

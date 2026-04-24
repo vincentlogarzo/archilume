@@ -21,11 +21,10 @@
   // VS Code Dev Containers only — has no effect on `docker compose up`.
   "updateRemoteUserUID": true,
 
-  // Runs after container creation. Dockerfile already baked deps into
-  // /opt/venv, so this only: (1) fixes bind-mount ownership (UIDs unknown at
-  // build time), (2) installs the project itself editably now that the
-  // workspace is mounted (--no-install-project was used in the image build).
-  "postCreateCommand": "sudo chown -R vscode:root /workspaces/archilume && uv sync --frozen",
+  // Runs after container creation. Installs the project editably on top of
+  // the pre-baked /opt/venv (--no-install-project was used in the image build).
+  // No chown needed: vscode is UID 1000, matching the host WSL user.
+  "postCreateCommand": "uv sync --frozen",
 
   "customizations": {
     "vscode": {
