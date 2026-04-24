@@ -12,7 +12,7 @@ ra_tiff - convert output hdr file format to tiff or simple viewing.
 from archilume import utils, config
 from archilume.utils import PhaseTimer
 from archilume.post.hdr_visualisation import hdr2png_falsecolor, hdr2png_contour
-from archilume.post.hdr_to_png import convert_hdrs_to_pngs, convert_hdrs_in_dir
+from archilume.post.hdr2png import convert_hdrs_to_pngs, convert_hdrs_in_dir
 
 # Standard library imports
 from dataclasses import dataclass, field

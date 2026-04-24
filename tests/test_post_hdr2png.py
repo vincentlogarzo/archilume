@@ -1,4 +1,4 @@
-"""Tests for :mod:`archilume.post.hdr_to_png` — HDR → PNG batch conversion.
+"""Tests for :mod:`archilume.post.hdr2png` — HDR → PNG batch conversion.
 
 ``utils.execute_new_radiance_commands`` is mocked so tests never invoke Radiance.
 """
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from archilume.post import hdr_to_png as hp
+from archilume.post import hdr2png as hp
 
 
 class TestTiffToPng:
