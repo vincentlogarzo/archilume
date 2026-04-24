@@ -14,6 +14,13 @@
 
   "remoteUser": "vscode",
 
+  // Rewrite the in-container `vscode` user's UID/GID to match the host user
+  // before the session starts. Without this, the devcontainer writes files
+  // into the bind-mounted workspace as UID 1001:0, which clashes with the
+  // host WSL user (UID 1000) and produces EACCES on VS Code file operations.
+  // VS Code Dev Containers only — has no effect on `docker compose up`.
+  "updateRemoteUserUID": true,
+
   // Runs after container creation. Dockerfile already baked deps into
   // /opt/venv, so this only: (1) fixes bind-mount ownership (UIDs unknown at
   // build time), (2) installs the project itself editably now that the

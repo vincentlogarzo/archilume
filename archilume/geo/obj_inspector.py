@@ -7,11 +7,12 @@ Parses a Wavefront .obj file and prints a summary:
 3. Bounding box    — Min/max extents and center point for X, Y, Z.
 4. Face distribution — Top 20 named objects by face count with percentage of total.
 
-Usage: Run directly as a script. Target file is set via config.INPUTS_DIR.
+Usage: Run directly as a script. Pass an OBJ path as the first argument, or rely on the default path.
 """
 
+import argparse
 import os
-from archilume import config
+from pathlib import Path
 
 
 class OBJInspector:
@@ -121,7 +122,12 @@ class OBJInspector:
 
 
 if __name__ == "__main__":
-    filepath = config.INPUTS_DIR / "527DM" /"223181_AR_LOFTUS_BTR_cleaned_stripped_cleaned.obj"
-    inspector = OBJInspector(filepath)
+    default_input = Path(__file__).resolve().parents[2] / "projects" / "openIFCmodels" / "AdvancedProject.obj"
+
+    parser = argparse.ArgumentParser(description="Inspect a Wavefront .obj file and print a summary.")
+    parser.add_argument("input", type=Path, nargs="?", default=default_input, help=f"Path to input OBJ file (default: {default_input})")
+    args = parser.parse_args()
+
+    inspector = OBJInspector(args.input)
     inspector.parse()
     inspector.report()

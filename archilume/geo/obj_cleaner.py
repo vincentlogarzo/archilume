@@ -12,8 +12,8 @@ Workflow:
 Output: Creates a new file with '_cleaned' suffix (original preserved)
 """
 
+import argparse
 from pathlib import Path
-from archilume import config
 
 
 def clean_obj_for_radiance(input_path, output_path=None, verbose=True):
@@ -150,11 +150,16 @@ def clean_obj_for_radiance(input_path, output_path=None, verbose=True):
     return output_path
 
 if __name__ == "__main__":
-    # Example usage - modify the input path to your OBJ file
-    input_file = config.INPUTS_DIR / "527DM" / "223181_AR_LOFTUS_BTR_cleaned_stripped_cleaned.obj"
+    default_input = Path(__file__).resolve().parents[2] / "projects" / "openIFCmodels" / "AdvancedProject.obj"
 
-    # Clean the file
-    output_file = clean_obj_for_radiance(
-        input_path=input_file,
-        verbose=True
+    parser = argparse.ArgumentParser(description="Strip non-essential data from an OBJ file for Radiance simulations.")
+    parser.add_argument("input", type=Path, nargs="?", default=default_input, help=f"Path to input OBJ file (default: {default_input})")
+    parser.add_argument("-o", "--output", type=Path, default=None, help="Output path (default: <input>_cleaned.obj)")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress statistics output")
+    args = parser.parse_args()
+
+    clean_obj_for_radiance(
+        input_path=args.input,
+        output_path=args.output,
+        verbose=not args.quiet,
     )
