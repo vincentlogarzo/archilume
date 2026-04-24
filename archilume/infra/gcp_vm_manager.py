@@ -27,9 +27,13 @@ _PRICING_CACHE_FILENAME = ".gcp_pricing_cache.json"
 SSH_KEY_PATH = Path.home() / ".ssh" / "google_cloud_vm_key"
 SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 SSH_HOST_ALIAS = "gcp-vm"
-REMOTE_WORKSPACE = "/mnt/disks/localssd/workspace/archilume"
 VM_NAME_PREFIX = "archilume-vm"
 MIN_VCPUS = 64
+ENGINE_IMAGE = "vlogarzo/archilume-engine:latest"
+ENGINE_PORT = 8100
+LSSD_MOUNT = "/mnt/disks/localssd"
+REMOTE_PROJECTS = f"{LSSD_MOUNT}/projects"
+STARTUP_SCRIPT_PATH = Path(__file__).parent / "cos_startup.sh"
 # GCP Compute Engine billing service ID (stable)
 _GCP_BILLING_SERVICE = "6F81-5844-456A"
 # Base clock speeds (GHz) per machine family — from GCP published specs
@@ -42,6 +46,60 @@ _FAMILY_GHZ: dict[str, str] = {
     "h4d": "3.4",
     "z3":  "3.6",
 }
+# Boot disk type required by each machine family. GCP has no per-machine-type
+# compatibility endpoint, so we gate on family prefix. The LSSD families (all
+# entries in _FAMILY_GHZ) only accept hyperdisk-balanced.
+_FAMILY_BOOT_DISK: dict[str, str] = {
+    "c4d": "hyperdisk-balanced",
+    "c4a": "hyperdisk-balanced",
+    "c4":  "hyperdisk-balanced",
+    "c3d": "hyperdisk-balanced",
+    "c3":  "hyperdisk-balanced",
+    "h4d": "hyperdisk-balanced",
+    "z3":  "hyperdisk-balanced",
+}
+_DEFAULT_BOOT_DISK = "pd-balanced"
+
+# CPU architecture per machine family. c4a/n4a/t2a are Google Axion/Ampere
+# ARM64; everything else LSSD-capable is x86_64. Drives both the machine-type
+# picker filter and the COS image-family selection (cos-stable vs cos-arm64-stable).
+_FAMILY_ARCH: dict[str, str] = {
+    "c4a": "arm64",
+    "n4a": "arm64",
+    "t2a": "arm64",
+    "c4d": "x86_64",
+    "c4":  "x86_64",
+    "c3d": "x86_64",
+    "c3":  "x86_64",
+    "h4d": "x86_64",
+    "z3":  "x86_64",
+}
+# Archs the engine image can run on. Flip to include "arm64" once
+# vlogarzo/archilume-engine is published as a multi-arch manifest.
+_ENGINE_SUPPORTED_ARCHES = {"x86_64"}
+
+
+def _arch_for(machine_type: str) -> str:
+    """Return 'arm64' or 'x86_64' for a machine type. Default to x86_64."""
+    name = machine_type.lower()
+    for family, arch in _FAMILY_ARCH.items():
+        if name.startswith(family):
+            return arch
+    return "x86_64"
+
+
+def _image_family_for_arch(arch: str) -> str:
+    """Return the GCP Container-Optimized OS image family for an arch."""
+    return "cos-arm64-stable" if arch == "arm64" else "cos-stable"
+
+
+def _boot_disk_type_for(machine_type: str) -> str:
+    """Return the boot disk type compatible with a given machine type."""
+    name = machine_type.lower()
+    for family, disk in _FAMILY_BOOT_DISK.items():
+        if name.startswith(family):
+            return disk
+    return _DEFAULT_BOOT_DISK
 
 
 class GCPVMManager:
@@ -541,6 +599,37 @@ class GCPVMManager:
             time.sleep(interval)
         raise RuntimeError(f"SSH not available on {vm_name} after {max_attempts * interval}s")
 
+    def _wait_for_engine(self, vm_name: str, timeout_s: int = 900, interval: int = 10):
+        """Poll the engine's /health endpoint via SSH until it returns 200."""
+        print(f"  Polling http://localhost:{ENGINE_PORT}/health", end="", flush=True)
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            time.sleep(interval)
+            print(".", end="", flush=True)
+            _, code = self._ssh_capture(
+                vm_name,
+                f"curl -fsS http://localhost:{ENGINE_PORT}/health -o /dev/null",
+            )
+            if code == 0:
+                print(" OK")
+                return
+        print(" TIMEOUT")
+        # Dump diagnostic info
+        print("\n  --- last 30 lines of serial console ---")
+        log, _ = self._gcloud_capture([
+            "compute", "instances", "get-serial-port-output", vm_name,
+            f"--zone={self.zone}", f"--project={self.project}",
+        ])
+        for line in log.splitlines()[-30:]:
+            print(f"    {line}")
+        print("\n  --- docker logs archilume-engine (last 50) ---")
+        docker_log, _ = self._ssh_capture(
+            vm_name, "docker logs archilume-engine 2>&1 | tail -50 || echo '(container not running)'"
+        )
+        for line in docker_log.splitlines():
+            print(f"    {line}")
+        raise RuntimeError(f"Engine did not become ready on {vm_name} after {timeout_s}s")
+
     def _run_step(self, label: str, vm_name: str, command: str):
         print(f"\n  {label}")
         code = self._ssh(vm_name, command)
@@ -709,6 +798,7 @@ class GCPVMManager:
             return []
 
         seen, results = set(), []
+        skipped_arches: dict[str, int] = {}
         for machine in data.get("items", []):
             name = machine.get("name", "")
             if not name or name in seen:
@@ -717,12 +807,22 @@ class GCPVMManager:
             if "lssd" not in name or machine.get("guestCpus", 0) < MIN_VCPUS:
                 continue
 
+            arch = _arch_for(name)
+            if arch not in _ENGINE_SUPPORTED_ARCHES:
+                skipped_arches[arch] = skipped_arches.get(arch, 0) + 1
+                seen.add(name)
+                continue
+
             seen.add(name)
             vcpus = machine.get("guestCpus", 0)
             mem_mb = machine.get("memoryMb", 0)
             mem_gb = round(mem_mb / 1024, 1)
             ghz = next((v for k, v in _FAMILY_GHZ.items() if name.startswith(k)), "n/a")
             results.append({"name": name, "vcpus": vcpus, "mem_gb": mem_gb, "ghz": ghz})
+
+        if skipped_arches:
+            skipped_str = ", ".join(f"{n} {a}" for a, n in sorted(skipped_arches.items()))
+            print(f"  (Skipped {skipped_str} machine type(s) — engine image is x86_64 only)")
 
         return sorted(results, key=lambda x: (x["vcpus"], x["name"]))
 
@@ -810,7 +910,7 @@ class GCPVMManager:
             return machines[0]["name"]
 
     def setup(self):
-        """Create and fully configure a new VM."""
+        """Create a Container-Optimized OS VM and wait for the engine container."""
         self.prompt_config()
         machine_type = self._pick_machine_type()
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -818,99 +918,41 @@ class GCPVMManager:
 
         print(f"\n--- Setting up new VM: {vm_name} ---")
 
-        print("\n[1/6] Generating SSH key...")
+        if not STARTUP_SCRIPT_PATH.exists():
+            raise RuntimeError(f"Startup script missing: {STARTUP_SCRIPT_PATH}")
+
+        print("\n[1/4] Generating SSH key...")
         self._ensure_ssh_key()
         username = self._gcloud_username()
         ssh_key_metadata = f"{username}:{self._read_pubkey()}"
 
-        print(f"\n[2/6] Creating VM ({machine_type})...")
+        arch = _arch_for(machine_type)
+        if arch not in _ENGINE_SUPPORTED_ARCHES:
+            raise RuntimeError(
+                f"Engine image is x86_64 only; {machine_type} is {arch}. "
+                f"Rebuild archilume-engine multi-arch to support this."
+            )
+        boot_disk_type = _boot_disk_type_for(machine_type)
+        image_family = _image_family_for_arch(arch)
+        print(f"\n[2/4] Creating VM ({machine_type}, {arch}, {image_family}, {boot_disk_type})...")
         self._gcloud([
             "compute", "instances", "create", vm_name,
             f"--project={self.project}", f"--zone={self.zone}",
             f"--machine-type={machine_type}",
-            "--image-family=debian-12", "--image-project=debian-cloud",
-            "--boot-disk-size=100GB", "--boot-disk-type=hyperdisk-balanced",
+            f"--image-family={image_family}", "--image-project=cos-cloud",
+            "--boot-disk-size=20GB", f"--boot-disk-type={boot_disk_type}",
+            "--labels=archilume-managed=true",
             f"--metadata=ssh-keys={ssh_key_metadata}",
+            f"--metadata-from-file=startup-script={STARTUP_SCRIPT_PATH}",
         ])
 
-        print("\n[3/6] Waiting for VM to be ready...")
+        print("\n[3/4] Waiting for VM to be ready...")
         self._wait_for_running(vm_name)
         self._wait_for_ssh(vm_name)
 
         try:
-            self._run_step("[4/6] Formatting and mounting local SSD...", vm_name,
-                "sudo mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard /dev/nvme0n1 && "
-                "sudo mkdir -p /mnt/disks/localssd && "
-                "sudo mount -o discard,defaults /dev/nvme0n1 /mnt/disks/localssd && "
-                "sudo chmod a+w /mnt/disks/localssd && "
-                "mkdir -p /mnt/disks/localssd/workspace"
-            )
-
-            print("\n  Detecting SSD UUID for fstab...")
-            uuid_out, code = self._ssh_capture(vm_name, "sudo blkid -s UUID -o value /dev/nvme0n1")
-            if code != 0 or not uuid_out:
-                raise RuntimeError("Could not detect SSD UUID via blkid")
-            uuid = uuid_out.strip()
-            print(f"  UUID: {uuid}")
-            self._run_step("  Writing /etc/fstab...", vm_name,
-                f'echo "UUID={uuid} /mnt/disks/localssd ext4 discard,nofail 0 2" | sudo tee -a /etc/fstab && '
-                "sudo mount -a"
-            )
-
-            self._run_step("[5/6] Installing Git and Docker...", vm_name,
-                "sudo apt-get update -y && "
-                "sudo apt-get install -y git docker.io tmux && "
-                f"sudo usermod -aG docker {username}"
-            )
-
-            # Step 6: run setup detached in tmux so SSH timeouts don't kill it.
-            # Write a wrapper script to the VM, then launch it in a detached tmux session.
-            SETUP_LOG = "/tmp/archilume_setup.log"
-            DONE_MARKER = "/tmp/archilume_setup_done"
-            FAIL_MARKER = "/tmp/archilume_setup_failed"
-            WRAPPER = "/tmp/archilume_run_setup.sh"
-
-            # Write the wrapper script onto the VM using printf (avoids heredoc/quoting issues on Windows)
-            lines = [
-                "#!/bin/bash",
-                f"rm -f {DONE_MARKER} {FAIL_MARKER}",
-                "cd /mnt/disks/localssd/workspace",
-                "git clone https://github.com/vincentlogarzo/archilume.git",
-                "sudo chown -R $(id -u):$(id -g) /mnt/disks/localssd/workspace",
-                f"bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh > {SETUP_LOG} 2>&1",
-                f"if [ $? -eq 0 ]; then touch {DONE_MARKER}; else touch {FAIL_MARKER}; fi",
-            ]
-            printf_arg = "\\n".join(lines) + "\\n"
-            self._run_step(
-                "[6/6] Writing setup wrapper script...",
-                vm_name,
-                f"printf '{printf_arg}' > {WRAPPER} && chmod +x {WRAPPER}"
-            )
-            self._run_step(
-                "      Launching setup in background (may take 10-20 min)...",
-                vm_name,
-                f"tmux new-session -d -s setup '{WRAPPER}'"
-            )
-
-            # Poll until setup finishes (max 30 min)
-            print("  Waiting for setup to complete", end="", flush=True)
-            poll_interval = 20
-            max_polls = 90  # 90 × 20s = 30 min
-            for _ in range(max_polls):
-                time.sleep(poll_interval)
-                print(".", end="", flush=True)
-                _, done_code = self._ssh_capture(vm_name, f"test -f {DONE_MARKER}")
-                _, fail_code = self._ssh_capture(vm_name, f"test -f {FAIL_MARKER}")
-                if done_code == 0:
-                    print(" done!")
-                    break
-                if fail_code == 0:
-                    log, _ = self._ssh_capture(vm_name, f"tail -50 {SETUP_LOG}")
-                    raise RuntimeError(f"Setup script failed. Last 50 lines of log:\n{log}")
-            else:
-                log, _ = self._ssh_capture(vm_name, f"tail -50 {SETUP_LOG}")
-                raise RuntimeError(f"Setup timed out after 30 minutes. Last 50 lines of log:\n{log}")
-
+            print("\n[4/4] Waiting for engine container (first image pull ~3-5 min)...")
+            self._wait_for_engine(vm_name)
         except RuntimeError as e:
             print(f"\n  ERROR: {e}")
             self._prompt_delete_on_failure(vm_name)
@@ -919,109 +961,129 @@ class GCPVMManager:
         ip = self._get_vm_ip(vm_name)
         print(f"\n  VM external IP: {ip}")
         self.update_ssh_config(ip, username)
-        print(f"  SSH config written: Host {SSH_HOST_ALIAS} → {ip} (key: {SSH_KEY_PATH})")
         self.copy_inputs_to_vm(vm_name)
 
         print(f"\n=== Setup complete! VM: {vm_name} | IP: {ip} ===")
-        print(f"\n📋 To connect with VS Code Remote SSH:")
-        print(f"   1. Open VS Code")
-        print(f"   2. Press F1 or Ctrl+Shift+P")
-        print(f"   3. Type: 'Remote-SSH: Connect to Host'")
-        print(f"   4. Select: {SSH_HOST_ALIAS}")
-        print(f"   5. Open folder: {REMOTE_WORKSPACE}")
-        print(f"\n   Or run this command:")
-        print(f"   code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
+        print(f"\n📋 To send jobs to the engine:")
+        print(f"   Open a local tunnel:")
+        print(f"     ssh -N -L {ENGINE_PORT}:localhost:{ENGINE_PORT} {SSH_HOST_ALIAS}")
+        print(f"   Then POST to http://localhost:{ENGINE_PORT}/workflows/daylight")
+        print(f"                 http://localhost:{ENGINE_PORT}/workflows/sunlight")
+        print(f"   Poll http://localhost:{ENGINE_PORT}/jobs/<job_id>")
+        print(f"\n   From Python:")
+        print(f"     from archilume.infra.engine_client import engine_tunnel, submit_job, poll_job")
+        print(f"     with engine_tunnel() as url:")
+        print(f"         job_id = submit_job(url, 'daylight', payload)")
+        print(f"         result = poll_job(url, job_id)")
 
-    def connect(self):
-        """Select a running VM and open VSCode remote."""
-        self.prompt_config()
+    @staticmethod
+    def _prompt_vm_choice(
+        rows: list[tuple[str, str, str, str]],
+        prompt: str,
+        multi: bool = False,
+    ) -> list[tuple[str, str, str, str]] | None:
+        """Re-prompt until user gives valid selection(s) or cancels.
+
+        Accepts 1-based index or exact VM name. In ``multi`` mode accepts a
+        comma-separated mix. Empty input or ``b`` returns None (cancel).
+        """
+        name_to_row = {row[0]: row for row in rows}
+        help_hint = "(numbers 1-based, names accepted, 'b' to go back)"
+        while True:
+            raw = input(f"\n  {prompt} {help_hint}: ").strip()
+            if not raw or raw.lower() == "b":
+                return None
+            tokens = [t.strip() for t in raw.split(",") if t.strip()]
+            if not multi and len(tokens) != 1:
+                print("  Enter exactly one choice, or 'b' to cancel.")
+                continue
+            selected: list[tuple[str, str, str, str]] = []
+            bad = False
+            for tok in tokens:
+                if tok.isdigit():
+                    idx = int(tok) - 1
+                    if 0 <= idx < len(rows):
+                        selected.append(rows[idx])
+                        continue
+                if tok in name_to_row:
+                    selected.append(name_to_row[tok])
+                    continue
+                print(f"  '{tok}' is not a valid number or VM name.")
+                bad = True
+                break
+            if bad:
+                continue
+            return selected
+
+    def _select_running_vm(self) -> tuple[str, str] | None:
+        """Prompt user to pick a running VM. Returns (vm_name, ip) or None."""
         vms = self.list_vms()
         running = [(n, s, z, ip) for n, s, z, ip in vms if s == "RUNNING"]
-
-        if not running:
-            print("  No running archilume VMs found. Run setup first.")
-            return
-
-        print("\n  Running VMs:")
-        for i, (name, _, zone, ip) in enumerate(running, 1):
-            print(f"    {i}. {name}  ({zone})  {ip}")
-
-        try:
-            idx = int(input("\n  Select VM number: ").strip()) - 1
-            vm_name, _, _, ip = running[idx]
-        except (ValueError, IndexError):
-            print("  Invalid selection.")
-            return
-
-        self._ensure_ssh_key_on_vm(vm_name)
-        username = self._gcloud_username()
-        self.update_ssh_config(ip, username)
-        self.copy_inputs_to_vm(vm_name)
-
-        print(f"\n=== Ready to connect! VM: {vm_name} | IP: {ip} ===")
-        print(f"\n📋 To connect with VS Code Remote SSH:")
-        print(f"   1. Open VS Code")
-        print(f"   2. Press F1 or Ctrl+Shift+P")
-        print(f"   3. Type: 'Remote-SSH: Connect to Host'")
-        print(f"   4. Select: {SSH_HOST_ALIAS}")
-        print(f"   5. Open folder: {REMOTE_WORKSPACE}")
-        print(f"\n   Or run this command:")
-        print(f"   code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
-
-    def reconnect_and_rebuild(self):
-        """Reconnect to an existing VM, re-clone repo, and rebuild dev container."""
-        self.prompt_config()
-        vms = self.list_vms()
-        running = [(n, s, z, ip) for n, s, z, ip in vms if s == "RUNNING"]
-
         if not running:
             print("  No running archilume VMs found.")
-            return
+            return None
 
         print("\n  Running VMs:")
         for i, (name, _, zone, ip) in enumerate(running, 1):
             print(f"    {i}. {name}  ({zone})  {ip}")
 
-        try:
-            idx = int(input("\n  Select VM number: ").strip()) - 1
-            vm_name, _, _, ip = running[idx]
-        except (ValueError, IndexError):
-            print("  Invalid selection.")
+        picked = self._prompt_vm_choice(running, "Select VM")
+        if not picked:
+            return None
+        name, _, _, ip = picked[0]
+        return name, ip
+
+    def tunnel_engine(self):
+        """Open an SSH tunnel to :8100 on a selected VM; block until Ctrl+C."""
+        self.prompt_config()
+        selection = self._select_running_vm()
+        if not selection:
             return
+        vm_name, ip = selection
 
         self._ensure_ssh_key_on_vm(vm_name)
         username = self._gcloud_username()
         self.update_ssh_config(ip, username)
 
-        print(f"\n  Re-cloning repository and rebuilding dev container on {vm_name}...")
-        print("  This may take 10+ minutes...\n")
+        print(f"\n  Opening tunnel: http://localhost:{ENGINE_PORT} → {vm_name}:{ENGINE_PORT}")
+        print(f"  Endpoints: /health /workflows/daylight /workflows/sunlight /jobs/<id>")
+        print(f"  Press Ctrl+C to close.\n")
+        try:
+            subprocess.run([
+                "ssh", "-N", "-L", f"{ENGINE_PORT}:localhost:{ENGINE_PORT}", SSH_HOST_ALIAS
+            ])
+        except KeyboardInterrupt:
+            pass
+        print("\n  Tunnel closed.")
+
+    def restart_engine(self):
+        """Pull the latest engine image and restart the container on a VM."""
+        self.prompt_config()
+        selection = self._select_running_vm()
+        if not selection:
+            return
+        vm_name, _ = selection
+
+        self._ensure_ssh_key_on_vm(vm_name)
 
         self._run_step(
-            "[1/2] Re-cloning repository...",
+            "[1/2] Pulling latest engine image...",
             vm_name,
-            "rm -rf /mnt/disks/localssd/workspace/archilume && "
-            "cd /mnt/disks/localssd/workspace && "
-            "git clone https://github.com/vincentlogarzo/archilume.git"
+            f"docker pull {ENGINE_IMAGE}",
         )
-
         self._run_step(
-            "[2/2] Running setup script...",
+            "[2/2] Restarting engine container...",
             vm_name,
-            "bash /mnt/disks/localssd/workspace/archilume/.devcontainer/setup.sh && "
-            "source ~/.bashrc"
+            f"docker rm -f archilume-engine 2>/dev/null; "
+            f"docker run -d --restart=unless-stopped --name archilume-engine "
+            f"-p {ENGINE_PORT}:{ENGINE_PORT} "
+            f"-v {REMOTE_PROJECTS}:/app/projects "
+            f"-e ARCHILUME_DEPLOYMENT_MODE=hosted "
+            f"-e ARCHILUME_HOST_PROJECTS_DIR=/app/projects "
+            f"{ENGINE_IMAGE}",
         )
-
-        self.copy_inputs_to_vm(vm_name)
-
-        print(f"\n=== Rebuild complete! VM: {vm_name} | IP: {ip} ===")
-        print(f"\n📋 To connect with VS Code Remote SSH:")
-        print(f"   1. Open VS Code")
-        print(f"   2. Press F1 or Ctrl+Shift+P")
-        print(f"   3. Type: 'Remote-SSH: Connect to Host'")
-        print(f"   4. Select: {SSH_HOST_ALIAS}")
-        print(f"   5. Open folder: {REMOTE_WORKSPACE}")
-        print(f"\n   Or run this command:")
-        print(f"   code --remote ssh-remote+{SSH_HOST_ALIAS} {REMOTE_WORKSPACE}")
+        self._wait_for_engine(vm_name, timeout_s=300)
+        print(f"\n  ✅ Engine restarted on {vm_name}.")
 
     def _scp_cmd(self, vm_name: str) -> tuple[list[str], str]:
         """Return (ssh_flags_list, user@ip) for direct scp transfers."""
@@ -1052,12 +1114,12 @@ class GCPVMManager:
             return
 
         print(f"  📂 Copying inputs data to VM (project: {self.archilume_project})...")
-        remote_project = f"{REMOTE_WORKSPACE}/projects/{self.archilume_project}"
+        remote_project = f"{REMOTE_PROJECTS}/{self.archilume_project}"
         remote_inputs = f"{remote_project}/inputs"
-        # Scaffold inputs/aoi and outputs dirs on VM
+        # Scaffold inputs/aoi and outputs dirs on VM (LSSD mount is world-writable)
         self._ssh(vm_name,
-            f"sudo mkdir -p {remote_inputs}/aoi {remote_project}/outputs && "
-            f"sudo chmod -R a+rwx {remote_project}"
+            f"mkdir -p {remote_inputs}/aoi {remote_project}/outputs && "
+            f"chmod -R a+rwx {remote_project}"
         )
 
         ssh_flags, remote_host = self._scp_cmd(vm_name)
@@ -1167,7 +1229,7 @@ class GCPVMManager:
 
         from archilume.config import get_project_paths
         paths = get_project_paths(self.archilume_project)
-        remote_outputs = f"{REMOTE_WORKSPACE}/projects/{self.archilume_project}/outputs"
+        remote_outputs = f"{REMOTE_PROJECTS}/{self.archilume_project}/outputs"
 
         # Check if remote outputs directory exists and has content
         out, code = self._ssh_capture(vm_name, f"ls -A {remote_outputs} 2>/dev/null")
@@ -1211,11 +1273,9 @@ class GCPVMManager:
         for i, (name, status, zone, ip) in enumerate(vms, 1):
             print(f"    {i}. {name}  [{status}]  {zone}  {ip or 'no IP'}")
 
-        try:
-            indices = [int(x.strip()) - 1 for x in input("\n  Enter numbers to delete (e.g. 1,3): ").split(",")]
-            selected = [vms[i] for i in indices]
-        except (ValueError, IndexError):
-            print("  Invalid selection.")
+        selected = self._prompt_vm_choice(vms, "Enter numbers or names to delete (comma-separated)", multi=True)
+        if not selected:
+            print("  Cancelled.")
             return
 
         # Check each running VM for active processes
@@ -1281,49 +1341,51 @@ class GCPVMManager:
         for i, (name, _, zone, ip) in enumerate(running, 1):
             print(f"    {i}. {name}  ({zone})  {ip}")
 
-        try:
-            indices = [int(x.strip()) - 1 for x in input("\n  Enter numbers to download from (e.g. 1,3): ").split(",")]
-            selected = [running[i] for i in indices]
-        except (ValueError, IndexError):
-            print("  Invalid selection.")
+        selected = self._prompt_vm_choice(running, "Enter numbers or names to download from (comma-separated)", multi=True)
+        if not selected:
+            print("  Cancelled.")
             return
 
         for name, _, zone, _ in selected:
             self._download_outputs_from_vm(name, zone)
 
+    _ACTIONS = {
+        "1": ("Setup new VM", "setup"),
+        "2": ("Open engine tunnel (localhost:8100)", "tunnel_engine"),
+        "3": ("Restart engine (pull latest image)", "restart_engine"),
+        "4": ("Download outputs from VM(s)", "download_outputs"),
+        "5": ("Delete VM(s)", "delete"),
+        "6": ("Check / list VMs", "check"),
+        "7": ("Sync SSH key to Windows host", "_sync_ssh_key_menu"),
+        "8": ("Exit", None),
+    }
+
+    def _sync_ssh_key_menu(self):
+        self._ensure_ssh_key()
+        self._prompt_copy_ssh_key_to_windows()
+
     def run(self):
-        """Show the main menu and dispatch the selected action."""
-        print("\n============= Archilume GCP VM Manager =============")
-        if self.cfg:
-            print(f"  Config: project={self.cfg.get('project', '?')}  zone={self.cfg.get('zone', '?')}")
+        """Show the main menu and dispatch actions until the user exits."""
+        while True:
+            print("\n============= Archilume GCP VM Manager =============")
+            if self.cfg:
+                print(f"  Config: project={self.cfg.get('project', '?')}  zone={self.cfg.get('zone', '?')}")
+            print()
+            for key, (label, _) in self._ACTIONS.items():
+                print(f"  {key}. {label}")
 
-        print("\n  1. Setup new VM")
-        print("  2. Connect to a VM")
-        print("  3. Reconnect and rebuild dev container")
-        print("  4. Download outputs from VM(s)")
-        print("  5. Delete VM(s)")
-        print("  6. Check / list VMs")
-        print("  7. Sync SSH key to Windows host")
-        print("  8. Exit")
+            choice = input("\nSelect option: ").strip()
 
-        choice = input("\nSelect option: ").strip()
+            if choice == "8":
+                return
 
-        if choice == "1":
-            self.setup()
-        elif choice == "2":
-            self.connect()
-        elif choice == "3":
-            self.reconnect_and_rebuild()
-        elif choice == "4":
-            self.download_outputs()
-        elif choice == "5":
-            self.delete()
-        elif choice == "6":
-            self.check()
-        elif choice == "7":
-            self._ensure_ssh_key()
-            self._prompt_copy_ssh_key_to_windows()
-        elif choice == "8":
-            raise SystemExit(0)
-        else:
-            print("  Invalid option.")
+            action = self._ACTIONS.get(choice)
+            if not action:
+                print("  Invalid option. Please pick 1-8.")
+                continue
+
+            _, method_name = action
+            try:
+                getattr(self, method_name)()
+            except KeyboardInterrupt:
+                print("\n  Interrupted. Returning to menu.")
