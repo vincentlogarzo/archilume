@@ -106,6 +106,49 @@ _ZOOM_GUARD_SCRIPT = rx.script("""
     }
     window._archilumeTrace = _trace;
 
+    // ---------------------------------------------------------------------------
+    // Browser-side error & console bridge.
+    // Pipes uncaught errors, unhandled Promise rejections, and console.error/warn
+    // back to the Python log so the user no longer has to copy-paste from DevTools.
+    // console.log is intentionally NOT bridged (too noisy); set
+    // window.__archilumeDebug = true to also bridge console.debug.
+    // ---------------------------------------------------------------------------
+    window.addEventListener('error', function(e) {
+        _trace('js_error', {
+            msg: e.message || String(e),
+            src: e.filename || null,
+            line: e.lineno || null,
+            col: e.colno || null,
+            stack: (e.error && e.error.stack) ? String(e.error.stack).slice(0, 2000) : null,
+        });
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+        var reason = e.reason;
+        _trace('js_unhandled_rejection', {
+            reason: (reason && reason.message) ? reason.message : String(reason),
+            stack: (reason && reason.stack) ? String(reason.stack).slice(0, 2000) : null,
+        });
+    });
+    (function _patchConsole() {
+        var levels = ['error', 'warn'];
+        levels.forEach(function(level) {
+            var original = console[level];
+            if (!original || original.__archilumePatched) return;
+            console[level] = function() {
+                try {
+                    var first = arguments.length > 0 ? arguments[0] : '';
+                    _trace('js_console', {
+                        level: level,
+                        msg: typeof first === 'string' ? first : String(first),
+                        argc: arguments.length,
+                    });
+                } catch (err) { /* never break console */ }
+                return original.apply(console, arguments);
+            };
+            console[level].__archilumePatched = true;
+        });
+    })();
+
     // Stop keydown propagation when focus is inside an input so window_event_listener
     // does not trigger editor shortcuts while the user is typing in a field.
     // Exception: arrow keys pass through when overlay align mode is active so they

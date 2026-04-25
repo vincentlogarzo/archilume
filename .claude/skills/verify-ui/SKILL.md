@@ -17,13 +17,49 @@ Run this after every change to Reflex state, event handlers, computed vars, or U
 
 ## Prerequisite
 
-The app must be running. If it is not:
+The app must be running. The default tier is now `light` (auto-on every run);
+upgrade to verbose only when chasing a specific bug:
 
 ```bash
+# default-on, lean traces — every run, no env var needed:
+python examples/launch_archilume_app.py --ensure
+# verbose tier — full state diff + args, slower but more signal:
 ARCHILUME_DEBUG=1 python examples/launch_archilume_app.py --ensure
 ```
 
-Then exercise the feature in the browser before running this skill.
+---
+
+## Where the logs live
+
+After a project is loaded, all debug artefacts land in `<project_dir>/logs/`:
+
+- `archilume_app.log` (+ rotations `.log.1` … `.log.5`)
+- `debug_trace.json` — current ring buffer
+- `debug_trace.archive.jsonl` — overflow archive
+
+The whole folder can be zipped and shared if a user wants to send their
+session for off-line analysis.
+
+Before a project loads, the same files live in `~/.archilume/logs/`
+(Linux/macOS) or `%USERPROFILE%\.archilume\logs\` (Windows).
+
+In the steps below, ``<logs>`` means whichever of those two paths is
+populated for the user's current session.
+
+---
+
+## Step 0 — Capture a baseline (optional but preferred)
+
+Before exercising the change in the browser, snapshot the current trace as a
+baseline. Step 2's diff then proves the change actually moved state, not just
+"the log is quiet":
+
+```bash
+cp <logs>/debug_trace.json <logs>/debug_trace.baseline.json
+```
+
+Skip this step only when the change is purely additive UI (e.g. a new label)
+with no state mutation.
 
 ---
 
@@ -32,13 +68,10 @@ Then exercise the feature in the browser before running this skill.
 Read the last 100 lines of the app log:
 
 ```bash
-tail -n 100 "$USERPROFILE/.archilume/logs/archilume_app.log"
-```
-
-Or on Linux/Mac:
-
-```bash
-tail -n 100 ~/.archilume/logs/archilume_app.log
+# Linux / macOS
+tail -n 100 <logs>/archilume_app.log
+# Windows PowerShell
+Get-Content <logs>\archilume_app.log -Tail 100
 ```
 
 **Look for:**
@@ -53,44 +86,66 @@ tail -n 100 ~/.archilume/logs/archilume_app.log
 
 ---
 
-## Step 2 — Read the debug trace
+## Step 2 — Diff the debug trace against baseline
 
-Read the structured state-diff ring buffer (last 200 state transitions):
+Read both the baseline (if Step 0 captured one) and the current trace:
 
 ```
-Read: C:\Users\{username}\.archilume\logs\debug_trace.json
+Read: <logs>/debug_trace.baseline.json   (from Step 0)
+Read: <logs>/debug_trace.json            (current)
 ```
-
-Or after a project is loaded, the trace moves to `{project_dir}/debug_trace.json`.
 
 Each entry has:
-- `ts` — timestamp
-- `event` — event handler name that fired
-- `args` — call arguments (redacted)
-- `changes` — dict of `field_name: [before_value, after_value]`
+- `ts`, `rid` — timestamp and correlation ID
+- `event` — event handler name
+- `elapsed_ms` — handler latency (`light` and `verbose` tiers)
+- `args` — call arguments, redacted (`verbose` tier only)
+- `changes` — `{field: [before, after]}` (`verbose` tier only)
+
+**Compute the delta** — entries present in current but not in baseline. Group
+the delta by `rid` to reconstruct the chain of handlers the change triggered.
 
 **Verify:**
 
-- The expected event handler name appears in recent entries (sorted by `ts`)
-- State fields changed to the expected values (`before → after`)
-- No unexpected fields were mutated by the change
-- Event sequence is correct (for multi-step flows, check ordering by `ts`)
+- The expected event handler appears in the delta (not just somewhere in the
+  full trace — it must have fired *during the change*).
+- State fields changed to the expected values (`before → after` in the delta).
+- No unexpected fields were mutated.
+- Event sequence is correct — order by `ts` within each `rid`.
+- `elapsed_ms` is reasonable (e.g. < 50ms for a UI handler — flag p95 > 100ms).
 
-**Flag if:** Expected event is absent, wrong fields changed, unexpected mutations.
+**Flag if:** expected event absent from the delta, wrong fields changed,
+unexpected mutations, or any handler shows latency > 100ms.
+
+If the trace is in `light` tier (no `args`/`changes`), confirm at least that
+the expected event names appear in the delta. Re-run with verbose tier only
+if the light delta is ambiguous.
 
 ---
 
-## Step 3 — Ask user to check browser console
+## Step 3 — Check for JS errors in the log
 
-Say to the user:
+Browser-side errors and `console.error`/`console.warn` are now piped into the
+unified backend log automatically (see `archilume_app.py`'s `_ZOOM_GUARD_SCRIPT`
+error bridge). Grep the log tail from Step 1 for:
 
-> "Please check the browser DevTools console (F12 → Console tab) and paste any red errors or warnings that appeared after you tested the feature."
+```
+[ERROR] [JS:js_error]              — uncaught browser errors
+[ERROR] [JS:js_unhandled_rejection] — unhandled Promise rejections
+[DEBUG] [JS:js_console] level=error — explicit console.error calls
+[DEBUG] [JS:js_console] level=warn  — explicit console.warn calls
+```
 
-If the user reports errors:
-- `TypeError` or `ReferenceError` — JS-level bug, likely in a component prop or event binding
+Categorise any matches:
+- `TypeError` / `ReferenceError` — JS-level bug in a component prop or event binding
 - `WebSocket closed` — backend crashed mid-session; check log for traceback
-- Reflex `hydration` warnings — state shape mismatch between server and client; likely a computed var or state field type issue
-- No errors — proceed
+- Reflex `hydration` warnings — state shape mismatch; likely a computed var or
+  state field type issue
+
+If none of these tags appear in the delta window, treat the console as clean —
+no need to ask the user to copy-paste from DevTools. (Fall back to asking only
+if the bridge appears not to be installed: search the log for the line
+`[applyEvent_installed]` near the start of the session.)
 
 ---
 

@@ -24,9 +24,9 @@
 # Cloud frontend build (bake a public URL into the JS bundle):
 #   REFLEX_API_URL=https://archilume.example.com docker buildx bake --load -f .docker/docker-bake.hcl archilume-frontend
 
-# Run the app:
+# Run App
 #   docker compose -f .docker/docker-compose-archilume.yml up -d
-#   Then open http://localhost:3000
+
 
 
 # ── base-slim ─────────────────────────────────────────────────────────────────
@@ -162,6 +162,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 \
            /usr/lib/x86_64-linux-gnu/libtiff.so.5
 
+# Google Cloud SDK — backend subprocess-shells `gcloud` to drive
+# archilume.infra.GCPVMManager VM lifecycle on behalf of the frontend.
+RUN curl -sSL https://sdk.cloud.google.com | bash -s -- \
+        --disable-prompts --install-dir=/opt \
+    && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud
+
 COPY --from=py-build-app --chown=1000:1000 /opt/venv /opt/venv
 COPY --from=radiance-extract /out/usr/local/radiance /usr/local/radiance
 COPY --chown=1000:1000 archilume/apps/archilume_app/ /app/archilume_app/
@@ -173,8 +179,9 @@ COPY --chown=1000:1000 \
     archilume/_template_dataclass.py \
     /app/archilume/
 COPY --chown=1000:1000 archilume/post/__init__.py archilume/post/hdr_visualisation.py /app/archilume/post/
+COPY --chown=1000:1000 archilume/infra/ /app/archilume/infra/
 
-ENV PATH=/opt/venv/bin:/usr/local/radiance/bin:${PATH} \
+ENV PATH=/opt/venv/bin:/usr/local/radiance/bin:/opt/google-cloud-sdk/bin:${PATH} \
     RAYPATH=/usr/local/radiance/lib \
     RADIANCE_ROOT=/usr/local/radiance
 
@@ -239,14 +246,14 @@ USER root
 # Remove the `app` user inherited from base-slim so UID 1000 is free.
 # VS Code's updateRemoteUserUID rewrites `vscode` to match the host UID at
 # container start; that rewrite silently fails if 1000 is already taken.
-RUN userdel -r app && groupdel app
+RUN userdel -r app && groupdel app 2>/dev/null || true
 
 # Dev-time system libs + build tools. Mirrors what setup.sh used to install
 # plus X11/OpenGL libs shared with archilume-engine for desktop visualisation.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-        sudo git openssh-client \
+        sudo git openssh-client unzip \
         build-essential cmake pkg-config python3-dev \
         gcc g++ libffi-dev libxml2-dev libxslt1-dev \
         libgl1 libgomp1 libxrender1 libxext6 libice6 libsm6 libx11-6 \
@@ -258,12 +265,36 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Native Radiance (reuse extract stage — same tarball as archilume-engine).
 COPY --from=radiance-extract /out/usr/local/radiance /usr/local/radiance
 
-# Google Cloud SDK — used by archilume.infra.GCPVMManager for VM lifecycle.
-RUN curl -sSL https://sdk.cloud.google.com | bash -s -- \
-        --disable-prompts --install-dir=/opt \
+# Google Cloud SDK — slim install for archilume.infra.GCPVMManager.
+# Uses the non-bundled-Python tarball (skips the 471 MB bundled runtime — the
+# python:3.12-slim base already ships /usr/local/bin/python3) and strips unused
+# command surfaces. Keeps auth, config, compute, projects + infra surfaces.
+# gsutil and bq are not installed — never invoked in this codebase. Net ~330 MB
+# vs 1.2 GB. CLOUDSDK_PYTHON points to the base-image system Python (not
+# /opt/venv) so install.sh works before uv sync populates the venv.
+ENV CLOUDSDK_PYTHON=/usr/local/bin/python3 \
+    CLOUDSDK_CORE_DISABLE_PROMPTS=1
+RUN curl -fsSL \
+      https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz \
+      -o /tmp/gcloud.tgz \
+    && tar -xzf /tmp/gcloud.tgz -C /opt \
+    && rm /tmp/gcloud.tgz \
+    && /opt/google-cloud-sdk/install.sh --quiet --usage-reporting=false \
+         --command-completion=false --path-update=false \
     && ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
-    && ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil \
-    && ln -sf /opt/google-cloud-sdk/bin/bq /usr/local/bin/bq
+    && SDK=/opt/google-cloud-sdk \
+    && rm -rf "$SDK/platform/gsutil" "$SDK/platform/bq" "$SDK/platform/anthoscli" \
+              "$SDK/bin/gsutil" "$SDK/bin/bq" "$SDK/bin/anthoscli" \
+              "$SDK/bin/docker-credential-gcloud" "$SDK/bin/git-credential-gcloud.sh" \
+              "$SDK/bin/dev_appserver.py" "$SDK/bin/java_dev_appserver.sh" \
+    && find "$SDK/lib/surface" -mindepth 1 -maxdepth 1 -type d \
+        ! -name compute ! -name auth ! -name config ! -name projects \
+        ! -name help ! -name version ! -name components \
+        ! -name meta ! -name topic \
+        -exec rm -rf {} + \
+    && find "$SDK" -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find "$SDK" -name '*.pyc' -delete \
+    && gcloud --version
 
 # uv (same source as other stages).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -285,7 +316,7 @@ RUN groupadd -g 1000 vscode \
     && chmod 0440 /etc/sudoers.d/vscode \
     && chown -R 1000:1000 /opt/venv /home/vscode
 
-ENV PATH=/opt/venv/bin:/usr/local/radiance/bin:/opt/google-cloud-sdk/bin:/home/vscode/.local/bin:${PATH} \
+ENV PATH=/opt/venv/bin:/usr/local/radiance/bin:/home/vscode/.local/bin:${PATH} \
     RAYPATH=/usr/local/radiance/lib \
     RADIANCE_ROOT=/usr/local/radiance \
     UV_LINK_MODE=copy \

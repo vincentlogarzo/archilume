@@ -93,7 +93,7 @@ The scripts in [examples/](examples/) are thin wrappers around the workflow clas
 | [workflow_sunlight_access.py](examples/workflow_sunlight_access.py) | Sunlight exposure: OBJ → octree → sky series → rendering → HDR/PNG time-series for the app to load. |
 | [workflow_daylight_iesve.py](examples/workflow_daylight_iesve.py) | Daylight factor analysis from IESVE octrees with falsecolor and contour post-processing. |
 | [workflow_daylight_iesve_api.py](examples/workflow_daylight_iesve_api.py) | Same daylight job, submitted via the in-process FastAPI engine — exercises the same path as the Docker engine container. |
-| [launch_google_cloud_vm.py](examples/launch_google_cloud_vm.py) | Provision and manage a GCP VM for remote simulation runs via `GCPVMManager`. |
+| [launch_google_cloud_vm.py](examples/launch_google_cloud_vm.py) | CLI for `GCPVMManager` — `setup` an LSSD COS VM, `tunnel` to its engine, `restart` the engine container, `delete`, or `list` archilume VMs. |
 
 Run a workflow:
 

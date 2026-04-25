@@ -76,6 +76,7 @@ markers = [
     "slow: takes > 1 s; skipped by default in local runs",
     "gcp: requires GCP credentials or gcloud mock setup",
     "radiance: requires Radiance binaries or mocked subprocess",
+    "perf: enforces performance budget; skip on noisy CI with -m 'not perf'",
 ]
 # --import-mode=importlib avoids module-name collision between top-level
 # tests/ and archilume/apps/archilume_app/tests/ (both ship __init__.py).
