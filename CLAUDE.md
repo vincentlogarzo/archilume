@@ -55,7 +55,7 @@ python examples/launch_archilume_app.py            # launch Reflex UI
 - `utils.py`: `execute_new_radiance_commands` (parallel), `clear_outputs_folder()`, geometry helpers, HDR utilities.
 - `project.py`: Project-level config/state.
 - `apps/archilume_app/`: Reflex-based web editor (primary UI).
-- `GCPVMManager` (`infra/`): GCP VM lifecycle. Config at `~/.archilume_gcp_config.json`. SSH `User` must match VM's provisioned username — never assume or change it.
+- `GCPVMManager` (`infra/`): GCP VM lifecycle. CLI-driven (`setup`/`delete`/`tunnel`/`restart`/`list`); pass `--project` or rely on `gcloud config get-value project`. SSH `User` is auto-derived from `gcloud config get-value account`.
 
 ## Launching the Reflex App
 

@@ -242,35 +242,9 @@ Transition from the current 10-minute script-based VM setup to a Docker-based "P
 
 ---
 
-## 🚀 Phase 2: Refactoring `GCPVMManager`
+## ✅ Phase 2: Refactoring `GCPVMManager` — DONE
 
-**Goal:** Shift the Python manager from "System Installer" to "Orchestrator."
-
-### 2.1 The "Docker-on-SSD" Strategy
-
-Modify `setup()` in `archilume/gcp_vm_manager.py`:
-
-1.  **Format/Mount SSD:** (Keep existing logic).
-2.  **Redirect Docker Storage:** 
-    - Create `/mnt/disks/localssd/docker`.
-    - Update `/etc/docker/daemon.json` to set `"data-root": "/mnt/disks/localssd/docker"`.
-    - Restart Docker.
-3.  **Auth & Pull:**
-    - `gcloud auth configure-docker <region>-docker.pkg.dev`.
-    - `docker pull <image-url>:latest`.
-
-### 2.2 The Execution Command
-
-Replace the "Cloning & Setup" step with a robust `docker run` template:
-
-```bash
-docker run --rm -it \
-  --gpus all \
-  -v /mnt/disks/localssd/workspace:/workspace \
-  -w /workspace \
-  <image-url>:latest \
-  /bin/bash
-```
+The "Docker-on-SSD" strategy (LSSD format/mount, Docker `data-root` relocation, engine pull/run) is implemented in [archilume/infra/cos_startup.sh](archilume/infra/cos_startup.sh) and runs on every COS boot. The Python manager (`archilume/infra/gcp_vm_manager.py`) is now a ~240-line orchestrator: `setup`/`delete`/`tunnel`/`restart`/`list`.
 
 ---
 

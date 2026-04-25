@@ -22,12 +22,24 @@ import reflex as rx
 from archilume.config import get_project_paths
 
 from ..lib.debug import (
+    DEBUG_TIER,
+    auto_debug_instrument,
     debug_handler,
     logger,
     new_correlation_id,
+    relocate_to_project,
+    set_debug_tier,
     trace,
     with_correlation_id,
 )
+
+# Handlers that fire at ~UI-frame rate (mouse move, hover) where even
+# light-tier overhead matters. Excluded from auto-instrumentation; opt back in
+# with an explicit ``@debug_handler`` if you need to trace them.
+_DEBUG_EXCLUDE: frozenset[str] = frozenset({
+    "handle_mouse_move",
+    "log_js_trace",  # logging sink — would self-trace the trace
+})
 from ..lib.geometry import (
     max_inscribed_rect,
     max_inscribed_rect_aspect,
@@ -346,6 +358,7 @@ class TreeNode(TypedDict):
     hdr_idx: int         # index into hdr_files
 
 
+@auto_debug_instrument(exclude=_DEBUG_EXCLUDE)
 class EditorState(rx.State):
     """Unified state for the entire editor application."""
 
@@ -608,23 +621,32 @@ class EditorState(rx.State):
     # =====================================================================
     # §14 — Debug
     # =====================================================================
-    debug_mode: bool = os.environ.get("ARCHILUME_DEBUG", "").lower() in ("1", "true")
+    # Default-on: ``light`` tier is the baseline (auto-set at debug.py import)
+    # so the UI reflects it. ``toggle_debug_mode`` flips light↔verbose.
+    debug_mode: bool = DEBUG_TIER == "verbose"
     debug_log: list[str] = []
 
     def toggle_debug_mode(self) -> None:
-        """Toggle debug mode on/off. Controls backend logging and frontend overlay."""
-        self.debug_mode = not self.debug_mode
-        level = logging.DEBUG if self.debug_mode else logging.WARNING
-        logger.setLevel(level)
+        """Toggle between ``light`` (always-on baseline) and ``verbose`` tiers.
+
+        ``light`` keeps lean trace entries (event + elapsed_ms + rid) running on
+        every session with near-zero per-call cost. ``verbose`` adds full state
+        snapshots, diffs, and redacted args — switch into it when actively
+        chasing a bug.
+        """
         if self.debug_mode:
-            # Start a fresh debug session — clear trace buffer and rotate log
-            trace.clear()
-            logger.debug("Debug mode ON — trace cleared, fresh session")
-            self.status_message = "Debug mode ON"
-        else:
-            # Flush remaining trace before turning off
+            set_debug_tier("light")
+            self.debug_mode = False
+            logger.setLevel(logging.WARNING)
             trace.flush()
-            self.status_message = "Debug mode OFF"
+            self.status_message = "Debug mode: light (baseline)"
+        else:
+            set_debug_tier("verbose")
+            self.debug_mode = True
+            logger.setLevel(logging.DEBUG)
+            trace.clear()
+            logger.debug("Debug mode: verbose — trace cleared, fresh session")
+            self.status_message = "Debug mode: verbose"
         self.status_colour = "accent2"
 
     # =====================================================================
@@ -6621,7 +6643,7 @@ class EditorState(rx.State):
                 except Exception:
                     pass
             self.session_path = str(paths.aoi_inputs_dir / "aoi_session.json")
-            trace.set_project_path(paths.project_dir)
+            relocate_to_project(paths.project_dir)
             from ..lib.image_loader import scan_hdr_files, read_hdr_view_params, scan_sunlight_view_groups
             self.hdr_files = scan_hdr_files(image_dir)
             # Read VIEW parameters from each HDR for accurate reprojection
@@ -7849,25 +7871,35 @@ class EditorState(rx.State):
     # =====================================================================
 
     def log_js_trace(self, payload: dict) -> None:
-        """Sink for JS-side tracer messages — logs one line per event to the
-        unified trace file (``~/.archilume/logs/archilume_app.log``) when
-        ``debug_mode`` is enabled.
+        """Sink for JS-side tracer messages.
 
         Invoked via ``window.applyEvent('editor_state.log_js_trace', {...})``.
         If the payload carries a ``rid`` field, it's adopted as the active
-        correlation ID for the duration of this log line so JS traces
-        interleave cleanly with backend handler traces.
+        correlation ID for this log line so JS traces interleave cleanly with
+        backend handler traces.
+
+        Severity routing:
+        - ``js_error`` / ``js_unhandled_rejection``: always logged at ERROR
+          level and added to the trace buffer, regardless of ``debug_mode``.
+          A JS error must never be silent.
+        - All other tags: gated on ``debug_mode`` (verbose tier).
         """
-        if not self.debug_mode:
-            return
         try:
             tag = payload.get("tag", "?")
             rid = payload.get("rid")
+
+            def _emit():
+                if tag in ("js_error", "js_unhandled_rejection"):
+                    logger.error(f"[JS:{tag}] {payload}")
+                    trace.add(tag, args=payload)
+                elif self.debug_mode:
+                    logger.debug(f"[JS:{tag}] {payload}")
+
             if rid:
                 with with_correlation_id(rid):
-                    logger.debug(f"[JS:{tag}] {payload}")
+                    _emit()
             else:
-                logger.debug(f"[JS:{tag}] {payload}")
+                _emit()
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[JS:err] failed to log trace: {exc}")
 

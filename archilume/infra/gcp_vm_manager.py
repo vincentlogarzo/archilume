@@ -1,512 +1,146 @@
-"""
-gcp_vm_manager.py — GCP VM lifecycle manager for Archilume.
+"""gcp_vm_manager.py — minimal GCP VM lifecycle for Archilume.
 
-Handles creation, setup, connection, and deletion of GCP VMs.
-Config is saved to ~/.archilume_gcp_config.json.
-SSH key is stored at ~/.ssh/google_cloud_vm_key.
+Creates an LSSD VM running Container-Optimized OS, with the engine container
+launched by `cos_startup.sh`. Four actions: setup, delete, tunnel, restart.
 """
 
-import json
-import os
-import platform
+from __future__ import annotations
+
 import shutil
 import subprocess
 import sys
-import tarfile
-import tempfile
 import time
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 from archilume.config import GCLOUD_EXECUTABLE
 
-CONFIG_PATH = Path.home() / ".archilume_gcp_config.json"
-_PRICING_CACHE_FILENAME = ".gcp_pricing_cache.json"
 SSH_KEY_PATH = Path.home() / ".ssh" / "google_cloud_vm_key"
 SSH_CONFIG_PATH = Path.home() / ".ssh" / "config"
 SSH_HOST_ALIAS = "gcp-vm"
 VM_NAME_PREFIX = "archilume-vm"
-MIN_VCPUS = 64
 ENGINE_IMAGE = "vlogarzo/archilume-engine:latest"
 ENGINE_PORT = 8100
 LSSD_MOUNT = "/mnt/disks/localssd"
 REMOTE_PROJECTS = f"{LSSD_MOUNT}/projects"
 STARTUP_SCRIPT_PATH = Path(__file__).parent / "cos_startup.sh"
-# GCP Compute Engine billing service ID (stable)
-_GCP_BILLING_SERVICE = "6F81-5844-456A"
-# Base clock speeds (GHz) per machine family — from GCP published specs
-_FAMILY_GHZ: dict[str, str] = {
-    "c4d": "3.4",
-    "c4a": "3.1",
-    "c4":  "3.1",
-    "c3d": "3.6",
-    "c3":  "3.1",
-    "h4d": "3.4",
-    "z3":  "3.6",
-}
-# Boot disk type required by each machine family. GCP has no per-machine-type
-# compatibility endpoint, so we gate on family prefix. The LSSD families (all
-# entries in _FAMILY_GHZ) only accept hyperdisk-balanced.
-_FAMILY_BOOT_DISK: dict[str, str] = {
-    "c4d": "hyperdisk-balanced",
-    "c4a": "hyperdisk-balanced",
-    "c4":  "hyperdisk-balanced",
-    "c3d": "hyperdisk-balanced",
-    "c3":  "hyperdisk-balanced",
-    "h4d": "hyperdisk-balanced",
-    "z3":  "hyperdisk-balanced",
-}
-_DEFAULT_BOOT_DISK = "pd-balanced"
+LEGACY_CONFIG_PATH = Path.home() / ".archilume_gcp_config.json"
 
-# CPU architecture per machine family. c4a/n4a/t2a are Google Axion/Ampere
-# ARM64; everything else LSSD-capable is x86_64. Drives both the machine-type
-# picker filter and the COS image-family selection (cos-stable vs cos-arm64-stable).
-_FAMILY_ARCH: dict[str, str] = {
-    "c4a": "arm64",
-    "n4a": "arm64",
-    "t2a": "arm64",
-    "c4d": "x86_64",
-    "c4":  "x86_64",
-    "c3d": "x86_64",
-    "c3":  "x86_64",
-    "h4d": "x86_64",
-    "z3":  "x86_64",
-}
-# Archs the engine image can run on. Flip to include "arm64" once
-# vlogarzo/archilume-engine is published as a multi-arch manifest.
-_ENGINE_SUPPORTED_ARCHES = {"x86_64"}
+DEFAULT_ZONE = "australia-southeast1-a"
+MACHINE_TYPES: tuple[str, ...] = (
+    "c4d-standard-64-lssd",
+    "c4d-standard-96-lssd",
+    "c4d-standard-192-lssd",
+    "c4-standard-288-lssd",
+    "c4d-standard-384-lssd",
+)
+DEFAULT_MACHINE_TYPE = "c4d-standard-96-lssd"
+
+# Engine image is x86_64-only; guardrail blocks arm64 prefixes (c4a/n4a/t2a).
+_X86_LSSD_PREFIXES = ("c4d-", "c4-", "c3d-", "c3-", "h4d-", "z3-")
+assert all(m.startswith(_X86_LSSD_PREFIXES) for m in MACHINE_TYPES), (
+    f"MACHINE_TYPES contains a non-x86_64 LSSD prefix: {MACHINE_TYPES}"
+)
 
 
-def _arch_for(machine_type: str) -> str:
-    """Return 'arm64' or 'x86_64' for a machine type. Default to x86_64."""
-    name = machine_type.lower()
-    for family, arch in _FAMILY_ARCH.items():
-        if name.startswith(family):
-            return arch
-    return "x86_64"
-
-
-def _image_family_for_arch(arch: str) -> str:
-    """Return the GCP Container-Optimized OS image family for an arch."""
-    return "cos-arm64-stable" if arch == "arm64" else "cos-stable"
-
-
-def _boot_disk_type_for(machine_type: str) -> str:
-    """Return the boot disk type compatible with a given machine type."""
-    name = machine_type.lower()
-    for family, disk in _FAMILY_BOOT_DISK.items():
-        if name.startswith(family):
-            return disk
-    return _DEFAULT_BOOT_DISK
+def _resolve_gcloud() -> str:
+    if Path(GCLOUD_EXECUTABLE).is_file():
+        return str(GCLOUD_EXECUTABLE)
+    found = shutil.which("gcloud") or shutil.which("gcloud.cmd")
+    if found:
+        return found
+    raise RuntimeError(
+        f"gcloud not found at {GCLOUD_EXECUTABLE} or on PATH. "
+        "Install: https://cloud.google.com/sdk/docs/install"
+    )
 
 
 class GCPVMManager:
-    def __init__(self, project_name: str | None = None):
-        # Check if gcloud exists at the configured path
-        if not GCLOUD_EXECUTABLE.exists():
-            self._install_gcloud()
-        self._ensure_authenticated()
-        self.cfg = self._load_config()
+    def __init__(self, project_name=None, project=None, zone=DEFAULT_ZONE):
         self.archilume_project = project_name
-
-    def _all_project_cache_paths(self) -> list[Path]:
-        """Return pricing cache paths for every project's archive directory."""
-        from archilume.config import PROJECTS_DIR
-        paths = []
-        if PROJECTS_DIR.is_dir():
-            for p in sorted(PROJECTS_DIR.iterdir()):
-                if p.is_dir():
-                    paths.append(p / "archive" / _PRICING_CACHE_FILENAME)
-        return paths
-
-    def _install_gcloud(self):
-        """Attempt to install the Google Cloud CLI if not found."""
-        print("Google Cloud CLI not found. Attempting to install...")
-        system = platform.system()
-
-        if system == "Windows":
-            gcloud_url = "https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe"
-            installer_path = Path.home() / "Downloads" / "GoogleCloudSDKInstaller.exe"
-            try:
-                print(f"  Downloading from {gcloud_url}...")
-                urllib.request.urlretrieve(gcloud_url, str(installer_path))
-                print("  Running installer (this may open a new window)...")
-                subprocess.run([str(installer_path)], check=False)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to install Google Cloud CLI: {e}\n"
-                    "Manual installation: https://cloud.google.com/sdk/docs/install-gcloud-cli"
-                ) from e
-        elif system in ("Darwin", "Linux"):
-            result = subprocess.run("curl https://sdk.cloud.google.com | bash", shell=True, check=False)
-            if result.returncode != 0:
-                raise RuntimeError(
-                    "Google Cloud CLI installation failed.\n"
-                    "Manual installation: https://cloud.google.com/sdk/docs/install-gcloud-cli"
-                )
+        self._gcloud_bin = _resolve_gcloud()
+        self.zone = zone
+        if LEGACY_CONFIG_PATH.exists():
+            print(f"Note: {LEGACY_CONFIG_PATH} is no longer used; pass --project or `gcloud config set project <id>`.")
+        if project:
+            self.project = project
         else:
-            raise RuntimeError(
-                f"Unsupported platform: {system}\n"
-                "Manual installation: https://cloud.google.com/sdk/docs/install-gcloud-cli"
-            )
+            out, code = self._gcloud(["config", "get-value", "project"], capture=True)
+            if code != 0 or not out or out == "(unset)":
+                raise RuntimeError("No GCP project set. Pass --project or run `gcloud config set project <id>`.")
+            self.project = out
+        self._ensure_authenticated()
 
-        # Verify installation succeeded
-        if not GCLOUD_EXECUTABLE.exists() and not shutil.which("gcloud"):
-            raise RuntimeError(
-                "Google Cloud CLI was installed but not found at expected path.\n"
-                "You may need to restart your terminal, then re-run this script.\n"
-                f"Expected path: {GCLOUD_EXECUTABLE}\n"
-                "Or set GCLOUD_SDK_ROOT environment variable to your installation path."
-            )
-        print("Google Cloud CLI installed successfully!")
+    # ----- gcloud / ssh wrappers -----
+
+    def _gcloud(self, args, capture=False):
+        cmd = [self._gcloud_bin, *args]
+        if capture:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            return r.stdout.strip(), r.returncode
+        r = subprocess.run(cmd)
+        if r.returncode != 0:
+            raise RuntimeError(f"gcloud {' '.join(args)} failed (exit {r.returncode})")
+        return "", 0
+
+    def _zp(self):
+        return [f"--zone={self.zone}", f"--project={self.project}"]
 
     def _ensure_authenticated(self):
-        """Check for an active gcloud account; run 'gcloud auth login' if missing."""
-        out, _ = self._gcloud_capture_static(["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"])
-        if not out:
-            print("  No active gcloud account found. Launching authentication...")
-            is_wsl = Path("/proc/version").exists() and "microsoft" in Path("/proc/version").read_text().lower()
-            if is_wsl:
-                print("  WSL detected — a URL will be printed below. Open it in your browser to log in.")
-                login_cmd = [str(GCLOUD_EXECUTABLE), "auth", "login", "--no-launch-browser"]
-            else:
-                login_cmd = [str(GCLOUD_EXECUTABLE), "auth", "login"]
-            result = subprocess.run(login_cmd)
-            if result.returncode != 0:
-                raise RuntimeError("gcloud authentication failed. Run 'gcloud auth login' manually.")
-            out, _ = self._gcloud_capture_static(["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"])
-            if not out:
-                raise RuntimeError("No active gcloud account after login. Run 'gcloud auth login' manually.")
-        print(f"  Authenticated as: {out.splitlines()[0]}")
-
-    @staticmethod
-    def _gcloud_capture_static(args: list) -> tuple[str, int]:
-        result = subprocess.run([str(GCLOUD_EXECUTABLE)] + args, capture_output=True, text=True)
-        return result.stdout.strip(), result.returncode
-
-    # ------------------------------------------------------------------
-    # Config
-    # ------------------------------------------------------------------
-
-    def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return json.loads(CONFIG_PATH.read_text())
-        return {}
-
-    def _save_config(self):
-        CONFIG_PATH.write_text(json.dumps(self.cfg, indent=2))
-
-    def prompt_config(self):
-        """Prompt for missing project, then auto-select best zone for the machine type."""
-        if "project" not in self.cfg:
-            self.cfg["project"] = input("  GCP project ID (e.g. my-project-123): ").strip()
-        if "zone" not in self.cfg:
-            self.cfg["zone"] = self._pick_best_zone()
-        self._save_config()
-
-    def _pick_best_zone(self) -> str:
-        """Query available zones for the c4d machine family.
-
-        Prefer US zones (cheapest). If no US zone is available, fall back to
-        the lowest-latency zone among remaining options.
-        """
-        reference_type = "c4d-standard-64-lssd"
-        print(f"  Finding best zone for lssd machine types...")
-        out, code = self._gcloud_capture([
-            "compute", "machine-types", "list",
-            f"--filter=name={reference_type}",
-            "--format=value(zone)",
-            f"--project={self.project}",
-        ])
-        if code != 0 or not out:
-            print("  Could not query zones, defaulting to us-central1-a")
-            return "us-central1-a"
-
-        zones = out.splitlines()
-        us_zones = [z for z in zones if z.startswith("us-")]
-        if us_zones:
-            chosen = sorted(us_zones)[0]
-            print(f"  Selected US zone: {chosen}")
-            return chosen
-
-        # No US zone — pick lowest-latency from remaining zones
-        print(f"  No US zones available. Checking latency across {len(zones)} zones...")
-        best_zone, best_ms = None, float("inf")
-        for zone in zones:
-            region = "-".join(zone.split("-")[:-1])
-            host = f"{region}.gcp.pingdom.com"
-            result = subprocess.run(
-                ["ping", "-c", "1", "-W", "2", host],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                for part in result.stdout.split():
-                    if part.startswith("time="):
-                        try:
-                            ms = float(part.split("=")[1].replace("ms", ""))
-                            if ms < best_ms:
-                                best_ms, best_zone = ms, zone
-                        except ValueError:
-                            pass
-                        break
-
-        if best_zone:
-            print(f"  Selected zone: {best_zone} ({best_ms:.0f} ms)")
-            return best_zone
-
-        chosen = zones[0]
-        print(f"  Ping unavailable, selecting first available zone: {chosen}")
-        return chosen
-
-    @property
-    def project(self) -> str:
-        return self.cfg["project"]
-
-    @property
-    def zone(self) -> str:
-        return self.cfg["zone"]
-
-    # ------------------------------------------------------------------
-    # gcloud helpers
-    # ------------------------------------------------------------------
-
-    def _gcloud(self, args: list):
-        """Run a gcloud command, streaming output live. Raises on failure."""
-        result = subprocess.run([str(GCLOUD_EXECUTABLE)] + args)
-        if result.returncode != 0:
+        out, _ = self._gcloud(["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"], capture=True)
+        if out:
+            return
+        if not sys.stdin.isatty():
             raise RuntimeError(
-                f"gcloud command failed (exit {result.returncode}):\n  gcloud {' '.join(args)}"
+                "No active gcloud account and stdin is not a TTY. "
+                "In a backend/container, activate a service account with "
+                "`gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS`."
             )
+        print("No active gcloud account; running `gcloud auth login --no-launch-browser`...")
+        self._gcloud(["auth", "login", "--no-launch-browser"])
 
-    def _gcloud_capture(self, args: list) -> tuple[str, int]:
-        """Run a gcloud command and capture stdout. Returns (stdout, exit_code)."""
-        return self._gcloud_capture_static(args)
+    def _username(self):
+        out, _ = self._gcloud(["config", "get-value", "account"], capture=True)
+        return out.split("@")[0]
 
-    def _gcloud_account(self) -> str:
-        out, _ = self._gcloud_capture(["config", "get-value", "account"])
+    def _ssh(self, vm_name, command, capture=False):
+        return self._gcloud(["compute", "ssh", vm_name, *self._zp(), "--command", command], capture=capture)
+
+    def _describe(self, vm_name, fmt):
+        return self._gcloud(["compute", "instances", "describe", vm_name, *self._zp(), f"--format=get({fmt})"], capture=True)
+
+    def _get_vm_ip(self, vm_name):
+        out, _ = self._describe(vm_name, "networkInterfaces[0].accessConfigs[0].natIP")
         return out
 
-    def _gcloud_username(self) -> str:
-        return self._gcloud_account().split("@")[0]
-
-    def _get_vm_ip(self, vm_name: str) -> str:
-        out, _ = self._gcloud_capture([
-            "compute", "instances", "describe", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-            "--format=get(networkInterfaces[0].accessConfigs[0].natIP)",
-        ])
-        return out
-
-    def _get_vm_status(self, vm_name: str) -> str:
-        out, code = self._gcloud_capture([
-            "compute", "instances", "describe", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-            "--format=get(status)",
-        ])
+    def _get_vm_status(self, vm_name):
+        out, code = self._describe(vm_name, "status")
         return out if code == 0 else "UNKNOWN"
 
-    def list_vms(self) -> list[tuple[str, str, str, str]]:
-        """Return [(name, status, zone, ip)] for all archilume-vm* instances."""
-        out, code = self._gcloud_capture([
-            "compute", "instances", "list",
-            f"--project={self.project}",
-            f"--filter=name~'^{VM_NAME_PREFIX}'",
-            "--format=csv[no-heading](name,status,zone,networkInterfaces[0].accessConfigs[0].natIP)",
-        ])
+    def list_vms(self):
+        out, code = self._gcloud(
+            ["compute", "instances", "list", f"--project={self.project}",
+             f"--filter=name~'^{VM_NAME_PREFIX}'",
+             "--format=csv[no-heading](name,status,zone,networkInterfaces[0].accessConfigs[0].natIP)"],
+            capture=True,
+        )
         if code != 0 or not out:
             return []
-        rows = []
-        for line in out.splitlines():
-            parts = line.split(",")
-            if len(parts) >= 4:
-                rows.append((parts[0], parts[1], parts[2], parts[3]))
-            elif len(parts) == 3:
-                rows.append((parts[0], parts[1], parts[2], ""))
-        return rows
+        return [tuple((line.split(",") + [""])[:4]) for line in out.splitlines() if line]
 
-    # ------------------------------------------------------------------
-    # SSH helpers
-    # ------------------------------------------------------------------
-
-    def _check_vscode_remote_ssh_config(self):
-        """
-        Check that VS Code Remote SSH is configured to use SSH_CONFIG_PATH.
-        Searches common settings.json locations and warns if the setting is missing or wrong.
-        Skips the check inside dev containers where the host filesystem is inaccessible.
-        """
-        # Inside a dev container we cannot access the host VS Code settings,
-        # and update_ssh_config() already writes to the Windows host SSH config
-        # via /mnt/c or _find_windows_ssh_config(). Skip the noisy warning.
-        if os.environ.get("REMOTE_CONTAINERS") or os.environ.get("CODESPACES"):
-            print("  ℹ️  Running inside a dev container — skipping VS Code settings.json check.\n"
-                  f"     SSH config is written directly to your host's ~/.ssh/config by this tool.")
-            return
-
-        candidate_dirs = [
-            Path.home() / ".config" / "Code" / "User",          # Linux host
-            Path.home() / ".config" / "Code - Insiders" / "User",
-            Path("/vscode/vscode-server/data/User"),             # dev container server
-            Path.home() / ".vscode-server" / "data" / "User",
-        ]
-        if sys.platform == "win32":
-            # Native Windows: %APPDATA%\Code\User
-            appdata = os.environ.get("APPDATA", "")
-            if appdata:
-                candidate_dirs.append(Path(appdata) / "Code" / "User")
-                candidate_dirs.append(Path(appdata) / "Code - Insiders" / "User")
-        else:
-            # WSL or Linux dev container: probe Windows drives via /mnt/c
-            wsl_users = Path("/mnt/c/Users")
-            if wsl_users.exists():
-                for user_dir in wsl_users.iterdir():
-                    candidate_dirs.append(user_dir / "AppData" / "Roaming" / "Code" / "User")
-                    candidate_dirs.append(user_dir / "AppData" / "Roaming" / "Code - Insiders" / "User")
-
-        found_settings = [d / "settings.json" for d in candidate_dirs if (d / "settings.json").exists()]
-
-        correct_path = str(SSH_CONFIG_PATH)
-        ok = False
-        for settings_file in found_settings:
-            try:
-                data = json.loads(settings_file.read_text())
-                configured = data.get("remote.SSH.configFile", "")
-                if configured == correct_path:
-                    ok = True
-                    break
-            except Exception:
-                continue
-
-        if not found_settings:
-            print(
-                f"\n  ⚠️  Could not locate a VS Code settings.json to verify Remote SSH config.\n"
-                f"     Ensure 'remote.SSH.configFile' is set to: {correct_path}\n"
-                f"     (VS Code → Settings → remote.SSH.configFile)"
-            )
-        elif not ok:
-            print(
-                f"\n  ⚠️  VS Code Remote SSH config may not point to the correct file.\n"
-                f"     Set 'remote.SSH.configFile' to: {correct_path}\n"
-                f"     (VS Code → Settings → remote.SSH.configFile)"
-            )
-        else:
-            print(f"  VS Code Remote SSH config file is correctly set to: {correct_path}")
+    # ----- SSH key + config -----
 
     def _ensure_ssh_key(self):
         if SSH_KEY_PATH.exists():
-            print(f"  SSH key already exists: {SSH_KEY_PATH}")
-        else:
-            print("  Generating SSH key...")
-            email = self._gcloud_account()
-            subprocess.run([
-                "ssh-keygen", "-t", "rsa", "-b", "4096",
-                "-f", str(SSH_KEY_PATH),
-                "-C", email,
-                "-N", "",
-            ], check=True)
-            print(f"  SSH key created: {SSH_KEY_PATH}")
-        self._check_vscode_remote_ssh_config()
-
-    def _prompt_copy_ssh_key_to_windows(self):
-        """Prompt user to copy SSH key from Linux container to Windows host."""
-        is_wsl = Path("/proc/version").exists() and "microsoft" in Path("/proc/version").read_text().lower()
-        is_devcontainer = os.environ.get("REMOTE_CONTAINERS") or os.environ.get("CODESPACES")
-
-        # Only show this prompt if we're in a dev container or WSL
-        if not (is_wsl or is_devcontainer):
             return
+        SSH_KEY_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            subprocess.run(["ssh-keygen", "-t", "rsa", "-b", "4096", "-f", str(SSH_KEY_PATH), "-N", "", "-q"], check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ssh-keygen failed: {e}. Try `chmod 700 ~/.ssh` and re-run.") from e
 
-        print("\n  ⚠️  SSH key synchronization for Windows host detected")
-        ans = input("  Do you need to copy the SSH key to your Windows host? (y/N): ").strip().lower()
-        if ans != "y":
-            return
-
-        print("\n  --- SSH Key Copy Instructions ---")
-        print(f"\n  Your SSH private key needs to be copied from Linux to Windows:")
-        print(f"\n  1️⃣  Copy the key content below:")
-        print(f"\n  {'-' * 70}")
-
-        # Read and display the private key
-        key_content = SSH_KEY_PATH.read_text()
-        print(key_content)
-        print(f"  {'-' * 70}")
-
-        print(f"\n  2️⃣  Paste it into your Windows SSH folder:")
-        windows_ssh_path = "C:\\Users\\<YourUsername>\\.ssh\\google_cloud_vm_key"
-        print(f"     📁 {windows_ssh_path}")
-        print(f"\n     Click here to open: file:///C:/Users/")
-
-        # Check if we can find the Windows user home
-        wsl_users = Path("/mnt/c/Users")
-        if wsl_users.exists():
-            user_dirs = [d for d in wsl_users.iterdir() if d.is_dir() and d.name not in ("Public", "Default", "Default User", "All Users")]
-            if user_dirs:
-                # Use first found user (usually the correct one)
-                windows_user = user_dirs[0].name
-                windows_ssh_key = f"C:\\Users\\{windows_user}\\.ssh\\google_cloud_vm_key"
-                print(f"\n     📍 Your path appears to be: {windows_ssh_key}")
-                print(f"     Click here to open: file:///C:/Users/{windows_user}/.ssh/")
-
-        print(f"\n  3️⃣  Fix SSH key permissions (Windows PowerShell as Admin):")
-        print(f"     icacls \"C:\\Users\\<YourUsername>\\.ssh\\google_cloud_vm_key\" /inheritance:r /grant:r \"%USERNAME%:F\"")
-
-        print(f"\n  4️⃣  Test SSH from Windows command prompt:")
-        print(f"     ssh gcp-vm")
-
-        print(f"\n  5️⃣  Then try VSCode Remote SSH again!")
-
-        input("\n  Press Enter after you've completed these steps...")
-        print("  ✅ Setup complete! VSCode Remote SSH should now work.")
-
-    def _read_pubkey(self) -> str:
-        return SSH_KEY_PATH.with_suffix(".pub").read_text().strip()
-
-    @staticmethod
-    def _upsert_ssh_config_block(config_path: Path, host_alias: str, block: str):
-        """Insert or replace a Host block in an SSH config file."""
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = config_path.read_text() if config_path.exists() else ""
-
-        lines = existing.splitlines(keepends=True)
-        out_lines = []
-        skip = False
-        found = False
-        for line in lines:
-            if line.strip() == f"Host {host_alias}":
-                skip = True
-                found = True
-                out_lines.append(block)
-                continue
-            if skip and line.startswith("Host "):
-                skip = False
-            if not skip:
-                out_lines.append(line)
-
-        if not found:
-            if out_lines and not out_lines[-1].endswith("\n"):
-                out_lines.append("\n")
-            out_lines.append("\n" + block)
-
-        config_path.write_text("".join(out_lines))
-
-    def _find_windows_ssh_config(self) -> Path | None:
-        """Find the Windows host SSH config path when running inside WSL/devcontainer."""
-        wsl_users = Path("/mnt/c/Users")
-        if not wsl_users.exists():
-            return None
-        for user_dir in wsl_users.iterdir():
-            if user_dir.name in ("Public", "Default", "Default User", "All Users"):
-                continue
-            ssh_dir = user_dir / ".ssh"
-            if ssh_dir.exists():
-                return ssh_dir / "config"
-        return None
-
-    def update_ssh_config(self, ip: str, username: str):
-        """Write or replace the Host gcp-vm block in ~/.ssh/config and Windows host config."""
-        # Block for the container/WSL config (uses container paths)
-        container_block = (
+    def _update_ssh_config(self, ip, username):
+        block = (
             f"Host {SSH_HOST_ALIAS}\n"
             f"    HostName {ip}\n"
             f"    User {username}\n"
@@ -514,878 +148,101 @@ class GCPVMManager:
             f"    StrictHostKeyChecking accept-new\n"
             f"    ConnectTimeout 30\n"
             f"    ServerAliveInterval 60\n"
-            f"    ServerAliveCountMax 10\n"
         )
+        SSH_CONFIG_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        existing = SSH_CONFIG_PATH.read_text() if SSH_CONFIG_PATH.exists() else ""
+        out_lines, skip, found = [], False, False
+        for line in existing.splitlines(keepends=True):
+            if line.strip() == f"Host {SSH_HOST_ALIAS}":
+                skip, found = True, True
+                out_lines.append(block)
+                continue
+            if skip and line.startswith("Host "):
+                skip = False
+            if not skip:
+                out_lines.append(line)
+        if not found:
+            if out_lines and not out_lines[-1].endswith("\n"):
+                out_lines.append("\n")
+            out_lines.append("\n" + block)
+        SSH_CONFIG_PATH.write_text("".join(out_lines))
+        print(f"  SSH config: Host {SSH_HOST_ALIAS} → {ip}")
 
-        self._upsert_ssh_config_block(SSH_CONFIG_PATH, SSH_HOST_ALIAS, container_block)
-        print(f"  SSH config updated: {SSH_CONFIG_PATH}")
-
-        # The devcontainer mounts ~/.ssh from the WSL host, so writing to
-        # SSH_CONFIG_PATH here automatically updates C:\Users\<you>\.ssh\config
-        # on Windows. No separate Windows config write needed.
-        print(f"  SSH config written: Host {SSH_HOST_ALIAS} → {ip} (key: {SSH_KEY_PATH})")
-
-    def _ensure_ssh_key_on_vm(self, vm_name: str):
-        """Ensure our SSH public key is in the VM's instance metadata."""
-        self._ensure_ssh_key()
-        username = self._gcloud_username()
-        pubkey = self._read_pubkey()
-        new_entry = f"{username}:{pubkey}"
-
-        # Fetch existing ssh-keys metadata
-        existing, code = self._gcloud_capture([
-            "compute", "instances", "describe", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-            "--format=value(metadata.items.ssh-keys)",
-        ])
-
-        if new_entry in (existing or ""):
-            print(f"  SSH public key already present on {vm_name}")
-            return
-
-        # Append our key to existing keys
-        if existing:
-            updated = existing.rstrip("\n") + "\n" + new_entry
-        else:
-            updated = new_entry
-
-        print(f"  Adding SSH public key to {vm_name}...")
-        self._gcloud([
-            "compute", "instances", "add-metadata", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-            f"--metadata=ssh-keys={updated}",
-        ])
-        print(f"  SSH public key added to {vm_name}")
-
-    # ------------------------------------------------------------------
-    # Remote command execution
-    # ------------------------------------------------------------------
-
-    def _ssh(self, vm_name: str, command: str) -> int:
-        """Run a command on the VM, streaming output live. Returns exit code."""
-        return subprocess.run([
-            str(GCLOUD_EXECUTABLE), "compute", "ssh", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-            f"--command={command}",
-        ]).returncode
-
-    def _ssh_capture(self, vm_name: str, command: str) -> tuple[str, int]:
-        """Run a command on the VM and capture stdout. Returns (stdout, exit_code)."""
-        result = subprocess.run([
-            str(GCLOUD_EXECUTABLE), "compute", "ssh", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-            f"--command={command}",
-        ], capture_output=True, text=True)
-        return result.stdout.strip(), result.returncode
-
-    def _wait_for_running(self, vm_name: str, max_attempts: int = 40, interval: int = 5):
-        print("  Waiting for VM to reach RUNNING status", end="", flush=True)
-        for _ in range(max_attempts):
-            if self._get_vm_status(vm_name) == "RUNNING":
-                print(" OK")
+    def _wait(self, predicate, label, attempts, interval):
+        for _ in range(attempts):
+            if predicate():
                 return
-            print(".", end="", flush=True)
             time.sleep(interval)
-        raise RuntimeError(f"VM {vm_name} did not reach RUNNING after {max_attempts * interval}s")
+        raise RuntimeError(f"{label} not ready after {attempts*interval}s")
 
-    def _wait_for_ssh(self, vm_name: str, max_attempts: int = 20, interval: int = 10):
-        print("  Waiting for SSH to become available", end="", flush=True)
-        time.sleep(10)
-        for _ in range(max_attempts):
-            if self._ssh(vm_name, "echo ok") == 0:
-                print(" OK")
-                return
-            print(".", end="", flush=True)
-            time.sleep(interval)
-        raise RuntimeError(f"SSH not available on {vm_name} after {max_attempts * interval}s")
+    # ----- actions -----
 
-    def _wait_for_engine(self, vm_name: str, timeout_s: int = 900, interval: int = 10):
-        """Poll the engine's /health endpoint via SSH until it returns 200."""
-        print(f"  Polling http://localhost:{ENGINE_PORT}/health", end="", flush=True)
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            time.sleep(interval)
-            print(".", end="", flush=True)
-            _, code = self._ssh_capture(
-                vm_name,
-                f"curl -fsS http://localhost:{ENGINE_PORT}/health -o /dev/null",
-            )
-            if code == 0:
-                print(" OK")
-                return
-        print(" TIMEOUT")
-        # Dump diagnostic info
-        print("\n  --- last 30 lines of serial console ---")
-        log, _ = self._gcloud_capture([
-            "compute", "instances", "get-serial-port-output", vm_name,
-            f"--zone={self.zone}", f"--project={self.project}",
-        ])
-        for line in log.splitlines()[-30:]:
-            print(f"    {line}")
-        print("\n  --- docker logs archilume-engine (last 50) ---")
-        docker_log, _ = self._ssh_capture(
-            vm_name, "docker logs archilume-engine 2>&1 | tail -50 || echo '(container not running)'"
-        )
-        for line in docker_log.splitlines():
-            print(f"    {line}")
-        raise RuntimeError(f"Engine did not become ready on {vm_name} after {timeout_s}s")
-
-    def _run_step(self, label: str, vm_name: str, command: str):
-        print(f"\n  {label}")
-        code = self._ssh(vm_name, command)
-        if code != 0:
-            raise RuntimeError(f"Step failed (exit {code}): {label}")
-        print("  ... done")
-
-    def _prompt_delete_on_failure(self, vm_name: str):
-        ans = input(f"\n  Delete failed VM '{vm_name}'? (y/N): ").strip().lower()
-        if ans == "y":
-            print(f"  Deleting {vm_name}...")
-            subprocess.run([
-                str(GCLOUD_EXECUTABLE), "compute", "instances", "delete", vm_name,
-                f"--zone={self.zone}", f"--project={self.project}", "--quiet",
-            ])
-            print("  Deleted.")
-        else:
-            print(f"  VM left running. SSH manually: gcloud compute ssh {vm_name} --zone={self.zone}")
-
-    # ------------------------------------------------------------------
-    # Public actions
-    # ------------------------------------------------------------------
-
-    def _load_pricing_cache(self) -> dict | None:
-        """Search all project archive dirs for a valid (< 7 days old) pricing cache."""
-        for cache_path in self._all_project_cache_paths():
-            if not cache_path.exists():
-                continue
-            try:
-                cache = json.loads(cache_path.read_text())
-                cache_date = cache.get("date")
-                if cache_date:
-                    age_days = (datetime.now() - datetime.strptime(cache_date, "%Y-%m-%d")).days
-                    if age_days < 7:
-                        return cache.get("data")
-            except Exception:
-                continue
-
-        return None
-
-    def _save_pricing_cache(self, pricing: dict, machines: list[dict], exchange_rate: float):
-        """Save pricing data to all project archive directories."""
-        cache = {
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "data": {
-                "pricing": pricing,
-                "machines": machines,
-                "exchange_rate": exchange_rate
-            }
-        }
-        payload = json.dumps(cache, indent=2)
-        for cache_path in self._all_project_cache_paths():
-            try:
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(payload)
-            except Exception:
-                pass  # Silently skip projects with write errors
-
-    def _fetch_usd_to_aud(self) -> float:
-        """Fetch live USD→AUD rate from frankfurter.app (no API key required)."""
-        try:
-            with urllib.request.urlopen(
-                "https://api.frankfurter.app/latest?from=USD&to=AUD", timeout=5
-            ) as r:
-                return json.loads(r.read())["rates"]["AUD"]
-        except Exception:
-            # Return fallback silently - caller will handle messaging if needed
-            return 1.55
-
-    def _fetch_gcp_pricing(self) -> dict[str, dict]:
-        """
-        Fetch on-demand per-core and per-GiB-RAM pricing from the GCP Billing SKUs API.
-        Returns a dict mapping lowercase family prefix → (core_usd_hr, ram_usd_gib_hr).
-        Requires an active gcloud auth token.
-        """
-        token_result = subprocess.run(
-            [str(GCLOUD_EXECUTABLE), "auth", "print-access-token"],
-            capture_output=True, text=True
-        )
-        if token_result.returncode != 0:
-            return {}
-        token = token_result.stdout.strip()
-
-        base = (
-            f"https://cloudbilling.googleapis.com/v1/services/"
-            f"{_GCP_BILLING_SERVICE}/skus?currencyCode=USD&pageSize=5000"
-        )
-        all_skus = []
-        page_token = ""
-        for _ in range(15):
-            url = base + (f"&pageToken={page_token}" if page_token else "")
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-            try:
-                with urllib.request.urlopen(req, timeout=15) as r:
-                    data = json.loads(r.read())
-            except Exception:
-                break
-            all_skus.extend(data.get("skus", []))
-            page_token = data.get("nextPageToken", "")
-            if not page_token:
-                break
-
-        # Parse: on-demand core and RAM pricing per machine family, region=Americas
-        pricing: dict[str, dict] = {}
-        for sku in all_skus:
-            desc = sku.get("description", "")
-            cat = sku.get("category", {})
-            if cat.get("usageType") != "OnDemand":
-                continue
-            if "spot" in desc.lower() or "commitment" in desc.lower() or "sole tenancy" in desc.lower():
-                continue
-            regions = sku.get("serviceRegions", [])
-            if "us-central1" not in regions and "americas" not in " ".join(regions).lower():
-                continue
-
-            pricing_info = sku.get("pricingInfo", [])
-            if not pricing_info:
-                continue
-            pricing_expr = pricing_info[0].get("pricingExpression", {})
-            tiers = pricing_expr.get("tieredRates", [])
-            if not tiers:
-                continue
-            price = tiers[0].get("unitPrice", {})
-            usd = float(price.get("units", 0)) + price.get("nanos", 0) / 1e9
-            unit = pricing_expr.get("usageUnit", "")
-
-            # Match patterns like "C4D Instance Core running in Americas"
-            lower = desc.lower()
-            for family in ("c4d", "c4a", "c3d", "h4d", "z3", "c4", "c3"):  # longer prefixes first
-                if lower.startswith(family + " instance"):
-                    entry = pricing.setdefault(family, {})
-                    if "core" in lower and unit.endswith("h"):
-                        entry["core"] = usd
-                    elif "ram" in lower and ("giby" in unit.lower() or "gby" in unit.lower()):
-                        entry["ram"] = usd
-                    break
-
-        return pricing
-
-    def _list_lssd_machine_types(self) -> list[dict]:
-        """
-        Query GCP API for all lssd machine types with >= MIN_VCPUS vCPUs in the
-        configured zone. Returns list of dicts with name, vcpus, mem_gb.
-        Uses direct API call for concurrent execution.
-        """
-        # Get access token
-        token_result = subprocess.run(
-            [str(GCLOUD_EXECUTABLE), "auth", "print-access-token"],
-            capture_output=True, text=True
-        )
-        if token_result.returncode != 0:
-            return []
-        token = token_result.stdout.strip()
-
-        # Call Compute Engine API directly
-        url = (
-            f"https://compute.googleapis.com/compute/v1/projects/{self.project}"
-            f"/zones/{self.zone}/machineTypes"
-        )
-
-        try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-        except Exception:
-            return []
-
-        seen, results = set(), []
-        skipped_arches: dict[str, int] = {}
-        for machine in data.get("items", []):
-            name = machine.get("name", "")
-            if not name or name in seen:
-                continue
-            # Filter for lssd machines with enough vCPUs
-            if "lssd" not in name or machine.get("guestCpus", 0) < MIN_VCPUS:
-                continue
-
-            arch = _arch_for(name)
-            if arch not in _ENGINE_SUPPORTED_ARCHES:
-                skipped_arches[arch] = skipped_arches.get(arch, 0) + 1
-                seen.add(name)
-                continue
-
-            seen.add(name)
-            vcpus = machine.get("guestCpus", 0)
-            mem_mb = machine.get("memoryMb", 0)
-            mem_gb = round(mem_mb / 1024, 1)
-            ghz = next((v for k, v in _FAMILY_GHZ.items() if name.startswith(k)), "n/a")
-            results.append({"name": name, "vcpus": vcpus, "mem_gb": mem_gb, "ghz": ghz})
-
-        if skipped_arches:
-            skipped_str = ", ".join(f"{n} {a}" for a, n in sorted(skipped_arches.items()))
-            print(f"  (Skipped {skipped_str} machine type(s) — engine image is x86_64 only)")
-
-        return sorted(results, key=lambda x: (x["vcpus"], x["name"]))
-
-    def _compute_usd_hr(self, machine: dict, pricing: dict[str, dict]) -> float | None:
-        """Estimate on-demand USD/hr for a machine type using billing SKU rates."""
-        name = machine["name"].lower()
-        for family in ("c4d", "c4a", "c3d", "h4d", "z3", "c4", "c3"):  # longer prefixes first
-            if name.startswith(family):
-                entry = pricing.get(family, {})
-                core_rate = entry.get("core")
-                ram_rate = entry.get("ram")
-                if core_rate and ram_rate:
-                    mem_gib = machine["mem_gb"] * 1.024  # GB → GiB approx
-                    return round(machine["vcpus"] * core_rate + mem_gib * ram_rate, 4)
-                break
-        return None
-
-    def _pick_machine_type(self) -> str:
-        # Try to load from cache first
-        cache = self._load_pricing_cache()
-        if cache:
-            print("\n  Using cached pricing data (updated weekly)...")
-            machines = cache.get("machines", [])
-            pricing = cache.get("pricing", {})
-            usd_to_aud = cache.get("exchange_rate", 1.55)
-        else:
-            print("\n  Grabbing the latest price tags from the GCP shop — this only happens once a week, won't be long...")
-
-            # Fetch machine types, pricing, and exchange rate concurrently
-            machines = None
-            pricing = {}
-            usd_to_aud = 1.55  # fallback
-
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                # Submit all API calls concurrently
-                futures = {
-                    executor.submit(self._list_lssd_machine_types): "machines",
-                    executor.submit(self._fetch_gcp_pricing): "pricing",
-                    executor.submit(self._fetch_usd_to_aud): "exchange"
-                }
-
-                # Collect results as they complete
-                for future in as_completed(futures):
-                    task = futures[future]
-                    try:
-                        result = future.result()
-                        if task == "machines":
-                            machines = result
-                        elif task == "pricing":
-                            pricing = result
-                        elif task == "exchange":
-                            usd_to_aud = result
-                    except Exception as e:
-                        if task == "exchange":
-                            print(f"  Warning: could not fetch exchange rate, using fallback {usd_to_aud:.2f}")
-                        else:
-                            print(f"  Warning: {task} fetch failed: {e}")
-
-            # Save to cache for next time
-            if machines:
-                self._save_pricing_cache(pricing, machines, usd_to_aud)
-
-        if not machines:
-            print("  Could not query machine types. Enter machine type manually:")
-            return input("  Machine type: ").strip()
-
-        print(f"\n  {'#':<4} {'Machine Type':<32} {'vCPU':>6} {'RAM(GB)':>8} {'GHz':>5} {'USD/hr':>8} {'AUD/hr':>8} {'cents/vCPU/hr':>15} {'USD/min':>8}")
-        print(f"  {'-'*4} {'-'*32} {'-'*6} {'-'*8} {'-'*5} {'-'*8} {'-'*8} {'-'*15} {'-'*8}")
-        for i, m in enumerate(machines, 1):
-            usd_hr = self._compute_usd_hr(m, pricing)
-            ghz = m.get("ghz", "n/a")
-            if usd_hr:
-                aud_hr = usd_hr * usd_to_aud
-                aud_cents_per_vcpu = (aud_hr / m["vcpus"]) * 100
-                usd_min = usd_hr / 60
-                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {ghz:>5} {usd_hr:>8.2f} {aud_hr:>8.2f} {aud_cents_per_vcpu:>15.2f} {usd_min:>8.4f}")
-            else:
-                print(f"  {i:<4} {m['name']:<32} {m['vcpus']:>6} {m['mem_gb']:>8.1f} {ghz:>5} {'n/a':>8} {'n/a':>8} {'n/a':>15} {'n/a':>8}")
-
-        try:
-            idx = int(input("\n  Select option: ").strip()) - 1
-            return machines[idx]["name"]
-        except (ValueError, IndexError):
-            print("  Invalid selection, defaulting to option 1.")
-            return machines[0]["name"]
-
-    def setup(self):
-        """Create a Container-Optimized OS VM and wait for the engine container."""
-        self.prompt_config()
-        machine_type = self._pick_machine_type()
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        vm_name = f"{VM_NAME_PREFIX}-{ts}"
-
-        print(f"\n--- Setting up new VM: {vm_name} ---")
-
+    def setup(self, machine_type=None, vm_name=None):
+        machine_type = machine_type or DEFAULT_MACHINE_TYPE
+        if machine_type not in MACHINE_TYPES:
+            raise ValueError(f"Unknown machine type {machine_type!r}. Choices: {', '.join(MACHINE_TYPES)}")
         if not STARTUP_SCRIPT_PATH.exists():
             raise RuntimeError(f"Startup script missing: {STARTUP_SCRIPT_PATH}")
-
-        print("\n[1/4] Generating SSH key...")
+        vm_name = vm_name or f"{VM_NAME_PREFIX}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        print(f"--- Creating VM {vm_name} ({machine_type}) ---")
         self._ensure_ssh_key()
-        username = self._gcloud_username()
-        ssh_key_metadata = f"{username}:{self._read_pubkey()}"
-
-        arch = _arch_for(machine_type)
-        if arch not in _ENGINE_SUPPORTED_ARCHES:
-            raise RuntimeError(
-                f"Engine image is x86_64 only; {machine_type} is {arch}. "
-                f"Rebuild archilume-engine multi-arch to support this."
-            )
-        boot_disk_type = _boot_disk_type_for(machine_type)
-        image_family = _image_family_for_arch(arch)
-        print(f"\n[2/4] Creating VM ({machine_type}, {arch}, {image_family}, {boot_disk_type})...")
+        username = self._username()
+        pubkey = SSH_KEY_PATH.with_suffix(".pub").read_text().strip()
         self._gcloud([
-            "compute", "instances", "create", vm_name,
-            f"--project={self.project}", f"--zone={self.zone}",
+            "compute", "instances", "create", vm_name, *self._zp(),
             f"--machine-type={machine_type}",
-            f"--image-family={image_family}", "--image-project=cos-cloud",
-            "--boot-disk-size=20GB", f"--boot-disk-type={boot_disk_type}",
+            "--image-family=cos-stable", "--image-project=cos-cloud",
+            "--boot-disk-size=20GB", "--boot-disk-type=hyperdisk-balanced",
             "--labels=archilume-managed=true",
-            f"--metadata=ssh-keys={ssh_key_metadata}",
+            f"--metadata=ssh-keys={username}:{pubkey}",
             f"--metadata-from-file=startup-script={STARTUP_SCRIPT_PATH}",
         ])
-
-        print("\n[3/4] Waiting for VM to be ready...")
-        self._wait_for_running(vm_name)
-        self._wait_for_ssh(vm_name)
-
-        try:
-            print("\n[4/4] Waiting for engine container (first image pull ~3-5 min)...")
-            self._wait_for_engine(vm_name)
-        except RuntimeError as e:
-            print(f"\n  ERROR: {e}")
-            self._prompt_delete_on_failure(vm_name)
-            return
-
+        self._wait(lambda: self._get_vm_status(vm_name) == "RUNNING", f"VM {vm_name}", 40, 5)
+        self._wait(lambda: self._ssh(vm_name, "echo ok", capture=True)[1] == 0, f"SSH on {vm_name}", 30, 10)
         ip = self._get_vm_ip(vm_name)
-        print(f"\n  VM external IP: {ip}")
-        self.update_ssh_config(ip, username)
-        self.copy_inputs_to_vm(vm_name)
+        self._update_ssh_config(ip, username)
+        print(f"\n=== VM ready: {vm_name} | IP: {ip} ===")
+        print(f"  ssh {SSH_HOST_ALIAS}")
+        print(f"  Tunnel: ssh -N -L {ENGINE_PORT}:localhost:{ENGINE_PORT} {SSH_HOST_ALIAS}")
+        print("  Engine container is starting (first pull ~3-5 min); poll /health to confirm.")
+        return vm_name
 
-        print(f"\n=== Setup complete! VM: {vm_name} | IP: {ip} ===")
-        print(f"\n📋 To send jobs to the engine:")
-        print(f"   Open a local tunnel:")
-        print(f"     ssh -N -L {ENGINE_PORT}:localhost:{ENGINE_PORT} {SSH_HOST_ALIAS}")
-        print(f"   Then POST to http://localhost:{ENGINE_PORT}/workflows/daylight")
-        print(f"                 http://localhost:{ENGINE_PORT}/workflows/sunlight")
-        print(f"   Poll http://localhost:{ENGINE_PORT}/jobs/<job_id>")
-        print(f"\n   From Python:")
-        print(f"     from archilume.infra.engine_client import engine_tunnel, submit_job, poll_job")
-        print(f"     with engine_tunnel() as url:")
-        print(f"         job_id = submit_job(url, 'daylight', payload)")
-        print(f"         result = poll_job(url, job_id)")
+    def delete(self, vm_name):
+        if not vm_name:
+            raise ValueError("vm_name is required")
+        self._gcloud(["compute", "instances", "delete", vm_name, *self._zp(), "--quiet"])
+        print(f"  Deleted {vm_name}")
 
-    @staticmethod
-    def _prompt_vm_choice(
-        rows: list[tuple[str, str, str, str]],
-        prompt: str,
-        multi: bool = False,
-    ) -> list[tuple[str, str, str, str]] | None:
-        """Re-prompt until user gives valid selection(s) or cancels.
-
-        Accepts 1-based index or exact VM name. In ``multi`` mode accepts a
-        comma-separated mix. Empty input or ``b`` returns None (cancel).
-        """
-        name_to_row = {row[0]: row for row in rows}
-        help_hint = "(numbers 1-based, names accepted, 'b' to go back)"
-        while True:
-            raw = input(f"\n  {prompt} {help_hint}: ").strip()
-            if not raw or raw.lower() == "b":
-                return None
-            tokens = [t.strip() for t in raw.split(",") if t.strip()]
-            if not multi and len(tokens) != 1:
-                print("  Enter exactly one choice, or 'b' to cancel.")
-                continue
-            selected: list[tuple[str, str, str, str]] = []
-            bad = False
-            for tok in tokens:
-                if tok.isdigit():
-                    idx = int(tok) - 1
-                    if 0 <= idx < len(rows):
-                        selected.append(rows[idx])
-                        continue
-                if tok in name_to_row:
-                    selected.append(name_to_row[tok])
-                    continue
-                print(f"  '{tok}' is not a valid number or VM name.")
-                bad = True
-                break
-            if bad:
-                continue
-            return selected
-
-    def _select_running_vm(self) -> tuple[str, str] | None:
-        """Prompt user to pick a running VM. Returns (vm_name, ip) or None."""
-        vms = self.list_vms()
-        running = [(n, s, z, ip) for n, s, z, ip in vms if s == "RUNNING"]
-        if not running:
-            print("  No running archilume VMs found.")
-            return None
-
-        print("\n  Running VMs:")
-        for i, (name, _, zone, ip) in enumerate(running, 1):
-            print(f"    {i}. {name}  ({zone})  {ip}")
-
-        picked = self._prompt_vm_choice(running, "Select VM")
-        if not picked:
-            return None
-        name, _, _, ip = picked[0]
-        return name, ip
-
-    def tunnel_engine(self):
-        """Open an SSH tunnel to :8100 on a selected VM; block until Ctrl+C."""
-        self.prompt_config()
-        selection = self._select_running_vm()
-        if not selection:
-            return
-        vm_name, ip = selection
-
-        self._ensure_ssh_key_on_vm(vm_name)
-        username = self._gcloud_username()
-        self.update_ssh_config(ip, username)
-
-        print(f"\n  Opening tunnel: http://localhost:{ENGINE_PORT} → {vm_name}:{ENGINE_PORT}")
-        print(f"  Endpoints: /health /workflows/daylight /workflows/sunlight /jobs/<id>")
-        print(f"  Press Ctrl+C to close.\n")
+    def tunnel(self, vm_name=None):
+        if vm_name is None:
+            running = [(n, ip) for n, s, _, ip in self.list_vms() if s == "RUNNING"]
+            if not running:
+                raise RuntimeError("No RUNNING archilume VMs to tunnel into.")
+            vm_name, ip = running[0]
+        else:
+            ip = self._get_vm_ip(vm_name)
+        self._update_ssh_config(ip, self._username())
+        print(f"  Tunneling {ENGINE_PORT}:localhost:{ENGINE_PORT} via {SSH_HOST_ALIAS} (Ctrl-C to stop)")
         try:
-            subprocess.run([
-                "ssh", "-N", "-L", f"{ENGINE_PORT}:localhost:{ENGINE_PORT}", SSH_HOST_ALIAS
-            ])
+            subprocess.run(["ssh", "-N", "-L", f"{ENGINE_PORT}:localhost:{ENGINE_PORT}", SSH_HOST_ALIAS], check=False)
         except KeyboardInterrupt:
-            pass
-        print("\n  Tunnel closed.")
+            print("\n  Tunnel closed.")
 
-    def restart_engine(self):
-        """Pull the latest engine image and restart the container on a VM."""
-        self.prompt_config()
-        selection = self._select_running_vm()
-        if not selection:
-            return
-        vm_name, _ = selection
-
-        self._ensure_ssh_key_on_vm(vm_name)
-
-        self._run_step(
-            "[1/2] Pulling latest engine image...",
-            vm_name,
-            f"docker pull {ENGINE_IMAGE}",
-        )
-        self._run_step(
-            "[2/2] Restarting engine container...",
-            vm_name,
+    def restart(self, vm_name):
+        if not vm_name:
+            raise ValueError("vm_name is required")
+        self._ssh(vm_name, f"docker pull {ENGINE_IMAGE}")
+        self._ssh(vm_name,
             f"docker rm -f archilume-engine 2>/dev/null; "
             f"docker run -d --restart=unless-stopped --name archilume-engine "
-            f"-p {ENGINE_PORT}:{ENGINE_PORT} "
-            f"-v {REMOTE_PROJECTS}:/app/projects "
-            f"-e ARCHILUME_DEPLOYMENT_MODE=hosted "
-            f"-e ARCHILUME_HOST_PROJECTS_DIR=/app/projects "
+            f"-p {ENGINE_PORT}:{ENGINE_PORT} -v {REMOTE_PROJECTS}:/app/projects "
+            f"-e ARCHILUME_DEPLOYMENT_MODE=hosted -e ARCHILUME_HOST_PROJECTS_DIR=/app/projects "
             f"{ENGINE_IMAGE}",
         )
-        self._wait_for_engine(vm_name, timeout_s=300)
-        print(f"\n  ✅ Engine restarted on {vm_name}.")
+        print(f"  Engine restarted on {vm_name}")
 
-    def _scp_cmd(self, vm_name: str) -> tuple[list[str], str]:
-        """Return (ssh_flags_list, user@ip) for direct scp transfers."""
-        ip = self._get_vm_ip(vm_name)
-        username = self._gcloud_username()
-        flags = [
-            "-C",  # Enable compression for faster transfers
-            "-i", str(SSH_KEY_PATH),
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "ConnectTimeout=10",
-        ]
-        return flags, f"{username}@{ip}"
-
-    def copy_inputs_to_vm(self, vm_name: str) -> None:
-        """Copy project inputs folder to VM and scaffold the outputs directory.
-
-        Uses tar.gz for the aoi subfolder (many small files) for speed.
-        """
-        if not self.archilume_project:
-            print("  ℹ️  No project selected, skipping inputs copy...")
-            return
-
-        from archilume.config import get_project_paths
-        paths = get_project_paths(self.archilume_project)
-        local_inputs = paths.inputs_dir
-        if not local_inputs.exists():
-            print("  ℹ️  No local inputs folder found, skipping...")
-            return
-
-        print(f"  📂 Copying inputs data to VM (project: {self.archilume_project})...")
-        remote_project = f"{REMOTE_PROJECTS}/{self.archilume_project}"
-        remote_inputs = f"{remote_project}/inputs"
-        # Scaffold inputs/aoi and outputs dirs on VM (LSSD mount is world-writable)
-        self._ssh(vm_name,
-            f"mkdir -p {remote_inputs}/aoi {remote_project}/outputs && "
-            f"chmod -R a+rwx {remote_project}"
-        )
-
-        ssh_flags, remote_host = self._scp_cmd(vm_name)
-        remote_dest = f"{remote_host}:{remote_inputs}/"
-
-        def _fmt_size(n: int) -> str:
-            for unit in ("B", "KB", "MB", "GB"):
-                if n < 1024:
-                    return f"{n:.1f} {unit}"
-                n /= 1024
-            return f"{n:.1f} TB"
-
-        anything_copied = False
-        any_failed = False
-
-        # Handle aoi folder: tar.gz it locally, scp the archive, extract on VM
-        aoi_folder = local_inputs / "aoi"
-        if aoi_folder.exists():
-            aoi_files = list(aoi_folder.rglob("*"))
-            file_count = sum(1 for f in aoi_files if f.is_file())
-            if file_count > 0:
-                total_size = sum(f.stat().st_size for f in aoi_files if f.is_file())
-                print(f"    → Compressing aoi/ ({file_count} files, {_fmt_size(total_size)})...")
-
-                # Create temporary tar.gz file
-                with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-                    tar_path = Path(tmp.name)
-
-                try:
-                    # Create tar.gz archive
-                    with tarfile.open(tar_path, "w:gz") as tf:
-                        for file in aoi_folder.rglob("*"):
-                            if file.is_file():
-                                arcname = file.relative_to(aoi_folder)
-                                tf.add(file, arcname)
-
-                    tar_size = tar_path.stat().st_size
-                    print(f"    → Compressed to {_fmt_size(tar_size)} ({100 * tar_size // total_size}% of original)")
-                    print(f"    → Uploading aoi.tar.gz...")
-
-                    # Upload tar.gz to VM
-                    result = subprocess.run(
-                        ["scp"] + ssh_flags + [str(tar_path), f"{remote_host}:{remote_inputs}/aoi.tar.gz"]
-                    )
-                    if result.returncode == 0:
-                        # Extract on VM and clean up (tar is always available on Linux)
-                        print(f"    → Extracting on VM...")
-                        extract_result = self._ssh(vm_name,
-                            f"mkdir -p {remote_inputs}/aoi && tar -xzf {remote_inputs}/aoi.tar.gz -C {remote_inputs}/aoi && rm {remote_inputs}/aoi.tar.gz"
-                        )
-                        if extract_result == 0:
-                            print("    ✅ aoi/ copied")
-                        else:
-                            print("    ⚠️  Failed to extract aoi.tar.gz on VM")
-                            any_failed = True
-                    else:
-                        print("    ⚠️  Failed to upload aoi.tar.gz")
-                        any_failed = True
-                finally:
-                    # Clean up local tar.gz
-                    tar_path.unlink(missing_ok=True)
-
-                anything_copied = True
-
-        # Handle loose files in inputs/ (not in subdirectories) - use regular scp
-        files_to_copy = [f for f in local_inputs.glob("*") if f.is_file()]
-        if files_to_copy:
-            total_size = _fmt_size(sum(f.stat().st_size for f in files_to_copy))
-            print(f"    → Copying {len(files_to_copy)} file(s) ({total_size})...")
-            result = subprocess.run(["scp"] + ssh_flags + [str(f) for f in files_to_copy] + [remote_dest])
-            if result.returncode == 0:
-                print(f"    ✅ {len(files_to_copy)} file(s) copied")
-            else:
-                print("    ⚠️  Failed to copy files")
-                any_failed = True
-            anything_copied = True
-
-        if not anything_copied:
-            print("  ℹ️  No aoi folder or input files found to copy")
-        elif any_failed:
-            print("  ⚠️  Some files failed to copy — check errors above.")
-        else:
-            print("  ✅ Inputs data copied successfully!")
-
-    def _check_vm_idle(self, vm_name: str) -> tuple[bool, str]:
-        """Check if the VM has any running user processes (python, bash scripts, etc).
-        Returns (is_idle, description)."""
-        # Look for user processes that indicate active work
-        # Exclude system daemons, services, and the check command itself
-        out, code = self._ssh_capture(
-            vm_name,
-            "ps aux --no-headers | grep -v root | "
-            "grep -vE '(sshd|ps aux|grep|bash -c|gcloud|systemd|networkd|unattended|kworker)' | "
-            "grep -E '(python|node|java|make|gcc|g\\+\\+|cargo|go run|docker)' || true"
-        )
-        if code != 0:
-            return False, "Could not check running processes"
-        if out.strip():
-            return False, out.strip()
-        return True, ""
-
-    def _download_outputs_from_vm(self, vm_name: str, zone: str = "") -> bool:
-        """Download outputs directory from VM, overwriting the local outputs folder. Returns True on success."""
-        if not self.archilume_project:
-            print("  ℹ️  No project selected, skipping outputs download...")
-            return True
-
-        from archilume.config import get_project_paths
-        paths = get_project_paths(self.archilume_project)
-        remote_outputs = f"{REMOTE_PROJECTS}/{self.archilume_project}/outputs"
-
-        # Check if remote outputs directory exists and has content
-        out, code = self._ssh_capture(vm_name, f"ls -A {remote_outputs} 2>/dev/null")
-        if code != 0 or not out:
-            print(f"  No outputs found on {vm_name}, skipping download.")
-            return True
-
-        # Overwrite local outputs dir directly
-        local_dest = paths.outputs_dir
-        local_dest.mkdir(parents=True, exist_ok=True)
-
-        print(f"  📥 Downloading outputs from {vm_name} to {local_dest}...")
-        ssh_flags, remote_host = self._scp_cmd(vm_name)
-        # Use tar on the remote to stream contents directly into local_dest,
-        # avoiding the nested-directory issue that scp -r causes with trailing slashes.
-        ssh_base = ["ssh"] + ssh_flags + [remote_host]
-        tar_remote = f"tar -C {remote_outputs} -czf - ."
-        tar_local = ["tar", "-C", str(local_dest), "-xzf", "-"]
-        tar_proc = subprocess.run(ssh_base + [tar_remote], stdout=subprocess.PIPE)
-        extract = subprocess.run(tar_local, input=tar_proc.stdout)
-        failed = tar_proc.returncode != 0 or extract.returncode != 0
-        if failed:
-            print(f"  ⚠️  Failed to download outputs")
-            return False
-
-        # List what was downloaded
-        downloaded = list(local_dest.rglob("*"))
-        file_count = sum(1 for f in downloaded if f.is_file())
-        print(f"  ✅ Downloaded {file_count} file(s) to {local_dest}")
-        return True
-
-    def delete(self):
-        """Select and delete one or more VMs."""
-        self.prompt_config()
-        vms = self.list_vms()
-        if not vms:
-            print("  No archilume VMs found.")
-            return
-
-        print("\n  All archilume VMs:")
-        for i, (name, status, zone, ip) in enumerate(vms, 1):
-            print(f"    {i}. {name}  [{status}]  {zone}  {ip or 'no IP'}")
-
-        selected = self._prompt_vm_choice(vms, "Enter numbers or names to delete (comma-separated)", multi=True)
-        if not selected:
-            print("  Cancelled.")
-            return
-
-        # Check each running VM for active processes
-        blocked = []
-        for name, status, zone, _ in selected:
-            if status != "RUNNING":
-                continue
-            print(f"\n  Checking {name} for active processes...")
-            is_idle, details = self._check_vm_idle(name)
-            if not is_idle:
-                print(f"  ⚠️  {name} is still running code:")
-                for line in details.splitlines()[:5]:
-                    print(f"      {line.strip()}")
-                blocked.append(name)
-
-        if blocked:
-            print(f"\n  ⚠️  The following VM(s) are still running code: {', '.join(blocked)}")
-            force = input("  Force shutdown anyway? (y/N): ").strip().lower()
-            if force != "y":
-                print("  Cancelled. Wait for processes to finish or stop them manually.")
-                return
-
-        print("\n  VMs to delete:")
-        for name, status, zone, _ in selected:
-            print(f"    {name}  [{status}]  {zone}")
-
-        if input("\n  Type 'delete' to confirm: ").strip() != "delete":
-            print("  Cancelled.")
-            return
-
-        for name, _, zone, _ in selected:
-            print(f"\n  Deleting {name}...")
-            subprocess.run([
-                str(GCLOUD_EXECUTABLE), "compute", "instances", "delete", name,
-                f"--zone={zone}", f"--project={self.project}", "--quiet",
-            ])
-            print(f"  Deleted {name}.")
-
-    def check(self):
-        """List all archilume VMs and their status."""
-        self.prompt_config()
-        print(f"\n  Archilume VMs in project '{self.project}':")
-        vms = self.list_vms()
-        if not vms:
-            print("  None found.")
-            return
-        print(f"\n  {'Name':<30}  {'Status':<12}  {'Zone':<25}  IP")
-        print(f"  {'-'*30}  {'-'*12}  {'-'*25}  {'-'*15}")
-        for name, status, zone, ip in vms:
-            print(f"  {name:<30}  {status:<12}  {zone:<25}  {ip or '—'}")
-
-    def download_outputs(self):
-        """Download outputs from selected VMs without deleting them."""
-        self.prompt_config()
-        vms = self.list_vms()
-        running = [(n, s, z, ip) for n, s, z, ip in vms if s == "RUNNING"]
-
-        if not running:
-            print("  No running archilume VMs found.")
-            return
-
-        print("\n  Running VMs:")
-        for i, (name, _, zone, ip) in enumerate(running, 1):
-            print(f"    {i}. {name}  ({zone})  {ip}")
-
-        selected = self._prompt_vm_choice(running, "Enter numbers or names to download from (comma-separated)", multi=True)
-        if not selected:
-            print("  Cancelled.")
-            return
-
-        for name, _, zone, _ in selected:
-            self._download_outputs_from_vm(name, zone)
-
-    _ACTIONS = {
-        "1": ("Setup new VM", "setup"),
-        "2": ("Open engine tunnel (localhost:8100)", "tunnel_engine"),
-        "3": ("Restart engine (pull latest image)", "restart_engine"),
-        "4": ("Download outputs from VM(s)", "download_outputs"),
-        "5": ("Delete VM(s)", "delete"),
-        "6": ("Check / list VMs", "check"),
-        "7": ("Sync SSH key to Windows host", "_sync_ssh_key_menu"),
-        "8": ("Exit", None),
-    }
-
-    def _sync_ssh_key_menu(self):
-        self._ensure_ssh_key()
-        self._prompt_copy_ssh_key_to_windows()
-
-    def run(self):
-        """Show the main menu and dispatch actions until the user exits."""
-        while True:
-            print("\n============= Archilume GCP VM Manager =============")
-            if self.cfg:
-                print(f"  Config: project={self.cfg.get('project', '?')}  zone={self.cfg.get('zone', '?')}")
-            print()
-            for key, (label, _) in self._ACTIONS.items():
-                print(f"  {key}. {label}")
-
-            choice = input("\nSelect option: ").strip()
-
-            if choice == "8":
-                return
-
-            action = self._ACTIONS.get(choice)
-            if not action:
-                print("  Invalid option. Please pick 1-8.")
-                continue
-
-            _, method_name = action
-            try:
-                getattr(self, method_name)()
-            except KeyboardInterrupt:
-                print("\n  Interrupted. Returning to menu.")
+    def run(self, action="setup", **kwargs):
+        actions = {"setup": self.setup, "delete": self.delete, "tunnel": self.tunnel, "restart": self.restart}
+        if action not in actions:
+            raise ValueError(f"Unknown action {action!r}. Choices: {', '.join(actions)}")
+        return actions[action](**kwargs)

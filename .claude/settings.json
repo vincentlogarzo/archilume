@@ -46,6 +46,14 @@
             "command": "python -c \"import sys, platform; print(f'[SYSTEM CONTEXT] OS: {sys.platform} | Platform: {platform.system()} {platform.release()} | Shell note: use PowerShell-compatible commands on win32, bash on linux')\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/list_open_bugs.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
