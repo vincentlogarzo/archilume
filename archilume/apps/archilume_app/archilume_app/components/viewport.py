@@ -4,6 +4,7 @@ import reflex as rx
 
 from ..state import EditorState
 from ..styles import COLORS, FONT_MONO, KBD_BADGE
+from .custom import pdf_underlay
 from .frame_playback_bar import frame_playback_bar
 
 
@@ -830,7 +831,11 @@ _CANVAS_JS = rx.script(r"""
     };
 
     function getOverlayImg() {
-        return document.getElementById('overlay-img');
+        // pdf.js migration: ``#overlay-canvas`` replaces the rasterised
+        // ``<img id="overlay-img">``. ``data-role="pdf-underlay"`` is the
+        // canonical selector going forward; the legacy id stays as a fallback
+        // in case any older render still has the img mounted.
+        return document.querySelector('[data-role="pdf-underlay"], #overlay-img');
     }
 
     function parseOverlayTransform(img) {
@@ -1412,27 +1417,38 @@ _CANVAS_JS = rx.script(r"""
 
 def _svg_canvas() -> rx.Component:
     return rx.box(
-        # PDF underlay — lowest layer, sits behind the HDR image.
-        # Uses rx.el.img (native <img>) to avoid Next.js Image constraints.
-        # Keep the img mounted whenever a cached URL is present; toggle visibility
-        # via opacity/pointer-events so JS-set style.transform is preserved across
-        # hide/show cycles (avoids unmount/remount resetting the dragged position).
+        # PDF underlay — lowest layer, sits behind the HDR image. pdf.js
+        # renders into the canvas client-side; ``pdf_underlay()`` runs the
+        # render lifecycle as a sibling Fragment that watches data attrs on
+        # ``#overlay-canvas`` (data-pdf-url / data-page-idx) and dispatches
+        # success/error back to ``set_overlay_pdf_loaded``.
+        # The canvas stays mounted whenever a PDF URL is present; visibility
+        # toggles via opacity/pointer-events so JS-set ``style.transform``
+        # (Adjust-Plan-Mode drag/scale) is preserved across hide/show cycles.
+        # ``data-role="pdf-underlay"`` is the canonical handle ``_CANVAS_JS``
+        # keys off of so the existing zoom/pan / drag pipeline keeps working.
         rx.cond(
-            EditorState.overlay_image_url != "",
-            rx.el.img(
-                src=EditorState.overlay_image_url,
-                id="overlay-img",
-                data_transform=EditorState.overlay_css_transform,
-                data_overlay_params=EditorState.overlay_params_json,
-                style={
-                    "position": "absolute", "top": "0", "left": "0",
-                    "width": "100%", "height": "auto",
-                    "opacity": rx.cond(EditorState.overlay_visible, "1", "0"),
-                    "transform_origin": "top left",
-                    "pointer_events": "none",
-                    "mix_blend_mode": EditorState.pdf_layer_blend_mode,
-                    "z_index": EditorState.pdf_layer_z_index,
-                },
+            EditorState.overlay_pdf_url != "",
+            rx.fragment(
+                rx.el.canvas(
+                    id="overlay-canvas",
+                    data_role="pdf-underlay",
+                    data_transform=EditorState.overlay_css_transform,
+                    data_overlay_params=EditorState.overlay_params_json,
+                    data_pdf_url=EditorState.overlay_pdf_url,
+                    data_page_idx=EditorState.overlay_page_idx.to_string(),
+                    data_render_scale="1",
+                    style={
+                        "position": "absolute", "top": "0", "left": "0",
+                        "width": "100%", "height": "auto",
+                        "opacity": rx.cond(EditorState.overlay_visible, "1", "0"),
+                        "transform_origin": "top left",
+                        "pointer_events": "none",
+                        "mix_blend_mode": EditorState.pdf_layer_blend_mode,
+                        "z_index": EditorState.pdf_layer_z_index,
+                    },
+                ),
+                pdf_underlay(),
             ),
             rx.fragment(),
         ),
@@ -1463,6 +1479,7 @@ def _svg_canvas() -> rx.Component:
             rx.el.img(
                 src=EditorState.current_image_url,
                 id="editor-img",
+                cross_origin="anonymous",
                 style={
                     "display": "block",
                     "position": "relative",
@@ -1479,6 +1496,7 @@ def _svg_canvas() -> rx.Component:
                 rx.el.img(
                     src=EditorState.current_image_b64,
                     id="editor-img",
+                    cross_origin="anonymous",
                     style={
                         "display": "block",
                         "position": "relative",

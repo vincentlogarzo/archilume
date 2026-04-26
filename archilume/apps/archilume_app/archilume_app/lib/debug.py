@@ -27,8 +27,7 @@ The tier is set once at import from the ``ARCHILUME_DEBUG`` env var:
 - ``0`` → ``off`` (pure pass-through)
 - ``1`` or ``verbose`` → ``verbose`` (full state-diff)
 
-``set_debug_tier`` flips it at runtime; ``EditorState.toggle_debug_mode``
-toggles between ``light`` and ``verbose``.
+``set_debug_tier`` flips it at runtime if needed.
 """
 
 from __future__ import annotations

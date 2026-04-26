@@ -29,14 +29,27 @@ _MAX_BBOX_DIAGONAL_M = 10_000.0
 # PDF
 # ---------------------------------------------------------------------------
 
+ENCRYPTED_PDF_MESSAGE = (
+    "This PDF is encrypted or password-protected. "
+    "Please unlock the PDF before attaching it."
+)
+
+
 def validate_pdf(path: Path) -> ValidationResult:
-    """PDF must open with PyMuPDF and report at least one page."""
+    """PDF must open with PyMuPDF, be unencrypted, and report at least one page.
+
+    Encryption is detected without unlocking — pdf.js cannot render password-
+    protected PDFs and the underlay would silently fail to draw, so we reject
+    upstream with an explicit user-facing message.
+    """
     try:
-        from .image_loader import get_pdf_page_count
-        count = get_pdf_page_count(path)
+        from .image_loader import get_pdf_info
+        info = get_pdf_info(path)
     except Exception as e:
         return False, f"Could not open PDF: {e}"
-    if count <= 0:
+    if info.is_encrypted:
+        return False, ENCRYPTED_PDF_MESSAGE
+    if info.page_count <= 0:
         return False, "PDF has no pages"
     return True, ""
 

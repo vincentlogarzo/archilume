@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -28,7 +29,6 @@ from ..lib.debug import (
     logger,
     new_correlation_id,
     relocate_to_project,
-    set_debug_tier,
     trace,
     with_correlation_id,
 )
@@ -50,26 +50,6 @@ from ..lib import project_modes
 
 # Module-level DF image cache (numpy arrays can't be Reflex state vars)
 _df_cache: dict[str, Any] = {"hdr_path": "", "image": None}
-
-# PDF overlay "Plan Resolution" cycle. Compressed-PNG disk cache keeps even the
-# 400 DPI variant cheap, so 72/100 (visibly soft on high-DPI displays) were
-# dropped and 400 was added for extreme-zoom inspection.
-_DPI_STEPS: tuple[int, ...] = (150, 200, 300, 400)
-_DEFAULT_OVERLAY_DPI: int = 200
-
-
-def _overlay_cache_dir(project: str) -> Optional[Path]:
-    """Filesystem path of the per-project PDF overlay PNG cache.
-
-    Lives under ``projects/<project>/inputs/plans/.overlay_cache/`` — keeps
-    cache artefacts project-bound (moves with archive/restore, deleted with
-    the project). Served by a FastAPI sub-app at
-    ``/overlay_cache/{project}/{filename}``. Returns None when *project* is
-    empty (no project is active — no cache location is defined).
-    """
-    if not project:
-        return None
-    return get_project_paths(project).plans_dir / ".overlay_cache"
 
 
 def _sunlight_frame_dir(project: str) -> Optional[Path]:
@@ -506,19 +486,21 @@ class EditorState(rx.State):
 
     # =====================================================================
     # §8 — PDF overlay
+    # overlay_img_width/height hold the active PDF page rect (in PDF points)
+    # since the pdf.js migration; only the aspect ratio is consumed by the
+    # transform math. pdf.js renders client-side from /overlay_pdf/{...}.
     # =====================================================================
     overlay_visible: bool = False
-    overlay_image_url: str = ""
     overlay_pdf_path: str = ""
     overlay_page_idx: int = 0
     overlay_page_count: int = 0
-    overlay_dpi: int = _DEFAULT_OVERLAY_DPI
     overlay_alpha: float = 0.6
     overlay_align_mode: bool = False
     overlay_transforms: dict = {}
     align_points: list[AlignPoint] = []
     overlay_img_width: int = 0
     overlay_img_height: int = 0
+    overlay_pdf_loaded: bool = False  # set by JS callback on successful pdf.js load
     _arrow_last_time: float = 0.0
     _arrow_last_dir: str = ""
     _arrow_repeat_count: int = 0
@@ -527,8 +509,7 @@ class EditorState(rx.State):
     _overlay_drag_start_y: float = 0.0
     _overlay_drag_start_ox: float = 0.0
     _overlay_drag_start_oy: float = 0.0
-    _overlay_prefetch_token: int = 0  # cancellation epoch for background DPI prefetch
-    _level_prefetch_token: int = 0  # cancellation epoch for adjacent-level PNG warm
+    _level_prefetch_token: int = 0  # cancellation epoch for adjacent-level HDR PNG warm
     _legacy_overlay_pending: bool = False
     _session_load_ok: bool = False  # guards auto-save; True only after a successful load
 
@@ -621,33 +602,10 @@ class EditorState(rx.State):
     # =====================================================================
     # §14 — Debug
     # =====================================================================
-    # Default-on: ``light`` tier is the baseline (auto-set at debug.py import)
-    # so the UI reflects it. ``toggle_debug_mode`` flips light↔verbose.
+    # Default-on: ``light`` tier is the baseline (auto-set at debug.py import).
+    # ``debug_mode`` is True only when launched with ARCHILUME_DEBUG=verbose.
     debug_mode: bool = DEBUG_TIER == "verbose"
     debug_log: list[str] = []
-
-    def toggle_debug_mode(self) -> None:
-        """Toggle between ``light`` (always-on baseline) and ``verbose`` tiers.
-
-        ``light`` keeps lean trace entries (event + elapsed_ms + rid) running on
-        every session with near-zero per-call cost. ``verbose`` adds full state
-        snapshots, diffs, and redacted args — switch into it when actively
-        chasing a bug.
-        """
-        if self.debug_mode:
-            set_debug_tier("light")
-            self.debug_mode = False
-            logger.setLevel(logging.WARNING)
-            trace.flush()
-            self.status_message = "Debug mode: light (baseline)"
-        else:
-            set_debug_tier("verbose")
-            self.debug_mode = True
-            logger.setLevel(logging.DEBUG)
-            trace.clear()
-            logger.debug("Debug mode: verbose — trace cleared, fresh session")
-            self.status_message = "Debug mode: verbose"
-        self.status_colour = "accent2"
 
     # =====================================================================
     # COMPUTED VARS
@@ -1650,6 +1608,34 @@ class EditorState(rx.State):
     def overlay_transparency_str(self) -> str:
         """Current transparency as a fraction 0–1 (0 = opaque, 1 = fully transparent)."""
         return str(round(1.0 - self.overlay_alpha, 2))
+
+    @rx.var
+    def overlay_pdf_url(self) -> str:
+        """Browser-relative URL for the attached PDF, served by the FastAPI
+        sub-app at ``/overlay_pdf/{project}/{filename:path}``.
+
+        The mtime querystring busts the browser's cache when the PDF on disk
+        is replaced at the same path (pdf.js fetches via XHR which honours
+        cache headers more strictly than ``<img>`` ever did). Returns ``""``
+        when no PDF is attached, the project is unset, or the file lives
+        outside the project's ``inputs_dir`` (out-of-project paths are
+        copied in by the upload handler).
+        """
+        if not self.overlay_pdf_path or not self.project:
+            return ""
+        try:
+            project_paths = get_project_paths(self.project)
+            inputs_root = project_paths.inputs_dir.resolve()
+            pdf_p = Path(self.overlay_pdf_path).resolve()
+            rel = pdf_p.relative_to(inputs_root)
+        except (ValueError, OSError):
+            return ""
+        try:
+            mtime_ns = pdf_p.stat().st_mtime_ns
+        except OSError:
+            return ""
+        rel_str = str(rel).replace("\\", "/")
+        return f"{_backend_base_url()}/overlay_pdf/{self.project}/{rel_str}?v={mtime_ns}"
 
     @rx.var
     def overlay_svg_transform(self) -> str:
@@ -3548,11 +3534,12 @@ class EditorState(rx.State):
             else:
                 t[key] = transform
             self.overlay_transforms = t
-        # Handle overlay props restore
-        if "dpi" in before:
-            dpi_changed = self.overlay_dpi != before.get("dpi", self.overlay_dpi)
+        # Handle overlay props restore. ``dpi`` keys may exist in older undo
+        # entries created before the pdf.js migration — they are ignored
+        # silently. The pdf.js canvas re-renders client-side on the
+        # data-page-idx attribute mutation; no Python rasterise call needed.
+        if "page_idx" in before or "alpha" in before:
             page_changed = self.overlay_page_idx != before.get("page_idx", self.overlay_page_idx)
-            self.overlay_dpi = before.get("dpi", self.overlay_dpi)
             self.overlay_alpha = before.get("alpha", self.overlay_alpha)
             self.overlay_page_idx = before.get("page_idx", self.overlay_page_idx)
             # Sync the restored page_idx back into the per-level transform so that
@@ -3565,8 +3552,7 @@ class EditorState(rx.State):
                     entry_t["page_idx"] = self.overlay_page_idx
                     t[level_key] = entry_t
                     self.overlay_transforms = t
-            if dpi_changed or page_changed:
-                self._rasterize_current_page()
+                self._refresh_overlay_page_dims()
         self._auto_save()
         self.status_message = "Overlay change undone"
 
@@ -4451,7 +4437,7 @@ class EditorState(rx.State):
         mode, so render pixels show through white PDF regions and black
         linework is preserved. Stays ``normal`` in daylight / AOI mode for
         back-compat (PDF is at the bottom there, not blended)."""
-        if self.is_sunlight_mode and self.overlay_visible and self.overlay_image_url != "":
+        if self.is_sunlight_mode and self.overlay_visible and self.overlay_pdf_path:
             return "multiply"
         return "normal"
 
@@ -4477,19 +4463,66 @@ class EditorState(rx.State):
     def toggle_overlay(self):
         if not self.overlay_pdf_path:
             self._pick_pdf_via_dialog()
-        else:
-            self.overlay_visible = not self.overlay_visible
-            logger.debug(f"[overlay] toggle_overlay: visible={self.overlay_visible}, pdf_path='{self.overlay_pdf_path}', url='{self.overlay_image_url}'")
-            if self.overlay_visible and not self.overlay_image_url:
-                self._rasterize_current_page()
-            if self.overlay_visible:
-                self._ensure_default_transform()
-            self._auto_save()
-        # Warm the disk cache for other DPI variants in the background so
-        # cycling "Plan Resolution" is instant. Safe to call unconditionally:
-        # the prefetch task bails if pdf_path or project is empty.
-        if self.overlay_pdf_path:
-            return EditorState.prefetch_overlay_dpi_cache
+            return
+        self.overlay_visible = not self.overlay_visible
+        logger.debug(
+            "[overlay] toggle_overlay: visible=%s, pdf_path='%s'",
+            self.overlay_visible, self.overlay_pdf_path,
+        )
+        if self.overlay_visible:
+            self._ensure_default_transform()
+        self._auto_save()
+
+    def _attach_pdf(self, src_path: str) -> bool:
+        """Validate, copy-into-project (if needed), record, and refresh dims.
+
+        Returns True on success. On failure, sets ``status_message`` and
+        ``status_colour`` to the validator's reason (e.g. encrypted PDF) and
+        leaves overlay state untouched. Out-of-project PDFs are copied into
+        ``inputs/plans/`` so the FastAPI route (which only serves files under
+        the project's ``inputs_dir``) can find them.
+        """
+        from ..lib.project_validators import validate_pdf
+        from ..lib.image_loader import get_pdf_info
+        src = Path(src_path)
+        ok, message = validate_pdf(src)
+        if not ok:
+            self.status_message = message
+            self.status_colour = "danger"
+            return False
+        final_path = src
+        if self.project:
+            try:
+                project_paths = get_project_paths(self.project)
+                inputs_root = project_paths.inputs_dir.resolve()
+                src_resolved = src.resolve()
+                src_resolved.relative_to(inputs_root)
+            except (ValueError, OSError):
+                # Source is outside the project — copy into inputs/plans/ so
+                # the /overlay_pdf/ route can resolve it.
+                try:
+                    plans_dir = project_paths.plans_dir
+                    plans_dir.mkdir(parents=True, exist_ok=True)
+                    dest = plans_dir / src.name
+                    shutil.copy2(src, dest)
+                    final_path = dest
+                except OSError as e:
+                    self.status_message = f"Could not copy PDF into project: {e}"
+                    self.status_colour = "danger"
+                    return False
+        self.overlay_pdf_path = str(final_path)
+        info = get_pdf_info(final_path)
+        self.overlay_page_count = info.page_count
+        self.overlay_page_idx = 0
+        if info.page_sizes:
+            w_pts, h_pts = info.page_sizes[0]
+            self.overlay_img_width = int(round(w_pts))
+            self.overlay_img_height = int(round(h_pts))
+        self._save_pdf_path_to_toml(str(final_path))
+        self.overlay_visible = True
+        self.status_message = f"Floor plan attached ({self.overlay_page_count} page(s))"
+        self.status_colour = "accent"
+        return True
 
     def _pick_pdf_via_dialog(self) -> None:
         import tkinter as tk
@@ -4504,20 +4537,7 @@ class EditorState(rx.State):
         root.destroy()
         if not path:
             return
-        self.overlay_pdf_path = path
-        from ..lib.image_loader import get_pdf_page_count
-        self.overlay_page_count = get_pdf_page_count(Path(path))
-        self.overlay_page_idx = 0
-        self.overlay_image_url = ""
-        self._save_pdf_path_to_toml(path)
-        self._rasterize_current_page()
-        if self.overlay_image_url:
-            self.overlay_visible = True
-            self.status_message = f"Floor plan attached ({self.overlay_page_count} page(s))"
-            self.status_colour = "accent"
-        else:
-            self.status_message = "Failed to rasterize PDF"
-            self.status_colour = "danger"
+        self._attach_pdf(path)
 
     def _save_pdf_path_to_toml(self, path: str) -> None:
         if not self.project:
@@ -4603,6 +4623,12 @@ class EditorState(rx.State):
     def cancel_calibration_rect(self) -> None:
         self.calib_rect_active = False
 
+    def toggle_calibration_rect(self) -> None:
+        if self.calib_rect_active:
+            self.cancel_calibration_rect()
+        else:
+            self.spawn_calibration_rect()
+
     def update_calibration_rect(self, delta: dict) -> None:
         if "x1" in delta:
             self.calib_rect_x1 = float(delta["x1"])
@@ -4649,8 +4675,8 @@ class EditorState(rx.State):
             self._push_overlay_undo({
                 "action": "overlay_props",
                 "desc": "Change overlay page",
-                "before": {"page_idx": old_page, "dpi": self.overlay_dpi, "alpha": self.overlay_alpha},
-                "after": {"page_idx": self.overlay_page_idx, "dpi": self.overlay_dpi, "alpha": self.overlay_alpha},
+                "before": {"page_idx": old_page, "alpha": self.overlay_alpha},
+                "after": {"page_idx": self.overlay_page_idx, "alpha": self.overlay_alpha},
             })
         # Persist new page into the per-level transform so navigating away and back
         # restores the correct page for this level (fixes cross-level page mutation).
@@ -4663,35 +4689,9 @@ class EditorState(rx.State):
             outer[key] = t
             self.overlay_transforms = outer
             self._auto_save()
-        self._rasterize_current_page()
-        if self.overlay_pdf_path:
-            return EditorState.prefetch_overlay_dpi_cache
-
-    def set_overlay_dpi(self, dpi: str) -> None:
-        try:
-            self.overlay_dpi = int(dpi)
-        except ValueError:
-            return
-        self._rasterize_current_page()
-
-    def cycle_overlay_dpi(self) -> None:
-        old_dpi = self.overlay_dpi
-        try:
-            idx = _DPI_STEPS.index(self.overlay_dpi)
-        except ValueError:
-            # Legacy sessions may hold a retired DPI (e.g. 72 or 100).
-            # Snap to the default and start cycling from there.
-            self.overlay_dpi = _DEFAULT_OVERLAY_DPI
-            idx = _DPI_STEPS.index(_DEFAULT_OVERLAY_DPI)
-        self.overlay_dpi = _DPI_STEPS[(idx + 1) % len(_DPI_STEPS)]
-        if self.overlay_align_mode:
-            self._push_overlay_undo({
-                "action": "overlay_props",
-                "desc": "Change overlay DPI",
-                "before": {"dpi": old_dpi, "alpha": self.overlay_alpha, "page_idx": self.overlay_page_idx},
-                "after": {"dpi": self.overlay_dpi, "alpha": self.overlay_alpha, "page_idx": self.overlay_page_idx},
-            })
-        self._rasterize_current_page()
+        # Refresh aspect ratio — different pages can have different sizes.
+        # The pdf.js canvas re-renders client-side on the data-page-idx mutation.
+        self._refresh_overlay_page_dims()
 
     def set_overlay_alpha(self, value: str) -> None:
         try:
@@ -5117,7 +5117,7 @@ class EditorState(rx.State):
             self.overlay_page_idx = new_page
             self._set_current_overlay_transform(new_t)
             if self.overlay_visible and self.overlay_pdf_path:
-                self._rasterize_current_page()
+                self._refresh_overlay_page_dims()
         else:
             logger.debug(
                 "[overlay-inherit] %s: no lower level with transform — reset to centred",
@@ -5146,7 +5146,7 @@ class EditorState(rx.State):
         if new_page != self.overlay_page_idx:
             self.overlay_page_idx = new_page
             if self.overlay_visible:
-                self._rasterize_current_page()
+                self._refresh_overlay_page_dims()
 
     def _infer_default_page_for_current_level(self) -> int:
         """Compute the default PDF page for the current level without storing a transform.
@@ -5335,130 +5335,75 @@ class EditorState(rx.State):
         self.overlay_transforms = t
         self._auto_save()
 
-    def _rasterize_current_page(self) -> None:
+    def _refresh_overlay_page_dims(self) -> None:
+        """Update overlay_img_width/height from the active PDF page's rect.
+
+        Replaces the old PNG-rasterisation pipeline: pdf.js renders the page
+        client-side, so the only Python-side bookkeeping is the page's aspect
+        ratio (consumed by ``overlay_css_transform`` / ``overlay_svg_transform``).
+        Page rects can vary inside a single PDF, so this refresh runs on every
+        page change and on level switches that restore a stored page index.
+
+        Clears overlay state when the PDF on disk has gone missing — keeps
+        existing UX where a renamed/deleted plan surfaces a danger toast and
+        prompts the user to attach a new file.
+        """
         if not self.overlay_pdf_path:
-            logger.debug("[overlay] _rasterize skipped: no overlay_pdf_path")
             return
         pdf_path = Path(self.overlay_pdf_path)
         if not pdf_path.exists():
             logger.warning("[overlay] PDF missing: %s — clearing overlay state", pdf_path)
             self.status_message = f"Floor plan not found: {pdf_path.name} — select a new PDF"
             self.status_colour = "danger"
-            self.overlay_image_url = ""
             self.overlay_img_width = 0
             self.overlay_img_height = 0
             self.overlay_pdf_path = ""
             self.overlay_page_count = 0
             self.overlay_page_idx = 0
             return
-        from ..lib.image_loader import rasterize_pdf_page
-        cache_dir = _overlay_cache_dir(self.project)
-        if cache_dir is None:
-            logger.debug("[overlay] _rasterize skipped: no active project")
+        from ..lib.image_loader import get_pdf_info
+        info = get_pdf_info(pdf_path)
+        if info.is_encrypted or info.page_count <= 0:
             return
-        logger.debug(f"[overlay] Rasterizing: {self.overlay_pdf_path} page={self.overlay_page_idx} dpi={self.overlay_dpi}")
-        cache_path, pw, ph = rasterize_pdf_page(pdf_path, self.overlay_page_idx, self.overlay_dpi, cache_dir=cache_dir)
-        if cache_path:
-            logger.debug(f"[overlay] Rasterized OK, path={cache_path}")
-        else:
-            logger.debug("[overlay] Rasterization FAILED — returned None/empty")
-        # URL is served by the FastAPI /overlay_cache/{project}/{filename}
-        # route on the backend port. Both segments percent-encoded to handle
-        # spaces and other reserved characters in project or file names.
-        if cache_path:
-            url = f"/overlay_cache/{quote(self.project)}/{quote(cache_path.name)}"
-            self.overlay_image_url = f"{_backend_base_url()}{url}"
-        else:
-            self.overlay_image_url = ""
-        self.overlay_img_width = pw
-        self.overlay_img_height = ph
+        idx = max(0, min(self.overlay_page_idx, info.page_count - 1))
+        w_pts, h_pts = info.page_sizes[idx]
+        self.overlay_img_width = int(round(w_pts))
+        self.overlay_img_height = int(round(h_pts))
 
-    @rx.event(background=True)
-    async def prefetch_overlay_dpi_cache(self):
-        """Warm the PNG disk cache for every (page, dpi) combination.
+    def set_overlay_pdf_loaded(self, payload: dict) -> None:
+        """JS callback after pdf.js opens the document.
 
-        Runs PyMuPDF rasterisation on worker threads so the Reflex event loop
-        stays responsive. Processes combinations in priority order:
-
-        1. Current page at non-current DPIs (user likely to cycle DPI)
-        2. Neighbouring pages at current DPI (user likely to page next/prev)
-        3. All remaining pages × DPIs
-
-        Between iterations we re-check the snapshot under the state lock and
-        abort if the user opened a different PDF (token bumped) — a page or
-        DPI change is *not* grounds to abort, since the point of prefetch is
-        to cover those navigations in advance. Cache hits skip rasterisation.
+        ``payload`` is shaped ``{ok: bool, page_count?: int, error?: str}``
+        and is dispatched from PdfUnderlayComponent's document-load effect.
+        On success the flag flips to True; on failure we surface the JS-side
+        error (network, malformed PDF) via ``status_message``. State doesn't
+        gate render on this flag — pdf.js drives the canvas independently —
+        but it lets the UI tell the user when the browser side has failed.
         """
-        import asyncio
-        from ..lib.image_loader import rasterize_pdf_page_to_cache
-
-        async with self:
-            if not self.overlay_pdf_path:
-                return
-            cache_dir = _overlay_cache_dir(self.project)
-            if cache_dir is None:
-                return
-            pdf_path = Path(self.overlay_pdf_path)
-            current_page = self.overlay_page_idx
-            current_dpi = self.overlay_dpi
-            page_count = self.overlay_page_count or 1
-            self._overlay_prefetch_token += 1
-            my_token = self._overlay_prefetch_token
-            pdf_path_str = self.overlay_pdf_path
-
-        # Priority-ordered (page, dpi) queue. A page's distance from
-        # current_page is the primary sort key so pages nearer the user's
-        # current position warm first; DPI tiebreaker puts current_dpi last
-        # (it is already rendered synchronously on demand).
-        combos: list[tuple[int, int]] = []
-        # Tier 1: current page, non-current DPIs first
-        for dpi in _DPI_STEPS:
-            if dpi != current_dpi:
-                combos.append((current_page, dpi))
-        combos.append((current_page, current_dpi))
-        # Tier 2+: all other pages, ordered by distance to current_page
-        other_pages = sorted(
-            (p for p in range(page_count) if p != current_page),
-            key=lambda p: abs(p - current_page),
-        )
-        for page in other_pages:
-            # current_dpi first for fast page navigation at the active zoom
-            combos.append((page, current_dpi))
-            for dpi in _DPI_STEPS:
-                if dpi != current_dpi:
-                    combos.append((page, dpi))
-
-        logger.debug(
-            "[overlay] prefetch started: %d combos (%d pages × %d dpis)",
-            len(combos), page_count, len(_DPI_STEPS),
-        )
-
-        for page, dpi in combos:
-            async with self:
-                if (
-                    self._overlay_prefetch_token != my_token
-                    or self.overlay_pdf_path != pdf_path_str
-                ):
-                    logger.debug("[overlay] prefetch superseded — aborting")
-                    return
-            try:
-                await asyncio.to_thread(
-                    rasterize_pdf_page_to_cache, pdf_path, page, dpi, cache_dir,
+        ok = bool(payload.get("ok", False))
+        if ok:
+            self.overlay_pdf_loaded = True
+            page_count = int(payload.get("page_count", 0) or 0)
+            if page_count and self.overlay_page_count and page_count != self.overlay_page_count:
+                logger.warning(
+                    "[overlay] pdf.js page_count=%d differs from PyMuPDF=%d for %s",
+                    page_count, self.overlay_page_count, self.overlay_pdf_path,
                 )
-            except Exception as exc:
-                logger.debug(
-                    "[overlay] prefetch page=%d dpi=%d failed: %r", page, dpi, exc,
-                )
-
-        logger.debug("[overlay] prefetch complete: all %d combos warmed", len(combos))
+            logger.debug("[overlay] pdf.js loaded page_count=%d", page_count or self.overlay_page_count)
+        else:
+            self.overlay_pdf_loaded = False
+            err = str(payload.get("error", "Failed to load PDF in browser"))
+            self.status_message = err
+            self.status_colour = "danger"
+            logger.warning("[overlay] pdf.js load failed: %s", err)
 
     @rx.event(background=True)
     async def prefetch_level_window(self):
         """Warm the image LRU for the +/-1 adjacent levels so flicking between
         level-above and level-below is served from memory.
 
-        Mirrors ``prefetch_overlay_dpi_cache``: token-based supersede,
-        ``asyncio.to_thread`` to keep the event loop responsive, and a
+        Token-based supersede, ``asyncio.to_thread`` to keep the event loop
+        responsive, and a
         per-target abort check so rapid keyboard flicks do not back up stale
         work. Picks targets by mode:
 
@@ -5938,7 +5883,9 @@ class EditorState(rx.State):
         self.current_variant_idx = data.get("current_variant_idx", 0)
         self.selected_parent = data.get("selected_parent", "")
         self.annotation_scale = data.get("annotation_scale", 1.0)
-        self.overlay_dpi = data.get("overlay_dpi", _DEFAULT_OVERLAY_DPI)
+        # Legacy ``overlay_dpi`` / ``overlay_image_url`` keys (pre-pdf.js
+        # migration) are silently dropped — the new pipeline renders client-
+        # side and has no notion of a fixed DPI selector.
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
@@ -6017,12 +5964,13 @@ class EditorState(rx.State):
         self.current_variant_idx = data.get("current_variant_idx", 0)
         self.selected_parent = data.get("selected_parent", "")
         self.annotation_scale = data.get("annotation_scale", 1.0)
-        self.overlay_dpi = data.get("overlay_dpi", _DEFAULT_OVERLAY_DPI)
         self.overlay_visible = data.get("overlay_visible", False)
         self.overlay_alpha = data.get("overlay_alpha", 0.6)
         self.overlay_page_idx = data.get("overlay_page_idx", 0)
-        # Restore cached PDF intrinsic dimensions so overlay_css_transform can
-        # compute the correct centring term before rasterization completes.
+        # Restore cached PDF page dimensions so overlay_css_transform can compute
+        # the correct centring term before pdf.js reports back from the browser.
+        # (Post-migration these are PDF-point sizes, not PNG pixels — only the
+        # ratio is consumed by transform math.)
         self.overlay_img_width = data.get("overlay_img_width", 0)
         self.overlay_img_height = data.get("overlay_img_height", 0)
         self._restore_visualisation_settings(data)
@@ -6040,8 +5988,8 @@ class EditorState(rx.State):
             data.get("transform_version", "?"), self.overlay_visible,
         )
         self.status_message = f"Session loaded ({len(self.rooms)} rooms)"
-        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_url:
-            self._rasterize_current_page()
+        if self.overlay_visible and self.overlay_pdf_path:
+            self._refresh_overlay_page_dims()
         self._recompute_df()
 
     def save_session(self) -> None:
@@ -6064,7 +6012,7 @@ class EditorState(rx.State):
             overlay_transforms=self.overlay_transforms,
             current_hdr_idx=self.current_hdr_idx, current_variant_idx=self.current_variant_idx,
             selected_parent=self.selected_parent, annotation_scale=self.annotation_scale,
-            overlay_dpi=self.overlay_dpi, overlay_visible=self.overlay_visible,
+            overlay_visible=self.overlay_visible,
             overlay_alpha=self.overlay_alpha,
             overlay_page_idx=self.overlay_page_idx, transform_version=tv,
             overlay_img_width=self.overlay_img_width,
@@ -6212,6 +6160,17 @@ class EditorState(rx.State):
         self.overlay_transforms = migrated
         self._legacy_overlay_pending = False
         self._legacy_overlay_from_version = 4
+        # Best-effort cleanup of the obsolete PNG rasterisation cache
+        # (``inputs/plans/.overlay_cache/``). The pdf.js migration renders
+        # client-side, so the disk cache is dead weight on disk and the
+        # filenames keep the old PyMuPDF fingerprint. Errors are swallowed:
+        # the cache is non-essential and may be locked by another process.
+        if self.project:
+            try:
+                plans_dir = get_project_paths(self.project).plans_dir
+                shutil.rmtree(plans_dir / ".overlay_cache", ignore_errors=True)
+            except Exception as e:
+                logger.debug("[overlay] legacy cache cleanup skipped: %r", e)
 
     # =====================================================================
     # PROJECT MANAGEMENT
@@ -6296,17 +6255,13 @@ class EditorState(rx.State):
         yield
 
         # Phase 4: deferred heavy compute
-        if self.overlay_visible and self.overlay_pdf_path and not self.overlay_image_url:
-            self._rasterize_current_page()
+        if self.overlay_visible and self.overlay_pdf_path:
+            self._refresh_overlay_page_dims()
             yield
         self._recompute_df()
 
-        # Phase 4b: warm the PDF overlay cache for every (page, dpi) in the
-        # background so navigating levels or cycling DPI is cache-served.
-        if self.overlay_pdf_path:
-            yield EditorState.prefetch_overlay_dpi_cache
-
         # Warm adjacent-level PNGs so +1/-1 flicks hit the in-memory LRU.
+        # PDF rasterisation prefetch is gone — pdf.js renders client-side.
         yield EditorState.prefetch_level_window
 
         # Phase 5: detect & regenerate any missing/stale falsecolour or contour
@@ -6581,8 +6536,8 @@ class EditorState(rx.State):
         if not self.project:
             return
         self.overlay_pdf_path = ""
-        self.overlay_image_url = ""
         self.overlay_visible = False
+        self.overlay_pdf_loaded = False
         self.overlay_page_idx = 0
         self.overlay_page_count = 0
         self.overlay_img_width = 0

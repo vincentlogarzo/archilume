@@ -422,11 +422,14 @@ class TestSunlightBlendMode:
 
 
 class TestPdfLayerBlendMode:
+    # ``pdf_layer_blend_mode`` keys off ``overlay_pdf_path`` after the pdf.js
+    # migration — the URL is computed via ``overlay_pdf_url`` and is no longer
+    # a state var. A non-empty path is the "PDF attached" signal.
     def test_multiply_in_sunlight_mode_with_pdf_visible(self, make_editor_state):
         s = make_editor_state(
             **_sunlight_mode_kwargs(),
             overlay_visible=True,
-            overlay_image_url="data:image/png;base64,AAAA",
+            overlay_pdf_path="/tmp/plan.pdf",
         )
         assert s.pdf_layer_blend_mode == "multiply"
 
@@ -434,7 +437,7 @@ class TestPdfLayerBlendMode:
         s = make_editor_state(
             **_sunlight_mode_kwargs(),
             overlay_visible=False,
-            overlay_image_url="data:image/png;base64,AAAA",
+            overlay_pdf_path="/tmp/plan.pdf",
         )
         assert s.pdf_layer_blend_mode == "normal"
 
@@ -442,7 +445,7 @@ class TestPdfLayerBlendMode:
         s = make_editor_state(
             **_sunlight_mode_kwargs(),
             overlay_visible=True,
-            overlay_image_url="",
+            overlay_pdf_path="",
         )
         assert s.pdf_layer_blend_mode == "normal"
 
@@ -452,7 +455,7 @@ class TestPdfLayerBlendMode:
             project_mode="aoi",
             view_groups=[],
             overlay_visible=True,
-            overlay_image_url="data:image/png;base64,AAAA",
+            overlay_pdf_path="/tmp/plan.pdf",
         )
         assert s.pdf_layer_blend_mode == "normal"
 

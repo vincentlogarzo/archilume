@@ -48,7 +48,9 @@ def _make_state(
     object.__setattr__(state, "base_state", state)
     object.__setattr__(state, "_auto_save", lambda: None)
     object.__setattr__(state, "_push_overlay_undo", lambda e: None)
-    object.__setattr__(state, "_rasterize_current_page", lambda: None)
+    # Stub the page-dim refresh — pdf.js renders client-side, so the helper
+    # would otherwise hit PyMuPDF on a non-existent path during these tests.
+    object.__setattr__(state, "_refresh_overlay_page_dims", lambda: None)
     # Initialise _backend_vars so Reflex's __setattr__ can write backend vars
     # (vars with a leading underscore). Without this, assignments to e.g.
     # _overlay_undo_stack inside methods raise AttributeError.
@@ -429,12 +431,11 @@ def test_undo_page_change_syncs_page_idx_into_level_transform() -> None:
     undo_entry = {
         "action": "overlay_props",
         "desc": "Change overlay page",
-        "before": {"page_idx": 0, "dpi": 150, "alpha": 0.6},
-        "after": {"page_idx": 1, "dpi": 150, "alpha": 0.6},
+        "before": {"page_idx": 0, "alpha": 0.6},
+        "after": {"page_idx": 1, "alpha": 0.6},
     }
     state._overlay_undo_stack = [undo_entry]
     state._overlay_session_start = {}
-    state.overlay_dpi = 150
     state.overlay_alpha = 0.6
     state._undo_overlay()
     # Global page_idx must be restored to the before value

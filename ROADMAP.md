@@ -205,7 +205,7 @@ This file tracks planned features, optimizations, and known issues for the Archi
 ### IESVE .pic Compatibility
 
 - **Migrate Post-Processing into Room Boundary Editor:** For this to be viable, the `df_cnt` (contour) and `df_false` (falsecolor) conversion steps currently handled in the rendering pipeline would need to be surfaced within `room_boundaries_editor.py`, so the editor can produce annotated outputs independently.
-- **[TEST & FIX] PDF Page Shifting in HDR Editor:** The feature to swap PDF pages/levels for the underlay in the HDR editor is fragile and unresponsive. Test and debug the page shifting functionality to ensure smooth, reliable switching between levels when using PDF underlays.
+- **[TEST & FIX] PDF Page Shifting in HDR Editor:** The feature to swap PDF pages/levels for the underlay in the HDR editor is fragile and unresponsive. Test and debug the page shifting functionality to ensure smooth, reliable switching between levels when using PDF underlays. *Pending re-test after pdf.js migration — the rasterise-on-page-change round-trip has been removed (pdf.js renders client-side); confirm whether residual fragility is now resolved or whether a separate state-ordering bug remains.*
 
 ### Notes
 

@@ -77,6 +77,8 @@ def sidebar() -> rx.Component:
                          is_active=EditorState.ortho_mode),
             _divider(),
             rx.spacer(),
+            _sidebar_btn("keyboard", "Shortcuts",
+                         on_click=EditorState.open_shortcuts_modal),
             # Color mode toggle at the bottom
             rx.tooltip(
                 rx.color_mode.button(size="1", variant="ghost"),

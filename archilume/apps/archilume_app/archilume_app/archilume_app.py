@@ -4,8 +4,10 @@ import reflex as rx
 from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse
 
+from archilume.config import get_project_paths
+
 from .components.header import header
-from .state.editor_state import _overlay_cache_dir, _sunlight_frame_dir
+from .state.editor_state import _sunlight_frame_dir
 from .components.modals import (
     accelerad_modal,
     create_project_modal,
@@ -475,28 +477,35 @@ _DEBUG_SCRIPT = rx.script("""
 """)
 
 
-# ── PDF overlay PNG cache — static file route ───────────────────────────────
-# Rasterized PDF pages are cached per-project at
-# ``projects/<name>/inputs/plans/.overlay_cache/`` and served by a FastAPI
-# sub-app registered via ``api_transformer`` at
-# ``/overlay_cache/{project}/{filename}`` on the backend port.
+# ── PDF overlay file route ──────────────────────────────────────────────────
+# Project-attached PDFs live under ``projects/<name>/inputs/plans/`` (or any
+# descendant of ``inputs/``). pdf.js fetches the raw PDF via XHR from this
+# FastAPI sub-app mounted at ``/overlay_pdf/{project}/{filename:path}`` on
+# the backend port. The mtime querystring on the URL (added by
+# ``EditorState.overlay_pdf_url``) cache-busts the browser when the PDF on
+# disk is replaced at the same path.
 _overlay_api = FastAPI()
 
 
-@_overlay_api.get("/overlay_cache/{project}/{filename}")
-async def _serve_overlay_png(project: str, filename: str) -> Response:
-    cache_dir = _overlay_cache_dir(project)
-    if cache_dir is None or not cache_dir.exists():
-        return Response(status_code=404)
-    cache_root = cache_dir.resolve()
-    target = (cache_root / filename).resolve()
+@_overlay_api.get("/overlay_pdf/{project}/{filename:path}")
+async def _serve_overlay_pdf(project: str, filename: str) -> Response:
     try:
-        target.relative_to(cache_root)
+        project_paths = get_project_paths(project)
+    except Exception:
+        return Response(status_code=404)
+    inputs_root = project_paths.inputs_dir.resolve()
+    target = (inputs_root / filename).resolve()
+    try:
+        target.relative_to(inputs_root)
     except ValueError:
         return Response(status_code=403)
-    if not target.is_file():
+    if not target.is_file() or target.suffix.lower() != ".pdf":
         return Response(status_code=404)
-    return FileResponse(target, media_type="image/png")
+    return FileResponse(
+        target,
+        media_type="application/pdf",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 # ── Sunlight frame PNGs — static file route ─────────────────────────────────
@@ -522,10 +531,20 @@ async def _serve_sunlight_frame(project: str, filename: str) -> Response:
     # Cache aggressively in the browser — a rendered frame PNG is immutable
     # for a given (project, stem); the URL changes if the PNG is regenerated
     # because the caller bumps the stem or deletes the file first.
+    #
+    # ``Access-Control-Allow-Origin: *`` is needed so the pixel-inspector
+    # tooltip (viewport.py ``ensurePixelCanvas`` / ``getImageData``) can read
+    # back pixels at high zoom. The frontend runs on a different port from
+    # the FastAPI backend in dev (3000 vs 8000); without CORS the canvas is
+    # tainted on draw and ``getImageData`` throws SecurityError on every
+    # mousemove past the 15× zoom threshold.
     return FileResponse(
         target,
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": "*",
+        },
     )
 
 

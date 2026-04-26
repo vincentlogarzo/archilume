@@ -69,7 +69,6 @@ def build_session_dict(
     current_variant_idx: int = 0,
     selected_parent: str = "",
     annotation_scale: float = 1.0,
-    overlay_dpi: int = 200,
     overlay_visible: bool = False,
     overlay_alpha: float = 0.6,
     overlay_page_idx: int = 0,
@@ -81,7 +80,13 @@ def build_session_dict(
     sunlight_settings: Optional[dict] = None,
     last_generated: Optional[dict] = None,
 ) -> dict[str, Any]:
-    """Build a session dict ready for saving."""
+    """Build a session dict ready for saving.
+
+    Note: ``overlay_img_width`` / ``overlay_img_height`` were once PNG pixel
+    dimensions from the PyMuPDF rasterisation cache. After the pdf.js
+    migration they hold the active PDF page's rect width/height in PDF
+    points; only the aspect ratio is consumed downstream.
+    """
     return {
         "rooms": rooms,
         "df_stamps": df_stamps,
@@ -91,7 +96,6 @@ def build_session_dict(
         "current_variant_idx": current_variant_idx,
         "selected_parent": selected_parent,
         "annotation_scale": annotation_scale,
-        "overlay_dpi": overlay_dpi,
         "overlay_visible": overlay_visible,
         "overlay_alpha": overlay_alpha,
         "overlay_page_idx": overlay_page_idx,

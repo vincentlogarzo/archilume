@@ -12,6 +12,57 @@ from archilume_app.lib import project_validators as V
 
 
 # ---------------------------------------------------------------------------
+# PDF
+# ---------------------------------------------------------------------------
+
+class TestValidatePdf:
+    @staticmethod
+    def _write_clean_pdf(path: Path, pages: int = 1) -> None:
+        import pymupdf as fitz
+        doc = fitz.open()
+        for _ in range(pages):
+            doc.new_page()
+        doc.save(str(path))
+        doc.close()
+
+    @staticmethod
+    def _write_encrypted_pdf(path: Path) -> None:
+        import pymupdf as fitz
+        doc = fitz.open()
+        doc.new_page()
+        # AES-256 with both owner and user passwords — pdf.js (and PyMuPDF
+        # without the password) cannot read either page-count or pixmap.
+        doc.save(
+            str(path),
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="o",
+            user_pw="u",
+        )
+        doc.close()
+
+    def test_valid_unencrypted_pdf(self, tmp_path: Path):
+        p = tmp_path / "ok.pdf"
+        self._write_clean_pdf(p, pages=2)
+        ok, msg = V.validate_pdf(p)
+        assert ok, msg
+
+    def test_rejects_encrypted_pdf_with_specific_message(self, tmp_path: Path):
+        p = tmp_path / "locked.pdf"
+        self._write_encrypted_pdf(p)
+        ok, msg = V.validate_pdf(p)
+        assert not ok
+        # Exact user-facing message — surfaced verbatim by both the create-
+        # project popout and the in-editor "Attach Floor Plan" flow.
+        assert msg == V.ENCRYPTED_PDF_MESSAGE
+
+    def test_rejects_missing_pdf(self, tmp_path: Path):
+        ok, msg = V.validate_pdf(tmp_path / "absent.pdf")
+        assert not ok
+        # No pages in a non-existent file → "PDF has no pages" branch.
+        assert "no pages" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
 # HDR / PIC
 # ---------------------------------------------------------------------------
 

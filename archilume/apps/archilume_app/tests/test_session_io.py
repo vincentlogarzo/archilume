@@ -88,15 +88,19 @@ class TestPrepareForJson:
 class TestBuildSessionDict:
     def test_returns_dict_with_all_keys(self):
         d = build_session_dict(rooms=[], df_stamps={}, overlay_transforms={})
-        expected_keys = {
+        # ``overlay_dpi`` was retired with the pdf.js migration — pdf.js
+        # auto-renders at devicePixelRatio × current zoom, so a discrete
+        # DPI selector no longer exists in state.
+        assert "overlay_dpi" not in d
+        required_keys = {
             "rooms", "df_stamps", "overlay_transforms", "transform_version",
             "current_hdr_idx", "current_variant_idx", "selected_parent",
-            "annotation_scale", "overlay_dpi", "overlay_visible",
+            "annotation_scale", "overlay_visible",
             "overlay_alpha", "overlay_page_idx",
             "overlay_img_width", "overlay_img_height",
             "falsecolour_settings", "contour_settings", "last_generated",
         }
-        assert expected_keys == set(d.keys())
+        assert required_keys.issubset(set(d.keys()))
 
     def test_defaults_are_sane(self):
         d = build_session_dict(rooms=[], df_stamps={}, overlay_transforms={})
@@ -104,7 +108,6 @@ class TestBuildSessionDict:
         assert d["current_variant_idx"] == 0
         assert d["selected_parent"] == ""
         assert d["annotation_scale"] == 1.0
-        assert d["overlay_dpi"] == 200
         assert d["overlay_visible"] is False
         assert d["overlay_alpha"] == 0.6
         assert d["overlay_page_idx"] == 0
@@ -116,13 +119,11 @@ class TestBuildSessionDict:
             df_stamps={"img.hdr": [(1, 2)]},
             overlay_transforms={"img.hdr": {"x": 10}},
             current_hdr_idx=3,
-            overlay_dpi=300,
             overlay_visible=True,
             overlay_alpha=0.8,
         )
         assert d["rooms"] == [{"name": "Kitchen"}]
         assert d["current_hdr_idx"] == 3
-        assert d["overlay_dpi"] == 300
         assert d["overlay_visible"] is True
         assert d["overlay_alpha"] == 0.8
 

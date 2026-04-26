@@ -1,13 +1,13 @@
 """Image loading, tone-mapping, and caching for HDR/TIFF/PDF files."""
 
 import base64
-import hashlib
 import io
 import os
 import subprocess
 import struct
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -18,20 +18,6 @@ from PIL import Image
 _image_cache: OrderedDict[str, str] = OrderedDict()
 _cache_lock = threading.Lock()
 _CACHE_MAX = 60
-
-# Per-process counter so concurrent rasterize calls for the same (page, dpi)
-# never share a .tmp path. Windows denies a second open() on a file already
-# open for write, so a shared tmp name causes PermissionError races and
-# orphaned .tmp artifacts.
-_tmp_counter_lock = threading.Lock()
-_tmp_counter = 0
-
-
-def _unique_tmp_suffix() -> str:
-    global _tmp_counter
-    with _tmp_counter_lock:
-        _tmp_counter += 1
-        return f"{os.getpid()}_{_tmp_counter}"
 
 
 def load_image_as_base64(path: Path) -> Optional[str]:
@@ -387,138 +373,56 @@ def scan_hdr_files(image_dir: Path) -> list[dict]:
     return result
 
 
-def _pdf_fingerprint(pdf_path: Path) -> str:
-    """md5 of (resolved path | size | mtime_ns), 10 hex chars.
+@dataclass(frozen=True)
+class PdfInfo:
+    """Lightweight metadata for an attached PDF underlay.
 
-    Stat-only — microseconds to compute. Invalidates cache when the PDF is
-    replaced, edited, or moved. Raises OSError if the file is missing.
+    page_sizes is per-page (width_pts, height_pts) so the editor can refresh
+    the transform aspect ratio when the user cycles to a page that differs in
+    size from the current one. is_encrypted gates the upload flow before any
+    rendering work happens.
     """
-    st = pdf_path.stat()
-    key = f"{pdf_path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
-    return hashlib.md5(key.encode()).hexdigest()[:10]
+    page_count: int
+    page_sizes: tuple[tuple[float, float], ...]
+    is_encrypted: bool
 
 
-def _overlay_cache_path(
-    pdf_path: Path, page_index: int, dpi: int, cache_dir: Path,
-) -> Path:
-    """Resolve the .png cache path for (pdf, page, dpi). Creates cache_dir.
-
-    Filename encodes the PDF fingerprint so edits/replacements at the same
-    path produce fresh cache entries (old entries remain orphaned).
-    """
-    fp = _pdf_fingerprint(pdf_path)
-    fname = f"{pdf_path.stem}_p{page_index}_{dpi}dpi_{fp}.png"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / fname
+_EMPTY_PDF_INFO = PdfInfo(page_count=0, page_sizes=(), is_encrypted=False)
 
 
-def rasterize_pdf_page(
-    pdf_path: Path, page_index: int = 0, dpi: int = 150,
-    cache_dir: Optional[Path] = None,
-) -> tuple[Optional[Path], int, int]:
-    """Rasterize a PDF page and return (cache_path, width, height).
+def get_pdf_info(pdf_path: Path) -> PdfInfo:
+    """Inspect a PDF and return page count, per-page sizes, and encryption flag.
 
-    Caches the rendered page as a deflated PNG under *cache_dir* keyed by
-    (stem, page, dpi, content fingerprint). The caller builds the served
-    URL from the returned Path — image_loader is agnostic of URL shape
-    or project layout.
-
-    Returns (None, 0, 0) when the PDF is missing, the page index is out of
-    range, or *cache_dir* is not supplied.
-    """
-    if not pdf_path.exists() or cache_dir is None:
-        return None, 0, 0
-
-    try:
-        cache_path = _overlay_cache_path(pdf_path, page_index, dpi, cache_dir)
-    except OSError:
-        return None, 0, 0
-
-    if cache_path.exists():
-        try:
-            with Image.open(cache_path) as img:
-                w, h = img.size
-            return cache_path, w, h
-        except Exception:
-            pass  # fall through to re-rasterize a corrupt cache entry
-
-    tmp_path = cache_path.with_suffix(f".tmp_{_unique_tmp_suffix()}.png")
-    try:
-        doc = fitz.open(str(pdf_path))
-        if page_index >= len(doc):
-            doc.close()
-            return None, 0, 0
-
-        page = doc[page_index]
-        scale = dpi / 72.0
-        mat = fitz.Matrix(scale, scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        img_w, img_h = pix.width, pix.height
-        doc.close()
-
-        img.save(tmp_path, format="PNG", optimize=True)
-        tmp_path.replace(cache_path)
-        return cache_path, img_w, img_h
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return None, 0, 0
-
-
-def rasterize_pdf_page_to_cache(
-    pdf_path: Path, page_index: int, dpi: int, cache_dir: Path,
-) -> bool:
-    """Rasterize a PDF page to the PNG disk cache only (no URL return).
-
-    For background prefetch: skip if cache already exists, otherwise rasterise
-    via PyMuPDF and atomically write a deflated PNG. Returns True if the PNG
-    exists after the call, False on any failure.
+    Returns ``_EMPTY_PDF_INFO`` for missing or unreadable files. Encrypted
+    PDFs return ``is_encrypted=True`` with whatever metadata PyMuPDF exposes
+    without unlocking — page_count may be 0 because the document is sealed.
     """
     if not pdf_path.exists():
-        return False
-    try:
-        cache_path = _overlay_cache_path(pdf_path, page_index, dpi, cache_dir)
-    except OSError:
-        return False
-
-    if cache_path.exists():
-        return True
-
-    tmp_path = cache_path.with_suffix(f".tmp_{_unique_tmp_suffix()}.png")
+        return _EMPTY_PDF_INFO
     try:
         doc = fitz.open(str(pdf_path))
-        if page_index >= len(doc):
-            doc.close()
-            return False
-        page = doc[page_index]
-        scale = dpi / 72.0
-        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        doc.close()
-
-        img.save(tmp_path, format="PNG", optimize=True)
-        tmp_path.replace(cache_path)
-        return True
     except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
+        return _EMPTY_PDF_INFO
+    try:
+        encrypted = bool(getattr(doc, "needs_pass", False) or getattr(doc, "is_encrypted", False))
+        if encrypted:
+            return PdfInfo(page_count=0, page_sizes=(), is_encrypted=True)
+        sizes: list[tuple[float, float]] = []
+        for page in doc:
+            rect = page.rect
+            sizes.append((float(rect.width), float(rect.height)))
+        return PdfInfo(
+            page_count=len(doc),
+            page_sizes=tuple(sizes),
+            is_encrypted=False,
+        )
+    finally:
+        doc.close()
 
 
 def get_pdf_page_count(pdf_path: Path) -> int:
-    """Return number of pages in a PDF."""
-    try:
-        doc = fitz.open(str(pdf_path))
-        count = len(doc)
-        doc.close()
-        return count
-    except Exception:
-        return 0
+    """Return number of pages in a PDF (0 on failure or encrypted)."""
+    return get_pdf_info(pdf_path).page_count
 
 
 def clear_cache() -> None:
