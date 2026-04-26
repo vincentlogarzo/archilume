@@ -212,7 +212,17 @@ if (-not (Test-Path -LiteralPath $ProjectsDir)) {
 
 $dockerCli = Get-Command docker -ErrorAction SilentlyContinue
 if (-not $dockerCli) {
-    Fail "'docker' CLI not on PATH. Install Docker Desktop (which bundles the CLI) and rerun."
+    Write-Host ""
+    Write-Host "  Docker Desktop does not appear to be installed." -ForegroundColor Yellow
+    Write-Host "  Docker Desktop is required to run Archilume." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Download: https://www.docker.com/products/docker-desktop/" -ForegroundColor Cyan
+    Write-Host ""
+    $answer = Read-Host "  Open the download page in your browser? [Y/n]"
+    if ($answer -notmatch '^(?i:n(o)?)$') {
+        Start-Process "https://www.docker.com/products/docker-desktop/" | Out-Null
+    }
+    Fail "Install Docker Desktop, then rerun this script."
 }
 
 # --------------------------------------------------------------------------- #
