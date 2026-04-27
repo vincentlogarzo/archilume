@@ -4,6 +4,10 @@
 
 For coding conventions, review checklists, and workflow standards see [.claude/rules/common/](.claude/rules/common/) and [.claude/rules/python/](.claude/rules/python/). Consult these before large refactors, code reviews, or security-sensitive changes.
 
+## Roadmap notes
+
+- **GPU cloud deployment (planned):** A proper GPU build of this repo for cloud GPU services is upcoming. New `archilume-engine-gpu` Docker target on a CUDA runtime base (e.g. `nvcr.io/nvidia/cuda:12.x-runtime-ubuntu22.04`), bundling Accelerad Linux binaries from `.devcontainer/accelerad_07_beta_linux/`. Keep current CPU `archilume-engine` target intact alongside it. Note: `nvcr.io/nvidia/k8s/container-toolkit` is **not** a runtime base — it's a node installer for the NVIDIA Container Toolkit on Kubernetes hosts.
+
 ## Platform & Environment
 
 **Runs on Windows and Linux.** Before any terminal command, detect OS:
